@@ -16,7 +16,7 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=30 * 60,  # 30分钟硬限制
     task_soft_time_limit=25 * 60,  # 25分钟软限制
-    result_expires=3600,  # 结果保留1小时
+    result_expires=3600,  # 结果保存1小时
     worker_prefetch_multiplier=1,  # 防止任务堆积
     worker_max_tasks_per_child=1000,  # 工作进程重启间隔
 )

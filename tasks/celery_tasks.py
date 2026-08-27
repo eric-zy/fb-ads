@@ -142,7 +142,7 @@ def check_all_accounts_risk(self) -> Dict:
     finally:
         db.close()
 
-# ==================== 报表生成 ====================
+# ==================== 报告生成 ====================
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=300)
 def generate_daily_report(self, account_id: str, report_date: Optional[str] = None) -> Dict:
