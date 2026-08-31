@@ -29,9 +29,9 @@ class RateLimitManager:
             hour_key = f"{self.key_prefix}:hour"
             day_key = f"{self.key_prefix}:day"
             
-            minute_count = redis_client.get(minute_key, 0)
-            hour_count = redis_client.get(hour_key, 0)
-            day_count = redis_client.get(day_key, 0)
+            minute_count = int(redis_client.get(minute_key, 0) or 0)
+            hour_count = int(redis_client.get(hour_key, 0) or 0)
+            day_count = int(redis_client.get(day_key, 0) or 0)
             
             return {
                 'minute': {
@@ -65,9 +65,9 @@ class RateLimitManager:
         """
         try:
             key = f"{self.key_prefix}:{window}"
-            count = redis_client.get(key, 0)
+            count = int(redis_client.get(key, 0) or 0)
             limit = self.limits.get(window, 0)
-            
+
             return count < limit
         except Exception as e:
             logger.error(f"Failed to check rate limit: {str(e)}")
@@ -93,10 +93,7 @@ class RateLimitManager:
             else:  # day
                 ttl = 86400
             
-            redis_client.increment(key, ttl=ttl)
-            count = redis_client.get(key, 0)
-            
-            return count
+            return redis_client.incr(key, 1, ttl=ttl)
         except Exception as e:
             logger.error(f"Failed to increment rate limit: {str(e)}")
             return 0

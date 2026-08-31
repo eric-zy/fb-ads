@@ -15,13 +15,14 @@ class RedisClient:
             decode_responses=True
         )
     
-    def get(self, key: str) -> Optional[str]:
+    def get(self, key: str, default: Any = None) -> Any:
         """获取值"""
         try:
-            return self.redis_client.get(key)
+            value = self.redis_client.get(key)
+            return value if value is not None else default
         except Exception as e:
             logger.error(f"Redis get error: {str(e)}")
-            return None
+            return default
     
     def set(self, key: str, value: Any, ex: Optional[int] = None) -> bool:
         """设置值"""
@@ -51,10 +52,21 @@ class RedisClient:
             logger.error(f"Redis exists error: {str(e)}")
             return False
     
-    def incr(self, key: str, amount: int = 1) -> int:
-        """自增计数"""
+    def incr(self, key: str, amount: int = 1, ttl: Optional[int] = None) -> int:
+        """自增计数
+
+        Args:
+            amount: 自增步长
+            ttl: 可选过期秒数。仅在 key 首次创建时设置（nx=True），
+                 保证限流窗口不会因重复设置而被无限延长。
+        """
         try:
-            return self.redis_client.incrby(key, amount)
+            pipe = self.redis_client.pipeline()
+            pipe.incrby(key, amount)
+            if ttl:
+                pipe.expire(key, ttl, nx=True)
+            result = pipe.execute()
+            return result[0]
         except Exception as e:
             logger.error(f"Redis incr error: {str(e)}")
             return 0

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, ForeignKey, Text, Index
+from sqlalchemy import BigInteger, Column, String, Float, Integer, DateTime, Boolean, ForeignKey, Text, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from core.database import Base
@@ -8,7 +8,7 @@ class Ad(Base):
     __tablename__ = "ads"
     
     id = Column(String(50), primary_key=True, index=True)
-    ad_id = Column(String(50), unique=True, nullable=False, index=True)
+    ad_id = Column(String(50), unique=True, nullable=False)
     ad_group_id = Column(String(50), ForeignKey('ad_groups.id'), nullable=False)
     
     # 基本信息
@@ -24,7 +24,7 @@ class Ad(Base):
     video_url = Column(String(500))
     
     # 性能指标
-    spend = Column(Float, default=0.0)
+    spend = Column(BigInteger, default=0, comment="花费（最小货币单位）")
     impressions = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
     conversions = Column(Integer, default=0)
@@ -46,9 +46,9 @@ class Ad(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     __table_args__ = (
-        Index('ix_ad_id', 'ad_id'),
-        Index('ix_ad_group_id', 'ad_group_id'),
-        Index('ix_status', 'status'),
+        Index('ix_ads_ad_id', 'ad_id'),
+        Index('ix_ads_ad_group_id', 'ad_group_id'),
+        Index('ix_ads_status', 'status'),
     )
     
     def __repr__(self):

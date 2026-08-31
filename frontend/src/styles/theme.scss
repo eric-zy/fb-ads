@@ -1,0 +1,107 @@
+// ============ 全局主题变量 ============
+:root {
+  // 主色（淡蓝系）
+  --primary: #5aa9e6;
+  --primary-light: #8fcdf0;
+  --primary-dark: #4a90d9;
+  --primary-gradient: linear-gradient(135deg, #5aa9e6 0%, #7fc8f8 100%);
+
+  // 中性色
+  --text-primary: #1f2937;
+  --text-regular: #4b5563;
+  --text-secondary: #909399;
+  --border-color: #e4e7ed;
+  --bg-page: #f5f7fa;
+  --bg-card: #ffffff;
+
+  // 功能色
+  --success: #67c23a;
+  --warning: #e6a23c;
+  --danger: #f56c6c;
+  --info: #909399;
+
+  // 圆角
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+
+  // 阴影
+  --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.06);
+  --shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(102, 126, 234, 0.15);
+
+  // 布局
+  --sidebar-width: 220px;
+}
+
+// ============ 通用工具类 ============
+.page-container {
+  padding: 24px;
+}
+
+.page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+
+  .page-title {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+  }
+  .page-subtitle {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 4px 0 0;
+  }
+}
+
+.toolbar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.card-shadow {
+  box-shadow: var(--shadow);
+  border-radius: var(--radius);
+  border: none;
+}
+
+// 统一 Element Plus 主色
+.el-button--primary {
+  --el-button-bg-color: var(--primary);
+  --el-button-border-color: var(--primary);
+  --el-button-hover-bg-color: var(--primary-light);
+  --el-button-hover-border-color: var(--primary-light);
+  --el-button-active-bg-color: var(--primary-dark);
+  --el-button-active-border-color: var(--primary-dark);
+}
+
+.el-table {
+  --el-table-header-bg-color: #fafbfc;
+  border-radius: var(--radius);
+}
+
+.el-card {
+  border: none;
+  box-shadow: var(--shadow);
+  border-radius: var(--radius);
+}
+
+// 滚动条美化
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b0b6c0;
+}

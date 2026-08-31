@@ -4,7 +4,7 @@
       <!-- 侧边栏 -->
       <el-aside width="200px" class="sidebar">
         <div class="logo">
-          <h2>📊 FBA</h2>
+          <h2>📊 META_ADS</h2>
         </div>
         <el-menu
           :default-active="activeMenu"
@@ -19,9 +19,21 @@
             <el-icon><Promotion /></el-icon>
             <span>广告系列</span>
           </el-menu-item>
+          <el-menu-item index="templates">
+            <el-icon><Collection /></el-icon>
+            <span>投放模板</span>
+          </el-menu-item>
           <el-menu-item index="batch-publish">
-            <el-icon><Rocket /></el-icon>
+            <el-icon><Upload /></el-icon>
             <span>批量投放</span>
+          </el-menu-item>
+          <el-menu-item index="jobs">
+            <el-icon><List /></el-icon>
+            <span>任务中心</span>
+          </el-menu-item>
+          <el-menu-item index="material">
+            <el-icon><Picture /></el-icon>
+            <span>素材库</span>
           </el-menu-item>
           <el-menu-item index="scheduled-tasks">
             <el-icon><Timer /></el-icon>
@@ -131,6 +143,20 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/userStore'
 import { useAccountStore } from '@/stores/accountStore'
+import {
+  DocumentCopy,
+  Promotion,
+  Collection,
+  Upload,
+  List,
+  Picture,
+  Timer,
+  PieChart,
+  Warning,
+  User,
+  Setting,
+  Switch,
+} from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -189,27 +215,38 @@ onMounted(async () => {
     overflow-y: auto;
 
     .logo {
-      padding: 20px;
+      padding: 16px 18px;
       border-bottom: 1px solid #e4e7eb;
       text-align: center;
+      background: var(--primary-gradient);
 
       h2 {
         margin: 0;
-        font-size: 20px;
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 1.2;
+        color: #fff;
+        letter-spacing: 0.5px;
       }
     }
 
     :deep(.el-menu) {
       border: none;
+      padding: 8px;
 
       .el-menu-item {
+        border-radius: 8px;
+        margin-bottom: 4px;
+        transition: all 0.2s;
+
         &:hover {
           background-color: #f5f7fa;
         }
 
         &.is-active {
-          background-color: #667eea !important;
+          background: var(--primary-gradient) !important;
           color: white;
+          box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
 
           .el-icon {
             color: white;
@@ -222,6 +259,7 @@ onMounted(async () => {
   .header {
     background: white;
     border-bottom: 1px solid #e4e7eb;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
     display: flex;
     justify-content: space-between;
     align-items: center;

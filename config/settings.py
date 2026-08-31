@@ -71,6 +71,16 @@ class Settings(BaseSettings):
     API_HOST: str = os.getenv("API_HOST", "0.0.0.0")
     API_PORT: int = int(os.getenv("API_PORT", "8000"))
     API_WORKERS: int = 4
+
+    # CORS：前端独立部署（3000/5173）时必须放行，否则 /api/* 会被浏览器拦截
+    CORS_ORIGINS: str = os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173",
+    )
+
+    # ========== 素材上传配置 ==========
+    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads"))
+    MAX_UPLOAD_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", str(200 * 1024 * 1024)))  # 200MB
     
     # ========== 通知配置 ==========
     NOTIFY_EMAIL: Optional[str] = os.getenv("NOTIFY_EMAIL")

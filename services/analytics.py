@@ -3,6 +3,7 @@ from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
 from models import AccountInsight, CampaignInsight, AdInsight, Campaign, Ad
 from core.logger import logger
+from core.money import to_major
 import numpy as np
 from sklearn.ensemble import IsolationForest
 import pandas as pd
@@ -15,7 +16,12 @@ class AnalyticsEngine:
     
     def calculate_metrics(self, spend: float, impressions: int, clicks: int,
                          conversions: int = 0) -> Dict[str, float]:
-        """计算广告指标"""
+        """计算广告指标
+
+        Args:
+            spend: **主单位（元）**。库内 spend 以最小货币单位存储，
+                   调用方需先 `to_major(...)` 转换，否则 cpc / cpm 会放大 100 倍。
+        """
         metrics = {
             'ctr': (clicks / impressions * 100) if impressions > 0 else 0,
             'cpc': (spend / clicks) if clicks > 0 else 0,
@@ -41,7 +47,7 @@ class AnalyticsEngine:
             for insight in insights:
                 data.append({
                     'date': insight.date,
-                    'spend': insight.spend,
+                    'spend': to_major(insight.spend),
                     'impressions': insight.impressions,
                     'clicks': insight.clicks,
                     'conversions': insight.conversions,
@@ -150,7 +156,7 @@ class AnalyticsEngine:
                 'date': str(report_date),
                 'account_id': account_id,
                 'metrics': {
-                    'spend': insight.spend,
+                    'spend': to_major(insight.spend),
                     'impressions': insight.impressions,
                     'clicks': insight.clicks,
                     'conversions': insight.conversions,
@@ -192,8 +198,9 @@ class AnalyticsEngine:
             if not insights:
                 return {}
             
-            # 汇总指标
-            total_spend = sum(i.spend for i in insights)
+            # 汇总指标：先按最小单位累加（避免浮点误差），最后统一转主单位输出
+            total_spend_minor = sum(i.spend or 0 for i in insights)
+            total_spend = to_major(total_spend_minor)
             total_impressions = sum(i.impressions for i in insights)
             total_clicks = sum(i.clicks for i in insights)
             total_conversions = sum(i.conversions for i in insights)

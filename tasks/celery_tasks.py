@@ -54,9 +54,15 @@ def fetch_all_accounts_insights(self, days: int = 1) -> Dict:
     """拉取所有账户的洞察数据"""
     db = SessionLocal()
     try:
-        from models import AdAccount
+        from models import AdAccount, SystemStatus
         
-        accounts = db.query(AdAccount).filter(AdAccount.is_active == True).all()
+        # 只处理系统侧允许参与投放的账户（历史上这里用的 is_active 列并不存在，
+        # 导致定时任务每次都抛错、实际一次都没跑起来）
+        accounts = (
+            db.query(AdAccount)
+            .filter(AdAccount.system_status == SystemStatus.ACTIVE.value)
+            .all()
+        )
         results = []
         
         for account in accounts:
@@ -122,9 +128,15 @@ def check_all_accounts_risk(self) -> Dict:
     """检查所有账户的风险"""
     db = SessionLocal()
     try:
-        from models import AdAccount
+        from models import AdAccount, SystemStatus
         
-        accounts = db.query(AdAccount).filter(AdAccount.is_active == True).all()
+        # 只处理系统侧允许参与投放的账户（历史上这里用的 is_active 列并不存在，
+        # 导致定时任务每次都抛错、实际一次都没跑起来）
+        accounts = (
+            db.query(AdAccount)
+            .filter(AdAccount.system_status == SystemStatus.ACTIVE.value)
+            .all()
+        )
         results = []
         
         for account in accounts:
@@ -277,3 +289,59 @@ def notify_weekly_report(self, account_id: str) -> Dict:
     except Exception as exc:
         logger.error(f"Failed to send weekly report notification: {str(exc)}")
         raise self.retry(exc=exc, countdown=60)
+
+
+# ==================== 定时编排任务（由 Celery Beat 触发） ====================
+# 设计文档第 5 / 24 节：定时任务统一由 Celery Beat 负责。
+# Beat 只能触发无参任务，因此「遍历账户再逐个派发」的逻辑下沉为编排任务。
+
+@shared_task(bind=True, name="tasks.celery_tasks.dispatch_daily_reports")
+def dispatch_daily_reports(self) -> Dict:
+    """日报告编排：为所有活跃账户派发生成任务"""
+    db = SessionLocal()
+    try:
+        from models import AdAccount
+
+        # 只处理系统侧允许参与投放的账户（历史上这里用的 is_active 列并不存在，
+        # 导致定时任务每次都抛错、实际一次都没跑起来）
+        accounts = (
+            db.query(AdAccount)
+            .filter(AdAccount.system_status == SystemStatus.ACTIVE.value)
+            .all()
+        )
+        for account in accounts:
+            generate_daily_report.apply_async(args=(account.account_id,), countdown=5)
+
+        logger.info(f"Dispatched daily reports for {len(accounts)} accounts")
+        return {"status": "dispatched", "accounts": len(accounts)}
+    except Exception as exc:
+        logger.error(f"Failed to dispatch daily reports: {str(exc)}")
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="tasks.celery_tasks.dispatch_weekly_reports")
+def dispatch_weekly_reports(self) -> Dict:
+    """周报告编排：为所有活跃账户派发生成任务"""
+    db = SessionLocal()
+    try:
+        from models import AdAccount
+
+        # 只处理系统侧允许参与投放的账户（历史上这里用的 is_active 列并不存在，
+        # 导致定时任务每次都抛错、实际一次都没跑起来）
+        accounts = (
+            db.query(AdAccount)
+            .filter(AdAccount.system_status == SystemStatus.ACTIVE.value)
+            .all()
+        )
+        for account in accounts:
+            generate_weekly_report.apply_async(args=(account.account_id,), countdown=5)
+
+        logger.info(f"Dispatched weekly reports for {len(accounts)} accounts")
+        return {"status": "dispatched", "accounts": len(accounts)}
+    except Exception as exc:
+        logger.error(f"Failed to dispatch weekly reports: {str(exc)}")
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()

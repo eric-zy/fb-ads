@@ -1,9 +1,10 @@
 """发布频次验证器 - 防止账户因过度操作被禁用"""
 from datetime import datetime, timedelta
 from typing import Dict, Tuple, List, Optional
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from core.logger import logger
-from models import Campaign
+from models import Campaign, AdAccount, SystemStatus
 
 class PublishFrequencyValidator:
     """验证账户的发布频次是否安全"""
@@ -19,11 +20,35 @@ class PublishFrequencyValidator:
             'safe': 30                  # 30秒
         }
     
+    def _resolve_ad_account_ids(self, account_id: str) -> List[str]:
+        """把账户标识解析为可用于 Campaign.ad_account_id 过滤的取值集合。
+
+        历史数据存在两种写法：
+          - 存 Meta 账户号（act_xxx，即 ad_accounts.account_id）
+          - 存内部主键（ad_accounts.id）
+        这里同时返回两者，保证不同来源的历史数据都能被统计到。
+        """
+        candidates = {account_id}
+
+        account = (
+            self.db.query(AdAccount)
+            .filter(
+                or_(AdAccount.account_id == account_id, AdAccount.id == account_id)
+            )
+            .first()
+        )
+        if account:
+            candidates.add(account.id)
+            if account.account_id:
+                candidates.add(account.account_id)
+
+        return [c for c in candidates if c]
+
     def check_campaign_publish_frequency(self, account_id: str, hours: int = 24) -> Dict:
         """检查账户在指定时间内的系列创建频次
         
         Args:
-            account_id: 账户ID
+            account_id: 账户ID（Meta 账户号或内部主键皆可）
             hours: 检查时间窗口（小时）
         
         Returns:
@@ -34,7 +59,7 @@ class PublishFrequencyValidator:
             
             # 查询在时间窗口内创建的系列
             campaigns = self.db.query(Campaign).filter(
-                Campaign.ad_account_id == account_id,
+                Campaign.ad_account_id.in_(self._resolve_ad_account_ids(account_id)),
                 Campaign.created_at >= cutoff_time
             ).all()
             
@@ -82,20 +107,24 @@ class PublishFrequencyValidator:
             (是否健康, 健康报告)
         """
         try:
-            from models import AdAccount
-            
             account = self.db.query(AdAccount).filter(
-                AdAccount.account_id == account_id
+                or_(AdAccount.account_id == account_id, AdAccount.id == account_id)
             ).first()
             
             if not account:
                 return False, {'status': 'not_found', 'message': 'Account not found'}
-            
-            # 检查账户状态
-            if account.status == 'FROZEN' or not account.is_active:
+
+            # 系统侧状态（system_status）决定是否允许参与投放；
+            # Meta 侧状态在 account_status / effective_status，同步维护，此处不参与健康判定
+            status_value = account.system_status
+            is_active = account.system_status == SystemStatus.ACTIVE.value
+
+            # 检查系统侧状态
+            if not is_active:
                 return False, {
-                    'status': account.status,
-                    'is_active': account.is_active,
+                    'status': status_value,
+                    'is_active': is_active,
+                    'system_status_reason': account.system_status_reason,
                     'message': 'Account is frozen or inactive'
                 }
             
@@ -105,8 +134,9 @@ class PublishFrequencyValidator:
             is_healthy = freq_report['status'] in ['safe', 'medium']
             
             return is_healthy, {
-                'status': account.status,
-                'is_active': account.is_active,
+                'status': status_value,
+                'is_active': is_active,
+                'system_status_reason': account.system_status_reason,
                 'publish_frequency': freq_report,
                 'message': 'Account is healthy' if is_healthy else 'Account has issues'
             }
@@ -129,7 +159,7 @@ class PublishFrequencyValidator:
             recommendations = []
             
             if not is_healthy:
-                if health_report.get('status') == 'FROZEN':
+                if health_report.get('status') == SystemStatus.DISABLED.value:
                     recommendations.append({
                         'priority': 'critical',
                         'type': 'account_frozen',

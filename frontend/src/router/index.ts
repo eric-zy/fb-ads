@@ -32,10 +32,28 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '广告系列' },
       },
       {
+        path: 'templates',
+        name: 'Templates',
+        component: () => import('@/pages/dashboard/Templates.vue'),
+        meta: { title: '投放模板' },
+      },
+      {
         path: 'batch-publish',
         name: 'BatchPublish',
         component: () => import('@/pages/dashboard/BatchPublish.vue'),
         meta: { title: '批量投放' },
+      },
+      {
+        path: 'jobs',
+        name: 'Jobs',
+        component: () => import('@/pages/dashboard/Jobs.vue'),
+        meta: { title: '任务中心' },
+      },
+      {
+        path: 'material',
+        name: 'Material',
+        component: () => import('@/pages/dashboard/Material.vue'),
+        meta: { title: '素材库' },
       },
       {
         path: 'scheduled-tasks',
@@ -91,6 +109,29 @@ const routes: RouteRecordRaw[] = [
         name: 'AdminAccounts',
         component: () => import('@/pages/admin/Accounts.vue'),
         meta: { title: '账户管理' },
+      },
+      {
+        path: 'meta-accounts',
+        name: 'AdminMetaAccounts',
+        component: () => import('@/pages/admin/MetaAccounts.vue'),
+        meta: { title: '主账号管理' },
+      },
+      {
+        path: 'businesses/:id',
+        name: 'AdminBusinessDetail',
+        component: () => import('@/pages/admin/BusinessDetail.vue'),
+        meta: { title: 'BM 详情' },
+      },
+      {
+        path: 'credentials',
+        name: 'AdminCredentials',
+        component: () => import('@/pages/admin/Credentials.vue'),
+        meta: { title: '凭据管理' },
+      },
+      // 侧边栏「返回用户端」的落点（el-menu 的 router 模式按 index 跳转）
+      {
+        path: 'overview',
+        redirect: '/dashboard/overview',
       },
     ],
   },

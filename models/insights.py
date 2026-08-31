@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Integer, DateTime, Date, ForeignKey, Index, JSON
+from sqlalchemy import BigInteger, Column, String, Float, Integer, DateTime, Date, ForeignKey, Index, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime, date
 from core.database import Base
@@ -11,10 +11,10 @@ class AccountInsight(Base):
     ad_account_id = Column(String(50), ForeignKey('ad_accounts.id'), nullable=False)
     
     # 日期
-    date = Column(Date, nullable=False, index=True)
+    date = Column(Date, nullable=False)
     
     # KPI指标
-    spend = Column(Float, default=0.0)
+    spend = Column(BigInteger, default=0, comment="花费（最小货币单位，见 core/money.py）")
     impressions = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
     conversions = Column(Integer, default=0)
@@ -38,8 +38,8 @@ class AccountInsight(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     __table_args__ = (
-        Index('ix_account_date', 'ad_account_id', 'date'),
-        Index('ix_date', 'date'),
+        Index('ix_account_insights_account_date', 'ad_account_id', 'date'),
+        Index('ix_account_insights_date', 'date'),
     )
 
 class CampaignInsight(Base):
@@ -49,10 +49,10 @@ class CampaignInsight(Base):
     id = Column(String(50), primary_key=True, index=True)
     campaign_id = Column(String(50), ForeignKey('campaigns.id'), nullable=False)
     
-    date = Column(Date, nullable=False, index=True)
-    
+    date = Column(Date, nullable=False)
+
     # KPI指标
-    spend = Column(Float, default=0.0)
+    spend = Column(BigInteger, default=0, comment="花费（最小货币单位，见 core/money.py）")
     impressions = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
     conversions = Column(Integer, default=0)
@@ -69,7 +69,8 @@ class CampaignInsight(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     __table_args__ = (
-        Index('ix_campaign_date', 'campaign_id', 'date'),
+        Index('ix_campaign_insights_campaign_date', 'campaign_id', 'date'),
+        Index('ix_campaign_insights_date', 'date'),
     )
 
 class AdInsight(Base):
@@ -79,10 +80,10 @@ class AdInsight(Base):
     id = Column(String(50), primary_key=True, index=True)
     ad_id = Column(String(50), ForeignKey('ads.id'), nullable=False)
     
-    date = Column(Date, nullable=False, index=True)
+    date = Column(Date, nullable=False)
     
     # KPI指标
-    spend = Column(Float, default=0.0)
+    spend = Column(BigInteger, default=0, comment="花费（最小货币单位，见 core/money.py）")
     impressions = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
     conversions = Column(Integer, default=0)
@@ -98,5 +99,6 @@ class AdInsight(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     __table_args__ = (
-        Index('ix_ad_date', 'ad_id', 'date'),
+        Index('ix_ad_insights_ad_date', 'ad_id', 'date'),
+        Index('ix_ad_insights_date', 'date'),
     )

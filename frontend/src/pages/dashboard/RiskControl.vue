@@ -110,9 +110,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
 import { useAccountStore } from '@/stores/accountStore'
-import axios from 'axios'
+import request from '@/utils/request'
 
 const accountStore = useAccountStore()
 
@@ -156,19 +155,19 @@ const getPriorityLabel = (priority: string) => {
 const loadAccountHealth = async () => {
   if (!accountStore.selectedAccount) return
   try {
-    const response = await axios.get(
+    const response = await request.get(
       `/api/v1/accounts/${accountStore.selectedAccount.account_id}/account-health-check`
     )
     accountHealth.value = response.data
   } catch (error) {
-    ElMessage.error('加载账户状态失败')
+    // 错误已由 utils/request.ts 全局拦截器弹框提示
   }
 }
 
 const loadRiskScore = async () => {
   if (!accountStore.selectedAccount) return
   try {
-    const response = await axios.get(
+    const response = await request.get(
       `/api/v1/accounts/${accountStore.selectedAccount.account_id}/fraud-score`
     )
     riskScore.value = response.data.fraud_score
@@ -181,12 +180,12 @@ const loadRiskEvents = async () => {
   if (!accountStore.selectedAccount) return
   eventsLoading.value = true
   try {
-    const response = await axios.get(
+    const response = await request.get(
       `/api/v1/accounts/${accountStore.selectedAccount.account_id}/risk-events`
     )
     riskEvents.value = response.data.events || []
   } catch (error) {
-    ElMessage.error('加载风险事件失败')
+    // 错误已由 utils/request.ts 全局拦截器弹框提示
   } finally {
     eventsLoading.value = false
   }
@@ -195,7 +194,7 @@ const loadRiskEvents = async () => {
 const loadRecommendations = async () => {
   if (!accountStore.selectedAccount) return
   try {
-    const response = await axios.get(
+    const response = await request.get(
       `/api/v1/accounts/${accountStore.selectedAccount.account_id}/safety-recommendations`
     )
     recommendations.value = response.data.recommendations
@@ -207,7 +206,7 @@ const loadRecommendations = async () => {
 const loadFrequencyStatus = async () => {
   if (!accountStore.selectedAccount) return
   try {
-    const response = await axios.get(
+    const response = await request.get(
       `/api/v1/accounts/${accountStore.selectedAccount.account_id}/publish-frequency-check?hours=24`
     )
     const report = response.data.frequency_report
@@ -220,7 +219,7 @@ const loadFrequencyStatus = async () => {
 const loadRateLimitStatus = async () => {
   if (!accountStore.selectedAccount) return
   try {
-    const response = await axios.get(
+    const response = await request.get(
       `/api/v1/accounts/${accountStore.selectedAccount.account_id}/rate-limit-status`
     )
     const hourStatus = response.data.rate_limits.hour
@@ -329,8 +328,8 @@ onMounted(() => {
           border-radius: 4px;
           font-size: 12px;
           font-weight: 600;
-          background-color: rgba(102, 126, 234, 0.1);
-          color: #667eea;
+          background-color: rgba(59, 130, 246, 0.1);
+          color: #3b82f6;
         }
 
         .type {

@@ -1,478 +1,546 @@
-# Facebook 广告自动化系统
+# Meta Ads 批量投流系统
+
+面向 **多 Business Manager（BM）/ 多广告账户** 的 Meta Ads 批量投放与自动化管理平台。
+
+> 完整的启动步骤见 **[docs/STARTUP.md](docs/STARTUP.md)**，
+> 架构设计依据见 **[meta_ads_batch_delivery_system_design.md](meta_ads_batch_delivery_system_design.md)**。
 
 ## 🎯 项目概述
 
-基于Facebook Python Business SDK的生产级广告自动化系统，包含以下核心功能：
+系统的核心抽象不是「BM × 广告账户」，而是：
 
-- **广告管理**: 系列、广告组、广告的同步与管理
-- **风险控制**: 多维度风险检测与自动化处理
-- **数据分析**: 性能趋势分析、异常检测、欺诈评分
-- **定时任务**: Celery + APScheduler实现的任务调度系统
-- **报表系统**: 日报、周报、自动通知
-- **API服务**: FastAPI提供的REST API接口
+> **一个 Campaign Template 如何被部署到多个 Ad Account。**
+
+```text
+Campaign Template
+        │
+   ┌────┼────┬────────┐
+   ▼    ▼    ▼        ▼
+Account A  B  C  ...  Account N
+   │    │    │        │
+Campaign  Campaign  Campaign ...     ← 模板的一次部署
+   │
+ AdSet
+   │
+  Ads
+```
+
+用户配置一次模板，即可批量部署到任意数量的广告账户；
+规模从 20 个账户扩展到 5000 个，核心业务模型不变。
+
+核心能力：
+
+- **账号统一管理**：BM 主账号、广告账户、凭据分离管理
+- **投放模板化**：Campaign Template（目标/预算/定向/素材/文案一次配置）
+- **批量创建**：模板 → 多账户，异步生成 Campaign / AdSet / Ad
+- **批量操作**：启停、预算调整（按模板批量作用于已部署实例）
+- **异步任务队列**：Celery + Redis，HTTP 请求不阻塞
+- **限流与重试**：Meta API 错误分类 + 指数退避 + 账户级限流
+- **幂等与部分成功**：重复提交不重复创建，失败可单独重跑
+- **实例映射**：Template × 账户 → Meta 对象 ID 的完整映射
+- **数据报表**：洞察数据采集、日报/周报
+- **风险控制**：风控事件检测与自动化处理
+
+## 🏗 技术栈
+
+| 层级 | 技术 |
+|---|---|
+| 后端 API | Python + FastAPI |
+| ORM / 数据库 | SQLAlchemy 2.0 + PostgreSQL |
+| Schema 校验 | Pydantic v2 |
+| 异步队列 | Celery 5 |
+| Cache / Broker | Redis |
+| 定时调度 | **Celery Beat**（原 APScheduler 已迁移） |
+| 数据库迁移 | **Alembic** |
+| Meta SDK | facebook-business-sdk |
+| 前端 | Vue3 + Vite + Element Plus |
 
 ## 📋 项目结构
 
+```text
+fb-ads/
+├── main.py                  # FastAPI 入口（含中间件装配）
+├── celery_app.py            # Celery 应用 + Beat 调度配置
+├── celery_worker.py         # Worker 入口
+├── cli.py                   # CLI 工具（建库/建管理员/启动组件/状态检查）
+│
+├── api/                     # API 路由层
+│   ├── users.py             # 用户管理
+│   ├── credentials.py       # ★ 凭据管理（Token 加密存、轮换/校验/启停）
+│   ├── accounts.py          # 广告账户（归属过滤 / 转移 / 批量操作）
+│   ├── meta_accounts.py     # BM 主账号（主数据，不存明文 Token）
+│   ├── media.py             # 素材库
+│   ├── templates.py         # 投放模板（核心）
+│   └── jobs.py              # Job Center（异步批量投放入口）
+│
+├── models/                  # 数据模型（SQLAlchemy）
+│   ├── meta_account.py      # BM 主账号
+│   ├── ad_account.py        # 广告账户
+│   ├── template.py          # ★ Campaign Template（核心业务对象）
+│   ├── instance.py          # ★ Campaign/AdSet/Ad 三层实例映射
+│   ├── credential.py        # ★ 加密凭据
+│   ├── job.py               # ★ Job / JobItem（Job Center）
+│   ├── audit_log.py         # ★ 审计日志
+│   ├── campaign.py  ad_group.py  ad.py
+│   ├── creative_asset.py    # 素材
+│   ├── insights.py          # 洞察数据
+│   ├── risk_control.py      # 风控事件/规则
+│   ├── publish_task.py      # 旧同步发布任务（历史遗留）
+│   └── user.py
+│
+├── services/
+│   ├── meta/                # ★ Meta API 封装层（SDK 隔离）
+│   │   ├── client.py        #   多账户独立 Session 客户端
+│   │   ├── service.py       #   MetaAdsService（重试/限流/错误分类）
+│   │   └── errors.py        #   错误分类（AUTH/PERMISSION/RATE_LIMIT...）
+│   ├── campaign_builder.py  # ★ Campaign/AdSet/Creative/Ad Builder
+│   ├── job_service.py       # ★ Job 创建与派发
+│   ├── credential_service.py# ★ 凭据解析（账户 → 解密 Token）
+│   ├── rate_limit.py        # 限流管理器
+│   ├── fb_client.py         # 旧版客户端（历史遗留）
+│   ├── ads_manager.py       # 广告同步/报表
+│   ├── risk_detector.py     # 风控检测
+│   ├── analytics.py         # 数据分析
+│   └── notifications.py     # 通知
+│
+├── tasks/
+│   ├── celery_tasks.py      # Celery 任务（洞察/风控/报表/通知）
+│   └── campaign_tasks.py    # ★ 批量投放任务（Job 编排与执行）
+│
+├── core/
+│   ├── database.py          # 引擎/Session/Base
+│   ├── auth.py              # JWT 认证
+│   ├── security.py          # ★ 凭据加解密（Fernet）
+│   ├── audit.py             # ★ 审计日志写入（自动脱敏敏感字段）
+│   ├── enums.py             # ★ 状态机/错误分类/动作类型
+│   ├── middleware.py        # 日志/限流/统一鉴权中间件
+│   ├── redis_client.py      # Redis 封装
+│   └── logger.py
+│
+├── migrations/              # ★ Alembic 迁移
+│   ├── env.py
+│   └── versions/0001_campaign_template_and_jobs.py
+├── scripts/
+│   └── migrate_tokens_to_credentials.py   # ★ 明文 Token 加密迁移
+├── docs/
+│   └── STARTUP.md           # 启动流程文档
+├── frontend/                # Vue3 前端
+├── alembic.ini
+└── requirements.txt
 ```
-fb-ads-automation/
-├── config/              # 配置管理
-│   └── settings.py      # 应用配置
-├── core/                # 核心模块
-│   ├── database.py      # 数据库连接
-│   ├── redis_client.py  # Redis客户端
-│   └── logger.py        # 日志系统
-├── models/              # 数据模型
-│   ├── ad_account.py    # 账户模型
-│   ├── campaign.py      # 系列模型
-│   ├── ad_group.py      # 广告组模型
-│   ├── ad.py            # 广告模型
-│   ├── insights.py      # 洞察数据模型
-│   └── risk_control.py  # 风控模型
-├── services/            # 业务服务层
-│   ├── fb_client.py     # Facebook API客户端
-│   ├── ads_manager.py   # 广告管理服务
-│   ├── risk_detector.py # 风险检测服务
-│   ├── analytics.py     # 数据分析引擎
-│   └── notifications.py # 通知服务
-├── tasks/               # 异步任务
-│   ├── celery_tasks.py  # Celery任务定义
-│   ├── scheduler.py     # 任务调度器
-│   └── __init__.py
-├── main.py              # FastAPI应用入口
-├── celery_app.py        # Celery应用配置
-├── celery_worker.py     # Celery工作进程
-├── cli.py               # CLI命令
-├── .env.example         # 环境变量示例
-└── requirements.txt     # 项目依赖
-```
+
+★ 标记为按设计文档新增/重构的模块。
 
 ## 🚀 快速开始
 
-### 1. 环境准备
+完整步骤见 [docs/STARTUP.md](docs/STARTUP.md)，摘要如下：
 
 ```bash
-# 克隆项目
-git clone <repo-url>
-cd fb-ads-automation
-
-# 创建虚拟环境
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或
-venv\Scripts\activate  # Windows
-
-# 安装依赖
+# 1. 安装依赖
+python -m venv venv && venv\Scripts\activate
 pip install -r requirements.txt
+cd frontend && npm install && cd ..
+
+# 2. 配置环境变量
+cp .env.example .env      # 重点：SECRET_KEY、DB_*、REDIS_*、FB_*
+
+# 3. 初始化数据库结构（Alembic）
+alembic upgrade head
+# Windows 若提示命令未识别（venv 未激活），改用：
+# .\venv\Scripts\python.exe -m alembic upgrade head
+
+# 4. 迁移存量明文 Token 到加密凭据表（重要）
+python scripts/migrate_tokens_to_credentials.py --dry-run
+python scripts/migrate_tokens_to_credentials.py
+
+# 5. 创建管理员
+python cli.py create-admin
 ```
 
-### 2. 配置环境变量
+### 启动组件（需 4 个进程）
 
 ```bash
-# 复制示例配置
-cp .env.example .env
+# 终端 1：API
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
-# 编辑.env文件，填入你的配置
-vi .env
+# 终端 2：Worker（执行异步任务）
+# Windows 上 prefork 多进程会报 WinError 5，必须加 --pool=solo；
+# 也可直接用 CLI，它会按平台自动选择进程池：
+python cli.py run-worker
+# 等价于：
+#   Windows   celery -A celery_app worker --loglevel=info --pool=solo
+#   Linux/Mac celery -A celery_app worker --loglevel=info --concurrency=4
+
+# 终端 3：Beat（定时触发，必须启动）
+celery -A celery_app beat --loglevel=info
+
+# 终端 4：前端
+cd frontend && npm run dev
 ```
 
-必需配置：
-- `FB_APP_ID`: Facebook应用ID
-- `FB_APP_SECRET`: Facebook应用密钥
-- `FB_ACCESS_TOKEN`: Facebook访问令牌
-- `FB_ACCOUNT_ID`: 广告账户ID
-- `DB_*`: 数据库连接参数
-- `REDIS_*`: Redis连接参数
+> **Beat 与 Worker 必须成对启动**：Beat 负责把定时任务投递到队列，
+> Worker 负责执行；缺少任一方，定时任务都不会真正运行。
 
-### 3. 初始化数据库
+### Windows 一键脚本
 
-```bash
-python cli.py init-database
+| 脚本 | 作用 |
+|---|---|
+| `start_all_win.bat` | 一键启动全部：API + Worker + Beat + 前端 |
+| `start_fb_ads.bat` | 仅 API |
+| `start_celery_win.bat` | 仅 Worker（`--pool=solo`） |
+| `start_beat_win.bat` | 仅 Beat 定时调度 |
+| `start_frontend_win.bat` | 仅前端 |
+
+## 🧩 核心架构
+
+### 1. 批量投放链路
+
+```text
+选择模板 → 选择账户 → POST /api/v1/jobs/campaign-create
+                              │
+                              ▼  立即返回 job_id（不阻塞）
+                        CampaignJob（PENDING）
+                              │
+                        Celery 派发（每账户一个子任务）
+                              │
+                    ┌─────────┼─────────┐
+                    ▼         ▼         ▼
+                 Account A  Account B  Account C     ← 每账户独立状态
+                    │
+            CampaignDeploymentBuilder
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+   Campaign      AdSet        Ads
+        │
+   写入 campaign_instances / adset_instances / ad_instances
 ```
 
-### 4. 启动各个组件
+- **原则一 模板优先**：一次配置，批量部署
+- **原则二 任务异步**：HTTP 不等待 Meta API
+- **原则三 每账户独立状态**：100 个账户不是一个状态
+- **原则四 幂等**：`campaign_instances` 唯一约束 `(template_id, ad_account_id)`，Retry ≠ Duplicate
+- **部分成功**：成功 93 / 失败 7 → `PARTIAL_SUCCESS`，可只重跑失败的 7 个
 
-#### 方式一：分别启动（开发环境）
+### 2. SDK 隔离（原则六）
 
-```bash
-# 终端1: 启动API服务器
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+业务代码不直接依赖 Meta SDK：
 
-# 终端2: 启动Celery Worker
-celery -A celery_app worker --loglevel=info --concurrency=4
-
-# 终端3: 启动任务调度器
-python cli.py start-scheduler
+```text
+业务层 → MetaAdsService → facebook_business → Meta Marketing API
 ```
 
-#### 方式二：使用Docker Compose（生产环境推荐）
+`MetaAdsService` 统一处理：
 
-```bash
-docker-compose up -d
+- **错误分类**：`AUTH / PERMISSION / VALIDATION / RATE_LIMIT / TEMPORARY / UNKNOWN`
+- **重试策略**：仅对 RATE_LIMIT、TEMPORARY 做指数退避（2s → 4s → 8s），参数错误直接失败
+- **限流**：账户维度窗口限流，超限等待而非放行
+
+### 3. 多账户凭据（原则：多 BM / 多账户）
+
+`MetaClient` 为每个账户构造**独立 Session**，不使用 `FacebookAdsApi.init()`（全局单例，
+在并发 Worker 下会串号）。凭据解析优先级：
+
+```text
+credentials 表（加密）→ meta_accounts.access_token（兼容历史明文）→ 全局配置兜底
 ```
 
-### 5. 检查系统状态
+### 4. 定时调度
 
-```bash
-python cli.py status
+定时任务由 **Celery Beat** 统一管理（原 APScheduler 已移除），
+配置位于 `celery_app.conf.beat_schedule`：
+
+| 任务 | 周期 | 环境变量 |
+|---|---|---|
+| `fetch-insights` | 每 2 小时 | `SCHEDULE_FETCH_INSIGHTS_CRON` |
+| `risk-check` | 每小时 | `SCHEDULE_RISK_CHECK_CRON` |
+| `daily-reports` | 每天 8 点 | `SCHEDULE_REPORT_DAILY_CRON` |
+| `weekly-reports` | 每周一 9 点 | `SCHEDULE_REPORT_WEEKLY_CRON` |
+
+## 🔌 API 文档
+
+- **完整接口文档（按模块）**：[docs/API.md](docs/API.md)
+- 交互文档（Swagger）：http://localhost:8000/docs
+
+基础 URL：`http://localhost:8000`
+
+> 所有 `/api/` 路径均需 `Authorization: Bearer <token>`（登录接口除外）。
+
+### 投放模板
+
+```http
+GET    /api/v1/templates            # 列表（可 ?status=ACTIVE 过滤）
+POST   /api/v1/templates            # 创建
+GET    /api/v1/templates/{id}
+PATCH  /api/v1/templates/{id}       # 局部更新
+POST   /api/v1/templates/{id}/clone # 复制
+DELETE /api/v1/templates/{id}       # 软删除（置 ARCHIVED）
 ```
 
-## 📊 核心功能说明
+创建模板示例：
 
-### 1. 广告管理 (`services/ads_manager.py`)
-
-- **同步系列**: `sync_campaigns(account_id)` - 从Facebook同步最新系列数据
-- **获取性能**: `get_campaign_performance()` - 获取系列性能指标
-- **暂停低效**: `pause_low_performance_campaigns()` - 自动暂停低性能系列
-- **获取花费**: `get_account_spend_today()` - 获取今日账户花费
-
-### 2. 风险控制 (`services/risk_detector.py`)
-
-**风险检测**：
-- 异常花费检测
-- 低质量广告检测
-- 欺诈模式检测
-- 政策违规检测
-
-**自动化处理**：
-- 暂停低效系列
-- 冻结高风险账户
-- 创建风险事件记录
-- 发送风险告警通知
-
-**配置参数**（.env）：
-```env
-RISK_DAILY_SPEND_LIMIT=10000        # 日花费上限
-RISK_DAILY_CTR_THRESHOLD=0.02       # CTR下限
-RISK_DAILY_CPC_THRESHOLD=5.0        # CPC上限
-RISK_FRAUD_SCORE_THRESHOLD=0.7      # 欺诈评分阈值
-RISK_ACCOUNT_FREEZE_DAYS=3          # 冻结天数
-```
-
-### 3. 数据分析 (`services/analytics.py`)
-
-- **性能趋势**: `get_account_performance_trend()` - 获取长期性能趋势
-- **异常检测**: `detect_spend_anomaly()` - 基于Isolation Forest的异常检测
-- **欺诈评分**: `calculate_fraud_score()` - 综合评分模型
-- **报表生成**: `generate_daily_report()` / `generate_weekly_report()`
-
-### 4. 定时任务 (`tasks/scheduler.py`)
-
-配置示例（Cron表达式）：
-
-```env
-SCHEDULE_FETCH_INSIGHTS_CRON=0 */2 * * *    # 每2小时
-SCHEDULE_RISK_CHECK_CRON=0 * * * *          # 每小时
-SCHEDULE_REPORT_DAILY_CRON=0 8 * * *        # 每天8点
-SCHEDULE_REPORT_WEEKLY_CRON=0 9 * * 1       # 每周一9点
-```
-
-### 5. 通知服务 (`services/notifications.py`)
-
-支持的通知渠道：
-- **邮件**: SMTP邮件通知
-- **钉钉**: DingTalk Webhook通知
-- **Slack**: Slack Webhook通知
-
-## 🔌 API文档
-
-### 基础URL
-`http://localhost:8000`
-
-### 账户管理API
-
-#### 同步系列
-```
-POST /api/v1/accounts/{account_id}/sync
-
-Response:
+```json
 {
-  "status": "success",
-  "account_id": "act_xxx",
-  "created": 5,
-  "updated": 3
-}
-```
-
-#### 获取今日花费
-```
-GET /api/v1/accounts/{account_id}/spend-today
-
-Response:
-{
-  "account_id": "act_xxx",
-  "spend": 1234.56,
-  "currency": "USD"
-}
-```
-
-### 风控API
-
-#### 检查账户风险
-```
-POST /api/v1/accounts/{account_id}/risk-check
-
-Response:
-{
-  "status": "success",
-  "account_id": "act_xxx",
-  "actions_taken": {
-    "campaigns_paused": 2,
-    "accounts_frozen": 0
+  "name": "US Sales V1",
+  "objective": "OUTCOME_SALES",
+  "budget_type": "DAILY",
+  "daily_budget": 100,
+  "optimization_goal": "OFFSITE_CONVERSIONS",
+  "billing_event": "IMPRESSIONS",
+  "targeting_json": { "geo_locations": { "countries": ["US"] }, "age_min": 18, "age_max": 65, "genders": [1, 2] },
+  "creative_config_json": {
+    "page_id": "xxx",
+    "creatives": [
+      { "headline": "标题", "primary_text": "正文", "description": "描述",
+        "cta": "LEARN_MORE", "landing_url": "https://example.com", "image_hash": "xxx" }
+    ]
   }
 }
 ```
 
-#### 获取风险事件
-```
-GET /api/v1/accounts/{account_id}/risk-events?limit=50
+### Job Center（批量投放）
 
-Response:
-{
-  "account_id": "act_xxx",
-  "events": [
-    {
-      "id": "risk_xxx",
-      "event_type": "unusual_spend",
-      "risk_level": "high",
-      "title": "异常花费检测",
-      "description": "...",
-      "is_resolved": false,
-      "created_at": "2024-01-01T12:00:00"
-    }
-  ]
-}
+```http
+POST   /api/v1/jobs/campaign-create   # 批量创建
+POST   /api/v1/jobs/schedule          # 定时投放（指定执行时间）
+GET    /api/v1/jobs/scheduled         # 待执行的定时任务
+POST   /api/v1/jobs/budget-update     # 批量改预算
+POST   /api/v1/jobs/pause             # 批量暂停
+POST   /api/v1/jobs/enable            # 批量启用
+GET    /api/v1/jobs                   # 任务列表
+GET    /api/v1/jobs/{id}              # 详情（含子项，前端轮询进度）
+POST   /api/v1/jobs/{id}/dispatch-now # 定时任务提前立即执行
+POST   /api/v1/jobs/{id}/retry        # 只重跑失败子项
+POST   /api/v1/jobs/{id}/cancel       # 取消
 ```
 
-#### 冻结账户
-```
-POST /api/v1/accounts/{account_id}/freeze
+> **定时投放**复用 Job 体系：创建时传入 `scheduled_at`，任务以 `QUEUED` 落库，
+> 由 Celery 的 eta 机制在指定时刻触发；取消时会 revoke 撤销，避免重复执行。
 
-Body:
-{
-  "reason": "High fraud risk detected"
-}
+提交批量创建：
 
-Response:
-{
-  "status": "success",
-  "account_id": "act_xxx",
-  "message": "Account frozen successfully"
-}
+```json
+// 请求
+{ "template_id": "xxx", "ad_account_ids": ["1","2","3"], "budget_override": 100, "status": "PAUSED" }
+
+// 响应（立即返回，不等待 Meta API）
+{ "job_id": "xxx", "status": "PENDING", "total_accounts": 3 }
 ```
 
-### 数据分析API
+任务状态机：
 
-#### 获取性能趋势
-```
-GET /api/v1/accounts/{account_id}/performance?days=30
-```
-
-#### 获取欺诈评分
-```
-GET /api/v1/accounts/{account_id}/fraud-score?window_days=7
-
-Response:
-{
-  "account_id": "act_xxx",
-  "fraud_score": 0.45,
-  "risk_level": "medium",
-  "threshold": 0.7
-}
+```text
+PENDING → VALIDATING → QUEUED → RUNNING → SUCCESS
+                                        ├→ PARTIAL_SUCCESS（部分成功）
+                                        └→ FAILED / CANCELLED
 ```
 
-#### 获取日报告
-```
-GET /api/v1/accounts/{account_id}/daily-report?report_date=2024-01-01
-```
+子项状态：`PENDING / RUNNING / SUCCESS / FAILED / SKIPPED`
 
-#### 获取周报告
-```
-GET /api/v1/accounts/{account_id}/weekly-report
-```
+### 其他
 
-### 任务管理API
-
-#### 提交拉取洞察任务
-```
-POST /api/v1/tasks/fetch-insights?account_id=act_xxx
-
-Response:
-{
-  "status": "submitted",
-  "task_id": "xxx-xxx-xxx",
-  "account_id": "act_xxx"
-}
+```http
+/api/v1/auth          # 登录 / 当前用户
+/api/v1/bms（现 meta-accounts）  # BM 主账号
+/api/v1/accounts      # 广告账户（同步/冻结/分配等）
+/api/v1/media         # 素材库
+/api/v1/users         # 用户管理
 ```
 
-#### 获取任务状态
-```
-GET /api/v1/tasks/{task_id}
+> 旧接口 `POST /api/v1/publish/batch` **已下线**（同步阻塞 + 笛卡尔积爆炸），
+> 请改用 `/api/v1/jobs/campaign-create`。
 
-Response:
-{
-  "task_id": "xxx-xxx-xxx",
-  "status": "SUCCESS",
-  "result": {...},
-  "error": null
-}
-```
+## 🔐 凭据安全
 
-## 🛡️ 风控体系详解
+三层分离（管理后台 → 主账号管理 / 凭据管理 / 广告账户）：
 
-### 风险等级
-- `LOW`: 低风险
-- `MEDIUM`: 中风险
-- `HIGH`: 高风险
-- `CRITICAL`: 严重风险
-
-### 风险事件类型
-- `UNUSUAL_SPEND`: 异常花费
-- `LOW_QUALITY`: 低质量广告
-- `HIGH_FRAUD`: 高欺诈风险
-- `ACCOUNT_FROZEN`: 账户冻结
-- `POLICY_VIOLATION`: 政策违规
-- `SUSPICIOUS_PATTERN`: 可疑模式
-
-### 风险评分模型
-
-欺诈评分计算：
-```python
-fraud_score = (anomaly_score * 0.8) + (quality_ratio * 0.2)
+```text
+BM 主账号 meta_accounts        广告账户 ad_accounts
+    │  只存主数据                   │  只存 meta_account_id
+    │  不存明文 Token               │  不存任何 Token
+    └──────────► 凭据 credentials ◄┘
+                  Fernet 加密存储
+                  过期检测 / 失效标记 / 轮换
 ```
 
-- **异常得分** (80%): 基于Isolation Forest的花费异常检测
-- **质量比例** (20%): 低质量广告占比
+- Access Token 加密存储于 `credentials` 表（Fernet，密钥由 `SECRET_KEY` 派生）
+- 前端永不接触明文 Token；API 默认返回脱敏值（`EAAA...9zQd`）
+- 查看明文需走 `POST /api/v1/credentials/{id}/reveal` 且显式 `confirm=true`，**写入审计日志**
+- Token 支持过期检测（`expires_at`）与权限异常标记（`status=INVALID`）
+- 解析优先级：`credentials`（加密）→ `meta_accounts.access_token`（历史明文兼容）→ 全局配置兜底
+- **过期凭据不回退全局 Token**：多 BM 场景下回退会造成"用 A 的身份操作 B 的账户"的串号事故
+- 迁移存量明文数据：
 
-### 自动化处理流程
-
-```
-风险检测
-  ↓
-评分计算
-  ↓
-阈值判断
-  ↓
-自动化处理
-  ├─ 暂停系列 (High)
-  ├─ 冻结账户 (Critical)
-  └─ 发送告警
-  ↓
-事件记录
-  ↓
-人工审核
+```bash
+python scripts/migrate_tokens_to_credentials.py --dry-run
+python scripts/migrate_tokens_to_credentials.py
+python scripts/migrate_tokens_to_credentials.py --purge   # 确认无误后清空明文列
 ```
 
-## 📈 数据模型关系
+> ⚠️ `SECRET_KEY` 变更后历史密文无法解密，请务必备份。
 
-```
-AdAccount (账户)
-  ├─ Campaign (系列)
-  │  ├─ AdGroup (广告组)
-  │  │  └─ Ad (广告)
-  │  │     └─ AdInsight (广告洞察)
-  │  └─ CampaignInsight (系列洞察)
-  ├─ AccountInsight (账户洞察)
-  └─ RiskEvent (风险事件)
+## 🗄 数据库迁移
+
+```bash
+alembic upgrade head                              # 升级
+alembic revision --autogenerate -m "说明"         # 生成新迁移
+alembic current / history                         # 查看版本
 ```
 
-## 🔧 开发指南
+存量库（早期由 `create_all` 建表）接入方式见 [docs/STARTUP.md](docs/STARTUP.md#4-初始化数据库)。
 
-### 添加新的风控规则
+## 📊 数据模型关系
 
-```python
-# services/risk_detector.py
-def check_custom_rule(self, account_id: str) -> bool:
-    """自定义风控规则"""
-    # 实现检测逻辑
-    pass
+### 账号资源池（Meta 账号管理 V1）
+
+```text
+Credential (credentials，Fernet 加密)
+    │  一个 BM 可有多条凭据，轮换时旧的转 DISABLED 留痕
+    ▼
+MetaAccount (meta_accounts = businesses)
+    │  status      业务状态 ACTIVE / DISABLED / ARCHIVED（人工维护）
+    │  sync_status 同步状态 PENDING / SYNCING / SUCCESS / FAILED（同步维护）
+    │
+    └─1:N─► AdAccount (ad_accounts)
+                business_id + account_id 唯一（同一 act_xxx 可挂多个 BM）
+                account_status / effective_status  Meta 侧（同步覆盖）
+                system_status                      系统侧（同步不覆盖）
+                    ↓
+                available-for-deployment 可投放账户池
 ```
 
-### 添加新的任务
+`meta_sync_logs` 记录每次**同步**的结果（成功/失败数、错误明细）；
+`audit_logs` 记录**人的操作**审计。两者职责分离，不混用。
 
-```python
-# tasks/celery_tasks.py
-@shared_task(bind=True, max_retries=3)
-def my_custom_task(self, account_id: str):
-    """自定义任务"""
-    # 实现任务逻辑
-    pass
+### 投放链路
+
+```text
+CampaignTemplate
+    │ (template_id, ad_account_id) 唯一
+    ├─► CampaignInstance ── AdSetInstance ── AdInstance
+    │
+    └─► CampaignJob ── CampaignJobItem（每账户一条，含幂等 hash）
+
+AdAccount ├─ Campaign ─ AdGroup ─ Ad
+          ├─ AccountInsight / CampaignInsight / AdInsight
+          └─ RiskEvent
 ```
 
-### 添加新的API端点
+### 金额约定
 
-```python
-# main.py
-@app.get("/api/v1/custom/endpoint")
-async def custom_endpoint(db: Session = Depends(get_db)):
-    """自定义端点"""
-    # 实现端点逻辑
-    pass
+所有金额字段一律 **BIGINT 最小货币单位**（`$10.50` → `1050`），避免浮点精度问题：
+
+| 范围 | 字段 |
+|---|---|
+| 账户 | `spend_cap` / `amount_spent` / `balance` / `daily_spend_limit` / `monthly_spend_limit` |
+| 投放 | `campaign_templates.daily_budget` / `lifetime_budget`、`publish_tasks.daily_budget` |
+| 数据 | `campaigns` / `ad_groups` / `ads` 的 `spend`、`budget`、`daily_budget`、`bid_amount`；三张 `*_insights` 的 `spend` |
+
+- 后端换算：`core/money.py`（`to_minor` / `to_major` / `format_money`）
+- 前端换算：`frontend/src/utils/money.ts`
+- **例外**：`ctr` / `cpc` / `cpm` / `roas` / `conversion_rate` / `risk_score` / `fraud_score`
+  是派生指标不是金额，保持浮点；但计算它们时需先转主单位。
+
+## 🛡 风险控制
+
+- 异常花费、低质量广告、欺诈模式、政策违规检测
+- 自动暂停低效系列、冻结高风险账户、发送告警
+
+```env
+RISK_DAILY_SPEND_LIMIT=10000
+RISK_DAILY_CTR_THRESHOLD=0.02
+RISK_DAILY_CPC_THRESHOLD=5.0
+RISK_FRAUD_SCORE_THRESHOLD=0.7
+RISK_ACCOUNT_FREEZE_DAYS=3
 ```
 
-## 📝 日志
-
-日志输出位置：`logs/app.log`
-
-日志格式：
-- **控制台**: 文本格式，便于实时监控
-- **文件**: JSON格式，便于日志分析
-
-## 🐳 Docker部署
+## 🐳 Docker 部署
 
 ```yaml
-# docker-compose.yml
-version: '3.8'
 services:
   postgres:
     image: postgres:14
     environment:
       POSTGRES_DB: fb_ads_db
       POSTGRES_PASSWORD: password
-  
+
   redis:
     image: redis:7
-  
+
   api:
     build: .
-    command: python -m uvicorn main:app --host 0.0.0.0 --port 8000
-    ports:
-      - "8000:8000"
-    depends_on:
-      - postgres
-      - redis
-  
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    depends_on: [postgres, redis]
+
   worker:
     build: .
     command: celery -A celery_app worker --loglevel=info
-    depends_on:
-      - postgres
-      - redis
-  
-  scheduler:
+    depends_on: [postgres, redis]
+
+  beat:
     build: .
-    command: python cli.py start-scheduler
-    depends_on:
-      - postgres
-      - redis
+    command: celery -A celery_app beat --loglevel=info
+    depends_on: [postgres, redis]
+
+  frontend:
+    build: ./frontend
+    ports: ["5173:80"]
+    depends_on: [api]
 ```
+
+> `beat` 为单点服务，**不要**部署多个副本，否则定时任务会重复触发。
+
+## 🧪 运行测试
+
+```bash
+python -m pytest tests -q
+```
+
+- 测试使用 `tests/conftest.py` 中的独立 SQLite 库并在事务内回滚，**不会写入开发/生产库**。
+- `TestClient` 依赖 `httpx`，已列入 `requirements.txt`；缺失时 `tests/conftest.py` 会直接导入失败。
+- 新增用例请统一使用 conftest 的 `db` fixture，不要在用例里 `SessionLocal()` 直接连业务库。
+- 接口级用例见 `tests/test_account_management.py`：独立内存库 + 真实 JWT 鉴权，
+  覆盖「BM 主账号 / 凭据 / 广告账户」三层分离管理（含加密存储、脱敏、轮换、批量操作）。
+
+## 🔧 开发指南
+
+**新增 Meta API 能力**：在 `services/meta/service.py` 中添加方法，业务层只调用该服务，不直接 import SDK。
+
+**新增异步任务**：
+
+```python
+# tasks/campaign_tasks.py
+@shared_task(bind=True, name="campaign.my_task")
+def my_task(self, job_item_id: str):
+    ...
+```
+
+> **新增任务模块后必须在 `celery_app.py` 中显式导入**。
+> `autodiscover_tasks(['tasks'])` 只导入 `tasks` 包本身，不会递归导入子模块；
+> 漏了这一步，Worker 会报 `Received unregistered task`，Job 永远卡在 `QUEUED`。
+
+**新增定时任务**：在 `celery_app.conf.beat_schedule` 中注册，重启 Beat 生效。
+
+**新增 API**：在 `api/` 下新建模块（统一 `prefix="/api/v1/..."`），并在 `main.py` 中 `include_router`。
+
+## 📝 日志
+
+- 位置：`logs/app.log`
+- 控制台：文本格式；文件：JSON 格式
+- 敏感信息（Token）自动脱敏，不写入普通日志
 
 ## 🤝 贡献指南
 
-1. Fork项目
+1. Fork 项目
 2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启Pull Request
+3. 提交更改
+4. 推送分支并开启 Pull Request
 
 ## 📄 许可
 
 MIT License
 
-## 📧 联系方式
-
-- 项目维护者: eric-zy
-- 问题反馈: GitHub Issues
-
 ---
 
-**最后更新**: 2024年
+**最后更新**：2026-08-29

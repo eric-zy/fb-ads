@@ -1,0 +1,101 @@
+# ==================== Python ====================
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# Python 缓存与编译产物
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境 (含 WSL 误建在 /mnt 下无法删除的残留)
+venv/
+venv*/
+venv_broken_wsl/
+
+# 打包 / 安装
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 类型检查 / lint
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Jupyter
+.ipynb_checkpoints
+
+# ==================== 环境变量 / 密钥 ====================
+.env
+.env.*
+!.env.example
+*.local
+# 注意：如需提交示例配置，应保留 .env.example
+
+# ==================== 日志 / 运行时 ====================
+*.log
+logs/
+celerybeat-schedule
+celerybeat.pid
+*.pid
+
+# ==================== 前端 (Vue/Vite) ====================
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+frontend/*.local
+frontend/.env
+frontend/.env.*
+
+# ==================== 编辑器 / 系统 ====================
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ==================== 测试 / 本地数据 ====================
+# pytest conftest 会生成 SQLite 测试库
+test.db
+test.db-journal
+*.sqlite3
+
+# 上传素材与本地运行时数据
+uploads/
+
+# Celery Beat 调度状态文件
+celerybeat-schedule
+celerybeat-schedule.*
+celerybeat.pid
+*.pid
+
+# ==================== 操作系统 ====================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/

@@ -1,7 +1,10 @@
 // Pinia用户store
+//
+// 说明：Token 的注入与失效处理已统一收敛到 utils/request.ts 的拦截器，
+// 这里只负责登录态的读写与持久化，不再手工设置 axios.defaults。
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import axios from 'axios'
+import request from '@/utils/request'
 import Cookies from 'js-cookie'
 
 export interface User {
@@ -14,6 +17,9 @@ export interface User {
   settings: Record<string, any>
 }
 
+const TOKEN_KEY = 'auth_token'
+const USER_KEY = 'user'
+
 export const useUserStore = defineStore('user', () => {
   const user = ref<User | null>(null)
   const token = ref<string>('')
@@ -23,15 +29,14 @@ export const useUserStore = defineStore('user', () => {
   const isAdmin = computed(() => user.value?.role === 'admin')
   const isManager = computed(() => user.value?.role === 'manager')
 
-  // 初始化认证状态
+  // 初始化认证状态（从 Cookie / localStorage 恢复）
   const initAuth = () => {
-    const storedToken = Cookies.get('auth_token')
-    const storedUser = localStorage.getItem('user')
-    
+    const storedToken = Cookies.get(TOKEN_KEY)
+    const storedUser = localStorage.getItem(USER_KEY)
+
     if (storedToken) {
       token.value = storedToken
-      axios.defaults.headers.common['Authorization'] = `Bearer ${storedToken}`
-      
+
       if (storedUser) {
         try {
           user.value = JSON.parse(storedUser)
@@ -46,19 +51,21 @@ export const useUserStore = defineStore('user', () => {
   const login = async (email: string, password: string) => {
     isLoading.value = true
     try {
-      const response = await axios.post('/api/v1/auth/login', {
+      const response = await request.post('/api/v1/auth/login', {
         email,
         password,
+      }, {
+        // 登录失败由 Login.vue 页面层弹框提示，避免拦截器全局弹框在此场景不可靠
+        skipErrorMessage: true,
       })
-      
+
       const { access_token, user: userData } = response.data
       token.value = access_token
       user.value = userData
-      
-      Cookies.set('auth_token', access_token, { expires: 7 })
-      localStorage.setItem('user', JSON.stringify(userData))
-      axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`
-      
+
+      Cookies.set(TOKEN_KEY, access_token, { expires: 7 })
+      localStorage.setItem(USER_KEY, JSON.stringify(userData))
+
       return true
     } catch (error: any) {
       console.error('Login error:', error)
@@ -71,27 +78,26 @@ export const useUserStore = defineStore('user', () => {
   // 登出
   const logout = async () => {
     try {
-      await axios.post('/api/v1/auth/logout')
+      await request.post('/api/v1/auth/logout')
     } finally {
       token.value = ''
       user.value = null
-      Cookies.remove('auth_token')
-      localStorage.removeItem('user')
-      delete axios.defaults.headers.common['Authorization']
+      Cookies.remove(TOKEN_KEY)
+      localStorage.removeItem(USER_KEY)
     }
   }
 
   // 更新用户设置
   const updateSettings = async (settings: Record<string, any>) => {
     if (!user.value) return
-    
+
     try {
-      const response = await axios.put(`/api/v1/users/${user.value.id}/settings`, {
+      const response = await request.put(`/api/v1/users/${user.value.id}/settings`, {
         settings,
       })
-      
+
       user.value.settings = response.data.settings
-      localStorage.setItem('user', JSON.stringify(user.value))
+      localStorage.setItem(USER_KEY, JSON.stringify(user.value))
       return true
     } catch (error) {
       console.error('Update settings error:', error)

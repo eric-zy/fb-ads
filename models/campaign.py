@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, Enum, ForeignKey, Index
+from sqlalchemy import BigInteger, Column, String, Float, Integer, DateTime, Boolean, Enum, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -15,7 +15,7 @@ class Campaign(Base):
     __tablename__ = "campaigns"
     
     id = Column(String(50), primary_key=True, index=True)
-    campaign_id = Column(String(50), unique=True, nullable=False, index=True)
+    campaign_id = Column(String(50), unique=True, nullable=False)
     ad_account_id = Column(String(50), ForeignKey('ad_accounts.id'), nullable=False)
     
     # 基本信息
@@ -23,14 +23,14 @@ class Campaign(Base):
     objective = Column(String(100))  # REACH, ENGAGEMENT, CONVERSIONS等
     status = Column(Enum(CampaignStatus), default=CampaignStatus.ACTIVE)
     
-    # 预算与时间
-    budget = Column(Float)  # 预算
-    daily_budget = Column(Float)
+    # 预算与时间（金额一律最小货币单位，见 core/money.py）
+    budget = Column(BigInteger, comment="总预算（最小货币单位）")
+    daily_budget = Column(BigInteger, comment="日预算（最小货币单位）")
     start_time = Column(DateTime)
     stop_time = Column(DateTime)
     
     # 性能指标
-    spend = Column(Float, default=0.0)
+    spend = Column(BigInteger, default=0, comment="花费（最小货币单位）")
     impressions = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
     conversions = Column(Integer, default=0)
@@ -51,9 +51,9 @@ class Campaign(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     __table_args__ = (
-        Index('ix_campaign_id', 'campaign_id'),
-        Index('ix_ad_account_id', 'ad_account_id'),
-        Index('ix_status', 'status'),
+        Index('ix_campaigns_campaign_id', 'campaign_id'),
+        Index('ix_campaigns_ad_account_id', 'ad_account_id'),
+        Index('ix_campaigns_status', 'status'),
     )
     
     def __repr__(self):

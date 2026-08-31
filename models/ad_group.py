@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, ForeignKey, Text, Index
+from sqlalchemy import BigInteger, Column, String, Float, Integer, DateTime, Boolean, ForeignKey, Text, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from core.database import Base
@@ -8,7 +8,7 @@ class AdGroup(Base):
     __tablename__ = "ad_groups"
     
     id = Column(String(50), primary_key=True, index=True)
-    ad_group_id = Column(String(50), unique=True, nullable=False, index=True)
+    ad_group_id = Column(String(50), unique=True, nullable=False)
     campaign_id = Column(String(50), ForeignKey('campaigns.id'), nullable=False)
     
     # 基本信息
@@ -19,13 +19,13 @@ class AdGroup(Base):
     targeting = Column(String(500))  # JSON格式的定位信息
     audience_id = Column(String(100))
     
-    # 竞价设置
-    bid_amount = Column(Float)
+    # 竞价设置（金额一律最小货币单位，见 core/money.py）
+    bid_amount = Column(BigInteger, comment="竞价金额（最小货币单位）")
     bid_strategy = Column(String(100))  # LOWEST_COST, TARGET_CPA等
-    daily_budget = Column(Float)
+    daily_budget = Column(BigInteger, comment="日预算（最小货币单位）")
     
     # 性能指标
-    spend = Column(Float, default=0.0)
+    spend = Column(BigInteger, default=0, comment="花费（最小货币单位）")
     impressions = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
     conversions = Column(Integer, default=0)
@@ -40,8 +40,8 @@ class AdGroup(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     __table_args__ = (
-        Index('ix_ad_group_id', 'ad_group_id'),
-        Index('ix_campaign_id', 'campaign_id'),
+        Index('ix_ad_groups_ad_group_id', 'ad_group_id'),
+        Index('ix_ad_groups_campaign_id', 'campaign_id'),
     )
     
     def __repr__(self):

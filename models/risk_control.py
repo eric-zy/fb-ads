@@ -55,10 +55,10 @@ class RiskEvent(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     __table_args__ = (
-        Index('ix_ad_account_id', 'ad_account_id'),
-        Index('ix_event_type', 'event_type'),
-        Index('ix_risk_level', 'risk_level'),
-        Index('ix_is_resolved', 'is_resolved'),
+        Index('ix_risk_events_ad_account_id', 'ad_account_id'),
+        Index('ix_risk_events_event_type', 'event_type'),
+        Index('ix_risk_events_risk_level', 'risk_level'),
+        Index('ix_risk_events_is_resolved', 'is_resolved'),
     )
     
     def __repr__(self):

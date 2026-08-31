@@ -10,6 +10,8 @@
         ref="formRef"
         :model="loginForm"
         :rules="rules"
+        autocomplete="on"
+        @submit.prevent="handleLogin"
         @keyup.enter="handleLogin"
       >
         <el-form-item prop="email">
@@ -18,6 +20,9 @@
             placeholder="请输入邮箱"
             prefix-icon="Message"
             clearable
+            name="email"
+            id="email"
+            autocomplete="username"
           />
         </el-form-item>
 
@@ -28,6 +33,9 @@
             type="password"
             prefix-icon="Lock"
             show-password
+            name="password"
+            id="password"
+            autocomplete="current-password"
           />
         </el-form-item>
 
@@ -41,8 +49,8 @@
         <el-form-item>
           <el-button
             type="primary"
+            native-type="submit"
             :loading="userStore.isLoading"
-            @click="handleLogin"
             class="login-button"
           >
             登 录
@@ -100,6 +108,7 @@ import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/userStore'
+import { formatRequestError } from '@/utils/request'
 import type { FormInstance } from 'element-plus'
 
 const router = useRouter()
@@ -140,7 +149,8 @@ const handleLogin = async () => {
       }
     }
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || '登录失败')
+    // 登录请求已声明 skipErrorMessage，由页面层兜底弹框
+    ElMessage.error(formatRequestError(error))
   }
 }
 
@@ -153,7 +163,7 @@ const goToRegister = () => {
 .login-container {
   display: flex;
   min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
 
   .login-box {
     flex: 1;

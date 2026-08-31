@@ -1,11 +1,12 @@
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
-from models import RiskEvent, RiskLevel, RiskEventType, AdAccount, Campaign, Ad
+from models import RiskEvent, RiskLevel, RiskEventType, AdAccount, Campaign, Ad, SystemStatus
 from services.fb_client import fb_client
 from services.ads_manager import AdsManager
 from config.settings import settings
 from core.logger import logger
+from core.money import to_minor
 import json
 
 class RiskDetector:
@@ -15,22 +16,24 @@ class RiskDetector:
         self.db = db
         self.ads_manager = AdsManager(db)
     
-    def check_daily_spend_anomaly(self, account_id: str) -> Optional[Tuple[float, float]]:
+    def check_daily_spend_anomaly(self, account_id: str) -> Optional[Tuple[int, int]]:
         """检查每日花费异常
-        
+
+        金额单位统一为**最小货币单位**（与 AdAccount.daily_spend_limit 一致）。
+
         Returns:
-            (今日花费, 预期花费) 或 None
+            (今日花费, 日限额) 或 None
         """
         try:
             account = self.db.query(AdAccount).filter_by(account_id=account_id).first()
             if not account:
                 return None
-            
+
             today_spend = self.ads_manager.get_account_spend_today(account_id)
-            daily_limit = account.daily_spend_limit
-            
+            daily_limit = account.daily_spend_limit or 0
+
             # 如果超过日预算80%
-            if today_spend > daily_limit * 0.8:
+            if daily_limit > 0 and today_spend > daily_limit * 0.8:
                 logger.warning(f"Daily spend anomaly detected: {today_spend} > {daily_limit * 0.8}")
                 return today_spend, daily_limit
             
@@ -130,11 +133,11 @@ class RiskDetector:
             if not account:
                 return False
             
-            account.is_frozen = True
-            account.frozen_reason = reason
-            account.frozen_at = datetime.utcnow()
-            account.unfreeze_at = datetime.utcnow() + timedelta(days=days)
-            
+            # 冻结 = 系统侧禁止参与批量投放（Meta 状态由同步维护，不在此改写）
+            account.system_status = SystemStatus.DISABLED.value
+            account.system_status_reason = reason
+            account.system_status_at = datetime.utcnow()
+
             self.db.commit()
             logger.warning(f"Account {account_id} frozen: {reason}")
             return True

@@ -1,18 +1,12 @@
 // 账户store
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import axios from 'axios'
+import request from '@/utils/request'
+import type { AdAccountItem } from '@/api/admin'
 
-export interface Account {
-  id: string
-  account_id: string
-  account_name: string
-  currency: string
-  status: string
-  daily_spend_limit: number
-  risk_score: number
-  is_frozen: boolean
-}
+// 复用统一的账户类型：/api/v1/users/{id}/accounts 与 /api/v1/accounts
+// 现在共用后端 account_to_dict()，避免"同一资源两套字段契约"
+export type Account = AdAccountItem
 
 export const useAccountStore = defineStore('account', () => {
   const accounts = ref<Account[]>([])
@@ -24,14 +18,14 @@ export const useAccountStore = defineStore('account', () => {
   })
 
   const activeAccounts = computed(() => {
-    return accounts.value.filter(a => a.status === 'active' && !a.is_frozen)
+    return accounts.value.filter(a => a.system_status === 'ACTIVE')
   })
 
   // 获取账户列表
   const fetchAccounts = async (userId: string) => {
     isLoading.value = true
     try {
-      const response = await axios.get(`/api/v1/users/${userId}/accounts`)
+      const response = await request.get(`/api/v1/users/${userId}/accounts`)
       accounts.value = response.data.accounts || []
       
       // 自动选择第一个账户
