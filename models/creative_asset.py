@@ -21,7 +21,9 @@ class CreativeAsset(Base):
 
     # 归属：可挂到某个主账号（BM）或具体广告账户；为空则为平台公共素材
     meta_account_id = Column(String(50), ForeignKey("meta_accounts.id"), nullable=True, index=True)
-    account_id = Column(String(50), ForeignKey("ad_accounts.account_id"), nullable=True, index=True)
+    # 注意：不建外键——ad_accounts.account_id 无唯一约束（同一 act_xxx 可挂多个 BM），
+    # PostgreSQL 不允许外键引用非唯一列；此处为宽松归属，仅保留普通列 + 索引
+    account_id = Column(String(50), nullable=True, index=True, comment="归属广告账户（act_xxx）")
 
     # 文件信息
     filename = Column(String(255), comment="服务器存储文件名")
