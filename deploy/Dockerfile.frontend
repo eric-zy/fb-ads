@@ -1,5 +1,7 @@
 # 前端镜像：多阶段构建（node build → nginx 托管）
-FROM node:20-alpine AS builder
+# 说明：本地 Docker 拉取 node:20-alpine 在部分网络环境下容易反复 EOF，
+# 改用非 alpine 变体提高拉取稳定性。
+FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 COPY frontend/package*.json ./
 RUN npm ci
