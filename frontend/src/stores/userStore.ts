@@ -11,8 +11,10 @@ export interface User {
   id: string
   email: string
   username: string
-  role: 'admin' | 'manager' | 'user'
+  role: 'admin' | 'platform_admin' | 'tenant_admin' | 'manager' | 'user'
   company_id: string
+  tenant_id?: string | null
+  is_platform_admin?: boolean
   permissions: string[]
   settings: Record<string, any>
 }
@@ -26,8 +28,14 @@ export const useUserStore = defineStore('user', () => {
   const isLoading = ref(false)
 
   const isAuthenticated = computed(() => !!token.value)
-  const isAdmin = computed(() => user.value?.role === 'admin')
+  // 兼容多租户角色：platform_admin / tenant_admin 都具备管理员权限；
+  // admin 为历史角色值，继续兼容旧账号。
+  const isAdmin = computed(() => {
+    const role = user.value?.role
+    return role === 'admin' || role === 'platform_admin' || role === 'tenant_admin'
+  })
   const isManager = computed(() => user.value?.role === 'manager')
+  const isPlatformAdmin = computed(() => user.value?.role === 'platform_admin' || user.value?.is_platform_admin === true)
 
   // 初始化认证状态（从 Cookie / localStorage 恢复）
   const initAuth = () => {
@@ -117,6 +125,7 @@ export const useUserStore = defineStore('user', () => {
     isAuthenticated,
     isAdmin,
     isManager,
+    isPlatformAdmin,
     initAuth,
     login,
     logout,
