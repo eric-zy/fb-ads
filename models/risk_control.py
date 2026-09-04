@@ -1,8 +1,9 @@
-from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, Enum, ForeignKey, Index, Text
+from sqlalchemy import Column, String, Float, Integer, DateTime, Boolean, Enum, ForeignKey, Index, Text, text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
 from core.database import Base
+from core.tenant import SharedTenantMixin, TenantMixin
 
 class RiskLevel(str, enum.Enum):
     """风险等级"""
@@ -20,8 +21,8 @@ class RiskEventType(str, enum.Enum):
     POLICY_VIOLATION = "policy_violation" # 政策违规
     SUSPICIOUS_PATTERN = "suspicious_pattern" # 可疑模式
 
-class RiskEvent(Base):
-    """风险事件记录"""
+class RiskEvent(TenantMixin, Base):
+    """风险事件记录（租户级）"""
     __tablename__ = "risk_events"
     
     id = Column(String(50), primary_key=True, index=True)
@@ -59,17 +60,24 @@ class RiskEvent(Base):
         Index('ix_risk_events_event_type', 'event_type'),
         Index('ix_risk_events_risk_level', 'risk_level'),
         Index('ix_risk_events_is_resolved', 'is_resolved'),
+        # ---- 租户隔离复合索引 ----
+        Index('ix_risk_events_tenant_account', 'tenant_id', 'ad_account_id'),
+        Index('ix_risk_events_tenant_resolved', 'tenant_id', 'is_resolved'),
     )
     
     def __repr__(self):
         return f"<RiskEvent {self.event_type} - {self.risk_level}>"
 
-class RiskRule(Base):
-    """风控规则配置"""
+class RiskRule(SharedTenantMixin, Base):
+    """风控规则配置（平台内置 + 租户覆盖）
+
+    `tenant_id IS NULL` → 平台内置规则，所有租户可见且不可修改
+    `tenant_id = X`     → 租户 X 的自定义规则，仅 X 可见
+    """
     __tablename__ = "risk_rules"
     
     id = Column(String(50), primary_key=True, index=True)
-    name = Column(String(255), nullable=False, unique=True)
+    name = Column(String(255), nullable=False)
     description = Column(Text)
     
     # 规则配置
@@ -88,6 +96,20 @@ class RiskRule(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        # 平台内置规则（tenant_id IS NULL）名称全局唯一
+        Index(
+            "uq_risk_rules_platform_name", "name", unique=True,
+            postgresql_where=text("tenant_id IS NULL"),
+        ),
+        # 租户自定义规则名称在租户内唯一
+        Index(
+            "uq_risk_rules_tenant_name", "tenant_id", "name", unique=True,
+            postgresql_where=text("tenant_id IS NOT NULL"),
+        ),
+        # 单列索引由 SharedTenantMixin 的 index=True 提供（ix_risk_rules_tenant_id）
+    )
     
     def __repr__(self):
-        return f"<RiskRule {self.name}>"
+        return f"<RiskRule {self.name} ({self.tenant_id or 'PLATFORM'})>"

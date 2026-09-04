@@ -111,6 +111,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '账户管理' },
       },
       {
+        path: 'accounts/:id',
+        name: 'AdminAccountDetail',
+        component: () => import('@/pages/admin/AccountDetail.vue'),
+        meta: { title: '账户详情' },
+      },
+      {
         path: 'meta-accounts',
         name: 'AdminMetaAccounts',
         component: () => import('@/pages/admin/MetaAccounts.vue'),

@@ -4,9 +4,10 @@ from datetime import datetime
 
 from core.database import Base
 from core.enums import ActionType, ErrorCategory, JobItemStatus, JobStatus
+from core.tenant import TenantMixin
 
 
-class CampaignJob(Base):
+class CampaignJob(TenantMixin, Base):
     """批量投放任务（设计文档第 17.1 节 / Job Center）
 
     一次批量操作 = 一个 Job，下挂 N 个 JobItem（每个广告账户一个）。
@@ -46,9 +47,16 @@ class CampaignJob(Base):
     template = relationship("CampaignTemplate", back_populates="jobs")
     items = relationship("CampaignJobItem", back_populates="job", cascade="all, delete-orphan")
 
+    __table_args__ = (
+        # Job Center 列表页固定按 (租户, 时间倒序) + 状态过滤
+        Index("ix_campaign_jobs_tenant_status", "tenant_id", "status"),
+        Index("ix_campaign_jobs_tenant_created", "tenant_id", "created_at"),
+    )
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "template_id": self.template_id,
             "action_type": self.action_type,
             "status": self.status,
@@ -66,7 +74,7 @@ class CampaignJob(Base):
         }
 
 
-class CampaignJobItem(Base):
+class CampaignJobItem(TenantMixin, Base):
     """批量任务的单个账户子项（设计文档第 17.2 节）
 
     原则三：每个账户独立状态，100 个账户不是一个状态。
@@ -79,6 +87,10 @@ class CampaignJobItem(Base):
         # 同一 Job 内同一账户只允许一条子项
         UniqueConstraint("job_id", "ad_account_id", name="uq_job_account"),
         Index("ix_job_items_request_hash", "request_hash"),
+        # ---- 租户隔离复合索引 ----
+        Index("ix_job_items_tenant_job", "tenant_id", "job_id"),
+        Index("ix_job_items_tenant_status", "tenant_id", "status"),
+        Index("ix_job_items_tenant_hash", "tenant_id", "request_hash"),
     )
 
     id = Column(String(50), primary_key=True, index=True)
@@ -116,6 +128,7 @@ class CampaignJobItem(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "job_id": self.job_id,
             "ad_account_id": self.ad_account_id,
             "status": self.status,

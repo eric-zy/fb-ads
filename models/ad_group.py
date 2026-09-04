@@ -2,8 +2,9 @@ from sqlalchemy import BigInteger, Column, String, Float, Integer, DateTime, Boo
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from core.database import Base
+from core.tenant import TenantMixin
 
-class AdGroup(Base):
+class AdGroup(TenantMixin, Base):
     """广告组模型"""
     __tablename__ = "ad_groups"
     
@@ -42,6 +43,8 @@ class AdGroup(Base):
     __table_args__ = (
         Index('ix_ad_groups_ad_group_id', 'ad_group_id'),
         Index('ix_ad_groups_campaign_id', 'campaign_id'),
+        # ---- 租户隔离复合索引 ----
+        Index('ix_ad_groups_tenant_campaign', 'tenant_id', 'campaign_id'),
     )
     
     def __repr__(self):

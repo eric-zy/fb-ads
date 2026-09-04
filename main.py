@@ -12,6 +12,7 @@ from config.settings import settings
 from core.database import get_db, init_db, close_db
 from core.logger import logger
 from core.money import to_major, to_minor
+from services.ad_account_resolver import resolve_ad_account
 from services.ads_manager import AdsManager
 from services.risk_detector import RiskDetector
 from services.analytics import AnalyticsEngine
@@ -26,10 +27,13 @@ from tasks.celery_tasks import (
     generate_daily_report,
     generate_weekly_report,
 )
+from tasks.meta_sync_tasks import sync_campaigns_task
+from api import tenants as tenants_api
 from api import users as users_api
 from api import accounts as accounts_api
 from api import meta_accounts as meta_accounts_api
 from api import credentials as credentials_api
+from api import meta_auth as meta_auth_api
 from api import media as media_api
 from api import templates as templates_api
 from api import jobs as jobs_api
@@ -129,6 +133,9 @@ async def shutdown():
     close_db()
     logger.info("Application shutdown complete")
 
+# 注册租户管理路由（SaaS 多租户：租户开通/配额/启停）
+app.include_router(tenants_api.router)
+
 # 注册用户管理路由
 app.include_router(users_api.router)
 
@@ -140,6 +147,9 @@ app.include_router(meta_accounts_api.router)
 
 # 注册凭据管理路由（BM 主账号 / 广告账户 / 凭据 三层分离管理）
 app.include_router(credentials_api.router)
+
+# Meta OAuth 授权（管理员选择 BM 后授权，回调自动加密保存 Token）
+app.include_router(meta_auth_api.router)
 
 # 注册素材库路由
 app.include_router(media_api.router)
@@ -160,12 +170,18 @@ def _hash_password(password: str) -> str:
     """与数据库存储一致的密码哈希（sha256）"""
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
-def _create_access_token(user_id: str, email: str, role: str) -> str:
-    """生成JWT风格的访问令牌"""
+def _create_access_token(user_id: str, email: str, role: str, tenant_id: str = None) -> str:
+    """生成JWT风格的访问令牌
+
+    多租户：`tid` / `tenant_id` claim 会被 `core.database.get_db` 读取，
+    用于建立请求级租户上下文（自动注入 tenant_id 过滤）。
+    """
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
+        "tenant_id": tenant_id,
+        "tid": tenant_id,
         "exp": datetime.utcnow() + timedelta(days=7),
         "iat": datetime.utcnow(),
     }
@@ -186,7 +202,7 @@ async def auth_login(request: LoginRequest, db: Session = Depends(get_db)):
         if not user.is_active:
             raise HTTPException(status_code=403, detail="账户已被禁用")
 
-        token = _create_access_token(user.id, user.email, user.role)
+        token = _create_access_token(user.id, user.email, user.role, user.tenant_id)
         return {
             "access_token": token,
             "token_type": "bearer",
@@ -195,7 +211,9 @@ async def auth_login(request: LoginRequest, db: Session = Depends(get_db)):
                 "email": user.email,
                 "username": user.username,
                 "role": user.role,
-                "company_id": user.company_id,
+                "tenant_id": user.tenant_id,
+                "company_id": user.company_id,  # 已废弃，兼容老前端
+                "is_platform_admin": user.is_platform_admin(),
                 "permissions": user.permissions or [],
                 "settings": user.settings or {},
             },
@@ -225,22 +243,30 @@ async def health_check():
 
 # ==================== 账户API ====================
 
-@app.post("/api/v1/accounts/{account_id}/sync")
+@app.post("/api/v1/accounts/{account_id}/sync-campaigns")
 async def sync_campaigns_api(account_id: str, db: Session = Depends(get_db)):
-    """同步账户系列"""
-    try:
-        ads_manager = AdsManager(db)
-        created, updated = ads_manager.sync_campaigns(account_id)
-        
-        return {
-            "status": "success",
-            "account_id": account_id,
-            "created": created,
-            "updated": updated
-        }
-    except Exception as e:
-        logger.error(f"Failed to sync campaigns: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+    """异步同步账户下的广告系列（Campaign）
+
+    注意与 `POST /api/v1/accounts/{id}/sync` 的区别：
+        - 本接口：同步 **广告系列**（Campaign），属于投放模块
+        - 后者：  同步 **广告账户本身**（文档 §20）
+
+    两者原本同名（`/accounts/{id}/sync`），路径模式相同导致后者遮蔽本路由，
+    因此改名区分。account_id 兼容主键与 Meta 账户号 act_xxx。
+
+    异步执行（文档 §25）：立即返回 job_id，HTTP 不等待 Meta API。
+    """
+    # 先确认账户存在，避免投递一个注定查不到数据的任务
+    account = resolve_ad_account(db, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail=f"广告账户不存在: {account_id}")
+
+    async_result = sync_campaigns_task.delay(account.id)
+    return {
+        "status": "QUEUED",
+        "account_id": account.id,
+        "job_id": async_result.id,
+    }
 
 @app.get("/api/v1/accounts/{account_id}/spend-today")
 async def get_daily_spend(account_id: str, db: Session = Depends(get_db)):
@@ -471,7 +497,9 @@ async def auth_me(current_user: "User" = Depends(get_current_active_user)):
         "email": current_user.email,
         "username": current_user.username,
         "role": current_user.role,
-        "company_id": current_user.company_id,
+        "tenant_id": getattr(current_user, "tenant_id", None),
+        "company_id": current_user.company_id,  # 已废弃，兼容老前端
+        "is_platform_admin": current_user.is_platform_admin(),
         "permissions": current_user.permissions or [],
         "settings": current_user.settings or {},
     }
@@ -672,6 +700,20 @@ async def http_exception_handler(request, exc):
         status_code=exc.status_code,
         content={"detail": exc.detail, "error": exc.detail},
     )
+
+@app.exception_handler(PermissionError)
+async def tenant_permission_error_handler(request, exc):
+    """租户越权处理（core.tenant 抛出）
+
+    典型场景：缺少租户上下文时创建租户级数据、跨租户"数据搬家"、租户修改平台共享数据。
+    转成 403 + detail，避免退化成 500 Internal server error。
+    """
+    logger.warning(f"Tenant permission denied: {exc}")
+    return JSONResponse(
+        status_code=403,
+        content={"detail": str(exc), "error": str(exc)},
+    )
+
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):

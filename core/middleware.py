@@ -32,6 +32,8 @@ class AuthEnforcementMiddleware(BaseHTTPMiddleware):
     PUBLIC_PATHS = {
         "/api/v1/auth/login",
         "/api/v1/auth/logout",
+        # Meta 浏览器回调不携带本系统 Bearer Token；身份与租户由短时签名 state 校验。
+        "/api/v1/meta-auth/callback",
         "/health",
     }
 

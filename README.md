@@ -38,6 +38,30 @@ Campaign  Campaign  Campaign ...     ← 模板的一次部署
 - **限流与重试**：Meta API 错误分类 + 指数退避 + 账户级限流
 - **幂等与部分成功**：重复提交不重复创建，失败可单独重跑
 - **实例映射**：Template × 账户 → Meta 对象 ID 的完整映射
+- **多租户隔离（SaaS）**：共享库 + 共享 Schema + `tenant_id` 行级隔离，
+  读写由 ORM 全局事件强制注入租户条件，业务代码零感知。
+  详见 **[docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md)**
+
+## 🏢 多租户隔离
+
+一个租户 = 一个客户公司/团队，租户间数据完全不可见。
+
+```text
+tenants ──┬── users ────────────── 租户成员（平台管理员 tenant_id 为空）
+          ├── meta_accounts ────── BM（唯一约束 tenant_id + business_id）
+          │     └── ad_accounts ── campaigns / insights / risk_events
+          ├── campaign_templates ─ campaign_instances → adset → ads
+          ├── campaign_jobs ────── campaign_job_items
+          └── audit_logs
+```
+
+隔离由 `core/tenant.py` 的 ORM 全局事件强制保证：
+
+- **读**：所有 SELECT 自动注入 `WHERE tenant_id = ?`（含 relationship 懒加载）
+- **写**：新建对象自动填充 `tenant_id`；跨租户搬家 / 篡改平台数据直接抛错
+- **跨租户**：平台运营显式 `bypass_tenant()`，定时任务用 `tenant_task` 装饰器
+
+新表接入只需两步：继承 `TenantMixin` → 建 `(tenant_id, 高频过滤列)` 复合索引。
 - **数据报表**：洞察数据采集、日报/周报
 - **风险控制**：风控事件检测与自动化处理
 
@@ -185,11 +209,7 @@ cd frontend && npm run dev
 
 | 脚本 | 作用 |
 |---|---|
-| `start_all_win.bat` | 一键启动全部：API + Worker + Beat + 前端 |
-| `start_fb_ads.bat` | 仅 API |
-| `start_celery_win.bat` | 仅 Worker（`--pool=solo`） |
-| `start_beat_win.bat` | 仅 Beat 定时调度 |
-| `start_frontend_win.bat` | 仅前端 |
+| `start.bat` | 一键启动全部：API + Worker + Beat + 前端（各占独立窗口，含 venv / .env / node_modules 自检） |
 
 ## 🧩 核心架构
 

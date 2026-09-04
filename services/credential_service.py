@@ -12,12 +12,12 @@
 """
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
 from config.settings import settings
-from core.enums import CredentialStatus
+from core.enums import CredentialSource, CredentialStatus
 from core.logger import logger
 from core.security import mask_token
 from models import AdAccount, Credential, MetaAccount
@@ -54,9 +54,11 @@ class CredentialService:
             raise CredentialError(f"广告账户不存在: {ad_account_id}")
 
         # 1) 优先使用加密凭据表（2 / 3 级回退在 resolve_token_for_meta 内完成）
-        if account.meta_account_id:
+        # 注意：AdAccount 通过 `business_id` 关联所属 BM，
+        # 不存在 `meta_account_id` 属性（那是 Credential 上的字段）。
+        if account.business_id:
             try:
-                return self.resolve_token_for_meta(account.meta_account_id)
+                return self.resolve_token_for_meta(account.business_id)
             except CredentialExpiredError:
                 # 过期必须直接失败，不能回退到全局 Token（避免多 BM 串号）
                 raise
@@ -73,7 +75,36 @@ class CredentialService:
         raise CredentialError(f"广告账户 {ad_account_id} 无可用凭据")
 
     def get_meta_credential(self, meta_account_id: str) -> Optional[Credential]:
-        """取该 BM 当前生效（ACTIVE）的凭据，没有则返回 None"""
+        """取该 BM 当前生效（ACTIVE）的凭据，没有则返回 None
+
+        解析顺序：
+            1. BM 显式指定的 `default_credential_id`（管理员可人工选择）
+            2. 该 BM 下最新一条 ACTIVE 凭据（向后兼容的推导逻辑）
+
+        指定的默认凭据若已被禁用/过期，会记录 warning 并回退到推导逻辑，
+        避免因指向失效凭据导致整个 BM 不可用。
+        """
+        meta = (
+            self.db.query(MetaAccount)
+            .filter(MetaAccount.id == meta_account_id)
+            .first()
+        )
+        if meta and meta.default_credential_id:
+            cred = (
+                self.db.query(Credential)
+                .filter(
+                    Credential.id == meta.default_credential_id,
+                    Credential.status == CredentialStatus.ACTIVE.value,
+                )
+                .first()
+            )
+            if cred:
+                return cred
+            logger.warning(
+                f"[CredentialService] BM {meta_account_id} 指定的默认凭据 "
+                f"{meta.default_credential_id} 不可用，回退为最新 ACTIVE 凭据"
+            )
+
         return (
             self.db.query(Credential)
             .filter(
@@ -145,12 +176,12 @@ class CredentialService:
     def mark_invalid_by_account(self, ad_account_id: str, reason: str) -> None:
         """按广告账户定位其 BM 的当前凭据并标记异常"""
         account = self.db.query(AdAccount).filter(AdAccount.id == ad_account_id).first()
-        if not account or not account.meta_account_id:
+        if not account or not account.business_id:
             return
         cred = (
             self.db.query(Credential)
             .filter(
-                Credential.meta_account_id == account.meta_account_id,
+                Credential.meta_account_id == account.business_id,
                 Credential.status == CredentialStatus.ACTIVE.value,
             )
             .first()
@@ -167,6 +198,10 @@ class CredentialService:
         token_type: str = "USER",
         expires_at: Optional[datetime] = None,
         replace_active: bool = True,
+        source: str = None,
+        scopes: Optional[List[str]] = None,
+        granted_by_user_id: Optional[str] = None,
+        meta_user_id: Optional[str] = None,
     ) -> Credential:
         """为指定 BM 写入加密凭据
 
@@ -177,6 +212,10 @@ class CredentialService:
             expires_at: 过期时间，None 表示长期有效
             replace_active: True=把该 BM 现有 ACTIVE 凭据置为 DISABLED 后新建（轮换）；
                             False=直接追加一条（可能并存多条 ACTIVE）
+            source: 来源 MANUAL / OAUTH，默认 MANUAL
+            scopes: 实际授予的权限列表（OAuth 场景）
+            granted_by_user_id: 发起授权的本系统用户
+            meta_user_id: 授权方的 Meta 用户 ID
         """
         if not plain_token:
             raise CredentialError("Token 不能为空")
@@ -198,6 +237,10 @@ class CredentialService:
             token_type=token_type or "USER",
             expires_at=expires_at,
             status=CredentialStatus.ACTIVE.value,
+            source=source or CredentialSource.MANUAL.value,
+            scopes=list(scopes) if scopes else None,
+            granted_by_user_id=granted_by_user_id,
+            meta_user_id=meta_user_id,
         )
         cred.set_access_token(plain_token)
         self.db.add(cred)

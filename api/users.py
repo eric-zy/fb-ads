@@ -11,7 +11,8 @@ import uuid
 from core.database import get_db
 from core.logger import logger
 from core.auth import get_current_active_user, require_admin
-from models import User, AdAccount
+from models import AdAccount, Tenant, User
+from models.tenant import UserRole
 from api.accounts import account_to_dict
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
@@ -144,6 +145,8 @@ class UserCreate(BaseModel):
     role: str = "user"
     company_id: Optional[str] = None
     is_active: bool = True
+    # 仅平台管理员可指定（为空表示归属当前管理员所在租户）
+    tenant_id: Optional[str] = None
 
 
 class UserUpdate(BaseModel):
@@ -162,6 +165,7 @@ class PasswordReset(BaseModel):
 def _user_to_dict(u: User) -> dict:
     return {
         "id": u.id,
+        "tenant_id": getattr(u, "tenant_id", None),
         "email": u.email,
         "username": u.username,
         "role": u.role,
@@ -204,17 +208,41 @@ def create_user(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    """创建用户（管理员）"""
+    """创建用户（管理员）
+
+    租户归属规则：
+        - 租户管理员创建的用户 → 自动归属当前租户
+        - 平台管理员可通过 `tenant_id` 指定租户；不指定则创建为平台账号
+    """
     if db.query(User).filter(User.email == data.email).first():
         raise HTTPException(status_code=400, detail="该邮箱已注册")
     if db.query(User).filter(User.username == data.username).first():
         raise HTTPException(status_code=400, detail="该用户名已存在")
+
+    target_tenant_id = data.tenant_id
+    if target_tenant_id and not UserRole.is_platform_admin(current_user.role):
+        raise HTTPException(status_code=403, detail="只有平台管理员可指定租户")
+
+    tenant = None
+    if target_tenant_id is None:
+        target_tenant_id = getattr(current_user, "tenant_id", None)
+    if target_tenant_id:
+        tenant = db.query(Tenant).filter(Tenant.id == target_tenant_id).first()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="目标租户不存在")
+        used = db.query(User).filter(User.tenant_id == target_tenant_id).count()
+        if not tenant.check_quota("max_users", used):
+            raise HTTPException(
+                status_code=403, detail=f"租户成员数已达上限（{tenant.max_users}）"
+            )
+
     u = User(
         id=str(uuid.uuid4()),
         email=data.email,
         username=data.username,
         hashed_password=_hash_password(data.password),
-        role=data.role,
+        role=UserRole.normalize(data.role),
+        tenant_id=target_tenant_id,  # 显式指定，不依赖上下文自动填充
         company_id=data.company_id,
         is_active=data.is_active,
         is_verified=True,
@@ -247,10 +275,20 @@ def update_user(
         if db.query(User).filter(User.username == data.username).first():
             raise HTTPException(status_code=400, detail="该用户名已被其他用户使用")
         u.username = data.username
-    for field in ("role", "company_id", "is_active", "permissions"):
+    for field in ("company_id", "is_active", "permissions"):
         val = getattr(data, field)
         if val is not None:
             setattr(u, field, val)
+    # 角色单独处理：只有平台管理员能授予平台管理员角色，防止租户内越权提权
+    if data.role is not None:
+        new_role = UserRole.normalize(data.role)
+        if UserRole.is_platform_admin(new_role) and not UserRole.is_platform_admin(
+            current_user.role
+        ):
+            raise HTTPException(
+                status_code=403, detail="只有平台管理员可授予平台管理员角色"
+            )
+        u.role = new_role
     db.commit()
     return _user_to_dict(u)
 

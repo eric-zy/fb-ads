@@ -76,6 +76,16 @@ class CredentialStatus(str, Enum):
     VERIFYING = "VERIFYING"  # 正在校验中（异步校验场景）
 
 
+class CredentialSource(str, Enum):
+    """凭据来源
+
+    MANUAL：管理员在后台手工粘贴 Token
+    OAUTH ：通过 Meta OAuth 授权流程获取（可溯源到授权人与授权范围）
+    """
+    MANUAL = "MANUAL"
+    OAUTH = "OAUTH"
+
+
 class InstanceStatus(str, Enum):
     """投放实例状态（本地侧）"""
     ACTIVE = "ACTIVE"

@@ -1,12 +1,13 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
 from core.database import Base
 from core.enums import InstanceStatus
+from core.tenant import TenantMixin
 
 
-class CampaignInstance(Base):
+class CampaignInstance(TenantMixin, Base):
     """Campaign 实例映射（设计文档第 12 节）
 
     Template 与 Meta Campaign 之间的映射：
@@ -22,6 +23,8 @@ class CampaignInstance(Base):
     __tablename__ = "campaign_instances"
     __table_args__ = (
         UniqueConstraint("template_id", "ad_account_id", name="uq_template_account_campaign"),
+        Index("ix_campaign_instances_tenant_template", "tenant_id", "template_id"),
+        Index("ix_campaign_instances_tenant_account", "tenant_id", "ad_account_id"),
     )
 
     id = Column(String(50), primary_key=True, index=True)
@@ -44,6 +47,7 @@ class CampaignInstance(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "template_id": self.template_id,
             "ad_account_id": self.ad_account_id,
             "meta_campaign_id": self.meta_campaign_id,
@@ -55,10 +59,13 @@ class CampaignInstance(Base):
         }
 
 
-class AdSetInstance(Base):
+class AdSetInstance(TenantMixin, Base):
     """AdSet 实例（设计文档第 13 节）"""
 
     __tablename__ = "adset_instances"
+    __table_args__ = (
+        Index("ix_adset_instances_tenant_campaign", "tenant_id", "campaign_instance_id"),
+    )
 
     id = Column(String(50), primary_key=True, index=True)
     campaign_instance_id = Column(
@@ -78,6 +85,7 @@ class AdSetInstance(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "campaign_instance_id": self.campaign_instance_id,
             "meta_adset_id": self.meta_adset_id,
             "name": self.name,
@@ -87,10 +95,13 @@ class AdSetInstance(Base):
         }
 
 
-class AdInstance(Base):
+class AdInstance(TenantMixin, Base):
     """Ad 实例（设计文档第 14 节）"""
 
     __tablename__ = "ad_instances"
+    __table_args__ = (
+        Index("ix_ad_instances_tenant_adset", "tenant_id", "adset_instance_id"),
+    )
 
     id = Column(String(50), primary_key=True, index=True)
     adset_instance_id = Column(
@@ -112,6 +123,7 @@ class AdInstance(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "adset_instance_id": self.adset_instance_id,
             "creative_id": self.creative_id,
             "meta_ad_id": self.meta_ad_id,

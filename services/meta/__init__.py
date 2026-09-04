@@ -16,6 +16,7 @@ from services.meta.service import MetaAdsService
 from services.meta.ad_account_service import AdAccountService
 from services.meta.business_service import BusinessService
 from services.meta.sync_service import MetaSyncService
+from services.meta.oauth_service import MetaOAuthError, MetaOAuthService
 
 __all__ = [
     "MetaApiError",
@@ -26,4 +27,6 @@ __all__ = [
     "AdAccountService",
     "BusinessService",
     "MetaSyncService",
+    "MetaOAuthError",
+    "MetaOAuthService",
 ]

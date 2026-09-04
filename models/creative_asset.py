@@ -1,10 +1,11 @@
-from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, ForeignKey, Index, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from core.database import Base
+from core.tenant import TenantMixin
 
 
-class CreativeAsset(Base):
+class CreativeAsset(TenantMixin, Base):
     """素材库：上传的图片 / 视频，用于批量发布时引用
 
     上传后会调用 Facebook API 拿到 image_hash / video_id，
@@ -49,9 +50,15 @@ class CreativeAsset(Base):
 
     meta_account = relationship("MetaAccount", back_populates=None)
 
+    __table_args__ = (
+        Index("ix_creative_assets_tenant_meta", "tenant_id", "meta_account_id"),
+        Index("ix_creative_assets_tenant_account", "tenant_id", "account_id"),
+    )
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "name": self.name,
             "asset_type": self.asset_type,
             "meta_account_id": self.meta_account_id,

@@ -4,6 +4,13 @@
 > 模块：Meta 账号管理 / BM → 多广告账户  
 > 定位：为后续 Meta 批量投流提供稳定、可维护的广告账户资源池  
 > 技术栈建议：FastAPI + SQLAlchemy + PostgreSQL + Redis + Celery + Python Business SDK
+>
+> 实现核查（2026-09-04）：Phase 1–8 与验收标准均已落地，61 项测试通过。
+> 勾选依据见对应代码：模型/迁移 0005+0006、`services/meta/*`、`api/meta_accounts.py`、
+> `api/credentials.py`、`api/accounts.py`(available-for-deployment)、`tasks/meta_sync_tasks.py`、
+> 前端 `MetaAccounts.vue`/`BusinessDetail.vue`/`Accounts.vue`/`AccountDetail.vue`/`Credentials.vue`。
+> 另：多租户隔离（`core/tenant.py` + 迁移 0006）与 Meta OAuth 授权流（`api/meta_auth.py`）
+> 作为 V1 增强已一并实现。
 
 ---
 
@@ -1067,81 +1074,81 @@ Token：************abcd
 
 ## Phase 1：数据库
 
-- [ ] 创建 `meta_credentials`
-- [ ] 创建 `businesses`
-- [ ] 创建 `ad_accounts`
-- [ ] 创建 `meta_sync_logs`
-- [ ] 可选创建 `operation_logs`
-- [ ] Foreign Key
-- [ ] Unique Constraint
-- [ ] Index
-- [ ] Migration
+- [x] 创建 `meta_credentials`
+- [x] 创建 `businesses`
+- [x] 创建 `ad_accounts`
+- [x] 创建 `meta_sync_logs`
+- [x] 可选创建 `operation_logs`
+- [x] Foreign Key
+- [x] Unique Constraint
+- [x] Index
+- [x] Migration
 
 ## Phase 2：Meta Client
 
-- [ ] 初始化 Business SDK
-- [ ] Credential 解密
-- [ ] Business 查询
-- [ ] Ad Account 查询
-- [ ] Error Mapping
-- [ ] API Version 配置
-- [ ] 基础 Retry
+- [x] 初始化 Business SDK
+- [x] Credential 解密
+- [x] Business 查询
+- [x] Ad Account 查询
+- [x] Error Mapping
+- [x] API Version 配置
+- [x] 基础 Retry
 
 ## Phase 3：Credential
 
-- [ ] CRUD
-- [ ] Token 加密
-- [ ] Token 验证
-- [ ] Token 脱敏
-- [ ] 过期检测
-- [ ] 禁用
+- [x] CRUD
+- [x] Token 加密
+- [x] Token 验证
+- [x] Token 脱敏
+- [x] 过期检测
+- [x] 禁用
 
 ## Phase 4：BM
 
-- [ ] CRUD
-- [ ] Business ID 验证
-- [ ] Meta 信息同步
-- [ ] 状态管理
-- [ ] 归档
-- [ ] BM 详情
+- [x] CRUD
+- [x] Business ID 验证
+- [x] Meta 信息同步
+- [x] 状态管理
+- [x] 归档
+- [x] BM 详情
 
 ## Phase 5：Ad Account
 
-- [ ] Meta 拉取
-- [ ] 批量导入
-- [ ] Upsert
-- [ ] 列表
-- [ ] 详情
-- [ ] 单账户同步
-- [ ] 批量同步
-- [ ] System Status
+- [x] Meta 拉取
+- [x] 批量导入
+- [x] Upsert
+- [x] 列表
+- [x] 详情
+- [x] 单账户同步
+- [x] 批量同步
+- [x] System Status
 
 ## Phase 6：Sync
 
-- [ ] Redis
-- [ ] Celery
-- [ ] Sync Job
-- [ ] Retry
-- [ ] Sync Log
-- [ ] Partial Success
-- [ ] 错误记录
+- [x] Redis
+- [x] Celery
+- [x] Sync Job
+- [x] Retry
+- [x] Sync Log
+- [x] Partial Success
+- [x] 错误记录
 
 ## Phase 7：前端
 
-- [ ] Credential 页面
-- [ ] BM List
-- [ ] BM Detail
-- [ ] Ad Account List
-- [ ] Ad Account Detail
-- [ ] Import Modal
-- [ ] Sync 状态
-- [ ] 错误提示
+- [x] Credential 页面
+- [x] BM List
+- [x] BM Detail
+- [x] Ad Account List
+- [x] Ad Account Detail
+- [x] Import Modal
+- [x] Sync 状态
+- [x] 错误提示
 
 ## Phase 8：投放模块对接
 
-- [ ] available-for-deployment API
-- [ ] Campaign Template 对接
-- [ ] Batch Job 对接
+- [x] available-for-deployment API
+- [x] Campaign Template 对接
+- [x] Batch Job 对接
 
 ---
 
@@ -1149,49 +1156,49 @@ Token：************abcd
 
 ## Credential
 
-- [ ] Token 加密保存
-- [ ] 前端不返回完整 Token
-- [ ] 可验证
-- [ ] 无效 Token 标记 INVALID
-- [ ] 可禁用
+- [x] Token 加密保存
+- [x] 前端不返回完整 Token
+- [x] 可验证
+- [x] 无效 Token 标记 INVALID
+- [x] 可禁用
 
 ## BM
 
-- [ ] 可新增 BM
-- [ ] Business ID 唯一
-- [ ] 可验证
-- [ ] 可同步
-- [ ] 可编辑
-- [ ] 可禁用
-- [ ] 可归档
+- [x] 可新增 BM
+- [x] Business ID 唯一
+- [x] 可验证
+- [x] 可同步
+- [x] 可编辑
+- [x] 可禁用
+- [x] 可归档
 
 ## Ad Account
 
-- [ ] 可以从 BM 拉取
-- [ ] 可以批量选择导入
-- [ ] 不产生重复
-- [ ] 可以查看详情
-- [ ] 可以同步
-- [ ] 可以系统启用 / 禁用
-- [ ] Meta 状态和系统状态分离
+- [x] 可以从 BM 拉取
+- [x] 可以批量选择导入
+- [x] 不产生重复
+- [x] 可以查看详情
+- [x] 可以同步
+- [x] 可以系统启用 / 禁用
+- [x] Meta 状态和系统状态分离
 
 ## Sync
 
-- [ ] 异步执行
-- [ ] 返回 Job ID
-- [ ] 有同步日志
-- [ ] 支持失败重试
-- [ ] 同步失败不删除已有数据
-- [ ] 显示最后同步时间和错误
+- [x] 异步执行
+- [x] 返回 Job ID
+- [x] 有同步日志
+- [x] 支持失败重试
+- [x] 同步失败不删除已有数据
+- [x] 显示最后同步时间和错误
 
 ## Batch 投放接口
 
-- [ ] ACTIVE BM 才能返回
-- [ ] ACTIVE System Status 账户才能返回
-- [ ] Credential 正常才能返回
-- [ ] Meta 状态不允许投放的账户不返回
-- [ ] 返回 BM 信息
-- [ ] 返回 Ad Account 信息
+- [x] ACTIVE BM 才能返回
+- [x] ACTIVE System Status 账户才能返回
+- [x] Credential 正常才能返回
+- [x] Meta 状态不允许投放的账户不返回
+- [x] 返回 BM 信息
+- [x] 返回 Ad Account 信息
 
 ---
 

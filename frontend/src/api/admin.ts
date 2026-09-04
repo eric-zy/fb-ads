@@ -144,6 +144,17 @@ export const accountApi = {
   unassign: (id: string, user_ids: string[]) => request.post('/api/v1/accounts/' + id + '/unassign', { user_ids }),
   users: (id: string) => request.get('/api/v1/accounts/' + id + '/users'),
   delete: (id: string) => request.delete('/api/v1/accounts/' + id),
+  /** 同步单个账户（异步）：立即返回 job_id，结果查同步日志 */
+  sync: (id: string) => request.post('/api/v1/accounts/' + id + '/sync'),
+  /** 批量同步：按 account_ids 或 business_id，逐条投递任务 */
+  syncBatch: (data: { account_ids?: string[]; business_id?: string }) =>
+    request.post('/api/v1/accounts/sync', data),
+  /**
+   * 异步同步账户下的广告系列（Campaign），返回 job_id。
+   * 与 sync() 的区别：sync 同步账户自身属性，本接口同步账户下的 Campaign。
+   */
+  syncCampaigns: (id: string) =>
+    request.post('/api/v1/accounts/' + id + '/sync-campaigns'),
 }
 
 // ============ 主账号（BM）管理 ============
@@ -343,4 +354,7 @@ export const credentialApi = {
   reveal: (id: string) =>
     request.post('/api/v1/credentials/' + id + '/reveal', { confirm: true }),
   remove: (id: string) => request.delete('/api/v1/credentials/' + id),
+  /** 生成短时、带租户绑定的 Meta OAuth 授权地址 */
+  oauthAuthorize: (metaAccountId: string) =>
+    request.get('/api/v1/meta-auth/authorize', { params: { meta_account_id: metaAccountId } }),
 }

@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     FB_APP_SECRET: str = os.getenv("FB_APP_SECRET", "")
     FB_ACCESS_TOKEN: str = os.getenv("FB_ACCESS_TOKEN", "")
     FB_ACCOUNT_ID: str = os.getenv("FB_ACCOUNT_ID", "")
+    FB_API_VERSION: str = os.getenv("FB_API_VERSION", "v18.0")
+    FB_OAUTH_REDIRECT_URI: str = os.getenv(
+        "FB_OAUTH_REDIRECT_URI",
+        "http://localhost:8000/api/v1/meta-auth/callback",
+    )
+    FB_OAUTH_SCOPES: str = os.getenv(
+        "FB_OAUTH_SCOPES", "ads_management,ads_read,business_management"
+    )
+    FRONTEND_BASE_URL: str = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
     FB_API_TIMEOUT: int = 30
     FB_API_RETRY_COUNT: int = 3
     
@@ -87,11 +96,22 @@ class Settings(BaseSettings):
     NOTIFY_DING_WEBHOOK: Optional[str] = os.getenv("NOTIFY_DING_WEBHOOK")
     NOTIFY_SLACK_WEBHOOK: Optional[str] = os.getenv("NOTIFY_SLACK_WEBHOOK")
     
+    # ========== 多租户（SaaS）配置 ==========
+    # 严格模式：开启后，执行租户级查询却没有租户上下文时直接抛错，
+    # 而不是"不过滤返回全量"。生产环境强烈建议开启，开发环境可关闭以便调试。
+    TENANT_STRICT_MODE: bool = os.getenv("TENANT_STRICT_MODE", "false").lower() == "true"
+    # 默认租户：历史数据回填归属的租户 slug（迁移 0006 会创建/复用）
+    DEFAULT_TENANT_SLUG: str = os.getenv("DEFAULT_TENANT_SLUG", "default")
+    DEFAULT_TENANT_NAME: str = os.getenv("DEFAULT_TENANT_NAME", "默认租户")
+
     # ========== 任务调度配置 ==========
     SCHEDULE_FETCH_INSIGHTS_CRON: str = "0 */2 * * *"  # 每2小时
     SCHEDULE_RISK_CHECK_CRON: str = "0 * * * *"        # 每小时
     SCHEDULE_REPORT_DAILY_CRON: str = "0 8 * * *"      # 每天8点
     SCHEDULE_REPORT_WEEKLY_CRON: str = "0 9 * * 1"     # 每周一9点
+    # 凭据到期巡检：Meta 长期 Token 固定 60 天且无 refresh 机制，必须定时巡检
+    SCHEDULE_CREDENTIAL_CHECK_CRON: str = "0 9 * * *"   # 每天9点
+    CREDENTIAL_EXPIRY_WARN_DAYS: int = int(os.getenv("CREDENTIAL_EXPIRY_WARN_DAYS", "7"))
     
     @property
     def database_url(self) -> str:

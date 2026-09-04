@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from models import AccountInsight, CampaignInsight, AdInsight, Campaign, Ad
 from core.logger import logger
 from core.money import to_major
+from services.ad_account_resolver import resolve_ad_account
 import numpy as np
 from sklearn.ensemble import IsolationForest
 import pandas as pd
@@ -13,6 +14,17 @@ class AnalyticsEngine:
     
     def __init__(self, db: Session):
         self.db = db
+
+    def _account_key(self, account_id: str) -> str:
+        """把账户标识归一到主键 `AdAccount.id`
+
+        本模块的查询条件都是 `AccountInsight.ad_account_id` / `Campaign.ad_account_id`，
+        二者都是指向 `ad_accounts.id` 的外键。若外部传入 Meta 账户号 act_xxx，
+        查询会**恒返回空**——历史上"日报永远是空"就是这个原因。
+        解析失败时退回原值，保持既有行为不变得更差。
+        """
+        account = resolve_ad_account(self.db, account_id)
+        return account.id if account else account_id
     
     def calculate_metrics(self, spend: float, impressions: int, clicks: int,
                          conversions: int = 0) -> Dict[str, float]:
@@ -34,9 +46,10 @@ class AnalyticsEngine:
         """获取账户性能趋势"""
         try:
             start_date = date.today() - timedelta(days=days)
-            
+            account_key = self._account_key(account_id)
+
             insights = self.db.query(AccountInsight).filter(
-                AccountInsight.ad_account_id == account_id,
+                AccountInsight.ad_account_id == account_key,
                 AccountInsight.date >= start_date
             ).order_by(AccountInsight.date).all()
             
@@ -98,8 +111,10 @@ class AnalyticsEngine:
         2. 低质量指标 (20%)
         """
         try:
+            account_key = self._account_key(account_id)
+
             # 异常检测评分
-            anomaly_score, is_anomaly = self.detect_spend_anomaly(account_id, window_days)
+            anomaly_score, is_anomaly = self.detect_spend_anomaly(account_key, window_days)
             
             # 规范化异常得分到0-1
             normalized_anomaly = max(0, min(1, (anomaly_score + 0.5)))
@@ -110,7 +125,7 @@ class AnalyticsEngine:
             ).join(
                 Campaign
             ).filter(
-                Campaign.ad_account_id == account_id
+                Campaign.ad_account_id == account_key
             ).count()
             
             low_quality_ads = self.db.query(Ad).join(
@@ -118,7 +133,7 @@ class AnalyticsEngine:
             ).join(
                 Campaign
             ).filter(
-                Campaign.ad_account_id == account_id,
+                Campaign.ad_account_id == account_key,
                 Ad.is_low_quality == True
             ).count()
             
@@ -135,10 +150,16 @@ class AnalyticsEngine:
             return 0.0
     
     def generate_daily_report(self, account_id: str, report_date: date) -> Dict:
-        """生成日报告"""
+        """生成日报告
+
+        Args:
+            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+        """
         try:
+            account_key = self._account_key(account_id)
+
             insight = self.db.query(AccountInsight).filter(
-                AccountInsight.ad_account_id == account_id,
+                AccountInsight.ad_account_id == account_key,
                 AccountInsight.date == report_date
             ).first()
             
@@ -148,13 +169,14 @@ class AnalyticsEngine:
             # 计算与前一天的对比
             previous_date = report_date - timedelta(days=1)
             previous_insight = self.db.query(AccountInsight).filter(
-                AccountInsight.ad_account_id == account_id,
+                AccountInsight.ad_account_id == account_key,
                 AccountInsight.date == previous_date
             ).first()
             
             report = {
                 'date': str(report_date),
-                'account_id': account_id,
+                # 回显归一后的主键：前端拿到的是稳定标识，便于后续接口串联
+                'account_id': account_key,
                 'metrics': {
                     'spend': to_major(insight.spend),
                     'impressions': insight.impressions,
@@ -182,15 +204,20 @@ class AnalyticsEngine:
             return {}
     
     def generate_weekly_report(self, account_id: str, end_date: date = None) -> Dict:
-        """生成周报告"""
+        """生成周报告
+
+        Args:
+            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+        """
         try:
             if end_date is None:
                 end_date = date.today()
-            
+
             start_date = end_date - timedelta(days=7)
-            
+            account_key = self._account_key(account_id)
+
             insights = self.db.query(AccountInsight).filter(
-                AccountInsight.ad_account_id == account_id,
+                AccountInsight.ad_account_id == account_key,
                 AccountInsight.date >= start_date,
                 AccountInsight.date <= end_date
             ).all()

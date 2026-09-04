@@ -7,7 +7,10 @@
           Access Token 加密存储于凭据表，与 BM 主账号、广告账户分离管理；更换 Token 不影响账户主数据
         </p>
       </div>
-      <el-button type="primary" :icon="Plus" @click="openCreate">新增凭据</el-button>
+      <div class="head-actions">
+        <el-button type="success" :loading="authorizing" @click="startMetaAuth">Meta 授权</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">手工新增</el-button>
+      </div>
     </div>
 
     <el-alert type="info" :closable="false" show-icon class="tip-alert">
@@ -229,6 +232,7 @@ const list = ref<CredentialItem[]>([])
 const metas = ref<MetaAccountItem[]>([])
 const loading = ref(false)
 const saving = ref(false)
+const authorizing = ref(false)
 const metaFilter = ref<string>('')
 const statusFilter = ref<string>('')
 
@@ -237,6 +241,20 @@ const showRotate = ref(false)
 const showReveal = ref(false)
 const current = ref<CredentialItem | null>(null)
 const revealedToken = ref('')
+
+async function startMetaAuth() {
+  if (!metaFilter.value) {
+    ElMessage.warning('请先在筛选框选择要绑定授权的 BM')
+    return
+  }
+  authorizing.value = true
+  try {
+    const { data } = await credentialApi.oauthAuthorize(metaFilter.value)
+    window.location.assign(data.authorization_url)
+  } finally {
+    authorizing.value = false
+  }
+}
 
 const createForm = ref({
   meta_account_id: '',
@@ -458,6 +476,12 @@ onMounted(async () => {
   // 支持从主账号页跳转过来时按 BM 预筛选
   const q = route.query.meta_account_id
   if (typeof q === 'string' && q) metaFilter.value = q
+  const authResult = route.query.meta_auth
+  if (authResult === 'success') {
+    ElMessage.success('Meta 授权成功，Token 已加密保存并绑定到 BM')
+  } else if (authResult === 'error') {
+    ElMessage.error(typeof route.query.message === 'string' ? route.query.message : 'Meta 授权失败')
+  }
   await loadMetas()
   await loadList()
 })

@@ -28,12 +28,19 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime
+
+# 能力扩展字段：PostgreSQL 用 JSONB（支持 GIN 索引与包含查询），
+# 其余方言（测试用的 SQLite）退化为普通 JSON，保证同一套模型跨库可用。
+JSONVariant = JSON().with_variant(JSONB(astext_type=Text()), "postgresql")
 import enum
 
 from core.database import Base
+from core.tenant import TenantMixin
 
 
 class AccountStatus(str, enum.Enum):
@@ -56,8 +63,8 @@ class SystemStatus(str, enum.Enum):
     DISABLED = "DISABLED"
 
 
-class AdAccount(Base):
-    """Facebook 广告账户"""
+class AdAccount(TenantMixin, Base):
+    """Facebook 广告账户（租户级核心资产）"""
 
     __tablename__ = "ad_accounts"
 
@@ -96,7 +103,13 @@ class AdAccount(Base):
     )
     system_status_reason = Column(String(500), comment="系统侧禁用原因（如风控冻结）")
     system_status_at = Column(DateTime, comment="最近一次系统侧状态变更时间")
-    capabilities = Column(JSON, default={}, comment="能力扩展字段（文档 §8）")
+    capabilities = Column(
+        JSONVariant,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+        comment="能力扩展字段（文档 §8）：can_create_campaign / can_read_insights 等",
+    )
 
     # ---------- 系统侧限额（风控用，最小货币单位） ----------
     daily_spend_limit = Column(BigInteger, default=0, nullable=False)
@@ -123,9 +136,11 @@ class AdAccount(Base):
         # 文档 §24：同一 BM 内账户不重复；跨 BM 允许同一 act_xxx
         UniqueConstraint("business_id", "account_id", name="uq_business_account"),
         Index("ix_ad_accounts_account_id", "account_id"),
-        Index("ix_ad_accounts_system_status", "system_status"),
-        Index("ix_ad_accounts_account_status", "account_status"),
-        Index("ix_ad_accounts_effective_status", "effective_status"),
+        # ---- 租户隔离复合索引：行级隔离下索引必须以 tenant_id 打头 ----
+        Index("ix_ad_accounts_tenant_business", "tenant_id", "business_id"),
+        Index("ix_ad_accounts_tenant_system_status", "tenant_id", "system_status"),
+        Index("ix_ad_accounts_tenant_account_status", "tenant_id", "account_status"),
+        Index("ix_ad_accounts_tenant_effective", "tenant_id", "effective_status"),
     )
 
     # ---------- 兼容属性 ----------

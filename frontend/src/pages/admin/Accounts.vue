@@ -40,6 +40,7 @@
         <el-button size="small" type="warning" @click="bulkAction('freeze')">批量停用</el-button>
         <el-button size="small" type="success" @click="bulkAction('unfreeze')">批量启用</el-button>
         <el-button size="small" type="primary" @click="openBulkTransfer">批量转移归属</el-button>
+        <el-button size="small" type="primary" :loading="syncing" @click="bulkSync">批量同步</el-button>
         <el-button size="small" type="danger" @click="bulkAction('delete')">批量删除</el-button>
         <el-button size="small" link @click="clearSelection">取消选择</el-button>
       </div>
@@ -94,8 +95,9 @@
         <el-table-column label="分配用户" width="90">
           <template #default="{ row }">{{ userCount[row.id] ?? '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="330" fixed="right">
+        <el-table-column label="操作" width="390" fixed="right">
           <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="goDetail(row)">详情</el-button>
             <el-button link type="primary" size="small" @click="openTransfer(row)">转移归属</el-button>
             <el-button link type="primary" size="small" @click="openAssign(row)">分配</el-button>
             <el-button link type="info" size="small" @click="openUsers(row)">用户</el-button>
@@ -218,7 +220,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh } from '@element-plus/icons-vue'
 import {
@@ -233,9 +235,11 @@ import {
 import { formatMoney, toMajor, toMinor } from '@/utils/money'
 
 const route = useRoute()
+const router = useRouter()
 
 const accounts = ref<AdAccountItem[]>([])
 const loading = ref(false)
+const syncing = ref(false)
 const search = ref('')
 const systemStatusFilter = ref('')
 const accountStatusFilter = ref('')
@@ -472,6 +476,33 @@ async function bulkAction(action: 'freeze' | 'unfreeze' | 'delete') {
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   }
+}
+
+/** 批量同步：异步任务，逐条投递后立即返回，结果查同步日志 */
+async function bulkSync() {
+  if (!selected.value.length) return
+  syncing.value = true
+  try {
+    const { data } = await accountApi.syncBatch({
+      account_ids: selected.value.map((a) => a.id),
+    })
+    if (data.failed) {
+      ElMessage.warning(
+        `已提交 ${data.submitted} 个，${data.failed} 个失败：${data.errors?.[0]?.error || ''}`
+      )
+    } else {
+      ElMessage.success(`已提交 ${data.submitted} 个同步任务`)
+    }
+    clearSelection()
+  } catch (e: any) {
+    // 错误已由 utils/request.ts 全局拦截器弹框提示
+  } finally {
+    syncing.value = false
+  }
+}
+
+function goDetail(a: AdAccountItem) {
+  router.push({ name: 'AdminAccountDetail', params: { id: a.id } })
 }
 
 async function toggleStatus(a: AdAccountItem) {

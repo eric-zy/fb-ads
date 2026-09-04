@@ -2,6 +2,7 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
 from models import RiskEvent, RiskLevel, RiskEventType, AdAccount, Campaign, Ad, SystemStatus
+from services.ad_account_resolver import resolve_ad_account
 from services.fb_client import fb_client
 from services.ads_manager import AdsManager
 from config.settings import settings
@@ -21,15 +22,18 @@ class RiskDetector:
 
         金额单位统一为**最小货币单位**（与 AdAccount.daily_spend_limit 一致）。
 
+        Args:
+            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+
         Returns:
             (今日花费, 日限额) 或 None
         """
         try:
-            account = self.db.query(AdAccount).filter_by(account_id=account_id).first()
+            account = resolve_ad_account(self.db, account_id)
             if not account:
                 return None
 
-            today_spend = self.ads_manager.get_account_spend_today(account_id)
+            today_spend = self.ads_manager.get_account_spend_today(account.id)
             daily_limit = account.daily_spend_limit or 0
 
             # 如果超过日预算80%
@@ -127,9 +131,13 @@ class RiskDetector:
             return None
     
     def freeze_account(self, account_id: str, reason: str, days: int = 3) -> bool:
-        """冻结账户"""
+        """冻结账户
+
+        Args:
+            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+        """
         try:
-            account = self.db.query(AdAccount).filter_by(account_id=account_id).first()
+            account = resolve_ad_account(self.db, account_id)
             if not account:
                 return False
             
@@ -149,53 +157,69 @@ class RiskDetector:
     
     def execute_risk_actions(self, account_id: str) -> Dict[str, int]:
         """执行风险缓解行动
-        
+
+        Args:
+            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+
         Returns:
-            行动统计 {"campaigns_paused": int, "accounts_frozen": int}
+            行动统计：
+                campaigns_paused  暂停的系列数
+                accounts_frozen   冻结的账户数
+                events_created    新建的风险事件数（调用方据此决定是否告警）
         """
-        result = {"campaigns_paused": 0, "accounts_frozen": 0}
-        
+        result = {"campaigns_paused": 0, "accounts_frozen": 0, "events_created": 0}
+
         try:
+            # 归一到主键：业务表外键都指向 AdAccount.id，
+            # 直接用外部传入的 act_xxx 会写进外键列造成数据错配。
+            account = resolve_ad_account(self.db, account_id)
+            if not account:
+                logger.warning(f"[RiskDetector] 账户不存在: {account_id}")
+                return result
+            account_key = account.id
+
             # 检查日花费异常
-            spend_anomaly = self.check_daily_spend_anomaly(account_id)
+            spend_anomaly = self.check_daily_spend_anomaly(account_key)
             if spend_anomaly:
                 today_spend, daily_limit = spend_anomaly
-                paused = self.ads_manager.pause_low_performance_campaigns(account_id)
+                paused = self.ads_manager.pause_low_performance_campaigns(account_key)
                 result["campaigns_paused"] += paused
-                
-                self.create_risk_event(
-                    account_id=account_id,
+
+                if self.create_risk_event(
+                    account_id=account_key,
                     event_type=RiskEventType.UNUSUAL_SPEND,
                     risk_level=RiskLevel.HIGH,
                     title="异常花费检测",
                     description=f"今日花费 {today_spend} 超过预算限额 {daily_limit}",
                     auto_action=f"Paused {paused} campaigns",
-                    requires_manual_review=True
-                )
-            
+                    requires_manual_review=True,
+                ):
+                    result["events_created"] += 1
+
             # 检查欺诈模式
-            fraud_score = self.detect_fraud_pattern(account_id)
+            fraud_score = self.detect_fraud_pattern(account_key)
             if fraud_score > settings.RISK_FRAUD_SCORE_THRESHOLD:
-                self.freeze_account(
-                    account_id,
+                if self.freeze_account(
+                    account_key,
                     f"High fraud risk detected (score: {fraud_score})",
-                    settings.RISK_ACCOUNT_FREEZE_DAYS
-                )
-                result["accounts_frozen"] += 1
-                
-                self.create_risk_event(
-                    account_id=account_id,
+                    settings.RISK_ACCOUNT_FREEZE_DAYS,
+                ):
+                    result["accounts_frozen"] += 1
+
+                if self.create_risk_event(
+                    account_id=account_key,
                     event_type=RiskEventType.HIGH_FRAUD,
                     risk_level=RiskLevel.CRITICAL,
                     title="高欺诈风险",
                     description=f"检测到高欺诈风险，评分：{fraud_score}",
                     auto_action="Account frozen",
-                    requires_manual_review=True
-                )
-            
+                    requires_manual_review=True,
+                ):
+                    result["events_created"] += 1
+
             logger.info(f"Risk actions executed: {result}")
             return result
-            
+
         except Exception as e:
             logger.error(f"Failed to execute risk actions: {str(e)}")
             return result

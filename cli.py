@@ -19,16 +19,45 @@ def _hash_password(password: str) -> str:
 @click.option('--email', default='admin@fbads.com', help='管理员邮箱')
 @click.option('--password', default='admin123456', help='管理员密码')
 @click.option('--username', default='admin', help='管理员用户名')
-def create_admin(email, password, username):
-    """创建/重置管理员账户（密码使用与登录一致的 sha256 哈希）"""
-    from models import User
+@click.option('--tenant-slug', default=None,
+              help='归属租户 slug，默认使用/创建 default 租户')
+@click.option('--platform', is_flag=True, default=False,
+              help='创建为平台管理员（不属于任何租户，可跨租户管理）')
+def create_admin(email, password, username, tenant_slug, platform):
+    """创建/重置管理员账户（密码使用与登录一致的 sha256 哈希）
+
+    多租户：管理员必须归属某个租户，否则登录后看不到任何数据
+    （所有业务表都按 tenant_id 过滤）。加 --platform 创建跨租户的平台管理员。
+    """
+    from models import Tenant, User
+    from models.tenant import TenantStatus, UserRole
+
     db = SessionLocal()
     try:
+        tenant = None
+        if not platform:
+            slug = (tenant_slug or "default").strip().lower()
+            tenant = db.query(Tenant).filter(Tenant.slug == slug).first()
+            if not tenant:
+                tenant = Tenant(
+                    id=uuid.uuid4().hex,
+                    name=slug,
+                    slug=slug,
+                    status=TenantStatus.ACTIVE.value,
+                )
+                db.add(tenant)
+                db.flush()
+                click.echo(f"[OK] 已创建租户: {slug}")
+
+        role = UserRole.PLATFORM_ADMIN.value if platform else UserRole.TENANT_ADMIN.value
+
         user = db.query(User).filter(User.email == email).first()
         if user:
             user.hashed_password = _hash_password(password)
             user.is_active = True
-            user.role = "admin"
+            user.role = role
+            if tenant is not None:
+                user.tenant_id = tenant.id
             click.echo(f"[OK] 已更新现有用户密码: {email}")
         else:
             user = User(
@@ -36,16 +65,22 @@ def create_admin(email, password, username):
                 email=email,
                 username=username,
                 hashed_password=_hash_password(password),
-                role="admin",
+                role=role,
+                tenant_id=tenant.id if tenant else None,
                 is_active=True,
                 is_verified=True,
             )
             db.add(user)
             click.echo(f"[OK] 已创建管理员账户: {email}")
+
+        if tenant and not tenant.owner_user_id:
+            tenant.owner_user_id = user.id
+
         db.commit()
         click.echo(f"  邮箱: {email}")
         click.echo(f"  密码: {password}")
-        click.echo(f"  角色: admin")
+        click.echo(f"  角色: {role}")
+        click.echo(f"  租户: {tenant.slug if tenant else '(平台，跨租户)'}")
     except Exception as e:
         db.rollback()
         click.echo(f"[FAIL] 创建失败: {str(e)}", err=True)

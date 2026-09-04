@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
 from core.database import Base
+from core.tenant import TenantMixin
 
 class CampaignStatus(str, enum.Enum):
     """系列状态"""
@@ -10,7 +11,7 @@ class CampaignStatus(str, enum.Enum):
     PAUSED = "PAUSED"
     DELETED = "DELETED"
 
-class Campaign(Base):
+class Campaign(TenantMixin, Base):
     """广告系列模型"""
     __tablename__ = "campaigns"
     
@@ -54,6 +55,9 @@ class Campaign(Base):
         Index('ix_campaigns_campaign_id', 'campaign_id'),
         Index('ix_campaigns_ad_account_id', 'ad_account_id'),
         Index('ix_campaigns_status', 'status'),
+        # ---- 租户隔离复合索引 ----
+        Index('ix_campaigns_tenant_account', 'tenant_id', 'ad_account_id'),
+        Index('ix_campaigns_tenant_status', 'tenant_id', 'status'),
     )
     
     def __repr__(self):

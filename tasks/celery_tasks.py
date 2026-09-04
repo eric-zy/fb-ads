@@ -6,15 +6,30 @@ from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
 from core.logger import logger
+from core.tenant import for_all_tenants, tenant_task
 from config.settings import settings
+from services.ad_account_resolver import resolve_tenant_of_ad_account_ref
 from services.ads_manager import AdsManager
 from services.risk_detector import RiskDetector
 from services.analytics import AnalyticsEngine
 from services.notifications import NotificationService
 
+
+def _resolve_account_tenant(account_ref: str):
+    """按广告账户解析租户：先按主键 id，再按 Meta 账户号 account_id(act_xxx)
+
+    历史调用方两种都传过，这里做兼容（实现见 services/ad_account_resolver）。
+    注意 act_xxx 并非全局唯一（唯一约束是 business_id + account_id），
+    同一账户被多个租户录入时会命中首个，因此编排任务一律派发主键
+    `account.id`，不走这条兜底分支。
+    """
+    return resolve_tenant_of_ad_account_ref(account_ref)
+
+
 # ==================== 洞察数据采集 ====================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=300)
+@tenant_task(lambda self, account_id, days=1: _resolve_account_tenant(account_id))
 def fetch_account_insights(self, account_id: str, days: int = 1) -> Dict:
     """拉取账户洞察数据
     
@@ -50,6 +65,7 @@ def fetch_account_insights(self, account_id: str, days: int = 1) -> Dict:
         db.close()
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=300)
+@for_all_tenants
 def fetch_all_accounts_insights(self, days: int = 1) -> Dict:
     """拉取所有账户的洞察数据"""
     db = SessionLocal()
@@ -68,7 +84,7 @@ def fetch_all_accounts_insights(self, days: int = 1) -> Dict:
         for account in accounts:
             try:
                 result = fetch_account_insights.apply_async(
-                    args=(account.account_id, days),
+                    args=(account.id, days),
                     countdown=5  # 错开请求
                 )
                 results.append(result.id)
@@ -83,6 +99,7 @@ def fetch_all_accounts_insights(self, days: int = 1) -> Dict:
 # ==================== 风险检测 ====================
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=300)
+@tenant_task(lambda self, account_id: _resolve_account_tenant(account_id))
 def check_account_risk(self, account_id: str) -> Dict:
     """检查账户风险
     
@@ -124,6 +141,7 @@ def check_account_risk(self, account_id: str) -> Dict:
         db.close()
 
 @shared_task(bind=True, max_retries=2)
+@for_all_tenants
 def check_all_accounts_risk(self) -> Dict:
     """检查所有账户的风险"""
     db = SessionLocal()
@@ -142,7 +160,7 @@ def check_all_accounts_risk(self) -> Dict:
         for account in accounts:
             try:
                 result = check_account_risk.apply_async(
-                    args=(account.account_id,),
+                    args=(account.id,),
                     countdown=3
                 )
                 results.append(result.id)
@@ -157,6 +175,7 @@ def check_all_accounts_risk(self) -> Dict:
 # ==================== 报告生成 ====================
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=300)
+@tenant_task(lambda self, account_id, report_date=None: _resolve_account_tenant(account_id))
 def generate_daily_report(self, account_id: str, report_date: Optional[str] = None) -> Dict:
     """生成日报告
     
@@ -197,6 +216,7 @@ def generate_daily_report(self, account_id: str, report_date: Optional[str] = No
         db.close()
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=300)
+@tenant_task(lambda self, account_id: _resolve_account_tenant(account_id))
 def generate_weekly_report(self, account_id: str) -> Dict:
     """生成周报告
     
@@ -232,6 +252,7 @@ def generate_weekly_report(self, account_id: str) -> Dict:
 # ==================== 通知服务 ====================
 
 @shared_task(bind=True, max_retries=2)
+@tenant_task(lambda self, account_id: _resolve_account_tenant(account_id))
 def notify_risk_events(self, account_id: str) -> Dict:
     """发送风险事件通知"""
     db = SessionLocal()
@@ -296,12 +317,12 @@ def notify_weekly_report(self, account_id: str) -> Dict:
 # Beat 只能触发无参任务，因此「遍历账户再逐个派发」的逻辑下沉为编排任务。
 
 @shared_task(bind=True, name="tasks.celery_tasks.dispatch_daily_reports")
+@for_all_tenants
 def dispatch_daily_reports(self) -> Dict:
     """日报告编排：为所有活跃账户派发生成任务"""
     db = SessionLocal()
     try:
-        from models import AdAccount
-
+        from models import AdAccount, SystemStatus
         # 只处理系统侧允许参与投放的账户（历史上这里用的 is_active 列并不存在，
         # 导致定时任务每次都抛错、实际一次都没跑起来）
         accounts = (
@@ -310,7 +331,7 @@ def dispatch_daily_reports(self) -> Dict:
             .all()
         )
         for account in accounts:
-            generate_daily_report.apply_async(args=(account.account_id,), countdown=5)
+            generate_daily_report.apply_async(args=(account.id,), countdown=5)
 
         logger.info(f"Dispatched daily reports for {len(accounts)} accounts")
         return {"status": "dispatched", "accounts": len(accounts)}
@@ -322,12 +343,12 @@ def dispatch_daily_reports(self) -> Dict:
 
 
 @shared_task(bind=True, name="tasks.celery_tasks.dispatch_weekly_reports")
+@for_all_tenants
 def dispatch_weekly_reports(self) -> Dict:
     """周报告编排：为所有活跃账户派发生成任务"""
     db = SessionLocal()
     try:
-        from models import AdAccount
-
+        from models import AdAccount, SystemStatus
         # 只处理系统侧允许参与投放的账户（历史上这里用的 is_active 列并不存在，
         # 导致定时任务每次都抛错、实际一次都没跑起来）
         accounts = (
@@ -336,7 +357,7 @@ def dispatch_weekly_reports(self) -> Dict:
             .all()
         )
         for account in accounts:
-            generate_weekly_report.apply_async(args=(account.account_id,), countdown=5)
+            generate_weekly_report.apply_async(args=(account.id,), countdown=5)
 
         logger.info(f"Dispatched weekly reports for {len(accounts)} accounts")
         return {"status": "dispatched", "accounts": len(accounts)}

@@ -14,17 +14,19 @@
     - 对外接口默认只返回脱敏值，查看明文需显式确认并写审计日志
     - 日志禁止打印完整 Token
 """
-from sqlalchemy import Column, DateTime, ForeignKey, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, JSON, String, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
+from sqlalchemy import Index
 from core.database import Base
-from core.enums import CredentialStatus
+from core.enums import CredentialSource, CredentialStatus
 from core.security import decrypt_token, encrypt_token, mask_token
+from core.tenant import TenantMixin
 
 
-class Credential(Base):
-    """凭据（加密的 Meta Access Token）"""
+class Credential(TenantMixin, Base):
+    """凭据（加密的 Meta Access Token，租户级敏感数据）"""
 
     __tablename__ = "credentials"
 
@@ -38,7 +40,12 @@ class Credential(Base):
         index=True,
         comment="归属 BM（Business Manager）",
     )
-    meta_account = relationship("MetaAccount")
+    # 显式指定 foreign_keys：BM 侧新增 default_credential_id 后，
+    # Credential 与 MetaAccount 之间存在两条外键路径，不指定会触发
+    # AmbiguousForeignKeysError。
+    meta_account = relationship(
+        "MetaAccount", foreign_keys=[meta_account_id], backref="credentials"
+    )
 
     # ---------- 文档 §4 字段 ----------
     name = Column(String(255), comment="凭据名称，便于运维识别")
@@ -58,8 +65,28 @@ class Credential(Base):
     last_error = Column(Text, comment="最近一次校验/调用失败原因")
     last_verified_at = Column(DateTime, comment="最近一次校验成功时间")
 
+    # ---------- 溯源字段（OAuth 授权留痕） ----------
+    # Token 一旦出问题，运维需要立刻回答三件事：
+    #   谁授的权？授了哪些权限？用的是哪个 Meta 账号？
+    # 没有这些字段就只能翻应用日志，甚至无从查起。
+    source = Column(
+        String(32),
+        default=CredentialSource.MANUAL.value,
+        comment="来源：MANUAL（手工录入）/ OAUTH（OAuth 授权）",
+    )
+    scopes = Column(JSON, comment="实际授予的 Meta 权限列表（OAUTH 来源时记录）")
+    granted_by_user_id = Column(
+        String(50), ForeignKey("users.id"), comment="发起授权的本系统用户"
+    )
+    meta_user_id = Column(String(64), comment="授权方的 Meta 用户 ID")
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_credentials_tenant_meta", "tenant_id", "meta_account_id"),
+        Index("ix_credentials_tenant_status", "tenant_id", "status"),
+    )
 
     # ---- 明文读写一律经过加解密，业务层不接触密文 ----
     def set_access_token(self, plain_token: str) -> None:
@@ -79,6 +106,7 @@ class Credential(Base):
     def to_dict(self, include_token: bool = False) -> dict:
         data = {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "meta_account_id": self.meta_account_id,
             "name": self.name,
             "app_id": self.app_id,

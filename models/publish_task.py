@@ -1,10 +1,11 @@
-from sqlalchemy import BigInteger, Column, String, Integer, Float, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import BigInteger, Column, String, Integer, Float, Boolean, DateTime, ForeignKey, Index, Text
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from core.database import Base
+from core.tenant import TenantMixin
 
 
-class PublishTask(Base):
+class PublishTask(TenantMixin, Base):
     """一次批量发布任务
 
     组合 = 账户 × 素材 × 文案。任务记录总体进度与摘要。
@@ -35,9 +36,14 @@ class PublishTask(Base):
 
     items = relationship("PublishedAd", back_populates="task", cascade="all, delete-orphan")
 
+    __table_args__ = (
+        Index("ix_publish_tasks_tenant_created", "tenant_id", "created_at"),
+    )
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "name": self.name,
             "total": self.total,
             "success": self.success,
@@ -48,10 +54,13 @@ class PublishTask(Base):
         }
 
 
-class PublishedAd(Base):
+class PublishedAd(TenantMixin, Base):
     """批量发布中单条组合的结果"""
 
     __tablename__ = "published_ads"
+    __table_args__ = (
+        Index("ix_published_ads_tenant_task", "tenant_id", "task_id"),
+    )
 
     id = Column(String(50), primary_key=True, index=True)
     task_id = Column(String(50), ForeignKey("publish_tasks.id"), index=True)
@@ -77,6 +86,7 @@ class PublishedAd(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "account_id": self.account_id,
             "asset_id": self.asset_id,
             "asset_type": self.asset_type,

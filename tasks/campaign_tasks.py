@@ -22,6 +22,7 @@ from core.enums import (
     JobStatus,
 )
 from core.logger import logger
+from core.tenant import resolve_tenant_of, tenant_task
 from models import CampaignInstance, CampaignJob, CampaignJobItem
 from services.campaign_builder import CampaignDeploymentBuilder
 from services.credential_service import CredentialError, CredentialService
@@ -116,6 +117,7 @@ def _mark_item_failed(
 # Job 编排
 # ----------------------------------------------------------------------
 @shared_task(bind=True, name="campaign.execute_job")
+@tenant_task(lambda self, job_id: resolve_tenant_of(CampaignJob, job_id))
 def execute_campaign_job(self, job_id: str) -> Dict[str, Any]:
     """Job 编排：把子项分派到队列，不在此处循环调用 Meta API
 
@@ -176,6 +178,7 @@ def execute_campaign_job(self, job_id: str) -> Dict[str, Any]:
 # CREATE：把模板部署到单个账户
 # ----------------------------------------------------------------------
 @shared_task(bind=True, name="campaign.create_for_account")
+@tenant_task(lambda self, job_item_id: resolve_tenant_of(CampaignJobItem, job_item_id))
 def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
     """单个账户的部署执行（设计文档第 39 节）"""
     db = SessionLocal()
@@ -263,6 +266,7 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
 # 批量启停 / 批量改预算（设计文档第 22 / 23 节）
 # ----------------------------------------------------------------------
 @shared_task(bind=True, name="campaign.apply_action_for_account")
+@tenant_task(lambda self, job_item_id: resolve_tenant_of(CampaignJobItem, job_item_id))
 def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
     """对已部署实例执行 PAUSE / ENABLE / UPDATE_BUDGET
 
@@ -357,6 +361,7 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
 # 重跑失败项（设计文档第 30 节）
 # ----------------------------------------------------------------------
 @shared_task(bind=True, name="campaign.retry_failed_items")
+@tenant_task(lambda self, job_id: resolve_tenant_of(CampaignJob, job_id))
 def retry_failed_job_items(self, job_id: str) -> Dict[str, Any]:
     """只重跑失败的子项，而不是重新执行全部账户
 

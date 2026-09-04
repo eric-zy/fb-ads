@@ -1,7 +1,18 @@
 from typing import Optional, List, Dict, Tuple, Any
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
-from models import Campaign, AdGroup, Ad, CampaignStatus, PublishTask, PublishedAd, CreativeAsset, AdAccount
+from models import (
+    AccountInsight,
+    Ad,
+    AdAccount,
+    AdGroup,
+    Campaign,
+    CampaignStatus,
+    CreativeAsset,
+    PublishTask,
+    PublishedAd,
+)
+from services.ad_account_resolver import resolve_ad_account
 from services.fb_client import fb_client
 from services.credential_service import CredentialError, CredentialService
 from config.settings import settings
@@ -29,12 +40,22 @@ class AdsManager:
     
     def sync_campaigns(self, account_id: str) -> Tuple[int, int]:
         """同步系列数据
-        
+
+        Args:
+            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+
         Returns:
             (新增数量, 更新数量)
         """
+        # 归一到主键：调 Meta API 要用 act_xxx，写外键要用主键，
+        # 混用会让 Campaign.ad_account_id 存进 act_xxx 而关联不上账户。
+        account = resolve_ad_account(self.db, account_id)
+        if not account:
+            logger.warning(f"[AdsManager] 账户不存在，跳过系列同步: {account_id}")
+            return 0, 0
+
         try:
-            campaigns = fb_client.get_campaigns(account_id)
+            campaigns = fb_client.get_campaigns(account.account_id)
             created_count = 0
             updated_count = 0
             
@@ -56,9 +77,9 @@ class AdsManager:
                 else:
                     # 创建新记录
                     new_campaign = Campaign(
-                        id=f"{account_id}_{campaign_id}",
+                        id=f"{account.id}_{campaign_id}",
                         campaign_id=campaign_id,
-                        ad_account_id=account_id,
+                        ad_account_id=account.id,  # 外键存主键
                         name=campaign_data.get('name'),
                         status=campaign_data.get('status', 'ACTIVE'),
                         objective=campaign_data.get('objective'),
@@ -156,11 +177,19 @@ class AdsManager:
 
         Meta insights 的 `spend` 返回主单位字符串（如 "10.50"），
         此处统一换算为最小货币单位，便于与 `daily_spend_limit` 等字段直接比较。
+
+        Args:
+            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
         """
+        account = resolve_ad_account(self.db, account_id)
+        if not account:
+            logger.warning(f"[AdsManager] 账户不存在: {account_id}")
+            return 0
+
         try:
             today = date.today()
             insights = fb_client.get_insights(
-                account_id=account_id,
+                account_id=account.account_id,  # Meta API 需要 act_xxx
                 date_start=str(today),
                 date_stop=str(today),
                 level='account'
@@ -174,6 +203,117 @@ class AdsManager:
         except Exception as e:
             logger.error(f"Failed to get account spend: {str(e)}")
             return 0
+
+    def fetch_insights(self, account_id: str, start_date: str, end_date: str) -> int:
+        """拉取账户洞察并落库到 account_insights（Celery 定时任务入口）
+
+        按天写入，同一 (账户, 日期) 重复拉取时做 upsert，保证任务可重跑。
+
+        Args:
+            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+            start_date: 起始日期 YYYY-MM-DD
+            end_date:   结束日期 YYYY-MM-DD（含）
+
+        Returns:
+            写入/更新的洞察条数
+        """
+        account = resolve_ad_account(self.db, account_id)
+        if not account:
+            logger.warning(f"[AdsManager] 账户不存在，跳过洞察拉取: {account_id}")
+            return 0
+
+        try:
+            insights = fb_client.get_insights(
+                account_id=account.account_id,  # Meta API 需要 act_xxx
+                date_start=start_date,
+                date_stop=end_date,
+                level='account',
+                params={'time_increment': 1},  # 按天拆分，便于按日期 upsert
+            )
+        except Exception as e:
+            logger.error(f"[AdsManager] 拉取洞察失败 {account.account_id}: {e}")
+            return 0
+
+        if not insights:
+            return 0
+
+        count = 0
+        for row in insights:
+            insight_date = self._parse_date(row.get('date_start') or start_date)
+            if not insight_date:
+                continue
+
+            spend = to_minor(float(row.get('spend', 0) or 0))
+            impressions = int(row.get('impressions', 0) or 0)
+            clicks = int(row.get('clicks', 0) or 0)
+            conversions = self._parse_conversions(row.get('actions'))
+
+            existing = (
+                self.db.query(AccountInsight)
+                .filter(
+                    AccountInsight.ad_account_id == account.id,
+                    AccountInsight.date == insight_date,
+                )
+                .first()
+            )
+            if existing:
+                target = existing
+            else:
+                target = AccountInsight(
+                    id=f"ins_{account.id}_{insight_date}",
+                    ad_account_id=account.id,
+                    date=insight_date,
+                )
+                self.db.add(target)
+
+            target.spend = spend
+            target.impressions = impressions
+            target.clicks = clicks
+            target.conversions = conversions
+            target.ctr = (clicks / impressions) if impressions else 0.0
+            target.cpc = (to_major(spend) / clicks) if clicks else 0.0
+            target.cpm = (to_major(spend) / impressions * 1000) if impressions else 0.0
+            target.extra_data = row
+            count += 1
+
+        self.db.commit()
+        logger.info(
+            f"[AdsManager] 账户 {account.account_id} 洞察落库 {count} 条 "
+            f"({start_date} ~ {end_date})"
+        )
+        return count
+
+    @staticmethod
+    def _parse_date(value) -> Optional[date]:
+        """把 YYYY-MM-DD 字符串转成 date，失败返回 None"""
+        if isinstance(value, date):
+            return value
+        if not value:
+            return None
+        try:
+            return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _parse_conversions(actions) -> int:
+        """从 Meta 的 actions 数组里取转化数（取 purchase / lead 等常见类型之和）"""
+        if not actions:
+            return 0
+        total = 0
+        for item in actions:
+            if not isinstance(item, dict):
+                continue
+            action_type = item.get('action_type') or ''
+            if action_type in (
+                'purchase', 'omni_purchase', 'lead', 'omni_lead',
+                'complete_registration', 'offsite_conversion',
+            ):
+                try:
+                    total += int(float(item.get('value', 0) or 0))
+                except (TypeError, ValueError):
+                    continue
+        return total
 
     def publish_batch(
         self,

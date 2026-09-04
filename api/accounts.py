@@ -35,6 +35,7 @@ from models import (
 from services.credential_service import CredentialError, CredentialService
 from services.fb_client import fb_client
 from services.meta import AdAccountService
+from tasks.meta_sync_tasks import sync_ad_account_task
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["账户管理"])
 
@@ -93,6 +94,17 @@ class BulkRequest(BaseModel):
 
 class AssignUsers(BaseModel):
     user_ids: List[str] = Field(..., description="要分配的用户 ID 列表")
+
+
+class SyncRequest(BaseModel):
+    """批量同步请求（文档 §20）
+
+    两种模式二选一：
+        account_ids  指定账户同步
+        business_id  同步该 BM 下的全部账户
+    """
+    account_ids: Optional[List[str]] = Field(None, description="要同步的账户主键列表")
+    business_id: Optional[str] = Field(None, description="同步该 BM 下的全部账户")
 
 
 def _resolve_bm_token(db: Session, meta: MetaAccount) -> str:
@@ -233,7 +245,9 @@ def list_accounts(
     总数通过响应头 `X-Total-Count` 返回（保持响应体为数组，兼容既有前端）。
     """
     q = db.query(AdAccount)
-    if current_user.role != "admin":
+    # 用 is_admin() 而非硬编码 role：多租户改造后租户管理员的 role 是
+    # `tenant_admin`，直接比对 "admin" 会让管理员被当成普通用户、看不到账户。
+    if not current_user.is_admin():
         sub = db.query(UserAccount.account_id).filter(UserAccount.user_id == current_user.id)
         q = q.filter(AdAccount.id.in_(sub))
     if search:
@@ -277,6 +291,136 @@ def list_available_for_deployment(
     return {"total": len(items), "accounts": items}
 
 
+# ==================== Meta 同步（文档 §20 / §25） ====================
+# HTTP 不等待 Meta API：投递 Celery 任务后立刻返回 job_id，
+# 进度与结果通过 `GET /api/v1/meta-accounts/{id}/sync-logs` 查询。
+
+def _submit_sync(db: Session, account: AdAccount, countdown: int = 0) -> str:
+    """投递单个账户的同步任务，返回 Celery job_id"""
+    meta = (
+        db.query(MetaAccount)
+        .filter(MetaAccount.id == account.business_id)
+        .first()
+    )
+    if not meta:
+        raise HTTPException(
+            status_code=400, detail=f"账户 {account.id} 未关联有效的 BM，无法同步"
+        )
+    # 提前校验凭据可用性，避免投递一个注定失败的任务
+    _resolve_bm_token(db, meta)
+    return sync_ad_account_task.apply_async(args=[account.id], countdown=countdown).id
+
+
+@router.post("/sync", response_model=dict)
+def sync_accounts_batch(
+    payload: SyncRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """批量同步广告账户（文档 §20：POST /ad-accounts/sync）
+
+    两种模式二选一：
+        account_ids  同步指定账户
+        business_id  同步该 BM 下的全部账户
+
+    逐个投递 Celery 任务后立即返回 job_id 列表；**单条失败不影响其余条目**，
+    失败明细在 errors 中返回。任务按 3 秒递增错开，避免瞬时触发 Meta 限流。
+    """
+    if not payload.account_ids and not payload.business_id:
+        raise HTTPException(
+            status_code=400, detail="account_ids 与 business_id 至少提供一个"
+        )
+
+    targets: List[AdAccount] = []
+    if payload.business_id:
+        meta = (
+            db.query(MetaAccount)
+            .filter(MetaAccount.id == payload.business_id)
+            .first()
+        )
+        if not meta:
+            raise HTTPException(status_code=404, detail="BM 不存在")
+        targets = (
+            db.query(AdAccount)
+            .filter(AdAccount.business_id == payload.business_id)
+            .all()
+        )
+    else:
+        for pk in payload.account_ids or []:
+            a = db.query(AdAccount).filter(AdAccount.id == pk).first()
+            if a:
+                targets.append(a)
+
+    if not targets:
+        raise HTTPException(status_code=404, detail="未找到可同步的账户")
+
+    jobs: List[dict] = []
+    errors: List[dict] = []
+    for index, account in enumerate(targets):
+        try:
+            jobs.append(
+                {
+                    "account_id": account.id,
+                    "job_id": _submit_sync(db, account, countdown=min(index * 3, 300)),
+                }
+            )
+        except HTTPException as e:
+            errors.append({"account_id": account.id, "error": e.detail})
+
+    record_audit(
+        db,
+        action="SYNC_AD_ACCOUNTS_BATCH",
+        resource_type="ad_account",
+        resource_id=payload.business_id or "batch",
+        user_id=current_user.id,
+        request_data={"business_id": payload.business_id, "count": len(targets)},
+        response_data={"submitted": len(jobs), "failed": len(errors)},
+        request=request,
+    )
+    logger.info(f"[sync] 批量同步投递 {len(jobs)} 个账户，失败 {len(errors)} 个")
+
+    return {
+        "status": "QUEUED",
+        "submitted": len(jobs),
+        "failed": len(errors),
+        "jobs": jobs,
+        "errors": errors,
+    }
+
+
+@router.post("/{account_pk}/sync", response_model=dict)
+def sync_single_account(
+    account_pk: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """同步单个广告账户（文档 §20：POST /ad-accounts/{id}/sync）
+
+    按主键定位；兼容传 Meta 账户号 act_xxx。
+    Upsert 规则见文档 §24：**不会覆盖 system_status**，Meta 不再返回的账户不删除。
+    """
+    a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
+    if not a:
+        a = db.query(AdAccount).filter(AdAccount.account_id == account_pk).first()
+    if not a:
+        raise HTTPException(status_code=404, detail="账户不存在")
+
+    job_id = _submit_sync(db, a)
+
+    record_audit(
+        db,
+        action="SYNC_AD_ACCOUNT",
+        resource_type="ad_account",
+        resource_id=a.id,
+        user_id=current_user.id,
+        response_data={"celery_task_id": job_id},
+        request=request,
+    )
+    return {"status": "QUEUED", "account_id": a.id, "job_id": job_id}
+
+
 @router.get("/{account_pk}", response_model=dict)
 def get_account(
     account_pk: str,
@@ -286,7 +430,7 @@ def get_account(
     a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
-    if current_user.role != "admin":
+    if not current_user.is_admin():
         linked = db.query(UserAccount).filter(
             UserAccount.user_id == current_user.id,
             UserAccount.account_id == a.id,
@@ -654,7 +798,7 @@ def _get_account_for_user(db: Session, account_pk: str, current_user: User) -> A
         a = db.query(AdAccount).filter(AdAccount.account_id == account_pk).first()
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
-    if current_user.role != "admin":
+    if not current_user.is_admin():
         linked = db.query(UserAccount).filter(
             UserAccount.user_id == current_user.id,
             UserAccount.account_id == a.id,

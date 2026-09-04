@@ -2,11 +2,13 @@ from sqlalchemy import BigInteger, Column, String, Float, DateTime, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
+from sqlalchemy import Index
 from core.database import Base
 from core.enums import TemplateStatus
+from core.tenant import TenantMixin
 
 
-class CampaignTemplate(Base):
+class CampaignTemplate(TenantMixin, Base):
     """投放模板 —— 系统最核心的业务对象（设计文档第 3.1 / 10 节）
 
     设计要点：
@@ -52,9 +54,15 @@ class CampaignTemplate(Base):
     jobs = relationship("CampaignJob", back_populates="template", cascade="save-update")
     instances = relationship("CampaignInstance", back_populates="template", cascade="save-update")
 
+    __table_args__ = (
+        # 行级隔离：列表页固定按 (租户, 状态) 过滤
+        Index("ix_campaign_templates_tenant_status", "tenant_id", "status"),
+    )
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "name": self.name,
             "objective": self.objective,
             "buying_type": self.buying_type,

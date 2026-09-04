@@ -75,6 +75,11 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.celery_tasks.dispatch_weekly_reports",
         "schedule": _cron(settings.SCHEDULE_REPORT_WEEKLY_CRON),
     },
+    # Meta 长期 Token 只有 60 天且无法自动续期，必须每天巡检
+    "credential-expiry-check": {
+        "task": "tasks.credential_tasks.check_expiring_credentials",
+        "schedule": _cron(settings.SCHEDULE_CREDENTIAL_CHECK_CRON),
+    },
 }
 
 # 自动发现任务
@@ -89,10 +94,23 @@ celery_app.autodiscover_tasks(['tasks'])
 # （典型表现：Job 一直卡在 QUEUED，批量投放完全不执行）。
 import logging as _logging
 
+# ---------------------------------------------------------------------------
+# 多租户：Worker 进程内启用租户严格模式
+#
+# 严格模式默认只在 init_db() 里设置（core/database.py），而 Worker 不走 init_db()，
+# 会导致 TENANT_STRICT_MODE 对 Celery 完全失效：
+# 某条任务的租户解析失败时，查询**不加任何过滤**（跨租户裸读）而不是快速失败。
+# 这里按配置显式设置一次，让 API 与 Worker 行为一致。
+# ---------------------------------------------------------------------------
+from core.tenant import set_strict_mode  # noqa: E402
+
+set_strict_mode(settings.TENANT_STRICT_MODE)
+
 for _task_module in (
     "tasks.celery_tasks",
     "tasks.campaign_tasks",
     "tasks.meta_sync_tasks",  # Meta 账号管理 V1：BM / 广告账户同步
+    "tasks.credential_tasks",  # 凭据到期巡检
 ):
     try:
         __import__(_task_module)

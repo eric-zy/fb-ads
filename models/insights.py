@@ -2,8 +2,9 @@ from sqlalchemy import BigInteger, Column, String, Float, Integer, DateTime, Dat
 from sqlalchemy.orm import relationship
 from datetime import datetime, date
 from core.database import Base
+from core.tenant import TenantMixin
 
-class AccountInsight(Base):
+class AccountInsight(TenantMixin, Base):
     """账户级别的数据洞察"""
     __tablename__ = "account_insights"
     
@@ -40,9 +41,12 @@ class AccountInsight(Base):
     __table_args__ = (
         Index('ix_account_insights_account_date', 'ad_account_id', 'date'),
         Index('ix_account_insights_date', 'date'),
+        # 数据量最大的表：租户内趋势查询必须走 (tenant_id, account, date)
+        Index('ix_account_insights_tenant_account_date', 'tenant_id', 'ad_account_id', 'date'),
+        Index('ix_account_insights_tenant_date', 'tenant_id', 'date'),
     )
 
-class CampaignInsight(Base):
+class CampaignInsight(TenantMixin, Base):
     """系列级别的数据洞察"""
     __tablename__ = "campaign_insights"
     
@@ -71,9 +75,11 @@ class CampaignInsight(Base):
     __table_args__ = (
         Index('ix_campaign_insights_campaign_date', 'campaign_id', 'date'),
         Index('ix_campaign_insights_date', 'date'),
+        Index('ix_campaign_insights_tenant_campaign_date', 'tenant_id', 'campaign_id', 'date'),
+        Index('ix_campaign_insights_tenant_date', 'tenant_id', 'date'),
     )
 
-class AdInsight(Base):
+class AdInsight(TenantMixin, Base):
     """广告级别的数据洞察"""
     __tablename__ = "ad_insights"
     
@@ -101,4 +107,6 @@ class AdInsight(Base):
     __table_args__ = (
         Index('ix_ad_insights_ad_date', 'ad_id', 'date'),
         Index('ix_ad_insights_date', 'date'),
+        Index('ix_ad_insights_tenant_ad_date', 'tenant_id', 'ad_id', 'date'),
+        Index('ix_ad_insights_tenant_date', 'tenant_id', 'date'),
     )

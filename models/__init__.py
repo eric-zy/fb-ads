@@ -1,3 +1,8 @@
+# ---- 多租户（SaaS 隔离）必须最先导入 ----
+# Tenant 是所有租户级模型的根节点；TenantMixin 由 core.tenant 提供，
+# 导入 models 时会自动注册全局 ORM 过滤钩子。
+from models.tenant import Tenant, TenantStatus, TenantPlan, UserRole
+
 from models.ad_account import AdAccount, AccountStatus, SystemStatus
 from models.meta_account import MetaAccount, BusinessStatus, SyncStatus
 from models.creative_asset import CreativeAsset
@@ -24,6 +29,11 @@ from models.audit_log import AuditLog
 from models.sync_log import MetaSyncLog, SyncType, SyncLogStatus
 
 __all__ = [
+    # 租户
+    'Tenant',
+    'TenantStatus',
+    'TenantPlan',
+    'UserRole',
     'AdAccount',
     'AccountStatus',   # 遗留枚举，已被 SystemStatus 取代，仅为兼容保留
     'SystemStatus',

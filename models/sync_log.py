@@ -7,11 +7,12 @@
 
 同步日志是排障依据：账户池不准时先看这里，而不是去翻操作审计。
 """
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text
 from datetime import datetime
 import enum
 
 from core.database import Base
+from core.tenant import TenantMixin
 
 
 class SyncType(str, enum.Enum):
@@ -31,10 +32,14 @@ class SyncLogStatus(str, enum.Enum):
     FAILED = "FAILED"
 
 
-class MetaSyncLog(Base):
+class MetaSyncLog(TenantMixin, Base):
     """Meta 同步日志"""
 
     __tablename__ = "meta_sync_logs"
+    __table_args__ = (
+        Index("ix_meta_sync_logs_tenant_business", "tenant_id", "business_id"),
+        Index("ix_meta_sync_logs_tenant_created", "tenant_id", "created_at"),
+    )
 
     id = Column(String(50), primary_key=True, index=True)
 
@@ -71,6 +76,7 @@ class MetaSyncLog(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "tenant_id": self.tenant_id,
             "business_id": self.business_id,
             "sync_type": self.sync_type,
             "status": self.status,

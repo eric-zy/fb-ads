@@ -224,14 +224,15 @@ def create_meta_account(
     db.add(meta)
     db.flush()
 
-    # 明文 Token 加密写入凭据表
+    # 明文 Token 加密写入凭据表，并设为该 BM 的默认凭据
     if payload.access_token:
         try:
-            CredentialService(db).create_for_meta(
+            cred = CredentialService(db).create_for_meta(
                 meta_account_id=meta.id,
                 plain_token=payload.access_token,
                 token_type=payload.token_type,
             )
+            meta.default_credential_id = cred.id
         except CredentialError as e:
             db.rollback()
             raise HTTPException(status_code=400, detail=str(e))
@@ -502,6 +503,76 @@ def sync_meta_accounts(
         "job_id": async_result.id,
         "status": "QUEUED",
         "message": "同步任务已提交，请通过 /sync-logs 查询结果",
+    }
+
+
+class SetDefaultCredentialRequest(BaseModel):
+    credential_id: Optional[str] = Field(
+        None, description="凭据 ID；传空表示清除指定，回退为「最新一条 ACTIVE 凭据」"
+    )
+
+
+@router.post("/{meta_id}/default-credential", response_model=dict)
+def set_default_credential(
+    meta_id: str,
+    payload: SetDefaultCredentialRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """设置该 BM 的默认凭据（文档 §5 credential_id）
+
+    一个 BM 可保留多条凭据（轮换留痕），默认凭据决定调 Meta API 时用哪一条：
+        - 显式指定后固定使用该条
+        - 未指定（或传空）回退为「最新一条 ACTIVE 凭据」
+
+    非 ACTIVE 凭据不允许设为默认——否则该 BM 会立刻不可用。
+    """
+    meta = _get_meta_or_404(db, meta_id)
+
+    if not payload.credential_id:
+        meta.default_credential_id = None
+        db.commit()
+        record_audit(
+            db,
+            action="CLEAR_DEFAULT_CREDENTIAL",
+            resource_type="meta_account",
+            resource_id=meta.id,
+            user_id=current_user.id,
+            request=request,
+        )
+        return {
+            "meta_account_id": meta.id,
+            "default_credential_id": None,
+            "message": "已清除默认凭据，将回退为最新一条 ACTIVE 凭据",
+        }
+
+    cred = db.query(Credential).filter(Credential.id == payload.credential_id).first()
+    if not cred:
+        raise HTTPException(status_code=404, detail="凭据不存在")
+    if cred.meta_account_id != meta.id:
+        raise HTTPException(status_code=400, detail="该凭据不属于此 BM")
+    if cred.status != CredentialStatus.ACTIVE.value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"凭据当前状态为 {cred.status}，只有 ACTIVE 凭据可设为默认",
+        )
+
+    meta.default_credential_id = cred.id
+    db.commit()
+    record_audit(
+        db,
+        action="SET_DEFAULT_CREDENTIAL",
+        resource_type="meta_account",
+        resource_id=meta.id,
+        user_id=current_user.id,
+        request_data={"credential_id": cred.id},
+        request=request,
+    )
+    return {
+        "meta_account_id": meta.id,
+        "default_credential_id": cred.id,
+        "message": "默认凭据已更新",
     }
 
 
