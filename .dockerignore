@@ -1,0 +1,51 @@
+# Node
+node_modules
+frontend/node_modules
+**/node_modules
+
+# Build output
+dist
+frontend/dist
+**/dist
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+
+# Python
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs
+
+# Test / coverage
+coverage
+htmlcov
+.pytest_cache
+
+# Temporary
+tmp
+temp
+*.tmp
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+
+# Documentation
+*.md
