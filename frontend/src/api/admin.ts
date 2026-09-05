@@ -63,8 +63,8 @@ export const credentialApi = {
   rotate: (id: string, data: { access_token: string; name?: string; token_type?: string; expires_at?: string | null; keep_old?: boolean }) => request.post('/api/v1/credentials/' + id + '/rotate', data),
   verify: (id: string) => request.post('/api/v1/credentials/' + id + '/verify'), disable: (id: string) => request.post('/api/v1/credentials/' + id + '/disable'), enable: (id: string) => request.post('/api/v1/credentials/' + id + '/enable'),
   reveal: (id: string) => request.post('/api/v1/credentials/' + id + '/reveal', { confirm: true }), remove: (id: string) => request.delete('/api/v1/credentials/' + id),
-  /** 已有 BM 传 metaAccountId；新增广告用户时省略，进入 OAuth-first 发现 BM */
   oauthAuthorize: (metaAccountId?: string) => request.get('/api/v1/meta-auth/authorize', { params: metaAccountId ? { meta_account_id: metaAccountId } : {} }),
+  oauthAuthorizeFirst: () => request.get('/api/v1/meta-auth/authorize-first'),
   oauthBusinesses: (credentialId: string) => request.get('/api/v1/meta-auth/businesses', { params: { credential_id: credentialId } }),
   oauthComplete: (data: { credential_id: string; business_id: string }) => request.post('/api/v1/meta-auth/complete', data),
 }
