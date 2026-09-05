@@ -8,7 +8,6 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-change-me}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # 暴露到宿主机，便于本地开发/调试直连（生产可注释掉）
     ports:
       - "5432:5432"
     healthcheck:
@@ -21,14 +20,12 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # 若设了 REDIS_PASSWORD 则开启 requirepass
     command: >-
       sh -c '[ -n "$$REDIS_PASSWORD" ] && redis-server --requirepass "$$REDIS_PASSWORD" || redis-server'
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     volumes:
       - redisdata:/data
-    # 暴露到宿主机，便于本地开发/调试直连（生产可注释掉）
     ports:
       - "6379:6379"
     networks: [fbnet]
@@ -49,9 +46,9 @@ services:
       - uploads:/app/uploads
       - logs:/app/logs
     networks: [fbnet]
-    # 生产不直接暴露 API 端口，仅 nginx 访问；调试时放开下行注释
-    # ports:
-    #   - "8000:8000"
+    # 本地 Vite 开发环境需要直接代理到 API；生产环境可通过 nginx 内网访问。
+    ports:
+      - "8000:8000"
 
   celery-worker:
     image: fbads-api:latest
