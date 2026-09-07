@@ -358,8 +358,8 @@ class MetaSyncService:
             # 延迟导入，避免 services.meta -> sync_service -> credential_service
             # 与 credential_service -> services.meta 形成循环依赖。
             from services.credential_service import CredentialError, CredentialService
-            token, _ = CredentialService(self.db).resolve_token(ad_account_id)
-            raw = MetaClient(access_token=token).get_ad_account(account.account_id)
+            service = CredentialService(self.db).build_service(ad_account_id)
+            raw = service.get_ad_account(account.account_id)
             self._upsert_ad_account(business, raw, existing=account)
             self.db.commit()
         except CredentialError as e:
