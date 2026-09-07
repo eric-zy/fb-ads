@@ -11,6 +11,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Base.metadata.create_all() may have created the current model schema
+    # before Alembic was introduced/advanced. In that case this revision is
+    # already reflected in the database and must not add duplicate columns.
+    inspector = sa.inspect(op.get_bind())
+    existing_columns = {column["name"] for column in inspector.get_columns("ad_accounts")}
+    if {"credential_id", "owner_type"}.issubset(existing_columns):
+        return
+
     op.add_column("ad_accounts", sa.Column("credential_id", sa.String(length=50), nullable=True))
     op.add_column("ad_accounts", sa.Column("owner_type", sa.String(length=20), nullable=True))
     op.create_index("ix_ad_accounts_credential_id", "ad_accounts", ["credential_id"])

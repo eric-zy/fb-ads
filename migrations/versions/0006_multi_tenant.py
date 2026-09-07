@@ -126,6 +126,16 @@ PARTIAL_WHERE = {
 
 
 def upgrade() -> None:
+    # The application historically called Base.metadata.create_all() during
+    # startup. On databases created by that path, the tenant tables/columns
+    # already exist while alembic_version still points at 0005. Treat the
+    # migration as applied so deployment can continue to the idempotent
+    # follow-up migrations instead of failing on DuplicateTable. Fresh
+    # databases still execute the full migration below.
+    bind = op.get_bind()
+    if sa.inspect(bind).has_table("tenants"):
+        return
+
     # ------------------------------------------------------------------
     # 1. tenants 表
     # ------------------------------------------------------------------
