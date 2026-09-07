@@ -438,8 +438,23 @@ def delete_credential(
     """
     cred = _get_credential_or_404(db, credential_id)
 
-    db.delete(cred)
-    db.commit()
+    # 被广告账户引用的凭据不能物理删除，否则会触发外键异常并破坏账号授权链路。
+    # 先解除引用并停用凭据，历史任务仍保留；未被引用的凭据才物理删除。
+    references = db.query(AdAccount).filter(AdAccount.credential_id == cred.id).all()
+    if references:
+        for account in references:
+            account.credential_id = None
+            account.system_status = "DISABLED"
+            account.system_status_reason = "凭据已删除，请重新授权"
+            account.system_status_at = datetime.utcnow()
+        cred.status = CredentialStatus.DISABLED.value
+        cred.last_error = "凭据由管理员删除，已解除广告账户引用"
+        db.commit()
+        result = {"success": True, "mode": "DISABLED", "unbound_accounts": len(references)}
+    else:
+        db.delete(cred)
+        db.commit()
+        result = {"success": True, "mode": "DELETED", "unbound_accounts": 0}
 
     record_audit(
         db,
@@ -449,4 +464,4 @@ def delete_credential(
         user_id=current_user.id,
         request=request,
     )
-    return {"success": True}
+    return result

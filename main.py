@@ -417,6 +417,8 @@ async def get_daily_report(account_id: str, report_date: str = None, db: Session
         return report
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get daily report: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -432,6 +434,8 @@ async def get_weekly_report(account_id: str, db: Session = Depends(get_db), _=De
             raise HTTPException(status_code=404, detail="No data found")
         
         return report
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get weekly report: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

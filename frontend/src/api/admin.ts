@@ -30,6 +30,7 @@ export const accountApi = {
   unassign: (id: string, user_ids: string[]) => request.post('/api/v1/accounts/' + id + '/unassign', { user_ids }),
   users: (id: string) => request.get('/api/v1/accounts/' + id + '/users'),
   delete: (id: string) => request.delete('/api/v1/accounts/' + id),
+  unbind: (id: string) => request.post('/api/v1/accounts/' + id + '/unbind'),
   sync: (id: string) => request.post('/api/v1/accounts/' + id + '/sync'),
   syncBatch: (data: { account_ids?: string[]; business_id?: string }) => request.post('/api/v1/accounts/sync', data),
   syncCampaigns: (id: string) => request.post('/api/v1/accounts/' + id + '/sync-campaigns'),

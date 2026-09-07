@@ -240,6 +240,7 @@ def list_accounts(
     business_id: Optional[str] = Query(None, description="按归属的 BM 过滤"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    include_unbound: bool = Query(False, description="是否包含已解绑的历史账号"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -248,6 +249,8 @@ def list_accounts(
     总数通过响应头 `X-Total-Count` 返回（保持响应体为数组，兼容既有前端）。
     """
     q = db.query(AdAccount)
+    if not include_unbound:
+        q = q.filter(AdAccount.owner_type != "UNBOUND")
     # 用 is_admin() 而非硬编码 role：多租户改造后租户管理员的 role 是
     # `tenant_admin`，直接比对 "admin" 会让管理员被当成普通用户、看不到账户。
     if not current_user.is_admin():
@@ -802,6 +805,26 @@ def delete_account(
             },
         ) from exc
     return {"success": True}
+
+
+@router.post("/{account_pk}/unbind", response_model=dict)
+def unbind_account(
+    account_pk: str,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """软解绑账号：保留历史任务，仅移除凭据并隐藏于默认账号列表。"""
+    account = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="账户不存在")
+    account.credential_id = None
+    account.owner_type = "UNBOUND"
+    account.system_status = SystemStatus.DISABLED.value
+    account.system_status_reason = "管理员解绑账号"
+    account.system_status_at = datetime.utcnow()
+    db.query(UserAccount).filter(UserAccount.account_id == account.id).delete(synchronize_session=False)
+    db.commit()
+    return {"success": True, "id": account.id, "status": "UNBOUND"}
 
 
 # ==================== 风控相关接口 ====================
