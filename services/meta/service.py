@@ -228,7 +228,11 @@ class MetaAdsService:
         def _do():
             account = self.client.account(account_id)
             account.remote_read(
-                fields=["id", "name", "currency", "timezone", "account_status"]
+                fields=[
+                    "id", "name", "currency", "timezone", "timezone_name",
+                    "account_status", "effective_status", "disable_reason",
+                    "amount_spent", "spend_cap",
+                ]
             )
             return dict(account)
 

@@ -36,6 +36,7 @@ from models import (
 from services.meta.business_service import BusinessService
 from services.meta.client import MetaClient
 from services.meta.errors import MetaApiError
+from services.credential_service import CredentialService, CredentialError
 
 
 def _minor_int(value) -> Optional[int]:
@@ -283,7 +284,7 @@ class MetaSyncService:
             error_detail=errors,
         )
 
-    def _upsert_ad_account(self, business: MetaAccount, raw: Dict[str, Any]) -> AdAccount:
+    def _upsert_ad_account(self, business: Optional[MetaAccount], raw: Dict[str, Any], existing: Optional[AdAccount] = None) -> AdAccount:
         """Upsert 单个广告账户（文档 §24）
 
         唯一键 (business_id, account_id)；**system_status 不在覆盖范围内**。
@@ -295,19 +296,18 @@ class MetaSyncService:
         if not account_id.startswith("act_"):
             account_id = f"act_{account_id}"
 
-        account = (
-            self.db.query(AdAccount)
-            .filter(
-                AdAccount.business_id == business.id,
-                AdAccount.account_id == account_id,
+        account = existing
+        if account is None and business is not None:
+            account = (
+                self.db.query(AdAccount)
+                .filter(AdAccount.business_id == business.id, AdAccount.account_id == account_id)
+                .first()
             )
-            .first()
-        )
 
         if account is None:
             account = AdAccount(
                 id=__import__("uuid").uuid4().hex,
-                business_id=business.id,
+                business_id=business.id if business else None,
                 account_id=account_id,
                 system_status=SystemStatus.ACTIVE.value,
                 capabilities={},
@@ -347,24 +347,23 @@ class MetaSyncService:
     # ------------------------------------------------------------------
     def sync_ad_account(self, ad_account_id: str) -> MetaSyncLog:
         """同步单个广告账户的 Meta 侧信息"""
-        if not settings.FB_ACCESS_TOKEN:
-            return self._dev_mode_log(None, SyncType.AD_ACCOUNT.value)
-
         account = self.db.query(AdAccount).filter(AdAccount.id == ad_account_id).first()
         if not account:
             raise ValueError(f"广告账户不存在: {ad_account_id}")
 
         business = account.business
-        if not business:
-            raise ValueError("账户未归属 BM，无法同步")
-
-        log = self._start_log(business.id, SyncType.AD_ACCOUNT.value)
+        log = self._start_log(business.id if business else None, SyncType.AD_ACCOUNT.value)
 
         try:
-            token = self.business_service._resolve_token(business)
+            # 个人广告账户不归属 BM，必须使用该账户绑定的 OAuth 凭据。
+            token, _ = CredentialService(self.db).resolve_token(ad_account_id)
             raw = MetaClient(access_token=token).get_ad_account(account.account_id)
-            self._upsert_ad_account(business, raw)
+            self._upsert_ad_account(business, raw, existing=account)
             self.db.commit()
+        except CredentialError as e:
+            account.last_sync_error = str(e)
+            self.db.commit()
+            return self._finish_log(log, total=1, success=0, failed=1, error_message=str(e))
         except MetaApiError as e:
             account.last_sync_error = str(e)
             self.db.commit()
