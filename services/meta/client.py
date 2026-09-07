@@ -129,7 +129,7 @@ class MetaClient:
         """拉取单个广告账户的 Meta 侧信息（文档 §23 单账户同步）"""
         act = self.normalize_account_id(account_id)
         return self._get(
-            act,
+            f"/{act}",
             params={
                 "fields": "id,name,account_status,effective_status,currency,"
                           "timezone_name,spend_cap,amount_spent,balance,disable_reason",
