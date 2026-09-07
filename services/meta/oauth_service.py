@@ -76,6 +76,14 @@ class MetaOAuthService:
         except MetaOAuthError:
             result = short
         access_token = result.get("access_token", token)
+        # XMP 类平台的连接校验：Token 必须属于当前平台 Meta App，
+        # 不能只依赖数据库中记录的 app_id。
+        debug = self._get_json("debug_token", {
+            "input_token": access_token,
+            "access_token": f"{settings.FB_APP_ID}|{settings.FB_APP_SECRET}",
+        }).get("data") or {}
+        if not debug.get("is_valid") or str(debug.get("app_id")) != str(settings.FB_APP_ID):
+            raise MetaOAuthError("Meta User Token 不属于当前平台应用，请使用本平台 OAuth 重新授权")
         expires_at = None
         if result.get("expires_in"):
             expires_at = datetime.utcnow() + timedelta(seconds=int(result["expires_in"]))

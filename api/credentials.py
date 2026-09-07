@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from core.audit import record_audit
+from config.settings import settings
 from core.auth import require_admin
 from core.database import get_db
 from core.enums import CredentialStatus, CredentialSource
@@ -185,8 +186,8 @@ def create_credential(
 
     if payload.name:
         cred.name = payload.name
-    if payload.app_id:
-        cred.app_id = payload.app_id
+    # App ID 属于平台连接，不属于用户/广告账户凭据；统一记录当前平台应用。
+    cred.app_id = settings.FB_APP_ID
     db.commit()
     db.refresh(cred)
 
