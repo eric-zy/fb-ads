@@ -362,6 +362,12 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
         logger.error(f"[JobItem {job_item_id}] Meta 调用失败: {e}")
         _mark_item_failed(db, job_item_id, e.code, e.message, e.category)
         return {"error": e.message, "category": e.category.value}
+    except ValueError as e:
+        # 模板参数在调用 Meta 前校验，按业务校验失败记录，避免被归类为 UNKNOWN。
+        db.rollback()
+        logger.error(f"[JobItem {job_item_id}] 投放参数校验失败: {e}")
+        _mark_item_failed(db, job_item_id, "INVALID_TEMPLATE", str(e), ErrorCategory.VALIDATION)
+        return {"error": str(e), "category": ErrorCategory.VALIDATION.value}
     except Exception as e:  # 兜底，避免 worker 静默吞异常
         db.rollback()
         logger.exception(f"[JobItem {job_item_id}] 未预期异常")

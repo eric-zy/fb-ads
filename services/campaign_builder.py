@@ -46,6 +46,24 @@ def _usd_to_cents(amount: Optional[float]) -> Optional[int]:
     return int(round(float(amount) * 100))
 
 
+# Meta 的 ODAX 目标值。旧模板可能仍保存旧版目标名，部署前统一转换，
+# 避免把系统内部/旧版枚举直接发给 Graph API。
+_OBJECTIVE_ALIASES = {
+    "CONVERSIONS": "OUTCOME_SALES",
+    "LINK_CLICKS": "OUTCOME_TRAFFIC",
+    "TRAFFIC": "OUTCOME_TRAFFIC",
+    "REACH": "OUTCOME_AWARENESS",
+    "BRAND_AWARENESS": "OUTCOME_AWARENESS",
+    "VIDEO_VIEWS": "OUTCOME_ENGAGEMENT",
+    "ENGAGEMENT": "OUTCOME_ENGAGEMENT",
+    "LEAD_GENERATION": "OUTCOME_LEADS",
+}
+_VALID_OBJECTIVES = {
+    "OUTCOME_AWARENESS", "OUTCOME_TRAFFIC", "OUTCOME_ENGAGEMENT",
+    "OUTCOME_LEADS", "OUTCOME_SALES", "OUTCOME_APP_PROMOTION",
+}
+
+
 class CampaignBuilder:
     """构建并创建 Campaign
 
@@ -70,14 +88,23 @@ class CampaignBuilder:
 
     def build_params(self) -> Dict[str, Any]:
         name = f"{self.template.name}{self.name_suffix}"
+        raw_objective = (self.template.objective or "").strip().upper()
+        objective = _OBJECTIVE_ALIASES.get(raw_objective, raw_objective)
+        if objective not in _VALID_OBJECTIVES:
+            raise ValueError(
+                f"模板推广目标无效：{self.template.objective!r}。"
+                f"请使用 {', '.join(sorted(_VALID_OBJECTIVES))}"
+            )
         params: Dict[str, Any] = {
             "name": name,
-            "objective": self.template.objective,
+            "objective": objective,
             "status": self.status,
             "special_ad_categories": self.template.special_ad_categories or [],
         }
-        if self.template.buying_type:
-            params["buying_type"] = self.template.buying_type
+        # AUCTION 是 Meta 默认值；不主动发送可减少不同账户/版本的参数兼容问题。
+        buying_type = (self.template.buying_type or "AUCTION").strip().upper()
+        if buying_type and buying_type != "AUCTION":
+            params["buying_type"] = buying_type
         return params
 
     def build(self) -> Dict[str, Any]:

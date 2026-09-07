@@ -18,6 +18,7 @@
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_
 from typing import List, Optional
 from pydantic import BaseModel, Field
@@ -776,9 +777,30 @@ def delete_account(
     a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
+    referenced_jobs = db.query(CampaignJobItem).filter(CampaignJobItem.ad_account_id == a.id).count()
+    if referenced_jobs:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "account_in_use",
+                "message": f"该广告账户已被 {referenced_jobs} 条投放任务引用，不能删除，请改用停用或归档",
+                "references": {"campaign_job_items": referenced_jobs},
+            },
+        )
     db.query(UserAccount).filter(UserAccount.account_id == a.id).delete(synchronize_session=False)
     db.delete(a)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        logger.warning(f"[accounts] 拒绝删除被引用广告账户 {a.id}: {exc}")
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "account_in_use",
+                "message": "该广告账户仍被业务数据引用，请改用停用或归档",
+            },
+        ) from exc
     return {"success": True}
 
 
