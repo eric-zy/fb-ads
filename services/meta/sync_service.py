@@ -36,7 +36,6 @@ from models import (
 from services.meta.business_service import BusinessService
 from services.meta.client import MetaClient
 from services.meta.errors import MetaApiError
-from services.credential_service import CredentialService, CredentialError
 
 
 def _minor_int(value) -> Optional[int]:
@@ -356,6 +355,9 @@ class MetaSyncService:
 
         try:
             # 个人广告账户不归属 BM，必须使用该账户绑定的 OAuth 凭据。
+            # 延迟导入，避免 services.meta -> sync_service -> credential_service
+            # 与 credential_service -> services.meta 形成循环依赖。
+            from services.credential_service import CredentialError, CredentialService
             token, _ = CredentialService(self.db).resolve_token(ad_account_id)
             raw = MetaClient(access_token=token).get_ad_account(account.account_id)
             self._upsert_ad_account(business, raw, existing=account)
