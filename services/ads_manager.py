@@ -39,6 +39,16 @@ class AdsManager:
     
     def __init__(self, db: Session):
         self.db = db
+
+    def _account_insights(self, account: AdAccount, start_date: str, end_date: str, level: str):
+        """使用账户绑定凭据访问 Meta，禁止回退到全局单例客户端。"""
+        service = CredentialService(self.db).build_service(account.id)
+        return service.get_insights(account.account_id, {
+            "date_preset": "custom",
+            "time_range": {"since": start_date, "until": end_date},
+            "level": level,
+            "time_increment": 1,
+        })
     
     def sync_campaigns(self, account_id: str) -> Tuple[int, int]:
         """同步系列数据
@@ -225,13 +235,7 @@ class AdsManager:
             return 0
 
         try:
-            insights = fb_client.get_insights(
-                account_id=account.account_id,  # Meta API 需要 act_xxx
-                date_start=start_date,
-                date_stop=end_date,
-                level='account',
-                params={'time_increment': 1},  # 按天拆分，便于按日期 upsert
-            )
+            insights = self._account_insights(account, start_date, end_date, "account")
         except Exception as e:
             logger.error(f"[AdsManager] 拉取洞察失败 {account.account_id}: {e}")
             return 0
@@ -293,7 +297,7 @@ class AdsManager:
         result = {"campaign": 0, "adset": 0, "ad": 0}
         levels = (("campaign", "campaign"), ("adset", "adset"), ("ad", "ad"))
         for dimension, level in levels:
-            rows = fb_client.get_insights(account.account_id, start_date, end_date, level=level, params={"time_increment": 1})
+            rows = self._account_insights(account, start_date, end_date, level)
             for row in rows:
                 insight_date = self._parse_date(row.get("date_start") or start_date)
                 external_id = row.get(f"{dimension}_id")
