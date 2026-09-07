@@ -19,10 +19,11 @@ from celery import shared_task
 from core.database import SessionLocal
 from core.logger import logger
 from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task
-from models import AdAccount, MetaAccount
+from models import AdAccount, MetaAccount, CampaignInstance, AdSetInstance, AdInstance
 from services.ad_account_resolver import resolve_tenant_of_ad_account_ref
 from services.ads_manager import AdsManager
 from services.meta import MetaSyncService
+from services.credential_service import CredentialService
 
 
 def _log_to_dict(log) -> Dict:
@@ -118,6 +119,124 @@ def sync_campaigns_task(self, account_id: str) -> Dict:
         }
     except Exception as exc:
         logger.error(f"[meta_sync] 账户 {account_id} 系列同步失败: {exc}")
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            return {"status": "failed", "error": str(exc)}
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="meta.sync_delivery_objects", max_retries=2, default_retry_delay=60)
+@tenant_task(lambda self, account_id: resolve_tenant_of_ad_account_ref(account_id))
+def sync_delivery_objects_task(self, account_id: str) -> Dict:
+    """异步同步本地 Campaign / AdSet / Ad 的 Meta 状态。"""
+    db = SessionLocal()
+    try:
+        account = db.query(AdAccount).filter(
+            (AdAccount.id == account_id) | (AdAccount.account_id == account_id)
+        ).first()
+        if not account:
+            return {"status": "failed", "error": "广告账户不存在"}
+        service = CredentialService(db).build_service(account.id)
+        campaigns = db.query(CampaignInstance).filter(CampaignInstance.ad_account_id == account.id).all()
+        # 每个账户只拉取一次，避免按 Campaign / AdSet 重复请求 Meta API。
+        sync_errors = []
+        try:
+            remote_campaigns = service.list_campaigns(account.account_id)
+        except Exception as exc:
+            logger.warning(f"[meta_sync] 账户 {account.id} Campaign 拉取失败: {exc}")
+            remote_campaigns = []
+            sync_errors.append({"type": "CAMPAIGN", "error": str(exc)})
+        remote_campaign_by_id = {str(item.get("id")): item for item in remote_campaigns}
+        remote_adsets_by_campaign = {}
+        remote_ads_by_adset = {}
+        updated = 0
+        for campaign in campaigns:
+            remote = remote_campaign_by_id.get(str(campaign.meta_campaign_id))
+            if remote:
+                campaign.meta_status = remote.get("effective_status") or remote.get("status")
+                campaign.status = remote.get("status") or campaign.status
+                updated += 1
+            for adset in campaign.adsets:
+                if adset.meta_adset_id:
+                    campaign_key = str(campaign.meta_campaign_id)
+                    if campaign_key not in remote_adsets_by_campaign:
+                        try:
+                            remote_adsets_by_campaign[campaign_key] = service.list_adsets(campaign.meta_campaign_id)
+                        except Exception as exc:
+                            logger.warning(f"[meta_sync] Campaign {campaign_key} AdSet 拉取失败: {exc}")
+                            remote_adsets_by_campaign[campaign_key] = []
+                            sync_errors.append({"type": "ADSET", "parent_id": campaign_key, "error": str(exc)})
+                    remote_set_by_id = {str(item.get("id")): item for item in remote_adsets_by_campaign[campaign_key]}
+                    remote_set = remote_set_by_id.get(str(adset.meta_adset_id))
+                    if remote_set:
+                        adset.status = remote_set.get("effective_status") or remote_set.get("status") or adset.status
+                        updated += 1
+                for ad in adset.ads:
+                    if ad.meta_ad_id:
+                        adset_key = str(adset.meta_adset_id)
+                        if adset_key not in remote_ads_by_adset:
+                            try:
+                                remote_ads_by_adset[adset_key] = service.list_ads(adset.meta_adset_id)
+                            except Exception as exc:
+                                logger.warning(f"[meta_sync] AdSet {adset_key} Ad 拉取失败: {exc}")
+                                remote_ads_by_adset[adset_key] = []
+                                sync_errors.append({"type": "AD", "parent_id": adset_key, "error": str(exc)})
+                        remote_ad_by_id = {str(item.get("id")): item for item in remote_ads_by_adset[adset_key]}
+                        remote_ad = remote_ad_by_id.get(str(ad.meta_ad_id))
+                        if remote_ad:
+                            ad.status = remote_ad.get("effective_status") or remote_ad.get("status") or ad.status
+                            updated += 1
+        db.commit()
+        return {
+            "status": "partial_success" if sync_errors else "success",
+            "account_id": account.id,
+            "updated": updated,
+            "error_count": len(sync_errors),
+            "errors": sync_errors[:20],
+        }
+    except Exception as exc:
+        db.rollback()
+        logger.error(f"[meta_sync] 投放对象同步失败: {exc}")
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            return {"status": "failed", "error": str(exc)}
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="meta.update_delivery_object", max_retries=2, default_retry_delay=30)
+@tenant_task(lambda self, object_type, object_id, account_id, action: resolve_tenant_of(AdAccount, account_id))
+def update_delivery_object_task(self, object_type: str, object_id: str, account_id: str, action: str) -> Dict:
+    """异步暂停/启用单个 AdSet 或 Ad。"""
+    db = SessionLocal()
+    try:
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        if not account:
+            return {"status": "failed", "error": "广告账户不存在"}
+        service = CredentialService(db).build_service(account.id)
+        remote_status = "PAUSED" if action == "PAUSE" else "ACTIVE"
+        if object_type == "ADSET":
+            obj = db.query(AdSetInstance).filter(AdSetInstance.id == object_id).first()
+            if not obj or not obj.meta_adset_id:
+                raise RuntimeError("广告组 Meta ID 不存在")
+            service.update_adset(obj.meta_adset_id, {"status": remote_status})
+            obj.status = remote_status
+        elif object_type == "AD":
+            obj = db.query(AdInstance).filter(AdInstance.id == object_id).first()
+            if not obj or not obj.meta_ad_id:
+                raise RuntimeError("广告 Meta ID 不存在")
+            service.update_ad(obj.meta_ad_id, {"status": remote_status})
+            obj.status = remote_status
+        else:
+            raise RuntimeError("不支持的投放对象类型")
+        db.commit()
+        return {"status": "success", "object_type": object_type, "object_id": object_id, "state": remote_status}
+    except Exception as exc:
+        db.rollback()
+        logger.error(f"[meta] {object_type} {object_id} 操作失败: {exc}")
         try:
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:

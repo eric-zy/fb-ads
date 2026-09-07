@@ -49,12 +49,14 @@ def fetch_account_insights(self, account_id: str, days: int = 1) -> Dict:
         end_date = date.today().strftime('%Y-%m-%d')
         
         insights_count = ads_manager.fetch_insights(account_id, start_date, end_date)
+        delivery_counts = ads_manager.fetch_delivery_insights(account_id, start_date, end_date)
         
         logger.info(f"Successfully fetched {insights_count} insights for {account_id}")
         return {
             "status": "success",
             "account_id": account_id,
             "insights_count": insights_count,
+            "delivery_counts": delivery_counts,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as exc:

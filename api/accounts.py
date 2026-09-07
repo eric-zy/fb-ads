@@ -201,6 +201,8 @@ def account_to_dict(a: AdAccount) -> dict:
         # ---- 归属 BM ----
         "business_id": a.business_id,
         "business_name": a.business.name if a.business else None,
+        "owner_type": a.owner_type,
+        "credential_id": a.credential_id,
         # ---- Meta 侧状态（同步覆盖） ----
         "account_status": a.account_status,
         "effective_status": a.effective_status,

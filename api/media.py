@@ -7,6 +7,7 @@
 import os
 import uuid
 import mimetypes
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -16,10 +17,11 @@ from typing import Optional, List
 from core.database import get_db
 from core.auth import get_current_active_user
 from core.logger import logger
-from models import CreativeAsset, MetaAccount, AdAccount
+from models import CreativeAsset, MetaAccount, AdAccount, MetaAssetBinding
 from services.credential_service import CredentialError, CredentialService
 from services.fb_client import fb_client
 from config.settings import settings
+from tasks.campaign_tasks import retry_asset_binding_task
 
 router = APIRouter(prefix="/api/v1/media", tags=["素材库"])
 
@@ -48,6 +50,82 @@ class MediaItem(BaseModel):
 
     class Config:
         from_attributes = True
+
+class AssetPrepareRequest(BaseModel):
+    ad_account_ids: List[str]
+
+class AssetRetryRequest(BaseModel):
+    binding_id: str
+
+@router.get("/{asset_id}/bindings")
+def list_asset_bindings(
+    asset_id: str,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_active_user),
+):
+    asset = db.query(CreativeAsset).filter(CreativeAsset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    return [row.to_dict() for row in db.query(MetaAssetBinding).filter(MetaAssetBinding.asset_id == asset_id).all()]
+
+@router.post("/{asset_id}/prepare")
+def prepare_asset_bindings(
+    asset_id: str,
+    req: AssetPrepareRequest,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_active_user),
+):
+    """为目标广告账户建立素材映射占位，实际上传由异步任务执行。"""
+    asset = db.query(CreativeAsset).filter(CreativeAsset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    if not req.ad_account_ids:
+        raise HTTPException(status_code=400, detail="至少选择一个广告账户")
+    created = []
+    for account_id in set(req.ad_account_ids):
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        if not account:
+            continue
+        binding = db.query(MetaAssetBinding).filter(
+            MetaAssetBinding.asset_id == asset_id,
+            MetaAssetBinding.ad_account_id == account.id,
+        ).first()
+        if not binding:
+            binding = MetaAssetBinding(
+                id=uuid.uuid4().hex,
+                asset_id=asset_id,
+                ad_account_id=account.id,
+                meta_asset_type=asset.asset_type,
+                status="PENDING",
+            )
+            db.add(binding)
+        elif binding.status in ("FAILED", "EXPIRED"):
+            binding.status = "PENDING"
+            binding.error_message = None
+            binding.updated_at = datetime.utcnow()
+        created.append(binding)
+    db.commit()
+    return {"asset_id": asset_id, "status": "PENDING", "bindings": [row.to_dict() for row in created]}
+
+
+@router.post("/{asset_id}/bindings/{binding_id}/retry")
+def retry_asset_binding(
+    asset_id: str,
+    binding_id: str,
+    db: Session = Depends(get_db),
+    _: dict = Depends(get_current_active_user),
+):
+    binding = db.query(MetaAssetBinding).filter(
+        MetaAssetBinding.id == binding_id,
+        MetaAssetBinding.asset_id == asset_id,
+    ).first()
+    if not binding:
+        raise HTTPException(status_code=404, detail="素材映射不存在")
+    binding.status = "PENDING"
+    binding.error_message = None
+    db.commit()
+    task = retry_asset_binding_task.delay(binding.id)
+    return {"status": "QUEUED", "binding_id": binding.id, "task_id": task.id}
 
 
 def _save_local(file: UploadFile) -> dict:

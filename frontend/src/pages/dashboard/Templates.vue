@@ -61,7 +61,14 @@
       width="720px"
       :close-on-click-modal="false"
     >
+      <el-steps :active="templateStep" simple class="template-steps">
+        <el-step title="基础信息" />
+        <el-step title="广告系列" />
+        <el-step title="广告组与定向" />
+        <el-step title="广告创意" />
+      </el-steps>
       <el-form :model="form" label-width="120px">
+        <section v-if="templateStep === 0">
         <el-divider content-position="left">基本信息</el-divider>
         <el-form-item label="模板名称" required>
           <el-input v-model="form.name" placeholder="如 US Sales V1" />
@@ -86,7 +93,9 @@
           </el-select>
         </el-form-item>
 
-        <el-divider content-position="left">预算</el-divider>
+        </section>
+        <section v-if="templateStep === 1">
+        <el-divider content-position="left">广告系列与预算</el-divider>
         <el-form-item label="预算类型">
           <el-select v-model="form.budget_type" style="width: 100%">
             <el-option label="日预算 DAILY" value="DAILY" />
@@ -100,7 +109,9 @@
           <el-input-number v-model="form.lifetime_budget" :min="0" :step="100" />
         </el-form-item>
 
-        <el-divider content-position="left">优化与计费</el-divider>
+        </section>
+        <section v-if="templateStep === 2">
+        <el-divider content-position="left">广告组优化与定向</el-divider>
         <el-form-item label="优化目标">
           <el-select v-model="form.optimization_goal" filterable allow-create style="width: 100%">
             <el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" />
@@ -119,32 +130,63 @@
         <el-form-item label="出价策略">
           <el-input v-model="form.bid_strategy" placeholder="可留空，如 LOWEST_COST_WITHOUT_CAP" />
         </el-form-item>
+        <el-divider content-position="left">受众定向</el-divider>
+        <el-form-item label="国家/地区">
+          <el-input v-model="targetingForm.countries" placeholder="多个国家用逗号分隔，例如 US,CA,GB" />
+        </el-form-item>
+        <el-form-item label="年龄范围">
+          <div class="inline-fields"><el-input-number v-model="targetingForm.age_min" :min="13" :max="65" /><span>至</span><el-input-number v-model="targetingForm.age_max" :min="13" :max="65" /></div>
+        </el-form-item>
+        <el-form-item label="性别">
+          <el-checkbox-group v-model="targetingForm.genders"><el-checkbox :label="1">男性</el-checkbox><el-checkbox :label="2">女性</el-checkbox></el-checkbox-group>
+        </el-form-item>
+        <el-form-item label="兴趣">
+          <el-input v-model="targetingForm.interests" placeholder="多个兴趣用逗号分隔（可选）" />
+        </el-form-item>
+        <el-form-item label="版位">
+          <el-select v-model="targetingForm.placements" multiple collapse-tags style="width:100%" placeholder="默认自动版位">
+            <el-option label="Facebook 信息流" value="facebook_feed" />
+            <el-option label="Instagram 信息流" value="instagram_stream" />
+            <el-option label="Facebook 快拍" value="facebook_story" />
+            <el-option label="Instagram 快拍" value="instagram_story" />
+          </el-select>
+        </el-form-item>
 
-        <el-divider content-position="left">定向与创意（JSON）</el-divider>
-        <el-form-item label="定向配置">
-          <el-input
-            v-model="form.targeting_json"
-            type="textarea"
-            :rows="4"
-            placeholder='{"geo_locations":{"countries":["US"]},"age_min":18,"age_max":65,"genders":[1,2]}'
-          />
+        </section>
+        <section v-if="templateStep === 3">
+        <el-divider content-position="left">广告创意</el-divider>
+        <el-form-item label="Facebook 页面" required>
+          <el-input v-model="creativeForm.page_id" placeholder="填写 Facebook Page ID" />
         </el-form-item>
-        <el-form-item label="创意配置">
-          <el-input
-            v-model="form.creative_config_json"
-            type="textarea"
-            :rows="7"
-            placeholder='{"page_id":"","creatives":[{"headline":"","primary_text":"","cta":"LEARN_MORE","landing_url":""}]}'
-          />
-          <div class="tip">
-            结构：{ page_id, creatives: [{ headline, primary_text, description, cta, landing_url, image_hash | video_id, asset_id }] }
-          </div>
-        </el-form-item>
+        <div v-for="(creative, index) in creativeForm.creatives" :key="index" class="creative-block">
+          <div class="creative-head"><b>创意 {{ index + 1 }}</b><el-button v-if="creativeForm.creatives.length > 1" link type="danger" @click="removeCreative(index)">删除</el-button></div>
+          <el-form-item label="素材类型">
+            <el-radio-group v-model="creative.asset_type"><el-radio value="image">图片</el-radio><el-radio value="video">视频</el-radio></el-radio-group>
+          </el-form-item>
+          <el-form-item label="素材库素材" required>
+            <el-select v-model="creative.asset_id" filterable style="width:100%" placeholder="选择已上传素材">
+              <el-option v-for="asset in availableAssets(creative.asset_type)" :key="asset.id" :label="asset.name" :value="asset.id">
+                <span>{{ asset.name }}</span><small class="asset-option-meta">{{ asset.asset_type === 'image' ? '图片' : '视频' }} · {{ asset.fb_hash || asset.fb_video_id || '待同步' }}</small>
+              </el-option>
+            </el-select>
+            <div v-if="selectedAsset(creative.asset_id)" class="asset-selected">已选择：{{ selectedAsset(creative.asset_id)?.name }}</div>
+            <div v-else class="tip">请先在“内容管理 → 素材库”上传并完成 Meta 同步。</div>
+          </el-form-item>
+          <el-form-item label="主文案" required><el-input v-model="creative.primary_text" type="textarea" :rows="3" maxlength="500" show-word-limit /></el-form-item>
+          <el-form-item label="标题"><el-input v-model="creative.headline" maxlength="100" show-word-limit /></el-form-item>
+          <el-form-item label="描述"><el-input v-model="creative.description" maxlength="200" show-word-limit /></el-form-item>
+          <el-form-item label="行动按钮"><el-select v-model="creative.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /><el-option label="联系我们" value="CONTACT_US" /></el-select></el-form-item>
+          <el-form-item label="落地页" required><el-input v-model="creative.landing_url" placeholder="https://example.com/landing" /></el-form-item>
+        </div>
+        <el-button class="add-creative" plain type="primary" @click="addCreative">+ 添加创意</el-button>
+        </section>
       </el-form>
 
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="submit">保存</el-button>
+        <el-button v-if="templateStep > 0" @click="templateStep--">上一步</el-button>
+        <el-button v-if="templateStep < 3" type="primary" @click="templateStep++">下一步</el-button>
+        <el-button v-else type="primary" :loading="saving" @click="submit">保存模板</el-button>
       </template>
     </el-dialog>
   </div>
@@ -154,13 +196,16 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
+import { mediaApi, type MediaItem } from '@/api/media'
 
 const templates = ref<CampaignTemplate[]>([])
+const mediaAssets = ref<MediaItem[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
 const isEdit = ref(false)
 const editingId = ref('')
+const templateStep = ref(0)
 
 const DEFAULT_TARGETING = JSON.stringify(
   { geo_locations: { countries: ['US'] }, age_min: 18, age_max: 65, genders: [1, 2] },
@@ -192,6 +237,55 @@ const form = reactive({
   targeting_json: DEFAULT_TARGETING,
   creative_config_json: DEFAULT_CREATIVE,
 })
+const targetingForm = reactive({
+  countries: 'US',
+  age_min: 18,
+  age_max: 65,
+  genders: [1, 2] as number[],
+  interests: '',
+  placements: [] as string[],
+})
+type CreativeForm = { asset_type: 'image' | 'video'; image_hash: string; video_id: string; headline: string; primary_text: string; description: string; cta: string; landing_url: string; asset_id: string }
+const newCreative = (): CreativeForm => ({ asset_type: 'image', image_hash: '', video_id: '', headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '', asset_id: '' })
+const creativeForm = reactive<{ page_id: string; creatives: CreativeForm[] }>({ page_id: '', creatives: [newCreative()] })
+const availableAssets = (type: string) => mediaAssets.value.filter(asset => asset.asset_type === type && asset.status === 'ready')
+const selectedAsset = (id: string) => mediaAssets.value.find(asset => asset.id === id)
+const addCreative = () => creativeForm.creatives.push(newCreative())
+const removeCreative = (index: number) => creativeForm.creatives.splice(index, 1)
+const buildCreativeJson = () => {
+  form.creative_config_json = JSON.stringify({
+    page_id: creativeForm.page_id,
+    creatives: creativeForm.creatives.map(item => {
+      const asset = selectedAsset(item.asset_id)
+      return { ...item, image_hash: asset?.fb_hash || item.image_hash, video_id: asset?.fb_video_id || item.video_id }
+    }),
+  }, null, 2)
+}
+const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
+  const cfg = value || {}
+  creativeForm.page_id = cfg.page_id || ''
+  creativeForm.creatives.splice(0, creativeForm.creatives.length, ...(Array.isArray(cfg.creatives) && cfg.creatives.length ? cfg.creatives.map((item: any) => ({ ...newCreative(), ...item })) : [newCreative()]))
+}
+const buildTargetingJson = () => {
+  const targeting: Record<string, any> = {
+    geo_locations: { countries: targetingForm.countries.split(',').map(v => v.trim()).filter(Boolean) },
+    age_min: targetingForm.age_min,
+    age_max: targetingForm.age_max,
+    genders: targetingForm.genders,
+  }
+  if (targetingForm.interests.trim()) targeting.flexible_spec = [{ interests: targetingForm.interests.split(',').map(v => ({ name: v.trim() })).filter(v => v.name) }]
+  if (targetingForm.placements.length) targeting.publisher_platforms = targetingForm.placements
+  form.targeting_json = JSON.stringify(targeting, null, 2)
+}
+const loadTargetingForm = (value: Record<string, any> | null | undefined) => {
+  const targeting = value || {}
+  targetingForm.countries = targeting.geo_locations?.countries?.join(',') || 'US'
+  targetingForm.age_min = targeting.age_min || 18
+  targetingForm.age_max = targeting.age_max || 65
+  targetingForm.genders = targeting.genders?.length ? targeting.genders : [1, 2]
+  targetingForm.interests = (targeting.flexible_spec?.[0]?.interests || []).map((v: any) => v.name || '').filter(Boolean).join(',')
+  targetingForm.placements = targeting.publisher_platforms || []
+}
 
 const loadTemplates = async () => {
   loading.value = true
@@ -202,8 +296,12 @@ const loadTemplates = async () => {
     loading.value = false
   }
 }
+const loadMediaAssets = async () => {
+  try { const { data } = await mediaApi.list(); mediaAssets.value = data } catch { mediaAssets.value = [] }
+}
 
 const resetForm = () => {
+  templateStep.value = 0
   isEdit.value = false
   editingId.value = ''
   form.name = ''
@@ -218,14 +316,18 @@ const resetForm = () => {
   form.bid_strategy = ''
   form.targeting_json = DEFAULT_TARGETING
   form.creative_config_json = DEFAULT_CREATIVE
+  loadCreativeForm(JSON.parse(DEFAULT_CREATIVE))
+  loadTargetingForm(JSON.parse(DEFAULT_TARGETING))
 }
 
 const openCreate = () => {
   resetForm()
+  loadMediaAssets()
   dialogVisible.value = true
 }
 
 const openEdit = (row: CampaignTemplate) => {
+  templateStep.value = 0
   isEdit.value = true
   editingId.value = row.id
   form.name = row.name
@@ -239,7 +341,10 @@ const openEdit = (row: CampaignTemplate) => {
   form.billing_event = row.billing_event || 'IMPRESSIONS'
   form.bid_strategy = row.bid_strategy || ''
   form.targeting_json = JSON.stringify(row.targeting_json ?? {}, null, 2)
+  loadTargetingForm(row.targeting_json)
   form.creative_config_json = JSON.stringify(row.creative_config_json ?? {}, null, 2)
+  loadCreativeForm(row.creative_config_json)
+  loadMediaAssets()
   dialogVisible.value = true
 }
 
@@ -260,6 +365,8 @@ const submit = async () => {
     return
   }
 
+  buildTargetingJson()
+  buildCreativeJson()
   let targeting: Record<string, any>
   let creative: Record<string, any>
   try {
@@ -359,4 +466,11 @@ onMounted(loadTemplates)
   .page-desc { margin: 4px 0 0; font-size: 13px; color: #909399; line-height: 1.6; max-width: 760px; }
 }
 .tip { color: #909399; font-size: 12px; margin-top: 4px; line-height: 1.5; }
+.inline-fields { display: flex; align-items: center; gap: 10px; }
+.template-steps { margin-bottom: 20px; }
+.creative-block { margin: 14px 0 20px; padding: 16px 18px 6px; border: 1px solid #ebeef5; border-radius: 8px; background: #fafcff; }
+.creative-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; color: #243b53; }
+.add-creative { margin-left: 120px; margin-bottom: 8px; }
+.asset-option-meta { float: right; margin-left: 18px; color: #909399; }
+.asset-selected { margin-top: 6px; color: #67c23a; font-size: 12px; }
 </style>

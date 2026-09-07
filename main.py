@@ -37,6 +37,8 @@ from api import meta_auth as meta_auth_api
 from api import media as media_api
 from api import templates as templates_api
 from api import jobs as jobs_api
+from api import campaigns as campaigns_api
+from api import reports as reports_api
 from core.auth import get_current_active_user, require_admin
 from core.middleware import (
     AuthEnforcementMiddleware,
@@ -159,6 +161,8 @@ app.include_router(templates_api.router)
 
 # 注册 Job Center 路由（批量投放异步入口）
 app.include_router(jobs_api.router)
+app.include_router(campaigns_api.router)
+app.include_router(reports_api.router)
 
 # 静态文件：上传的素材可直接访问
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -397,7 +401,7 @@ async def get_fraud_score(account_id: str, window_days: int = 7, db: Session = D
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/accounts/{account_id}/daily-report")
-async def get_daily_report(account_id: str, report_date: str = None, db: Session = Depends(get_db)):
+async def get_daily_report(account_id: str, report_date: str = None, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
     """获取日报告"""
     try:
         analytics = AnalyticsEngine(db)
@@ -418,7 +422,7 @@ async def get_daily_report(account_id: str, report_date: str = None, db: Session
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/accounts/{account_id}/weekly-report")
-async def get_weekly_report(account_id: str, db: Session = Depends(get_db)):
+async def get_weekly_report(account_id: str, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
     """获取周报告"""
     try:
         analytics = AnalyticsEngine(db)
@@ -432,10 +436,18 @@ async def get_weekly_report(account_id: str, db: Session = Depends(get_db)):
         logger.error(f"Failed to get weekly report: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/v1/accounts/{account_id}/performance-trend")
+async def get_performance_trend(account_id: str, days: int = 30, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
+    """获取账户趋势数据，供报表折线图使用。"""
+    if days < 1 or days > 90:
+        raise HTTPException(status_code=400, detail="days 必须在 1 到 90 之间")
+    frame = AnalyticsEngine(db).get_account_performance_trend(account_id, days)
+    return frame.to_dict(orient="records") if not frame.empty else []
+
 # ==================== 任务API ====================
 
 @app.post("/api/v1/tasks/fetch-insights")
-async def submit_fetch_insights(account_id: str):
+async def submit_fetch_insights(account_id: str, _=Depends(get_current_active_user)):
     """提交拉取洞察任务"""
     try:
         task = fetch_account_insights.delay(account_id)

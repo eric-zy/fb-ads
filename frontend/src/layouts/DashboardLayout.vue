@@ -4,31 +4,43 @@
       <el-aside width="200px" class="sidebar">
         <div class="logo"><h2>📊 META_ADS</h2></div>
         <el-menu :default-active="activeMenu" @select="handleMenuSelect" router>
-          <el-menu-item index="overview"><el-icon><DocumentCopy /></el-icon><span>仪表板</span></el-menu-item>
-          <el-menu-item index="campaigns"><el-icon><Promotion /></el-icon><span>广告系列</span></el-menu-item>
-          <el-menu-item index="templates"><el-icon><Collection /></el-icon><span>投放模板</span></el-menu-item>
-          <el-menu-item index="batch-publish"><el-icon><Upload /></el-icon><span>批量投放</span></el-menu-item>
-          <el-menu-item index="jobs"><el-icon><List /></el-icon><span>任务中心</span></el-menu-item>
-          <el-menu-item index="material"><el-icon><Picture /></el-icon><span>素材库</span></el-menu-item>
-          <el-menu-item index="scheduled-tasks"><el-icon><Timer /></el-icon><span>定时任务</span></el-menu-item>
-          <el-menu-item index="reports"><el-icon><PieChart /></el-icon><span>报表分析</span></el-menu-item>
-          <el-menu-item index="risk-control"><el-icon><Warning /></el-icon><span>风险控制</span></el-menu-item>
+          <el-menu-item index="overview"><el-icon><DocumentCopy /></el-icon><span>工作台</span></el-menu-item>
+          <el-sub-menu index="content">
+            <template #title><el-icon><Collection /></el-icon><span>内容管理</span></template>
+            <el-menu-item index="material"><el-icon><Picture /></el-icon><span>素材库</span></el-menu-item>
+            <el-menu-item index="templates"><el-icon><Collection /></el-icon><span>投放模板</span></el-menu-item>
+          </el-sub-menu>
+          <el-sub-menu index="delivery">
+            <template #title><el-icon><Promotion /></el-icon><span>投放管理</span></template>
+            <el-menu-item index="campaigns"><el-icon><Promotion /></el-icon><span>广告系列</span></el-menu-item>
+            <el-menu-item index="batch-publish"><el-icon><Upload /></el-icon><span>批量投放</span></el-menu-item>
+            <el-menu-item index="jobs"><el-icon><List /></el-icon><span>执行任务</span></el-menu-item>
+            <el-menu-item index="scheduled-tasks"><el-icon><Timer /></el-icon><span>定时任务</span></el-menu-item>
+          </el-sub-menu>
+          <el-sub-menu index="analytics">
+            <template #title><el-icon><PieChart /></el-icon><span>数据分析</span></template>
+            <el-menu-item index="reports"><el-icon><PieChart /></el-icon><span>投放概览</span></el-menu-item>
+          </el-sub-menu>
+          <el-menu-item index="risk-control"><el-icon><Warning /></el-icon><span>风控中心</span></el-menu-item>
           <el-divider />
-          <el-menu-item index="accounts"><el-icon><OfficeBuilding /></el-icon><span>BM / 广告账户</span></el-menu-item>
-          <el-menu-item index="settings"><el-icon><Setting /></el-icon><span>设置</span></el-menu-item>
+          <el-sub-menu index="accounts-group">
+            <template #title><el-icon><OfficeBuilding /></el-icon><span>账号中心</span></template>
+            <el-menu-item index="accounts"><span>账号总览</span></el-menu-item>
+          </el-sub-menu>
+          <el-menu-item index="settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
         </el-menu>
       </el-aside>
 
       <el-container>
         <el-header class="header">
           <div class="header-left">
-            <el-select v-model="accountStore.selectedAccountId" placeholder="选择广告账户" @change="handleAccountChange" class="account-selector" clearable>
+            <el-select v-model="accountStore.selectedAccountId" placeholder="选择账号" @change="handleAccountChange" class="account-selector" clearable>
               <el-option v-for="account in accountStore.accounts" :key="account.id" :label="account.account_name" :value="account.id" />
             </el-select>
             <el-breadcrumb v-if="route.path === '/dashboard/accounts'" separator="/" class="breadcrumb">
               <el-breadcrumb-item>账号中心</el-breadcrumb-item>
               <el-breadcrumb-item>Meta</el-breadcrumb-item>
-              <el-breadcrumb-item>BM / 广告账户</el-breadcrumb-item>
+              <el-breadcrumb-item>账号中心</el-breadcrumb-item>
             </el-breadcrumb>
           </div>
 

@@ -6,11 +6,12 @@ from models.tenant import Tenant, TenantStatus, TenantPlan, UserRole
 from models.ad_account import AdAccount, AccountStatus, SystemStatus
 from models.meta_account import MetaAccount, BusinessStatus, SyncStatus
 from models.creative_asset import CreativeAsset
+from models.meta_asset_binding import MetaAssetBinding
 from models.campaign import Campaign, CampaignStatus
 from models.ad_group import AdGroup
 from models.ad import Ad
 from models.publish_task import PublishTask, PublishedAd
-from models.insights import AccountInsight, CampaignInsight, AdInsight
+from models.insights import AccountInsight, CampaignInsight, AdInsight, AdSetInsight
 from models.risk_control import RiskEvent, RiskLevel, RiskEventType, RiskRule
 from models.user import User, UserAccount
 
@@ -27,6 +28,7 @@ from models.job import CampaignJob, CampaignJobItem
 from models.audit_log import AuditLog
 # Meta 同步日志（Meta 账号管理 V1 §10）—— 同步结果，与操作审计分开记录
 from models.sync_log import MetaSyncLog, SyncType, SyncLogStatus
+from models.async_task import AsyncTaskRecord
 
 __all__ = [
     # 租户
@@ -45,11 +47,13 @@ __all__ = [
     'AdGroup',
     'Ad',
     'CreativeAsset',
+    'MetaAssetBinding',
     'PublishTask',
     'PublishedAd',
     'AccountInsight',
     'CampaignInsight',
     'AdInsight',
+    'AdSetInsight',
     'RiskEvent',
     'RiskLevel',
     'RiskEventType',
@@ -68,4 +72,5 @@ __all__ = [
     'MetaSyncLog',
     'SyncType',
     'SyncLogStatus',
+    'AsyncTaskRecord',
 ]

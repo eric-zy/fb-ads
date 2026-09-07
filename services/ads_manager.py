@@ -3,6 +3,8 @@ from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
 from models import (
     AccountInsight,
+    CampaignInsight,
+    AdSetInsight,
     Ad,
     AdAccount,
     AdGroup,
@@ -282,6 +284,34 @@ class AdsManager:
             f"({start_date} ~ {end_date})"
         )
         return count
+
+    def fetch_delivery_insights(self, account_id: str, start_date: str, end_date: str) -> Dict[str, int]:
+        """按 Campaign / AdSet / Ad 级别同步 Meta 洞察。"""
+        account = resolve_ad_account(self.db, account_id)
+        if not account:
+            return {"campaign": 0, "adset": 0, "ad": 0}
+        result = {"campaign": 0, "adset": 0, "ad": 0}
+        levels = (("campaign", "campaign"), ("adset", "adset"), ("ad", "ad"))
+        for dimension, level in levels:
+            rows = fb_client.get_insights(account.account_id, start_date, end_date, level=level, params={"time_increment": 1})
+            for row in rows:
+                insight_date = self._parse_date(row.get("date_start") or start_date)
+                external_id = row.get(f"{dimension}_id")
+                if not insight_date or not external_id:
+                    continue
+                model, parent = (CampaignInsight, "campaign_id") if dimension == "campaign" else (AdSetInsight, "ad_group_id") if dimension == "adset" else (AdInsight, "ad_id")
+                entity = None
+                if dimension == "campaign": entity = self.db.query(Campaign).filter(Campaign.campaign_id == external_id, Campaign.ad_account_id == account.id).first()
+                elif dimension == "adset": entity = self.db.query(AdGroup).filter(AdGroup.ad_group_id == external_id).first()
+                else: entity = self.db.query(Ad).filter(Ad.ad_id == external_id).first()
+                if not entity: continue
+                filter_column = getattr(model, parent)
+                existing = self.db.query(model).filter(filter_column == entity.id, model.date == insight_date).first()
+                target = existing or model(id=f"ins_{dimension}_{entity.id}_{insight_date}", **{parent: entity.id}, date=insight_date)
+                if not existing: self.db.add(target)
+                target.spend = to_minor(float(row.get("spend", 0) or 0)); target.impressions = int(row.get("impressions", 0) or 0); target.clicks = int(row.get("clicks", 0) or 0); target.conversions = self._parse_conversions(row.get("actions")); target.ctr = (target.clicks / target.impressions) if target.impressions else 0.0; target.cpc = to_major(target.spend) / target.clicks if target.clicks else 0.0; target.cpm = to_major(target.spend) / target.impressions * 1000 if target.impressions else 0.0; result[dimension] += 1
+        self.db.commit()
+        return result
 
     @staticmethod
     def _parse_date(value) -> Optional[date]:

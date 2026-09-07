@@ -234,6 +234,101 @@ class MetaAdsService:
 
         return self._execute(_do, f"get_ad_account(act={act})", account_id=account_id)
 
+    def list_campaigns(self, account_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        """读取广告账户下的 Campaign，供同步任务使用。"""
+        act = self.client.normalize_account_id(account_id)
+
+        def _do():
+            account = self.client.account(account_id)
+            rows = account.get_campaigns(
+                fields=[
+                    Campaign.Field.id,
+                    Campaign.Field.name,
+                    Campaign.Field.status,
+                    Campaign.Field.effective_status,
+                    Campaign.Field.objective,
+                    Campaign.Field.daily_budget,
+                    Campaign.Field.lifetime_budget,
+                    Campaign.Field.updated_time,
+                ],
+                params={"limit": limit},
+            )
+            return [dict(row) for row in rows]
+
+        return self._execute(_do, f"list_campaigns(act={act})", account_id=account_id)
+
+    def list_adsets(self, campaign_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        """读取 Campaign 下的 AdSet。"""
+        def _do():
+            campaign = Campaign(campaign_id, api=self.client.api)
+            rows = campaign.get_ad_sets(
+                fields=[
+                    AdSet.Field.id,
+                    AdSet.Field.name,
+                    AdSet.Field.status,
+                    AdSet.Field.effective_status,
+                    AdSet.Field.daily_budget,
+                    AdSet.Field.lifetime_budget,
+                    AdSet.Field.optimization_goal,
+                    AdSet.Field.billing_event,
+                    AdSet.Field.targeting,
+                    AdSet.Field.updated_time,
+                ],
+                params={"limit": limit},
+            )
+            return [dict(row) for row in rows]
+
+        return self._execute(_do, f"list_adsets(campaign={campaign_id})")
+
+    def list_ads(self, adset_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        """读取 AdSet 下的 Ad。"""
+        def _do():
+            adset = AdSet(adset_id, api=self.client.api)
+            rows = adset.get_ads(
+                fields=[
+                    Ad.Field.id,
+                    Ad.Field.name,
+                    Ad.Field.status,
+                    Ad.Field.effective_status,
+                    Ad.Field.creative,
+                    Ad.Field.updated_time,
+                ],
+                params={"limit": limit},
+            )
+            return [dict(row) for row in rows]
+
+        return self._execute(_do, f"list_ads(adset={adset_id})")
+
+    def update_campaign(self, campaign_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """更新 Campaign 属性，例如名称、预算或状态。"""
+        def _do():
+            campaign = Campaign(campaign_id, api=self.client.api)
+            campaign.update(params)
+            campaign.remote_update()
+            return {"id": campaign_id, **params}
+
+        return self._execute(_do, f"update_campaign({campaign_id})")
+
+    def update_adset(self, adset_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """更新 AdSet 属性，例如预算、定向或状态。"""
+        def _do():
+            adset = AdSet(adset_id, api=self.client.api)
+            adset.update(params)
+            adset.remote_update()
+            return {"id": adset_id, **params}
+
+        return self._execute(_do, f"update_adset({adset_id})")
+
+    def update_ad(self, ad_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """更新 Ad 属性，例如名称或状态。"""
+        def _do():
+            ad = Ad(ad_id, api=self.client.api)
+            ad.update(params)
+            ad.remote_update()
+            return {"id": ad_id, **params}
+
+        return self._execute(_do, f"update_ad({ad_id})")
+
     def upload_image(self, account_id: str, file_path: str) -> Dict[str, Any]:
         """上传图片素材，返回 image_hash"""
         act = self.client.normalize_account_id(account_id)

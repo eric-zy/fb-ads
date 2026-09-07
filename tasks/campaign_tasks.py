@@ -23,13 +23,114 @@ from core.enums import (
 )
 from core.logger import logger
 from core.tenant import resolve_tenant_of, tenant_task
-from models import CampaignInstance, CampaignJob, CampaignJobItem
+from models import CampaignInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, AdAccount
 from services.campaign_builder import CampaignDeploymentBuilder
 from services.credential_service import CredentialError, CredentialService
 from services.meta import MetaApiError
+import copy
+import os
 
 # 未到达终态的子项状态
 _ACTIVE_ITEM_STATUSES = [JobItemStatus.PENDING.value, JobItemStatus.RUNNING.value]
+
+
+@shared_task(bind=True, name="meta.retry_asset_binding", max_retries=2, default_retry_delay=30)
+@tenant_task(lambda self, binding_id: resolve_tenant_of(MetaAssetBinding, binding_id))
+def retry_asset_binding_task(self, binding_id: str) -> Dict[str, Any]:
+    """独立重试单个素材到账户的 Meta 上传。"""
+    db = SessionLocal()
+    try:
+        binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
+        if not binding:
+            return {"status": "failed", "error": "素材映射不存在"}
+        asset = db.query(CreativeAsset).filter(CreativeAsset.id == binding.asset_id).first()
+        account = db.query(AdAccount).filter(AdAccount.id == binding.ad_account_id).first()
+        if not asset or not asset.file_path or not os.path.exists(asset.file_path):
+            raise RuntimeError("素材文件不存在")
+        if not account:
+            raise RuntimeError("广告账户不存在")
+        service = CredentialService(db).build_service(account.id)
+        binding.status = "UPLOADING"
+        binding.error_message = None
+        db.commit()
+        result = (service.upload_video(account.account_id, asset.file_path)
+                  if asset.asset_type == "video"
+                  else service.upload_image(account.account_id, asset.file_path))
+        binding.meta_asset_id = result.get("video_id") if asset.asset_type == "video" else result.get("hash")
+        if not binding.meta_asset_id:
+            raise RuntimeError("Meta 未返回素材 ID")
+        binding.status = "READY"
+        binding.uploaded_at = datetime.utcnow()
+        binding.last_verified_at = datetime.utcnow()
+        db.commit()
+        return {"status": "success", "binding": binding.to_dict()}
+    except Exception as exc:
+        db.rollback()
+        binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
+        if binding:
+            binding.status = "FAILED"
+            binding.error_message = str(exc)
+            db.commit()
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            return {"status": "failed", "error": str(exc)}
+    finally:
+        db.close()
+
+
+def _prepare_template_assets(db: Session, service: Any, template: Any, ad_account_id: str, meta_ad_account_id: str) -> Any:
+    """在账户子任务内按需上传素材，并解析为当前账户专属的 Meta ID。"""
+    config = copy.deepcopy(template.creative_config_json or {})
+    creatives = config.get("creatives")
+    if not isinstance(creatives, list):
+        creatives = [config] if config else []
+    for creative in creatives:
+        asset_id = creative.get("asset_id")
+        if not asset_id:
+            continue
+        asset = db.query(CreativeAsset).filter(CreativeAsset.id == asset_id).first()
+        if not asset or not asset.file_path or not os.path.exists(asset.file_path):
+            raise RuntimeError(f"素材文件不存在: {asset_id}")
+        binding = db.query(MetaAssetBinding).filter(
+            MetaAssetBinding.asset_id == asset_id,
+            MetaAssetBinding.ad_account_id == ad_account_id,
+        ).first()
+        if not binding:
+            import uuid
+            binding = MetaAssetBinding(id=uuid.uuid4().hex, asset_id=asset_id,
+                                       ad_account_id=ad_account_id,
+                                       meta_asset_type=asset.asset_type, status="PENDING")
+            db.add(binding)
+            db.flush()
+        if binding.status != "READY" or not binding.meta_asset_id:
+            binding.status = "UPLOADING"
+            binding.error_message = None
+            db.commit()
+            try:
+                result = (service.upload_video(meta_ad_account_id, asset.file_path)
+                          if asset.asset_type == "video"
+                          else service.upload_image(meta_ad_account_id, asset.file_path))
+                meta_id = result.get("video_id") if asset.asset_type == "video" else result.get("hash")
+                if not meta_id:
+                    raise RuntimeError("Meta 未返回素材 ID")
+                binding.meta_asset_id = meta_id
+                binding.status = "READY"
+                binding.uploaded_at = datetime.utcnow()
+                binding.last_verified_at = datetime.utcnow()
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding.id).first()
+                if binding:
+                    binding.status = "FAILED"
+                    binding.error_message = str(exc)
+                    db.commit()
+                raise
+        meta_id = binding.meta_asset_id
+        creative["video_id" if asset.asset_type == "video" else "image_hash"] = meta_id
+    config["creatives"] = creatives
+    return config
 
 
 # ----------------------------------------------------------------------
@@ -223,16 +324,25 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             logger.error(f"[JobItem {job_item_id}] 凭据不可用: {e}")
             return {"error": str(e)}
 
-        builder = CampaignDeploymentBuilder(
-            db,
-            service,
-            template,
-            ad_account_id=item.ad_account_id,
-            meta_ad_account_id=account.account_id,
-            budget_override=budget_override,
-            status=status,
+        original_creative_config = template.creative_config_json
+        template.creative_config_json = _prepare_template_assets(
+            db, service, template, item.ad_account_id, account.account_id
         )
-        result = builder.build()
+
+        try:
+            builder = CampaignDeploymentBuilder(
+                db,
+                service,
+                template,
+                ad_account_id=item.ad_account_id,
+                meta_ad_account_id=account.account_id,
+                budget_override=budget_override,
+                status=status,
+            )
+            result = builder.build()
+        finally:
+            # 账户专属 hash/video_id 只应进入映射表，不能污染公共模板。
+            template.creative_config_json = original_creative_config
 
         item.status = JobItemStatus.SUCCESS.value
         item.campaign_instance_id = result.get("campaign_instance_id")

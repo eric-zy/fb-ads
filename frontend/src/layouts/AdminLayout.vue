@@ -15,10 +15,6 @@
             <span>用户管理</span>
           </el-menu-item>
           <el-divider />
-          <el-menu-item index="meta-accounts">
-            <el-icon><OfficeBuilding /></el-icon>
-            <span>主账号管理</span>
-          </el-menu-item>
           <el-menu-item index="credentials">
             <el-icon><Key /></el-icon>
             <span>凭据管理</span>
@@ -65,7 +61,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 // 图标不走 unplugin-vue-components 的自动注册（components.d.ts 只含 El* 组件），
 // 必须显式导入，否则运行时会渲染成空标签
-import { DataLine, User, Postcard, OfficeBuilding, Key, Back } from '@element-plus/icons-vue'
+import { DataLine, User, Postcard, Key, Back } from '@element-plus/icons-vue'
 import { useUserStore } from '@/stores/userStore'
 
 const router = useRouter()

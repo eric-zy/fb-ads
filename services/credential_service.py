@@ -53,6 +53,17 @@ class CredentialService:
         if not account:
             raise CredentialError(f"广告账户不存在: {ad_account_id}")
 
+        # 个人广告账户可不挂 BM，直接使用接入该账户的 OAuth 凭据。
+        if account.credential_id:
+            cred = self.db.query(Credential).filter(
+                Credential.id == account.credential_id,
+                Credential.status == CredentialStatus.ACTIVE.value,
+            ).first()
+            if cred and not cred.is_expired():
+                token = cred.get_access_token()
+                if token:
+                    return token, cred
+
         # 1) 优先使用加密凭据表（2 / 3 级回退在 resolve_token_for_meta 内完成）
         # 注意：AdAccount 通过 `business_id` 关联所属 BM，
         # 不存在 `meta_account_id` 属性（那是 Credential 上的字段）。

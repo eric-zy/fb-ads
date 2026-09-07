@@ -23,10 +23,10 @@ class MetaOAuthService:
         self.session = session or requests.Session()
 
     @staticmethod
-    def _require_config() -> None:
+    def _require_config(require_redirect: bool = True) -> None:
         if not settings.FB_APP_ID or not settings.FB_APP_SECRET:
             raise MetaOAuthError("Meta OAuth 未配置：请设置 FB_APP_ID 和 FB_APP_SECRET")
-        if not settings.FB_OAUTH_REDIRECT_URI:
+        if require_redirect and not settings.FB_OAUTH_REDIRECT_URI:
             raise MetaOAuthError("Meta OAuth 未配置回调地址 FB_OAUTH_REDIRECT_URI")
 
     def authorization_url(self, state: str) -> str:
@@ -91,6 +91,28 @@ class MetaOAuthService:
             "meta_user_id": meta_user_id,
         }
 
+    def exchange_user_token(self, user_token: str) -> Dict[str, Any]:
+        """校验 JS SDK 返回的用户 Token，并尽可能换成长效 Token。"""
+        self._require_config(require_redirect=False)
+        if not user_token:
+            raise MetaOAuthError("Meta 未返回用户 Access Token")
+        debug = self._get_json("debug_token", {
+            "input_token": user_token,
+            "access_token": f"{settings.FB_APP_ID}|{settings.FB_APP_SECRET}",
+        })
+        data = debug.get("data") or {}
+        if not data.get("is_valid") or str(data.get("app_id")) != str(settings.FB_APP_ID):
+            raise MetaOAuthError("Facebook 登录 Token 无效或不属于当前应用")
+        result = self._get_json("oauth/access_token", {
+            "grant_type": "fb_exchange_token",
+            "client_id": settings.FB_APP_ID,
+            "client_secret": settings.FB_APP_SECRET,
+            "fb_exchange_token": user_token,
+        })
+        access_token = result.get("access_token", user_token)
+        expires_at = datetime.utcnow() + timedelta(seconds=int(result["expires_in"])) if result.get("expires_in") else None
+        return {"access_token": access_token, "expires_at": expires_at, "meta_user_id": data.get("user_id")}
+
     def verify_permissions(self, access_token: str) -> list[str]:
         """确认用户实际授予了配置中的全部权限。"""
         data = self._get_json("me/permissions", {"access_token": access_token})
@@ -132,6 +154,30 @@ class MetaOAuthService:
             if not after:
                 break
         return businesses
+
+    def get_ad_accounts(self, access_token: str, max_pages: int = 20) -> list[dict]:
+        """读取 OAuth 用户可访问的广告账户。
+
+        直接接入流程使用该结果让用户选择广告账户；BM 归属由 Meta 返回，
+        前端无需先让用户选择 BM。
+        """
+        self._require_config()
+        params = {
+            "access_token": access_token,
+            "fields": "id,name,account_status,effective_status,currency,timezone_name,amount_spent,spend_cap,business{id,name}",
+            "limit": 100,
+        }
+        accounts: list[dict] = []
+        after = None
+        for _ in range(max_pages):
+            if after:
+                params["after"] = after
+            data = self._get_json("me/adaccounts", params)
+            accounts.extend(data.get("data", []))
+            after = (data.get("paging") or {}).get("cursors", {}).get("after")
+            if not after:
+                break
+        return accounts
 
     @staticmethod
     def verify_business_access(access_token: str, business_id: str) -> Dict[str, Any]:

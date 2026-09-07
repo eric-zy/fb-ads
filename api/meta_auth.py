@@ -19,7 +19,8 @@ from core.database import get_db
 from core.enums import CredentialSource, CredentialStatus
 from core.logger import logger
 from core.tenant import tenant_scope
-from models import Credential, MetaAccount, User
+from models import AdAccount, Credential, MetaAccount, User
+from models.ad_account import SystemStatus
 from models.tenant import UserRole
 from services.credential_service import CredentialService, CredentialError
 from services.meta.oauth_service import MetaOAuthError, MetaOAuthService
@@ -30,6 +31,40 @@ router = APIRouter(prefix="/api/v1/meta-auth", tags=["Meta OAuth 授权"])
 class OAuthCompleteRequest(BaseModel):
     credential_id: str = Field(..., description="本次 OAuth 产生的临时凭据 ID")
     business_id: str = Field(..., description="用户选择的 Meta Business ID")
+
+class OAuthAccountsCompleteRequest(BaseModel):
+    credential_id: str = Field(..., description="本次 OAuth 产生的临时凭据 ID")
+    account_ids: list[str] = Field(..., min_length=1, description="用户选择的 Meta 广告账户 ID")
+
+class SDKLoginRequest(BaseModel):
+    access_token: str = Field(..., min_length=20)
+
+@router.get("/sdk-config")
+def sdk_config(_: User = Depends(require_admin)):
+    """返回可公开给浏览器 SDK 的 App ID；绝不返回 App Secret。"""
+    if not settings.FB_APP_ID:
+        raise HTTPException(status_code=503, detail="Meta App ID 未配置")
+    return {"app_id": settings.FB_APP_ID, "version": settings.FB_API_VERSION}
+
+@router.post("/sdk-login")
+def sdk_login(payload: SDKLoginRequest, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """接收 FB.login 返回的短期 Token，在服务端验证并创建临时凭据。"""
+    tenant_id = getattr(current_user, "tenant_id", None)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="平台账号不属于任何租户，无法接入 Meta 广告账号")
+    try:
+        oauth = MetaOAuthService()
+        token = oauth.exchange_user_token(payload.access_token)
+        scopes = oauth.verify_permissions(token["access_token"])
+        pending_id = str(uuid.uuid4())
+        pending = MetaAccount(id=pending_id, name="Meta SDK 待绑定", business_id=f"__oauth_pending__{pending_id}", app_id=settings.FB_APP_ID, status="ARCHIVED", sync_status="PENDING", description="JavaScript SDK 登录临时授权容器")
+        db.add(pending); db.flush()
+        cred = CredentialService(db).create_for_meta(meta_account_id=pending.id, plain_token=token["access_token"], token_type="USER", expires_at=token["expires_at"], replace_active=False, source=CredentialSource.OAUTH.value, scopes=scopes, granted_by_user_id=current_user.id, meta_user_id=token.get("meta_user_id"))
+        cred.name = "Meta SDK OAuth - 待选择广告账户"; cred.app_id = settings.FB_APP_ID; cred.last_verified_at = datetime.utcnow()
+        db.commit()
+        return {"credential_id": cred.id, "expires_in": 600}
+    except (MetaOAuthError, CredentialError) as exc:
+        db.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 def _frontend_redirect(path: str = "/dashboard/accounts", **params: str) -> RedirectResponse:
     base = settings.FRONTEND_BASE_URL.rstrip("/") + path
@@ -99,6 +134,72 @@ def oauth_businesses(credential_id: str = Query(...), db: Session = Depends(get_
     try: businesses=MetaOAuthService().get_businesses(cred.get_access_token())
     except MetaOAuthError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"credential_id":credential_id,"businesses":businesses}
+
+@router.get("/ad-accounts")
+def oauth_ad_accounts(credential_id: str = Query(...), db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """OAuth-first 直接读取广告账户，前端无需先选择 BM。"""
+    cred = db.query(Credential).filter(Credential.id == credential_id).first()
+    if not cred or cred.source != CredentialSource.OAUTH.value:
+        raise HTTPException(status_code=404, detail="OAuth 凭据不存在")
+    if cred.granted_by_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="无权访问该 OAuth 授权")
+    if cred.status != CredentialStatus.ACTIVE.value or cred.is_expired():
+        raise HTTPException(status_code=400, detail="OAuth 凭据已失效，请重新授权")
+    try:
+        accounts = MetaOAuthService().get_ad_accounts(cred.get_access_token())
+    except MetaOAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"credential_id": credential_id, "accounts": accounts}
+
+@router.post("/complete-accounts")
+def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    """直接接入所选广告账户；BM 由 Meta 返回值自动创建/绑定，不要求用户选择。"""
+    cred = db.query(Credential).filter(Credential.id == payload.credential_id).first()
+    if not cred or cred.source != CredentialSource.OAUTH.value:
+        raise HTTPException(status_code=404, detail="OAuth 凭据不存在")
+    if cred.granted_by_user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="无权完成该 OAuth 授权")
+    if cred.status != CredentialStatus.ACTIVE.value or cred.is_expired():
+        raise HTTPException(status_code=400, detail="OAuth 凭据已失效，请重新授权")
+    try:
+        remote = MetaOAuthService().get_ad_accounts(cred.get_access_token())
+        selected = {str(item.get("id")): item for item in remote if str(item.get("id")) in set(payload.account_ids)}
+        if len(selected) != len(set(payload.account_ids)):
+            raise MetaOAuthError("所选广告账户不在当前授权范围内")
+        imported = []
+        for meta_id, item in selected.items():
+            business = item.get("business") or {}
+            business_id = str(business.get("id") or "").strip()
+            meta = db.query(MetaAccount).filter(MetaAccount.business_id == business_id).first() if business_id else None
+            if not meta and business_id:
+                meta = MetaAccount(id=uuid.uuid4().hex, name=business.get("name") or f"Meta Business {business_id}", business_id=business_id, app_id=settings.FB_APP_ID, status="ACTIVE", sync_status="SUCCESS", description="OAuth 直接接入广告账号自动创建")
+                db.add(meta); db.flush()
+            existing = db.query(AdAccount).filter(
+                AdAccount.account_id == meta_id,
+                AdAccount.business_id == (meta.id if meta else None),
+                AdAccount.credential_id == (None if meta else cred.id),
+            ).first()
+            if not existing:
+                existing = AdAccount(id=uuid.uuid4().hex, business_id=meta.id if meta else None,
+                                     credential_id=None if meta else cred.id,
+                                     owner_type="BUSINESS" if meta else "PERSONAL",
+                                     account_id=meta_id, system_status=SystemStatus.ACTIVE.value)
+                db.add(existing)
+            existing.account_name = item.get("name")
+            existing.account_status = str(item.get("account_status")) if item.get("account_status") is not None else None
+            existing.effective_status = str(item.get("effective_status")) if item.get("effective_status") is not None else None
+            existing.currency = item.get("currency") or existing.currency
+            existing.timezone = item.get("timezone_name") or existing.timezone
+            existing.credential_id = None if meta else cred.id
+            imported.append({"id": existing.id, "account_id": meta_id, "business_id": meta.id if meta else None, "business_name": meta.name if meta else None, "owner_type": existing.owner_type})
+            # 为每个自动创建的 BM 绑定同一个授权 Token，仍由 credentials 加密保存。
+            if meta and not db.query(Credential).filter(Credential.meta_account_id == meta.id, Credential.status == CredentialStatus.ACTIVE.value).first():
+                copy = CredentialService(db).create_for_meta(meta_account_id=meta.id, plain_token=cred.get_access_token(), token_type="USER", expires_at=cred.expires_at, replace_active=False, source=CredentialSource.OAUTH.value, scopes=cred.scopes, granted_by_user_id=current_user.id, meta_user_id=cred.meta_user_id)
+                copy.name = f"Meta OAuth - {meta.name}"; copy.app_id = settings.FB_APP_ID; copy.last_verified_at = datetime.utcnow()
+        db.commit()
+        return {"success": True, "accounts": imported}
+    except (MetaOAuthError, CredentialError) as exc:
+        db.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/complete")
 def oauth_complete(payload: OAuthCompleteRequest, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):

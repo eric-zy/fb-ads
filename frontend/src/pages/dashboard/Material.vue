@@ -59,15 +59,25 @@
                 <el-button link type="danger" size="small">删除</el-button>
               </template>
             </el-popconfirm>
+            <el-button link type="primary" size="small" @click="openBindings(item)">映射</el-button>
           </div>
         </div>
       </div>
     </el-card>
+    <el-dialog v-model="bindingVisible" title="账号素材映射" width="720px" @closed="stopBindingPolling">
+      <el-table :data="bindings" v-loading="bindingLoading" size="small">
+        <el-table-column prop="ad_account_id" label="账号" min-width="180" />
+        <el-table-column prop="status" label="状态" width="110" />
+        <el-table-column prop="meta_asset_id" label="Meta 素材 ID" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="error_message" label="错误" min-width="180" show-overflow-tooltip />
+        <el-table-column label="操作" width="90"><template #default="{ row }"><el-button v-if="row.status === 'FAILED'" link type="primary" @click="retryBinding(row)">重试</el-button></template></el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { UploadFilled, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { mediaApi, type MediaItem } from '@/api/media'
@@ -78,6 +88,11 @@ const loading = ref(false)
 const filterType = ref('')
 const filterMeta = ref('')
 const metaAccounts = ref<MetaAccountItem[]>([])
+const bindingVisible = ref(false)
+const bindingLoading = ref(false)
+const bindings = ref<any[]>([])
+const bindingAssetId = ref('')
+let bindingTimer: number | null = null
 
 const load = async () => {
   loading.value = true
@@ -113,6 +128,12 @@ const remove = async (item: MediaItem) => {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   }
 }
+
+const refreshBindings = async () => { if (!bindingAssetId.value) return; const { data } = await mediaApi.bindings(bindingAssetId.value); bindings.value = data }
+const openBindings = async (item: MediaItem) => { bindingAssetId.value = item.id; bindingVisible.value = true; bindingLoading.value = true; try { await refreshBindings(); if (bindingTimer !== null) window.clearInterval(bindingTimer); bindingTimer = window.setInterval(refreshBindings, 2000) } finally { bindingLoading.value = false } }
+const retryBinding = async (row: any) => { try { await mediaApi.retryBinding(bindingAssetId.value, row.id); row.status = 'PENDING'; row.error_message = null; ElMessage.success('已提交素材重试任务') } catch { /* 全局拦截器提示错误 */ } }
+const stopBindingPolling = () => { if (bindingTimer !== null) { window.clearInterval(bindingTimer); bindingTimer = null } }
+onBeforeUnmount(() => { if (bindingTimer !== null) window.clearInterval(bindingTimer) })
 
 const formatSize = (n?: number | null) => {
   if (!n) return '-'

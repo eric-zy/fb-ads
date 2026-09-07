@@ -133,6 +133,7 @@ def _submit(
         "status": job.status,
         "total_accounts": job.total_accounts,
         "scheduled_at": job.scheduled_at.isoformat() if job.scheduled_at else None,
+        "rejected_accounts": (job.params or {}).get("rejected_accounts", []),
     }
 
 

@@ -111,6 +111,8 @@ class Credential(TenantMixin, Base):
             "name": self.name,
             "app_id": self.app_id,
             "token_type": self.token_type,
+            "source": self.source,
+            "scopes": self.scopes or [],
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
             "status": self.status,
             "last_error": self.last_error,

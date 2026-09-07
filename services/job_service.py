@@ -117,6 +117,10 @@ class JobService:
             action_type.value if isinstance(action_type, ActionType) else action_type
         )
         params = params or {}
+        # 保留被前置校验剔除的账户，供前端明确提示，不进入投放子任务。
+        if rejected:
+            params = dict(params)
+            params["rejected_accounts"] = rejected
         key_params = self._key_params_for_hash(action_value, params)
 
         # 仅在时间为「未来」时才按定时处理，过去的时间退化为立即执行

@@ -60,6 +60,18 @@ def tenant_context():
     reset_current_tenant_id(token)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_meta_api(monkeypatch):
+    """禁止用例真实调用 Meta Graph API
+
+    本地 .env 常保留占位值（如 FB_ACCESS_TOKEN=your_access_token），
+    非空会让 BusinessService / CredentialService 走真实网络校验，
+    用例在离线或假 token 下必然失败。这里统一清空，使校验走
+    dev_mode 跳过分支——测试不应依赖外部凭据与网络。
+    """
+    monkeypatch.setattr(settings, "FB_ACCESS_TOKEN", "", raising=False)
+
+
 def override_get_db():
     try:
         db = TestingSessionLocal()

@@ -25,6 +25,9 @@ class AccountInsight(TenantMixin, Base):
     cpc = Column(Float, default=0.0)  # 每次点击成本
     cpm = Column(Float, default=0.0)  # 千次展示成本
     roas = Column(Float, default=0.0) # 广告支出回报率
+    revenue = Column(BigInteger, nullable=True)
+    profit = Column(BigInteger, nullable=True)
+    roi = Column(Float, nullable=True)
     
     # 趋势指标
     spend_trend = Column(Float, default=0.0)  # 与前一天的增长率
@@ -66,6 +69,9 @@ class CampaignInsight(TenantMixin, Base):
     cpc = Column(Float, default=0.0)
     cpm = Column(Float, default=0.0)
     roas = Column(Float, default=0.0)
+    revenue = Column(BigInteger, nullable=True)
+    profit = Column(BigInteger, nullable=True)
+    roi = Column(Float, nullable=True)
     
     campaign = relationship("Campaign", back_populates="insights")
     
@@ -109,4 +115,30 @@ class AdInsight(TenantMixin, Base):
         Index('ix_ad_insights_date', 'date'),
         Index('ix_ad_insights_tenant_ad_date', 'tenant_id', 'ad_id', 'date'),
         Index('ix_ad_insights_tenant_date', 'tenant_id', 'date'),
+    )
+
+class AdSetInsight(TenantMixin, Base):
+    """广告组级别的数据洞察。"""
+    __tablename__ = "adset_insights"
+    id = Column(String(50), primary_key=True, index=True)
+    ad_group_id = Column(String(50), ForeignKey('ad_groups.id'), nullable=False)
+    date = Column(Date, nullable=False)
+    spend = Column(BigInteger, default=0)
+    impressions = Column(Integer, default=0)
+    clicks = Column(Integer, default=0)
+    conversions = Column(Integer, default=0)
+    ctr = Column(Float, default=0.0)
+    cpc = Column(Float, default=0.0)
+    cpm = Column(Float, default=0.0)
+    revenue = Column(BigInteger, nullable=True)
+    profit = Column(BigInteger, nullable=True)
+    roi = Column(Float, nullable=True)
+    revenue = Column(BigInteger, nullable=True)
+    profit = Column(BigInteger, nullable=True)
+    roi = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (
+        Index('ix_adset_insights_group_date', 'ad_group_id', 'date'),
+        Index('ix_adset_insights_tenant_group_date', 'tenant_id', 'ad_group_id', 'date'),
     )

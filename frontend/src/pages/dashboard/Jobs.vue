@@ -211,6 +211,7 @@ const viewDetail = async (id: string) => {
   const { data } = await jobsApi.get(id)
   currentJob.value = data
   detailVisible.value = true
+  if (!isFinal(data.status)) startTimer()
 }
 
 const handleRetry = async (row: CampaignJob) => {
@@ -232,6 +233,7 @@ const handleRetry = async (row: CampaignJob) => {
       const { data } = await jobsApi.get(row.id)
       currentJob.value = data
     }
+    startTimer()
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   }
@@ -250,6 +252,10 @@ const handleCancel = async (row: CampaignJob) => {
     await jobsApi.cancel(row.id)
     ElMessage.success('任务已取消')
     await loadJobs()
+    if (currentJob.value?.id === row.id) {
+      const { data } = await jobsApi.get(row.id)
+      currentJob.value = data
+    }
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   }
@@ -260,10 +266,16 @@ const startTimer = () => {
   stopTimer()
   timer = window.setInterval(async () => {
     if (!autoRefresh.value) return
+    const active = jobs.value.some((job) => !isFinal(job.status))
+    if (!active && (!currentJob.value || isFinal(currentJob.value.status))) {
+      stopTimer()
+      return
+    }
     await loadJobs()
     if (detailVisible.value && currentJob.value) {
       const { data } = await jobsApi.get(currentJob.value.id)
       currentJob.value = data
+      if (isFinal(data.status) && !jobs.value.some((job) => !isFinal(job.status))) stopTimer()
     }
   }, 5000)
 }

@@ -14,9 +14,17 @@
         </div>
       </template>
 
-      <el-form label-width="110px" :model="form">
-        <!-- 模板 -->
-        <el-form-item label="投放模板" required>
+      <el-steps :active="activeStep" finish-status="success" simple class="publish-steps">
+        <el-step title="选择模板" />
+        <el-step title="广告系列与广告组" />
+        <el-step title="广告账户与投放" />
+        <el-step title="预览提交" />
+      </el-steps>
+      <el-form label-width="110px" :model="form" class="publish-form">
+        <section v-if="activeStep === 0" class="step-panel">
+          <h3>选择投放模板</h3>
+          <p class="step-desc">模板包含 Campaign、AdSet、Ad 和素材文案配置，本次投放只覆盖需要变化的参数。</p>
+          <el-form-item label="投放模板" required>
           <el-select
             v-model="form.template_id"
             filterable
@@ -30,10 +38,45 @@
               :label="`${t.name}（${t.objective || '-'} · $${t.daily_budget ?? '-'}/天）`"
               :value="t.id"
             />
+            <template #empty>
+              <div class="template-empty">
+                <span>暂无可用投放模板</span>
+                <el-button link type="primary" @click="goCreateTemplate">去创建模板</el-button>
+              </div>
+            </template>
           </el-select>
           <div class="tip">一次配置模板，即可批量部署到任意数量账户。</div>
-        </el-form-item>
-
+          </el-form-item>
+          <el-alert v-if="selectedTemplate" type="info" :closable="false" show-icon title="模板内容">
+            {{ selectedTemplate.name }} · {{ selectedTemplate.objective || '未设置目标' }} ·
+            {{ creativeCount(selectedTemplate) }} 个广告创意
+          </el-alert>
+          <el-alert v-if="assetBindings.length" type="info" :closable="false" show-icon title="素材映射">
+            素材会在各广告账户的 Celery 子任务中独立上传，不共用 image hash / video ID。
+          </el-alert>
+          <el-table v-if="assetBindings.length" :data="assetBindings" size="small" style="margin-top:12px">
+            <el-table-column prop="asset_id" label="素材" show-overflow-tooltip />
+            <el-table-column prop="ad_account_id" label="广告账户" show-overflow-tooltip />
+            <el-table-column prop="status" label="状态" width="110" />
+          </el-table>
+        </section>
+        <section v-else-if="activeStep === 1" class="step-panel">
+          <h3>广告系列与广告组</h3>
+          <p class="step-desc">以下配置来自模板，将为每个目标广告账户创建独立的 Campaign、AdSet 和 Ad。</p>
+          <el-descriptions v-if="selectedTemplate" :column="2" border>
+            <el-descriptions-item label="广告系列目标">{{ selectedTemplate.objective || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="购买类型">{{ selectedTemplate.buying_type || 'AUCTION' }}</el-descriptions-item>
+            <el-descriptions-item label="优化目标">{{ selectedTemplate.optimization_goal || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="计费事件">{{ selectedTemplate.billing_event || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="默认预算">{{ templateBudget }}</el-descriptions-item>
+            <el-descriptions-item label="广告创意">{{ creativeCount(selectedTemplate) }} 个</el-descriptions-item>
+          </el-descriptions>
+          <el-alert type="warning" :closable="false" show-icon title="模板配置">
+            如需修改 Campaign / AdSet / Ad 配置，请先在投放模板中编辑。本次投放可覆盖预算和状态，不会修改模板原始内容。
+          </el-alert>
+        </section>
+        <section v-else-if="activeStep === 2" class="step-panel">
+          <h3>广告账户与本次投放参数</h3>
         <!-- 账户多选 -->
         <el-form-item label="广告账户" required>
           <el-select
@@ -53,30 +96,39 @@
           </el-select>
         </el-form-item>
 
-        <!-- 预算覆盖 -->
         <el-form-item label="预算覆盖">
           <el-input-number v-model="form.budget_override" :min="0" :step="10" />
           <span class="tip-inline">为 0 或留空时沿用模板预算（美元/天）</span>
         </el-form-item>
 
-        <!-- 投放状态 -->
         <el-form-item label="投放状态">
-          <el-select v-model="form.status" style="width: 240px">
-            <el-option label="暂停（推荐，确认后再启用）" value="PAUSED" />
-            <el-option label="立即启用" value="ACTIVE" />
-          </el-select>
+          <el-radio-group v-model="form.status">
+            <el-radio value="PAUSED">暂停（推荐）</el-radio>
+            <el-radio value="ACTIVE">立即启用</el-radio>
+          </el-radio-group>
         </el-form-item>
-
-        <el-form-item>
-          <el-button
-            type="primary"
-            :disabled="!canSubmit"
-            :loading="submitting"
-            @click="submit"
-          >
-            提交批量投放
-          </el-button>
-        </el-form-item>
+        <el-alert type="info" :closable="false" show-icon title="地区与人群">
+          当前版本沿用模板中的定向配置；地区、人群覆盖字段已预留，下一阶段接入 Meta 定向编辑器。
+        </el-alert>
+        </section>
+        <section v-else class="step-panel">
+          <h3>预览并提交</h3>
+          <el-descriptions :column="1" border>
+            <el-descriptions-item label="投放模板">{{ selectedTemplate?.name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="目标账户">{{ form.ad_account_ids.length }} 个</el-descriptions-item>
+            <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → 1 个 AdSet → {{ creativeCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
+            <el-descriptions-item label="预算">{{ form.budget_override ? form.budget_override + ' 美元/天（本次覆盖）' : templateBudget + '（沿用模板）' }}</el-descriptions-item>
+            <el-descriptions-item label="初始状态">{{ form.status === 'ACTIVE' ? '立即启用' : '暂停' }}</el-descriptions-item>
+          </el-descriptions>
+          <el-alert type="warning" :closable="false" show-icon title="提交后将创建异步投放任务">
+            系统会逐账户执行，失败账户不会影响已成功账户，可在任务中心重试失败项。
+          </el-alert>
+        </section>
+        <div class="step-actions">
+          <el-button v-if="activeStep > 0" @click="activeStep--">上一步</el-button>
+          <el-button v-if="activeStep < 3" type="primary" :disabled="!canNext" @click="activeStep++">下一步</el-button>
+          <el-button v-else type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit">提交批量投放</el-button>
+        </div>
       </el-form>
 
       <!-- 当前任务进度 -->
@@ -154,15 +206,19 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { accountApi, type AdAccountItem } from '@/api/admin'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
+import { mediaApi, type MetaAssetBinding } from '@/api/media'
 import {
   jobsApi,
   isFinalStatus,
   type CampaignJob,
 } from '@/api/jobs'
 
+const router = useRouter()
+const route = useRoute()
 const templates = ref<CampaignTemplate[]>([])
 const accounts = ref<AdAccountItem[]>([])
 const jobs = ref<CampaignJob[]>([])
@@ -172,8 +228,11 @@ const loadingTemplates = ref(false)
 const loadingAccounts = ref(false)
 const loadingJobs = ref(false)
 const submitting = ref(false)
+const assetBindings = ref<MetaAssetBinding[]>([])
+const activeStep = ref(0)
 
 let pollTimer: number | null = null
+let assetPollTimer: number | null = null
 
 const form = reactive({
   template_id: '',
@@ -183,6 +242,22 @@ const form = reactive({
 })
 
 const canSubmit = computed(() => !!form.template_id && form.ad_account_ids.length > 0)
+const selectedTemplate = computed(() => templates.value.find(t => t.id === form.template_id) || null)
+const templateBudget = computed(() => {
+  if (!selectedTemplate.value) return '-'
+  if (selectedTemplate.value.budget_type === 'LIFETIME') return '$' + (selectedTemplate.value.lifetime_budget ?? '-') + ' 总预算'
+  return '$' + (selectedTemplate.value.daily_budget ?? '-') + ' / 天'
+})
+const creativeCount = (template: CampaignTemplate | null) => {
+  const creatives = template?.creative_config_json?.creatives
+  return Array.isArray(creatives) && creatives.length ? creatives.length : template?.creative_config_json ? 1 : 0
+}
+const canNext = computed(() => {
+  if (activeStep.value === 0) return !!form.template_id
+  if (activeStep.value === 2) return form.ad_account_ids.length > 0
+  return true
+})
+const goCreateTemplate = () => router.push('/dashboard/templates')
 
 const progressPercent = computed(() => {
   if (!currentJob.value || !currentJob.value.total_accounts) return 0
@@ -253,6 +328,25 @@ const stopPolling = () => {
   }
 }
 
+const pollAssetBindings = (assetIds: string[]) => {
+  if (assetPollTimer !== null) window.clearInterval(assetPollTimer)
+  let rounds = 0
+  assetPollTimer = window.setInterval(async () => {
+    rounds += 1
+    try {
+      const results = await Promise.all(assetIds.map(id => mediaApi.bindings(String(id))))
+      assetBindings.value = results.flatMap(result => result.data)
+      const pending = assetBindings.value.some(row => ['PENDING', 'UPLOADING'].includes(row.status))
+      if (!pending || rounds >= 30) {
+        window.clearInterval(assetPollTimer as number)
+        assetPollTimer = null
+      }
+    } catch {
+      if (rounds >= 30) window.clearInterval(assetPollTimer as number)
+    }
+  }, 2000)
+}
+
 const startPolling = (jobId: string) => {
   stopPolling()
   pollTimer = window.setInterval(async () => {
@@ -276,12 +370,26 @@ const submit = async () => {
   }
   submitting.value = true
   try {
+    // 素材是按广告账户生成 Meta 映射的；先创建映射占位，再提交创建任务。
+    // 真正的上传由后端异步投放任务处理，避免前端等待多个账户上传。
+    const creatives = selectedTemplate.value?.creative_config_json?.creatives
+    const assetIds = Array.isArray(creatives)
+      ? [...new Set(creatives.map((item: any) => item?.asset_id).filter(Boolean))]
+      : []
+    if (assetIds.length) {
+      const prepared = await Promise.all(assetIds.map(assetId => mediaApi.prepare(String(assetId), form.ad_account_ids)))
+      assetBindings.value = prepared.flatMap(response => response.data.bindings)
+      pollAssetBindings(assetIds.map(String))
+    }
     const { data } = await jobsApi.createCampaign({
       template_id: form.template_id,
       ad_account_ids: form.ad_account_ids,
       budget_override: form.budget_override || undefined,
       status: form.status,
     })
+    if (data.rejected_accounts?.length) {
+      ElMessage.warning(`有 ${data.rejected_accounts.length} 个账号未进入任务，请检查账号状态`)
+    }
     ElMessage.success(`任务已提交：${data.job_id}（共 ${data.total_accounts} 个账户）`)
     const { data: job } = await jobsApi.get(data.job_id)
     currentJob.value = job
@@ -329,6 +437,12 @@ onMounted(() => {
   loadTemplates()
   loadAccounts()
   loadJobs()
+  const presetAccounts = String(route.query.account_ids || '').split(',').filter(Boolean)
+  if (presetAccounts.length) form.ad_account_ids = presetAccounts
+})
+
+onUnmounted(() => {
+  if (assetPollTimer !== null) window.clearInterval(assetPollTimer)
 })
 
 onUnmounted(stopPolling)
@@ -341,6 +455,14 @@ onUnmounted(stopPolling)
 }
 .tip { color: #909399; font-size: 12px; margin-top: 4px; }
 .tip-inline { color: #909399; font-size: 12px; margin-left: 10px; }
+.publish-steps { margin: 6px 0 28px; }
+.publish-form { max-width: 920px; }
+.step-panel { min-height: 270px; padding: 8px 4px; }
+.step-panel h3 { margin: 0 0 8px; color: #1f2d3d; }
+.step-desc { margin: 0 0 24px; color: #909399; font-size: 13px; }
+.step-panel .el-alert { margin-top: 22px; }
+.step-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; padding-top: 18px; border-top: 1px solid #ebeef5; }
+.template-empty { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; color: #909399; }
 .job-line { margin: 8px 0; }
 .err-cat { color: #e6a23c; margin-right: 4px; }
 </style>

@@ -23,15 +23,16 @@ from sqlalchemy.orm import Session
 from core.audit import record_audit
 from core.auth import require_admin
 from core.database import get_db
-from core.enums import CredentialStatus
+from core.enums import CredentialStatus, CredentialSource
 from core.logger import logger
-from models import Credential, MetaAccount, User
+from models import Credential, MetaAccount, User, AdAccount
 from services.credential_service import CredentialError, CredentialService
 
 router = APIRouter(prefix="/api/v1/credentials", tags=["凭据管理"])
 
 VALID_TOKEN_TYPES = ("USER", "SYSTEM_USER", "PAGE")
 VALID_STATUSES = tuple(s.value for s in CredentialStatus)
+REQUIRED_ADS_SCOPES = {"ads_read", "ads_management"}
 
 
 # ==================== 请求/响应模型 ====================
@@ -85,6 +86,17 @@ def _credential_to_dict(db: Session, cred: Credential, include_token: bool = Fal
     )
     data["meta_account_name"] = meta.name if meta else None
     data["business_id"] = meta.business_id if meta else None
+    linked = db.query(AdAccount).filter(AdAccount.credential_id == cred.id).all()
+    data["linked_account_count"] = len(linked)
+    data["linked_personal_account_count"] = sum(1 for account in linked if account.owner_type == "PERSONAL")
+    data["linked_accounts"] = [
+        {"id": account.id, "account_id": account.account_id, "name": account.account_name,
+         "owner_type": account.owner_type, "business_id": account.business_id}
+        for account in linked
+    ]
+    granted = set(data.get("scopes") or [])
+    data["missing_scopes"] = sorted(REQUIRED_ADS_SCOPES - granted) if cred.source == CredentialSource.OAUTH.value else []
+    data["permission_ready"] = not data["missing_scopes"]
     return data
 
 

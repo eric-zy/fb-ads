@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from core.enums import CredentialStatus
-from models import AdAccount, MetaAccount, BusinessStatus, SystemStatus
+from models import AdAccount, MetaAccount, Credential, BusinessStatus, SystemStatus
 
 
 def _credential_service(db):
@@ -61,17 +61,20 @@ class AdAccountService:
             reason = account.system_status_reason or "管理员已禁用"
             return False, f"系统侧已禁用：{reason}"
 
-        # 2) 归属 BM 是否存在且启用
+        # 2) BM 账号校验；个人账号不要求 BM，改用自身 OAuth 凭据。
         business: Optional[MetaAccount] = account.business
-        if not business:
-            return False, "未归属任何 BM"
-        if business.status != BusinessStatus.ACTIVE.value:
+        if business and business.status != BusinessStatus.ACTIVE.value:
             return False, f"BM 状态为 {business.status}"
 
-        # 3) 凭据是否可用（加密凭据表，过期视为不可用）
-        cred = _credential_service(self.db).get_meta_credential(business.id)
+        # 3) 凭据是否可用（BM 账户或个人账号自身凭据）
+        if business:
+            cred = _credential_service(self.db).get_meta_credential(business.id)
+        elif account.credential_id:
+            cred = self.db.query(Credential).filter(Credential.id == account.credential_id).first()
+        else:
+            cred = None
         if not cred:
-            return False, "BM 无可用凭据"
+            return False, "账号无可用凭据"
         if cred.status != CredentialStatus.ACTIVE.value:
             return False, f"凭据状态为 {cred.status}"
         if cred.is_expired():
@@ -107,8 +110,7 @@ class AdAccountService:
             business: Optional[MetaAccount] = account.business
             cred = (
                 _credential_service(self.db).get_meta_credential(business.id)
-                if business
-                else None
+                if business else self.db.query(Credential).filter(Credential.id == account.credential_id).first()
             )
 
             item = {

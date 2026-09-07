@@ -1,24 +1,37 @@
 <template>
   <div class="campaigns-page">
-    <el-card>
-      <template #header>
-        <div class="card-header">
-          <span>广告系列管理</span>
-        </div>
-      </template>
-      <el-alert type="warning" :closable="false" show-icon>
-        <template #title>功能开发中</template>
-        该模块依赖后端 <code>/api/v1/campaigns</code> 系列接口，当前后端尚未开放。
-        你可以在 <b>批量发布</b> 页面通过账户同步获取系列数据。
-      </el-alert>
-    </el-card>
+    <div class="page-head"><div><div class="eyebrow">投放管理 / Meta</div><h2>广告系列</h2><p>统一查看和控制 Campaign、AdSet 与 Ad。</p></div><div><el-button :loading="loading" @click="refresh">刷新</el-button><el-button type="primary" @click="sync">同步 Meta</el-button></div></div>
+    <el-alert v-if="taskNotice" :title="taskNotice" :type="taskNoticeType" :closable="true" @close="taskNotice = ''" show-icon style="margin-bottom: 12px" />
+    <el-tabs v-model="activeTab" @tab-change="onTabChange">
+      <el-tab-pane label="广告系列" name="campaigns"><el-card shadow="never"><el-table :data="campaigns" v-loading="loading"><el-table-column prop="name" label="广告系列" /><el-table-column prop="meta_campaign_id" label="Meta ID" /><el-table-column prop="objective" label="目标" /><el-table-column label="Meta 状态"><template #default="{ row }"><el-tag size="small" :type="row.meta_status === 'ACTIVE' ? 'success' : 'warning'">{{ row.meta_status || '未同步' }}</el-tag></template></el-table-column><el-table-column label="系统状态"><template #default="{ row }"><el-tag size="small" :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ row.status }}</el-tag></template></el-table-column><el-table-column label="操作"><template #default="{ row }"><el-button link type="primary" @click="openAdsets(row)">广告组</el-button><el-button link type="warning" @click="changeStatus(row)">{{ row.status === 'ACTIVE' ? '暂停' : '启用' }}</el-button></template></el-table-column></el-table><el-empty v-if="!loading && !campaigns.length" description="暂无广告系列，请先完成批量投放" /></el-card></el-tab-pane>
+      <el-tab-pane label="广告组" name="adsets"><el-card shadow="never"><div class="sub-head">{{ selectedCampaign?.name || '请选择广告系列' }}<el-button link @click="activeTab = 'campaigns'">返回</el-button></div><el-table :data="adsets" v-loading="subLoading"><el-table-column prop="name" label="广告组" /><el-table-column prop="meta_adset_id" label="Meta ID" /><el-table-column prop="optimization_goal" label="优化目标" /><el-table-column prop="daily_budget" label="日预算" /><el-table-column label="状态"><template #default="{ row }"><el-tag size="small" :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ row.status || '未知' }}</el-tag></template></el-table-column><el-table-column label="操作"><template #default="{ row }"><el-button link type="primary" @click="openAds(row)">广告</el-button><el-button link type="warning" @click="changeStatus(row)">{{ row.status === 'ACTIVE' ? '暂停' : '启用' }}</el-button></template></el-table-column></el-table></el-card></el-tab-pane>
+      <el-tab-pane label="广告" name="ads"><el-card shadow="never"><div class="sub-head">{{ selectedAdset?.name || '请选择广告组' }}<el-button link @click="activeTab = 'adsets'">返回</el-button></div><el-table :data="ads" v-loading="subLoading"><el-table-column prop="name" label="广告" /><el-table-column prop="meta_ad_id" label="Meta ID" /><el-table-column prop="effective_status" label="Meta 状态" /><el-table-column prop="status" label="系统状态" /><el-table-column label="操作"><template #default="{ row }"><el-button link type="warning" @click="changeStatus(row)">{{ row.status === 'ACTIVE' ? '暂停' : '启用' }}</el-button></template></el-table-column></el-table></el-card></el-tab-pane>
+      <el-tab-pane label="异步任务" name="jobs"><el-card shadow="never"><el-table :data="jobs" v-loading="jobLoading"><el-table-column prop="id" label="投放任务 ID" /><el-table-column prop="action_type" label="动作" /><el-table-column prop="status" label="状态" /><el-table-column prop="created_at" label="创建时间" /></el-table><el-divider /><div class="sub-head">Meta 操作任务</div><el-table :data="metaTasks" size="small"><el-table-column prop="task_id" label="Celery Task ID" show-overflow-tooltip /><el-table-column prop="task_type" label="类型" /><el-table-column prop="object_type" label="对象" /><el-table-column prop="status" label="状态" /><el-table-column prop="created_at" label="提交时间" /></el-table></el-card></el-tab-pane>
+    </el-tabs>
   </div>
 </template>
-
-<script setup lang="ts"></script>
-
-<style scoped lang="scss">
-.campaigns-page {
-  padding: 4px;
-}
-</style>
+<script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { campaignsApi, type MetaAd, type MetaAdSet, type MetaCampaign } from '@/api/campaigns'
+import { jobsApi, type CampaignJob } from '@/api/jobs'
+const activeTab = ref('campaigns'); const loading = ref(false); const subLoading = ref(false); const jobLoading = ref(false)
+const campaigns = ref<MetaCampaign[]>([]); const adsets = ref<MetaAdSet[]>([]); const ads = ref<MetaAd[]>([]); const jobs = ref<CampaignJob[]>([]); const metaTasks = ref<any[]>([])
+const selectedCampaign = ref<MetaCampaign | null>(null); const selectedAdset = ref<MetaAdSet | null>(null)
+const taskNotice = ref(''); const taskNoticeType = ref<'info' | 'success' | 'warning' | 'error'>('info')
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
+let taskTimer: ReturnType<typeof setTimeout> | undefined
+async function loadCampaigns() { loading.value = true; try { const { data } = await campaignsApi.list(); campaigns.value = data } finally { loading.value = false } }
+async function openAdsets(row: MetaCampaign) { selectedCampaign.value = row; activeTab.value = 'adsets'; subLoading.value = true; try { const { data } = await campaignsApi.adsets(row.id); adsets.value = data } finally { subLoading.value = false } }
+async function openAds(row: MetaAdSet) { selectedAdset.value = row; activeTab.value = 'ads'; subLoading.value = true; try { const { data } = await campaignsApi.ads(row.id); ads.value = data } finally { subLoading.value = false } }
+function watchTasks(taskIds: string[]) { if (!taskIds.length) return; if (taskTimer) clearTimeout(taskTimer); let round = 0; const poll = async () => { const statuses = await Promise.all(taskIds.map(id => campaignsApi.taskStatus(id).then(({ data }) => data).catch(() => ({ task_id: id, state: 'UNKNOWN' })))); const finished = statuses.filter(item => ['SUCCESS', 'FAILURE', 'REVOKED'].includes(item.state)); const failed = statuses.filter(item => ['FAILURE', 'REVOKED'].includes(item.state)); const partial = statuses.filter(item => item.result?.status === 'partial_success'); const errorCount = statuses.reduce((sum, item) => sum + Number(item.result?.error_count || 0), 0); taskNoticeType.value = failed.length ? 'error' : partial.length || errorCount ? 'warning' : finished.length === statuses.length ? 'success' : 'info'; taskNotice.value = finished.length === statuses.length ? (failed.length ? `任务完成：${failed.length} 个失败` : partial.length || errorCount ? `任务完成，但有 ${errorCount || partial.length} 项同步异常` : 'Meta 任务已完成，页面状态已刷新') : `Meta 任务执行中：${finished.length}/${statuses.length}`; if (finished.length === statuses.length || round++ >= 30) { await refresh(); return } taskTimer = setTimeout(poll, 2000) }; poll() }
+async function sync() { try { const { data } = await campaignsApi.sync(campaigns.value.map(row => row.id)); ElMessage.success('同步任务已提交：' + (data.task_ids?.length || 0) + ' 个账户'); taskNotice.value = 'Meta 同步任务已提交'; activeTab.value = 'jobs'; await loadJobs(); watchTasks(data.task_ids || []) } catch {} }
+function scheduleRefresh(attempt = 0) { if (refreshTimer) clearTimeout(refreshTimer); if (attempt >= 3) return; refreshTimer = setTimeout(async () => { try { if (activeTab.value === 'campaigns') await loadCampaigns(); else if (activeTab.value === 'adsets' && selectedCampaign.value) { const { data } = await campaignsApi.adsets(selectedCampaign.value.id); adsets.value = data } else if (activeTab.value === 'ads' && selectedAdset.value) { const { data } = await campaignsApi.ads(selectedAdset.value.id); ads.value = data } } finally { scheduleRefresh(attempt + 1) } }, 2000) }
+async function changeStatus(row: MetaCampaign | MetaAdSet | MetaAd) { const action = row.status === 'ACTIVE' ? 'PAUSE' : 'ENABLE'; try { await ElMessageBox.confirm('确认操作「' + row.name + '」？', '确认操作', { type: 'warning' }); const { data } = await campaignsApi.action({ action, ids: [row.id] }); ElMessage.success('异步任务已提交：' + ((data.task_ids || []).length || data.job_id || '处理中')); taskNotice.value = '状态变更任务已提交'; watchTasks(data.task_ids || []); scheduleRefresh() } catch {} }
+async function loadJobs() { jobLoading.value = true; try { const [{ data: jobData }, { data: taskData }] = await Promise.all([jobsApi.list({ limit: 50 }), campaignsApi.taskRecords(50)]); jobs.value = jobData; metaTasks.value = taskData } finally { jobLoading.value = false } }
+async function refresh() { await loadCampaigns(); await loadJobs() }
+async function onTabChange(tab: string | number) { if (tab === 'jobs') await loadJobs() }
+onMounted(refresh)
+onBeforeUnmount(() => { if (refreshTimer) clearTimeout(refreshTimer); if (taskTimer) clearTimeout(taskTimer) })
+</script>
+<style scoped>.campaigns-page{padding:4px}.page-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px}.eyebrow{color:#829ab1;font-size:12px}.page-head h2{margin:6px 0;color:#102a43}.page-head p{margin:0;color:#627d98;font-size:13px}.sub-head{display:flex;justify-content:space-between;margin-bottom:12px;color:#52606d}</style>

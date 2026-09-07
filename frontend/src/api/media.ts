@@ -21,6 +21,18 @@ export interface MediaItem {
   created_at: string | null
 }
 
+export interface MetaAssetBinding {
+  id: string
+  asset_id: string
+  ad_account_id: string
+  meta_asset_id: string | null
+  meta_asset_type: string
+  status: 'PENDING' | 'UPLOADING' | 'READY' | 'FAILED' | 'EXPIRED' | string
+  error_message: string | null
+  uploaded_at: string | null
+  last_verified_at: string | null
+}
+
 export const mediaApi = {
   list: (params?: { meta_account_id?: string; account_id?: string; asset_type?: string }) =>
     request.get<MediaItem[]>('/api/v1/media', { params }),
@@ -39,4 +51,15 @@ export const mediaApi = {
     })
   },
   remove: (id: string) => request.delete('/api/v1/media/' + id),
+  bindings: (assetId: string) =>
+    request.get<MetaAssetBinding[]>(`/api/v1/media/${assetId}/bindings`),
+  prepare: (assetId: string, adAccountIds: string[]) =>
+    request.post<{ asset_id: string; status: string; bindings: MetaAssetBinding[] }>(
+      `/api/v1/media/${assetId}/prepare`,
+      { ad_account_ids: adAccountIds },
+    ),
+  retryBinding: (assetId: string, bindingId: string) =>
+    request.post<{ status: string; binding_id: string; task_id: string }>(
+      `/api/v1/media/${assetId}/bindings/${bindingId}/retry`,
+    ),
 }

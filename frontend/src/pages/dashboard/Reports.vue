@@ -1,24 +1,27 @@
 <template>
   <div class="reports-page">
-    <el-card>
-      <template #header>
-        <div class="card-header">
-          <span>数据报表</span>
-        </div>
-      </template>
-      <el-alert type="warning" :closable="false" show-icon>
-        <template #title>功能开发中</template>
-        报表数据来自后端 <code>/api/v1/accounts/{id}/daily-report</code> 与
-        <code>/api/v1/accounts/{id}/weekly-report</code> 接口。请在账户列表中选择账户后查看。
-      </el-alert>
-    </el-card>
+    <div class="page-head"><div><div class="eyebrow">数据分析</div><h2>报表分析</h2><p>按广告账户查看 Meta 洞察数据。</p></div><div><el-button :disabled="!trend.length" @click="exportCsv">导出 CSV</el-button><el-button :loading="syncing" :disabled="!accountId" @click="syncInsights">同步洞察</el-button><el-button :loading="loading" @click="loadReport">刷新</el-button></div></div>
+    <el-card shadow="never" class="filters"><el-radio-group v-model="period" @change="loadReport"><el-radio-button label="daily">日报</el-radio-button><el-radio-button label="weekly">周报</el-radio-button></el-radio-group><el-select v-model="accountId" placeholder="选择广告账户" filterable style="width:280px;margin-left:16px" @change="loadReport"><el-option v-for="account in accounts" :key="account.id" :label="account.account_name || account.account_id" :value="account.id" /></el-select><el-select v-model="dimension" style="width:130px;margin-left:12px" @change="loadReport"><el-option label="账户维度" value="account" /><el-option label="Campaign" value="campaign" /><el-option label="AdSet" value="adset" /><el-option label="Ad" value="ad" /></el-select><el-date-picker v-if="period === 'daily'" v-model="reportDate" type="date" value-format="YYYY-MM-DD" placeholder="选择日期" style="margin-left:12px" @change="loadReport" /><el-select v-model="trendDays" style="width:120px;margin-left:12px" @change="loadReport"><el-option label="近 7 天" :value="7" /><el-option label="近 30 天" :value="30" /><el-option label="近 90 天" :value="90" /></el-select></el-card>
+    <el-empty v-if="!accountId" description="请选择广告账户查看报表" />
+    <template v-else><el-alert v-if="error" :title="error" type="warning" :closable="false" style="margin:12px 0" /><el-alert v-if="syncTaskId" :title="syncNotice" type="info" :closable="false" style="margin:12px 0" /><el-row :gutter="12" v-loading="loading"><el-col v-for="item in metrics" :key="item.label" :span="6"><el-card shadow="never"><div class="metric-label">{{ item.label }}</div><div class="metric-value">{{ item.value }}</div></el-card></el-col></el-row><el-card shadow="never" class="chart-card"><template #header>近 30 天趋势</template><div ref="chartRef" class="chart"></div></el-card><el-card v-if="report" shadow="never" class="raw"><template #header>报表原始数据</template><pre>{{ JSON.stringify(report, null, 2) }}</pre></el-card></template>
   </div>
 </template>
-
-<script setup lang="ts"></script>
-
-<style scoped lang="scss">
-.reports-page {
-  padding: 4px;
-}
-</style>
+<script setup lang="ts">
+import { onMounted, onBeforeUnmount, ref, computed, nextTick } from 'vue'
+import * as echarts from 'echarts'
+import request from '@/utils/request'
+import { accountApi } from '@/api/admin'
+const accounts = ref<any[]>([]); const accountId = ref(''); const dimension = ref('account'); const period = ref<'daily' | 'weekly'>('daily'); const reportDate = ref(new Date().toISOString().slice(0, 10)); const trendDays = ref(30); const report = ref<any>(null); const trend = ref<any[]>([]); const chartRef = ref<HTMLElement>(); let chart: echarts.ECharts | undefined; const loading = ref(false); const syncing = ref(false); const syncTaskId = ref(''); const syncNotice = ref(''); const error = ref(''); let syncTimer: number | undefined
+const metrics = computed(() => { const r = report.value || {}; const m = r.total_metrics || r.metrics || r; return [{ label: '花费', value: m.spend ?? m.total_spend ?? 0 }, { label: '展示', value: m.impressions ?? m.total_impressions ?? 0 }, { label: '点击', value: m.clicks ?? m.total_clicks ?? 0 }, { label: '转化', value: m.conversions ?? m.total_conversions ?? 0 }, { label: 'CTR', value: formatRate(m.ctr) }, { label: 'CPC', value: m.cpc ?? '-' }, { label: 'CPM', value: m.cpm ?? '-' }, { label: 'ROAS', value: m.roas ?? '-' }] })
+function formatRate(value: any) { return value === undefined || value === null ? '-' : `${Number(value).toFixed(2)}%` }
+async function loadAccounts() { try { const { data } = await accountApi.list({ page: 1, page_size: 100 }); accounts.value = data || []; if (!accountId.value && accounts.value.length) accountId.value = accounts.value[0].id } catch { accounts.value = [] } }
+async function loadReport() { if (!accountId.value) return; loading.value = true; error.value = ''; try { const path = period.value === 'weekly' ? 'weekly-report' : 'daily-report'; const [reportResponse, trendResponse] = await Promise.all([request.get(`/api/v1/accounts/${accountId.value}/${path}`, { params: period.value === 'daily' ? { report_date: reportDate.value } : undefined }), request.get('/api/v1/reports/trend', { params: { dimension: dimension.value, entity_id: dimension.value === 'account' ? accountId.value : undefined, days: trendDays.value } })]); report.value = reportResponse.data; trend.value = trendResponse.data?.series || []; await nextTick(); renderChart() } catch { report.value = null; error.value = period.value === 'weekly' ? '暂无该账户周报数据，请先执行洞察同步' : '暂无该账户日期数据，请先执行洞察同步' } finally { loading.value = false } }
+function renderChart() { if (!chartRef.value) return; chart ||= echarts.init(chartRef.value); chart.setOption({ tooltip: { trigger: 'axis' }, legend: { data: ['花费', '点击', '转化'] }, xAxis: { type: 'category', data: trend.value.map(item => item.date) }, yAxis: [{ type: 'value', name: '花费' }, { type: 'value', name: '数量' }], series: [{ name: '花费', type: 'line', smooth: true, data: trend.value.map(item => item.spend), yAxisIndex: 0 }, { name: '点击', type: 'line', smooth: true, data: trend.value.map(item => item.clicks), yAxisIndex: 1 }, { name: '转化', type: 'line', smooth: true, data: trend.value.map(item => item.conversions), yAxisIndex: 1 }] }) }
+async function syncInsights() { if (!accountId.value || syncing.value) return; if (syncTimer) window.clearTimeout(syncTimer); syncing.value = true; try { const { data } = await request.post('/api/v1/tasks/fetch-insights', undefined, { params: { account_id: accountId.value } }); syncTaskId.value = data.task_id || ''; syncNotice.value = '洞察同步任务已提交'; pollSyncTask() } finally { syncing.value = false } }
+function pollSyncTask() { let rounds = 0; const poll = async () => { if (!syncTaskId.value) return; try { const { data } = await request.get(`/api/v1/tasks/${syncTaskId.value}`); if (data.state === 'SUCCESS') { syncNotice.value = '洞察同步完成，正在刷新报表'; await loadReport(); return } if (['FAILURE', 'REVOKED'].includes(data.state)) { syncNotice.value = '洞察同步失败，请检查账号授权和权限'; return } syncNotice.value = `洞察同步执行中：${data.state}` } catch { syncNotice.value = '暂时无法获取同步状态' } if (rounds++ < 30) syncTimer = window.setTimeout(poll, 2000) }; poll() }
+function resizeChart() { chart?.resize() }
+function exportCsv() { const headers = ['date', 'spend', 'impressions', 'clicks', 'conversions', 'ctr', 'cpc', 'cpm', 'roas']; const rows = trend.value.map(item => headers.map(key => JSON.stringify(item[key] ?? '')).join(',')); const blob = new Blob(['\ufeff' + [headers.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `meta-${dimension.value}-trend-${trendDays.value}d.csv`; link.click(); URL.revokeObjectURL(url) }
+onMounted(async () => { window.addEventListener('resize', resizeChart); await loadAccounts(); await loadReport() })
+onBeforeUnmount(() => { if (syncTimer) window.clearTimeout(syncTimer); window.removeEventListener('resize', resizeChart); chart?.dispose() })
+</script>
+<style scoped>.reports-page{padding:4px}.page-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px}.eyebrow{color:#829ab1;font-size:12px}.page-head h2{margin:6px 0;color:#102a43}.page-head p{margin:0;color:#627d98;font-size:13px}.filters{margin-bottom:16px}.metric-label{color:#829ab1;font-size:13px}.metric-value{margin-top:10px;font-size:24px;font-weight:600;color:#102a43}.chart-card,.raw{margin-top:16px}.chart{height:340px}.raw pre{max-height:320px;overflow:auto;white-space:pre-wrap}</style>
