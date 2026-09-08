@@ -278,15 +278,14 @@ class MetaAdsService:
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            account = self.client.account(account_id)
-            account.remote_read(
-                fields=[
-                    "id", "name", "currency", "timezone", "timezone_name",
-                    "account_status", "effective_status", "disable_reason",
-                    "amount_spent", "spend_cap",
-                ]
+            return self.client._get(
+                act,
+                params={
+                    "fields": "id,name,currency,timezone,timezone_name,"
+                    "account_status,effective_status,disable_reason,"
+                    "amount_spent,spend_cap",
+                },
             )
-            return dict(account)
 
         return self._execute(_do, f"get_ad_account(act={act})", account_id=account_id)
 
@@ -295,21 +294,22 @@ class MetaAdsService:
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            account = self.client.account(account_id)
-            rows = account.get_campaigns(
-                fields=[
-                    Campaign.Field.id,
-                    Campaign.Field.name,
-                    Campaign.Field.status,
-                    Campaign.Field.effective_status,
-                    Campaign.Field.objective,
-                    Campaign.Field.daily_budget,
-                    Campaign.Field.lifetime_budget,
-                    Campaign.Field.updated_time,
-                ],
-                params={"limit": limit},
+            fields = (
+                "id,name,status,effective_status,objective,daily_budget,"
+                "lifetime_budget,updated_time"
             )
-            return [dict(row) for row in rows]
+            rows: List[Dict[str, Any]] = []
+            after = None
+            for _ in range(20):
+                params = {"fields": fields, "limit": limit}
+                if after:
+                    params["after"] = after
+                payload = self.client._get(f"{act}/campaigns", params=params)
+                rows.extend(payload.get("data", []))
+                after = (payload.get("paging") or {}).get("cursors", {}).get("after")
+                if not after or len(rows) >= limit:
+                    break
+            return rows[:limit]
 
         return self._execute(_do, f"list_campaigns(act={act})", account_id=account_id)
 

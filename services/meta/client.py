@@ -10,14 +10,17 @@
 不使用 FacebookAdsApi.init()（它是全局的，在 Celery 并发 worker 下会串号），
 而是把 api 实例显式传给每个 SDK 对象，保证多账户并发安全。
 """
+import json
 from typing import List, Optional
+
+import requests
 
 from facebook_business.api import FacebookAdsApi, FacebookSession
 from facebook_business.adobjects.adaccount import AdAccount as FBAdAccount
 
 from config.settings import settings
 from core.logger import logger
-from services.meta.errors import MetaApiError, classify_facebook_error
+from services.meta.errors import MetaApiError, classify, classify_facebook_error
 from core.enums import ErrorCategory
 
 
@@ -89,10 +92,37 @@ class MetaClient:
     def _get(self, path: str, params: dict) -> dict:
         """统一的 GET 调用与错误映射"""
         try:
-            response = self._api.call("GET", path, params=params)
-            return response.json()
-        except Exception as e:
-            raise classify_facebook_error(e)
+            request_params = dict(params or {})
+            for key, value in list(request_params.items()):
+                if isinstance(value, (dict, list)):
+                    request_params[key] = json.dumps(value, separators=(",", ":"))
+            request_params["access_token"] = self.access_token
+            response = requests.get(
+                f"https://graph.facebook.com/{settings.FB_API_VERSION}/{path.lstrip('/')}",
+                params=request_params,
+                timeout=settings.FB_API_TIMEOUT,
+            )
+            payload = response.json()
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if response.status_code >= 400 or error:
+                error = error or {}
+                code = error.get("code")
+                subcode = error.get("error_subcode")
+                raise MetaApiError(
+                    error.get("message", f"Graph API HTTP {response.status_code}"),
+                    category=classify(code, subcode, response.status_code),
+                    code=code,
+                    subcode=subcode,
+                    http_status=response.status_code,
+                    fbtrace_id=error.get("fbtrace_id"),
+                )
+            return payload
+        except MetaApiError:
+            raise
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            raise MetaApiError(str(exc), category=ErrorCategory.TEMPORARY)
+        except Exception as exc:
+            raise classify_facebook_error(exc)
 
     def get_business(self, business_id: str) -> dict:
         """拉取 BM 基础信息（文档 §14 添加 BM 时用于校验 Business ID）"""
