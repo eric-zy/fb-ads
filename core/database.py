@@ -87,7 +87,13 @@ def init_db():
     import core.tenant as tenant_mod  # noqa: F401
 
     tenant_mod.set_strict_mode(settings.TENANT_STRICT_MODE)
-    Base.metadata.create_all(bind=engine)
+    # 生产环境禁止 create_all：否则 Alembic 的版本表为空时，启动会先
+    # 自动创建业务表，随后 `alembic upgrade head` 从 0001 重放并报
+    # DuplicateTable。生产库结构必须由显式 Alembic 迁移管理。
+    if settings.DEBUG or settings.ENVIRONMENT.lower() == "development":
+        Base.metadata.create_all(bind=engine)
+    else:
+        logger.info("Production mode: skip Base.metadata.create_all(); use Alembic migrations")
     logger.info(
         f"Database initialized successfully "
         f"(tenant_isolation=on, strict_mode={settings.TENANT_STRICT_MODE})"
