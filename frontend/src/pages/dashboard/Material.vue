@@ -11,10 +11,12 @@
             :auto-upload="false"
             :show-file-list="false"
             :on-change="onSelect"
+            :disabled="!filterAccount || uploading"
             accept="image/*,video/*"
-            multiple
           >
-            <el-button type="primary" :icon="UploadFilled">上传素材</el-button>
+            <el-button type="primary" :icon="UploadFilled" :loading="uploading" :disabled="!filterAccount">
+              {{ filterAccount ? '上传素材' : '请先选择广告账户' }}
+            </el-button>
           </el-upload>
         </div>
       </template>
@@ -88,6 +90,7 @@ const loading = ref(false)
 const filterType = ref('')
 const filterAccount = ref('')
 const accounts = ref<AdAccountItem[]>([])
+const uploading = ref(false)
 const bindingVisible = ref(false)
 const bindingLoading = ref(false)
 const bindings = ref<any[]>([])
@@ -110,16 +113,21 @@ const load = async () => {
 const onSelect = async (file: any) => {
   const raw: File = file.raw
   if (!raw) return
+  if (!filterAccount.value) {
+    ElMessage.warning('请先选择归属广告账户，再上传素材')
+    return
+  }
+  if (uploading.value) return
+  uploading.value = true
   try {
-    if (!filterAccount.value) {
-      ElMessage.warning('请先选择归属广告账户，再上传素材')
-      return
-    }
     const res = await mediaApi.upload(raw, { account_id: filterAccount.value })
     ElMessage.success(`已上传：${res.data.name}`)
     await load()
   } catch (e: any) {
-    // 错误已由 utils/request.ts 全局拦截器弹框提示
+    const detail = e?.response?.data?.detail || e?.message || '素材上传失败'
+    ElMessage.error(String(detail))
+  } finally {
+    uploading.value = false
   }
 }
 
