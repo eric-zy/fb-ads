@@ -84,6 +84,18 @@ class CampaignBuilder:
         self.template = template
         self.meta_ad_account_id = meta_ad_account_id
         self.status = status
+        self.created_meta_ids: List[str] = []
+
+    def _cleanup_created(self) -> List[str]:
+        """逆序清理本次创建的 Meta 对象，返回清理失败的对象。"""
+        failed = []
+        for object_id in reversed(self.created_meta_ids):
+            try:
+                self.service.delete_object(object_id)
+            except Exception as exc:
+                failed.append(object_id)
+                logger.error(f"[Deployment] 补偿删除失败 object={object_id}: {exc}")
+        return failed
         self.name_suffix = name_suffix
 
     def build_params(self) -> Dict[str, Any]:
@@ -108,6 +120,16 @@ class CampaignBuilder:
         return params
 
     def build(self) -> Dict[str, Any]:
+        try:
+            return self._build()
+        except Exception as exc:
+            failed_cleanup = self._cleanup_created()
+            if failed_cleanup:
+                logger.error(f"[Deployment] 需要人工清理 Meta 对象: {failed_cleanup}")
+                setattr(exc, "cleanup_failed_ids", failed_cleanup)
+            raise
+
+    def _build(self) -> Dict[str, Any]:
         return self.service.create_campaign(self.meta_ad_account_id, self.build_params())
 
 
@@ -185,6 +207,8 @@ class CreativeBuilder:
         self.name = name
 
     def build_params(self) -> Dict[str, Any]:
+        if not self.page_id:
+            raise ValueError("广告创意缺少 Facebook Page ID，请在模板中选择已同步页面")
         cfg = self.creative_config
         asset_type = cfg.get("asset_type", "image")
 
@@ -329,6 +353,7 @@ class CampaignDeploymentBuilder:
         campaign = CampaignBuilder(
             self.service, self.template, meta_account_id, status=self.status
         ).build()
+        self.created_meta_ids.append(campaign["id"])
         campaign_instance = CampaignInstance(
             id=_new_id(),
             template_id=self.template.id,
@@ -349,6 +374,7 @@ class CampaignDeploymentBuilder:
             budget_override=self.budget_override,
             status=self.status,
         ).build()
+        self.created_meta_ids.append(adset["id"])
         adset_instance = AdSetInstance(
             id=_new_id(),
             campaign_instance_id=campaign_instance.id,
@@ -375,6 +401,7 @@ class CampaignDeploymentBuilder:
                 page_id=creative_config.get("page_id"),
                 name=f"{self.template.name} C{idx}",
             ).build()
+            self.created_meta_ids.append(creative["id"])
 
             ad = AdBuilder(
                 self.service,
@@ -384,6 +411,7 @@ class CampaignDeploymentBuilder:
                 name=f"{self.template.name} A{idx}",
                 status=self.status,
             ).build()
+            self.created_meta_ids.append(ad["id"])
 
             self.db.add(
                 AdInstance(

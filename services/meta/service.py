@@ -171,6 +171,10 @@ class MetaAdsService:
 
         return self._execute(_do, f"create_ad(act={act})", account_id=account_id)
 
+    def delete_object(self, object_id: str) -> Dict[str, Any]:
+        """删除投放失败补偿阶段创建的 Meta 对象。"""
+        return self._execute(lambda: self.client._delete(object_id), f"delete_object({object_id})")
+
     # ------------------------------------------------------------------
     # 批量操作 Action（设计文档第 22 / 23 节）
     # ------------------------------------------------------------------

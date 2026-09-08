@@ -31,6 +31,9 @@ class CampaignCreateRequest(BaseModel):
     budget_override: Optional[float] = Field(None, description="覆盖模板预算（USD/天）")
     status: str = Field("PAUSED", description="创建后状态，默认 PAUSED，避免直接产生花费")
 
+class CampaignPreflightRequest(CampaignCreateRequest):
+    pass
+
 
 class BudgetUpdateRequest(BaseModel):
     """设计文档第 22 节：按模板批量改预算"""
@@ -138,6 +141,11 @@ def _submit(
 
 
 # ==================== 批量投放 ====================
+
+@router.post("/campaign-preflight")
+def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+    """发布前检查；只读，不创建任务、不调用 Meta 写接口。"""
+    return JobService(db).preflight_campaign(req.template_id, req.ad_account_ids, req.budget_override, req.status)
 
 @router.post("/campaign-create")
 def create_campaign_batch(

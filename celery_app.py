@@ -80,6 +80,10 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.credential_tasks.check_expiring_credentials",
         "schedule": _cron(settings.SCHEDULE_CREDENTIAL_CHECK_CRON),
     },
+    "meta-pages-sync": {
+        "task": "meta.sync_all_pages",
+        "schedule": crontab(minute=0),
+    },
 }
 
 # 自动发现任务

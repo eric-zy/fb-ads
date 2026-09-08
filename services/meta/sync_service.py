@@ -24,6 +24,7 @@ from config.settings import settings
 from core.logger import logger
 from models import (
     AdAccount,
+    Credential,
     MetaAccount,
     MetaSyncLog,
     # SyncStatus 是 BM 上的同步状态位（models/meta_account.py），
@@ -118,9 +119,6 @@ class MetaSyncService:
     # ------------------------------------------------------------------
     def sync_business(self, business_id: str) -> MetaSyncLog:
         """同步单个 BM 的基础信息（timezone / currency / 名称）"""
-        if not settings.FB_ACCESS_TOKEN:
-            return self._dev_mode_log(business_id, SyncType.BUSINESS.value)
-
         business = self.db.query(MetaAccount).filter(MetaAccount.id == business_id).first()
         if not business:
             raise ValueError(f"BM 不存在: {business_id}")
@@ -152,9 +150,6 @@ class MetaSyncService:
 
         注意：**不覆盖 system_status**，管理员的禁用决定必须保留。
         """
-        if not settings.FB_ACCESS_TOKEN:
-            return self._dev_mode_log(business_id, SyncType.AD_ACCOUNT.value)
-
         business = self.db.query(MetaAccount).filter(MetaAccount.id == business_id).first()
         if not business:
             raise ValueError(f"BM 不存在: {business_id}")
@@ -314,6 +309,15 @@ class MetaSyncService:
                 monthly_spend_limit=0,
             )
             self.db.add(account)
+
+        if business and business.connection_id:
+            account.connection_id = business.connection_id
+        elif account.credential_id:
+            credential = self.db.query(Credential).filter(
+                Credential.id == account.credential_id
+            ).first()
+            if credential and credential.connection_id:
+                account.connection_id = credential.connection_id
 
         # ---- Meta 侧字段：每次同步覆盖 ----
         account.account_name = raw.get("name") or account.account_name

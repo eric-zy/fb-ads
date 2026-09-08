@@ -51,6 +51,9 @@
             {{ selectedTemplate.name }} · {{ selectedTemplate.objective || '未设置目标' }} ·
             {{ creativeCount(selectedTemplate) }} 个广告创意
           </el-alert>
+          <el-alert v-if="selectedTemplate && !templateReady" type="warning" :closable="false" show-icon>
+            该模板尚未选择 Facebook Page，请先到「投放模板」编辑并选择已同步页面。
+          </el-alert>
           <el-alert v-if="assetBindings.length" type="info" :closable="false" show-icon title="素材映射">
             素材会在各广告账户的 Celery 子任务中独立上传，不共用 image hash / video ID。
           </el-alert>
@@ -107,6 +110,9 @@
             <el-radio value="ACTIVE">立即启用</el-radio>
           </el-radio-group>
         </el-form-item>
+        <el-alert v-if="!loadingAccounts && !accounts.length" type="warning" :closable="false" show-icon>
+          当前没有可投放广告账户，请先完成 Meta OAuth 授权或恢复有效凭据。
+        </el-alert>
         <el-alert type="info" :closable="false" show-icon title="地区与人群">
           当前版本沿用模板中的定向配置；地区、人群覆盖字段已预留，下一阶段接入 Meta 定向编辑器。
         </el-alert>
@@ -123,10 +129,15 @@
           <el-alert type="warning" :closable="false" show-icon title="提交后将创建异步投放任务">
             系统会逐账户执行，失败账户不会影响已成功账户，可在任务中心重试失败项。
           </el-alert>
+          <el-alert v-if="preflightResult" :type="preflightResult.passed ? 'success' : 'error'" :closable="false" show-icon style="margin-top:12px">
+            <template #title>{{ preflightResult.passed ? `预检通过：${preflightResult.ready_account_ids.length} 个账户可投放` : '预检未通过，暂不能提交' }}</template>
+            <div v-for="item in preflightResult.errors" :key="item.code">{{ item.message }}</div>
+            <div v-for="item in preflightResult.warnings" :key="item.code" class="preflight-warning">{{ item.message }}</div>
+          </el-alert>
         </section>
         <div class="step-actions">
           <el-button v-if="activeStep > 0" @click="activeStep--">上一步</el-button>
-          <el-button v-if="activeStep < 3" type="primary" :disabled="!canNext" @click="activeStep++">下一步</el-button>
+          <el-button v-if="activeStep < 3" type="primary" :loading="preflighting" :disabled="!canNext" @click="nextStep">下一步</el-button>
           <el-button v-else type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit">提交批量投放</el-button>
         </div>
       </el-form>
@@ -151,7 +162,8 @@
           <el-table-column prop="ad_account_id" label="账户" show-overflow-tooltip />
           <el-table-column label="状态" width="110">
             <template #default="{ row }">
-              <el-tag :type="itemTagType(row.status)" size="small">{{ row.status }}</el-tag>
+            <el-tag :type="itemTagType(row.status)" size="small">{{ row.status }}</el-tag>
+            <el-tag v-if="row.response_payload?.cleanup_failed" type="danger" size="small" style="margin-left:4px">待人工清理</el-tag>
             </template>
           </el-table-column>
           <el-table-column prop="meta_campaign_id" label="Meta Campaign" width="160" show-overflow-tooltip />
@@ -160,6 +172,11 @@
             <template #default="{ row }">
               <span v-if="row.error_category" class="err-cat">[{{ row.error_category }}]</span>
               {{ row.error_message }}
+            </template>
+          </el-table-column>
+          <el-table-column label="待清理 Meta 对象" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.response_payload?.cleanup_object_ids?.join(', ') || '-' }}
             </template>
           </el-table-column>
         </el-table>
@@ -208,7 +225,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { accountApi, type AdAccountItem } from '@/api/admin'
+import { accountApi, type DeployableAccount } from '@/api/admin'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { mediaApi, type MetaAssetBinding } from '@/api/media'
 import {
@@ -220,7 +237,7 @@ import {
 const router = useRouter()
 const route = useRoute()
 const templates = ref<CampaignTemplate[]>([])
-const accounts = ref<AdAccountItem[]>([])
+const accounts = ref<DeployableAccount[]>([])
 const jobs = ref<CampaignJob[]>([])
 const currentJob = ref<CampaignJob | null>(null)
 
@@ -228,6 +245,8 @@ const loadingTemplates = ref(false)
 const loadingAccounts = ref(false)
 const loadingJobs = ref(false)
 const submitting = ref(false)
+const preflighting = ref(false)
+const preflightResult = ref<any>(null)
 const assetBindings = ref<MetaAssetBinding[]>([])
 const activeStep = ref(0)
 
@@ -241,8 +260,9 @@ const form = reactive({
   status: 'PAUSED',
 })
 
-const canSubmit = computed(() => !!form.template_id && form.ad_account_ids.length > 0)
 const selectedTemplate = computed(() => templates.value.find(t => t.id === form.template_id) || null)
+const templateReady = computed(() => !!selectedTemplate.value?.creative_config_json?.page_id)
+const canSubmit = computed(() => !!form.template_id && templateReady.value && form.ad_account_ids.length > 0 && !!preflightResult.value?.passed)
 const templateBudget = computed(() => {
   if (!selectedTemplate.value) return '-'
   if (selectedTemplate.value.budget_type === 'LIFETIME') return '$' + (selectedTemplate.value.lifetime_budget ?? '-') + ' 总预算'
@@ -253,11 +273,19 @@ const creativeCount = (template: CampaignTemplate | null) => {
   return Array.isArray(creatives) && creatives.length ? creatives.length : template?.creative_config_json ? 1 : 0
 }
 const canNext = computed(() => {
-  if (activeStep.value === 0) return !!form.template_id
+  if (activeStep.value === 0) return !!form.template_id && templateReady.value
   if (activeStep.value === 2) return form.ad_account_ids.length > 0
   return true
 })
 const goCreateTemplate = () => router.push('/dashboard/templates')
+
+const nextStep = async () => {
+  if (activeStep.value === 2) {
+    await runPreflight()
+    if (!preflightResult.value?.passed) return
+  }
+  activeStep.value++
+}
 
 const progressPercent = computed(() => {
   if (!currentJob.value || !currentJob.value.total_accounts) return 0
@@ -303,7 +331,7 @@ const loadTemplates = async () => {
 const loadAccounts = async () => {
   loadingAccounts.value = true
   try {
-    const { data } = await accountApi.list()
+    const { data } = await accountApi.availableForDeployment()
     accounts.value = data
   } finally {
     loadingAccounts.value = false
@@ -365,7 +393,7 @@ const startPolling = (jobId: string) => {
 
 const submit = async () => {
   if (!canSubmit.value) {
-    ElMessage.warning('请选择投放模板与至少一个广告账户')
+    ElMessage.warning(!templateReady.value ? '模板尚未选择有效 Facebook 页面' : '请选择至少一个可投放广告账户')
     return
   }
   submitting.value = true
@@ -400,6 +428,16 @@ const submit = async () => {
   } finally {
     submitting.value = false
   }
+}
+
+const runPreflight = async () => {
+  if (!form.template_id || !form.ad_account_ids.length) return
+  preflighting.value = true
+  try {
+    const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status })
+    preflightResult.value = data
+    if (!data.passed) ElMessage.error('预检未通过，请处理阻断项')
+  } finally { preflighting.value = false }
 }
 
 const viewJob = async (id: string) => {

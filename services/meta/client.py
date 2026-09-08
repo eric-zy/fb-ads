@@ -167,6 +167,27 @@ class MetaClient:
         except Exception as exc:
             raise classify_facebook_error(exc)
 
+    def _delete(self, path: str) -> dict:
+        """删除 Meta 对象（仅用于投放失败补偿，不作为业务删除入口）。"""
+        try:
+            response = requests.delete(
+                f"https://graph.facebook.com/{settings.FB_API_VERSION}/{path.lstrip('/')}",
+                params={"access_token": self.access_token},
+                timeout=settings.FB_API_TIMEOUT,
+            )
+            payload = response.json()
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if response.status_code >= 400 or error:
+                error = error or {}
+                raise MetaApiError(error.get("message", f"Graph API HTTP {response.status_code}"), category=classify(error.get("code"), error.get("error_subcode"), response.status_code))
+            return payload
+        except MetaApiError:
+            raise
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            raise MetaApiError(str(exc), category=ErrorCategory.TEMPORARY)
+        except Exception as exc:
+            raise classify_facebook_error(exc)
+
     def get_business(self, business_id: str) -> dict:
         """拉取 BM 基础信息（文档 §14 添加 BM 时用于校验 Business ID）"""
         bid = self.normalize_business_id(business_id)

@@ -14,6 +14,7 @@ export interface CampaignJobItem {
   error_message: string | null
   error_category: string | null
   retry_count: number
+  response_payload?: { cleanup_failed?: boolean; cleanup_object_ids?: string[] } | null
   created_at: string | null
   updated_at: string | null
 }
@@ -40,6 +41,14 @@ export interface JobSubmitResult {
   status: string
   total_accounts: number
 }
+export interface CampaignPreflightResult {
+  passed: boolean
+  template?: { id: string; name: string; objective?: string; creative_count: number }
+  errors: Array<{ code: string; message: string }>
+  warnings: Array<{ code: string; message: string; items?: any[] }>
+  accounts: Array<{ account_id: string; status: string; reason?: string }>
+  ready_account_ids: string[]
+}
 
 export interface CreateCampaignPayload {
   template_id: string
@@ -63,6 +72,8 @@ export interface ScheduleCampaignPayload {
 }
 
 export const jobsApi = {
+  preflightCampaign: (data: CreateCampaignPayload) =>
+    request.post<CampaignPreflightResult>('/api/v1/jobs/campaign-preflight', data),
   createCampaign: (data: CreateCampaignPayload) =>
     request.post<JobSubmitResult>('/api/v1/jobs/campaign-create', data),
 

@@ -76,14 +76,13 @@ class BusinessService:
                 "business_id_matched": bool # Meta 返回的 ID 与本地是否一致
             }
         """
-        if not settings.FB_ACCESS_TOKEN:
-            return self._dev_mode_result(business, "连通性校验")
-
         try:
             token = self._resolve_token(business)
             client = MetaClient(access_token=token)
             data = client.get_business(business.business_id)
         except MetaApiError as e:
+            if not settings.FB_ACCESS_TOKEN and e.category == ErrorCategory.AUTH:
+                return self._dev_mode_result(business, "连通性校验")
             logger.error(f"[BusinessService] 校验 BM {business.business_id} 失败: {e}")
             return {"ok": False, "dev_mode": False, "error": str(e), "business": None,
                     "business_id_matched": False}
@@ -108,14 +107,13 @@ class BusinessService:
 
         返回 Meta 原始数据；dev 模式或失败时返回 None（不影响调用方主流程）。
         """
-        if not settings.FB_ACCESS_TOKEN:
-            self._dev_mode_result(business, "信息拉取")
-            return None
-
         try:
             token = self._resolve_token(business)
             data = MetaClient(access_token=token).get_business(business.business_id)
         except MetaApiError as e:
+            if not settings.FB_ACCESS_TOKEN and e.category == ErrorCategory.AUTH:
+                self._dev_mode_result(business, "信息拉取")
+                return None
             logger.error(f"[BusinessService] 拉取 BM {business.business_id} 信息失败: {e}")
             return None
 

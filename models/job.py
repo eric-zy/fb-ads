@@ -138,6 +138,7 @@ class CampaignJobItem(TenantMixin, Base):
             "error_code": self.error_code,
             "error_message": self.error_message,
             "error_category": self.error_category,
+            "response_payload": self.response_payload,
             "retry_count": self.retry_count,
             "request_hash": self.request_hash,
             "created_at": self.created_at.isoformat() if self.created_at else None,

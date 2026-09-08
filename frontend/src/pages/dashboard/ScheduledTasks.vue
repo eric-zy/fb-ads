@@ -98,6 +98,10 @@
           </el-select>
         </el-form-item>
 
+        <el-alert v-if="!loadingAccounts && !accounts.length" type="warning" :closable="false" show-icon>
+          当前没有可投放广告账户，请先完成 Meta OAuth 授权或恢复有效凭据。
+        </el-alert>
+
         <el-form-item label="预算覆盖">
           <el-input-number v-model="form.budget_override" :min="0" :step="10" />
           <span class="tip-inline">为 0 时沿用模板预算（美元/天）</span>
@@ -139,7 +143,7 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { accountApi, type AdAccountItem } from '@/api/admin'
+import { accountApi, type DeployableAccount } from '@/api/admin'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { jobsApi, type CampaignJob } from '@/api/jobs'
 
@@ -147,7 +151,7 @@ const router = useRouter()
 
 const tasks = ref<CampaignJob[]>([])
 const templates = ref<CampaignTemplate[]>([])
-const accounts = ref<AdAccountItem[]>([])
+const accounts = ref<DeployableAccount[]>([])
 
 const loading = ref(false)
 const loadingTemplates = ref(false)
@@ -225,7 +229,7 @@ const loadTemplates = async () => {
 const loadAccounts = async () => {
   loadingAccounts.value = true
   try {
-    const { data } = await accountApi.list()
+    const { data } = await accountApi.availableForDeployment()
     accounts.value = data
   } finally {
     loadingAccounts.value = false
@@ -266,6 +270,11 @@ const submit = async () => {
   }
   if (!form.scheduledTime) {
     ElMessage.warning('请选择执行时间')
+    return
+  }
+  const selected = templates.value.find(t => t.id === form.template_id)
+  if (!selected?.creative_config_json?.page_id) {
+    ElMessage.warning('模板尚未选择有效 Facebook 页面，请先编辑模板')
     return
   }
 

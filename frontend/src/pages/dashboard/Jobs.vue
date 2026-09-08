@@ -107,9 +107,10 @@
 
       <el-table :data="currentJob?.items || []" size="small" max-height="380">
         <el-table-column prop="ad_account_id" label="广告账户" show-overflow-tooltip />
-        <el-table-column label="状态" width="110">
+          <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <el-tag :type="itemTagType(row.status)" size="small">{{ row.status }}</el-tag>
+            <el-tag v-if="row.response_payload?.cleanup_failed" type="danger" size="small" style="margin-left:4px">待人工清理</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="meta_campaign_id" label="Meta Campaign" width="170" show-overflow-tooltip />
@@ -119,12 +120,17 @@
           </template>
         </el-table-column>
         <el-table-column prop="retry_count" label="重试" width="70" />
-        <el-table-column label="错误" min-width="200" show-overflow-tooltip>
+          <el-table-column label="错误" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="row.error_category" class="err-cat">[{{ row.error_category }}]</span>
             {{ row.error_message }}
           </template>
-        </el-table-column>
+          </el-table-column>
+          <el-table-column label="待清理 Meta 对象" min-width="220" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.response_payload?.cleanup_object_ids?.join(', ') || '-' }}
+            </template>
+          </el-table-column>
       </el-table>
 
       <template #footer>

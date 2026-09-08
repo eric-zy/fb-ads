@@ -14,7 +14,7 @@
     <el-alert v-if="authResult" :type="authResult.type" :closable="true" show-icon class="tip-alert" @close="clearAuthResult">
       <template #title>
         {{ authResult.message }}
-        <span v-if="authResult.type === 'success'"> 授权成功后系统会自动异步同步该 BM 下的广告账户。</span>
+        <span v-if="authResult.type === 'success'"> 授权成功后系统会自动同步 BM、广告账户和 Facebook Page。</span>
       </template>
     </el-alert>
 

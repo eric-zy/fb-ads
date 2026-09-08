@@ -15,9 +15,9 @@
             <span>用户管理</span>
           </el-menu-item>
           <el-divider />
-          <el-menu-item index="credentials">
+          <el-menu-item index="meta-connections">
             <el-icon><Key /></el-icon>
-            <span>凭据管理</span>
+            <span>Meta 授权</span>
           </el-menu-item>
           <el-menu-item index="accounts">
             <el-icon><Postcard /></el-icon>

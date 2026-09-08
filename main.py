@@ -34,6 +34,8 @@ from api import accounts as accounts_api
 from api import meta_accounts as meta_accounts_api
 from api import credentials as credentials_api
 from api import meta_auth as meta_auth_api
+from api import meta_pages as meta_pages_api
+from api import meta_connections as meta_connections_api
 from api import media as media_api
 from api import templates as templates_api
 from api import jobs as jobs_api
@@ -152,6 +154,8 @@ app.include_router(credentials_api.router)
 
 # Meta OAuth 授权（管理员选择 BM 后授权，回调自动加密保存 Token）
 app.include_router(meta_auth_api.router)
+app.include_router(meta_pages_api.router)
+app.include_router(meta_connections_api.router)
 
 # 注册素材库路由
 app.include_router(media_api.router)

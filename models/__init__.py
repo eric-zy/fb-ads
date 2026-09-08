@@ -22,6 +22,8 @@ from models.template import CampaignTemplate
 from models.instance import CampaignInstance, AdSetInstance, AdInstance
 # 加密凭据（设计文档第 9 节 / Meta 账号管理 V1 §4）
 from models.credential import Credential
+from models.meta_page import MetaPage
+from models.meta_connection import MetaConnection
 # Job Center（设计文档第 17 节）
 from models.job import CampaignJob, CampaignJobItem
 # 审计日志（设计文档第 41.3 节）
@@ -66,6 +68,8 @@ __all__ = [
     'AdSetInstance',
     'AdInstance',
     'Credential',
+    'MetaPage',
+    'MetaConnection',
     'CampaignJob',
     'CampaignJobItem',
     'AuditLog',

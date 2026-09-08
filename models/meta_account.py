@@ -69,6 +69,10 @@ class MetaAccount(TenantMixin, Base):
     )
 
     id = Column(String(50), primary_key=True, index=True)
+    connection_id = Column(
+        String(50), ForeignKey("meta_connections.id"), nullable=True, index=True,
+        comment="所属 Meta OAuth 授权连接",
+    )
 
     # ---------- 基础信息 ----------
     name = Column(String(255), nullable=False, comment="BM 显示名称")
@@ -134,6 +138,7 @@ class MetaAccount(TenantMixin, Base):
         data = {
             "id": self.id,
             "tenant_id": self.tenant_id,
+            "connection_id": self.connection_id,
             "name": self.name,
             "business_id": self.business_id,
             "app_id": self.app_id,

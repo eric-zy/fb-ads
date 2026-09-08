@@ -156,7 +156,10 @@
         <section v-if="templateStep === 3">
         <el-divider content-position="left">广告创意</el-divider>
         <el-form-item label="Facebook 页面" required>
-          <el-input v-model="creativeForm.page_id" placeholder="填写 Facebook Page ID" />
+          <el-select v-model="creativeForm.page_id" filterable style="width:100%" placeholder="选择已授权的 Facebook 页面">
+            <el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name} (${page.page_id})`" :value="page.page_id" />
+          </el-select>
+          <div v-if="!metaPages.length" class="tip">暂无已同步页面，请先完成 Meta OAuth 授权后刷新页面。</div>
         </el-form-item>
         <div v-for="(creative, index) in creativeForm.creatives" :key="index" class="creative-block">
           <div class="creative-head"><b>创意 {{ index + 1 }}</b><el-button v-if="creativeForm.creatives.length > 1" link type="danger" @click="removeCreative(index)">删除</el-button></div>
@@ -197,9 +200,11 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { mediaApi, type MediaItem } from '@/api/media'
+import { metaPagesApi, type MetaPage } from '@/api/metaPages'
 
 const templates = ref<CampaignTemplate[]>([])
 const mediaAssets = ref<MediaItem[]>([])
+const metaPages = ref<MetaPage[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
@@ -299,6 +304,9 @@ const loadTemplates = async () => {
 const loadMediaAssets = async () => {
   try { const { data } = await mediaApi.list(); mediaAssets.value = data } catch { mediaAssets.value = [] }
 }
+const loadMetaPages = async () => {
+  try { const { data } = await metaPagesApi.list(); metaPages.value = data } catch { metaPages.value = [] }
+}
 
 const resetForm = () => {
   templateStep.value = 0
@@ -323,6 +331,7 @@ const resetForm = () => {
 const openCreate = () => {
   resetForm()
   loadMediaAssets()
+  loadMetaPages()
   dialogVisible.value = true
 }
 
@@ -345,6 +354,7 @@ const openEdit = (row: CampaignTemplate) => {
   form.creative_config_json = JSON.stringify(row.creative_config_json ?? {}, null, 2)
   loadCreativeForm(row.creative_config_json)
   loadMediaAssets()
+  loadMetaPages()
   dialogVisible.value = true
 }
 

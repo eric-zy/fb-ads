@@ -36,7 +36,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'accounts/:id', name: 'AdminAccountDetail', component: () => import('@/pages/admin/AccountDetail.vue'), meta: { title: '广告账户详情' } },
       { path: 'meta-accounts', name: 'AdminMetaAccounts', component: () => import('@/pages/admin/MetaAccounts.vue'), meta: { title: 'BM 管理' } },
       { path: 'businesses/:id', name: 'AdminBusinessDetail', component: () => import('@/pages/admin/BusinessDetail.vue'), meta: { title: 'BM 详情' } },
-      { path: 'credentials', name: 'AdminCredentials', component: () => import('@/pages/admin/Credentials.vue'), meta: { title: 'Meta 授权凭据' } },
+      { path: 'meta-connections', name: 'AdminMetaConnections', component: () => import('@/pages/admin/MetaConnections.vue'), meta: { title: 'Meta 授权' } },
       { path: 'overview', redirect: '/dashboard/overview' },
     ],
   },

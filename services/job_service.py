@@ -14,9 +14,9 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from core.enums import ActionType, JobItemStatus, JobStatus
+from core.enums import ActionType, InstanceStatus, JobItemStatus, JobStatus
 from core.logger import logger
-from models import CampaignJob, CampaignJobItem, CampaignTemplate
+from models import CampaignJob, CampaignJobItem, CampaignTemplate, MetaPage
 from tasks.campaign_tasks import (
     execute_campaign_job,
     retry_failed_job_items,
@@ -58,6 +58,55 @@ class JobService:
         self.db = db
 
     # ------------------------------------------------------------------
+    # 投放前置校验
+    # ------------------------------------------------------------------
+    def preflight_campaign(
+        self, template_id: str, ad_account_ids: List[str], budget_override: Optional[float] = None,
+        status: str = "PAUSED",
+    ) -> Dict[str, Any]:
+        """返回可读的发布前检查结果；不创建 Job，不调用 Meta 写接口。"""
+        from models import MetaPage
+        from services.meta import AdAccountService
+
+        errors: List[Dict[str, Any]] = []
+        warnings: List[Dict[str, Any]] = []
+        template = self.db.query(CampaignTemplate).filter(CampaignTemplate.id == template_id).first()
+        if not template:
+            return {"passed": False, "errors": [{"code": "TEMPLATE_NOT_FOUND", "message": "投放模板不存在"}], "warnings": [], "accounts": []}
+        if template.status != "ACTIVE":
+            errors.append({"code": "TEMPLATE_INACTIVE", "message": "投放模板不是 ACTIVE 状态"})
+        if status not in (InstanceStatus.PAUSED.value, InstanceStatus.ACTIVE.value):
+            errors.append({"code": "INVALID_STATUS", "message": "初始状态只能是 PAUSED 或 ACTIVE"})
+        budget = budget_override if budget_override is not None else ((template.daily_budget or 0) / 100)
+        if budget <= 0:
+            errors.append({"code": "INVALID_BUDGET", "message": "预算必须大于 0"})
+        config = template.creative_config_json or {}
+        page_id = str(config.get("page_id") or "")
+        if not page_id:
+            errors.append({"code": "PAGE_REQUIRED", "message": "模板未选择 Facebook Page"})
+        elif not self.db.query(MetaPage).filter(MetaPage.page_id == page_id, MetaPage.status == "ACTIVE").first():
+            errors.append({"code": "PAGE_UNAVAILABLE", "message": "Facebook Page 未同步、已失效或不属于当前租户"})
+        creatives = config.get("creatives") if isinstance(config.get("creatives"), list) else [config]
+        if not creatives or all(not (c.get("asset_id") or c.get("image_hash") or c.get("video_id")) for c in creatives):
+            errors.append({"code": "CREATIVE_REQUIRED", "message": "模板至少需要一个有效素材"})
+
+        ids = list(dict.fromkeys(ad_account_ids or []))
+        available, rejected = AdAccountService(self.db).filter_available_ids(ids)
+        account_results = [{"account_id": x, "status": "READY"} for x in available]
+        account_results += [{"account_id": x.get("account_id"), "status": "BLOCKED", "reason": x.get("reason")} for x in rejected]
+        if rejected:
+            warnings.append({"code": "ACCOUNTS_REJECTED", "message": f"{len(rejected)} 个账户不可投放，将被剔除", "items": rejected})
+        if not available:
+            errors.append({"code": "NO_AVAILABLE_ACCOUNT", "message": "没有可投放的广告账户"})
+        existing = self.db.query(CampaignInstance).filter(
+            CampaignInstance.template_id == template_id,
+            CampaignInstance.ad_account_id.in_(available),
+            CampaignInstance.status != InstanceStatus.DELETED.value,
+        ).count() if available else 0
+        if existing:
+            warnings.append({"code": "ALREADY_DEPLOYED", "message": f"{existing} 个账户已有该模板实例，提交后会跳过创建"})
+        return {"passed": not errors, "template": {"id": template.id, "name": template.name, "objective": template.objective, "creative_count": len(creatives)}, "errors": errors, "warnings": warnings, "accounts": account_results, "ready_account_ids": available}
+
     # 创建
     # ------------------------------------------------------------------
     @staticmethod
@@ -97,6 +146,17 @@ class JobService:
             raise ValueError(f"投放模板不存在: {template_id}")
         if not ad_account_ids:
             raise ValueError("请至少选择一个广告账户")
+
+        # XMP 式投放前置校验：模板引用的 Page 必须属于当前租户且仍有效。
+        page_id = (template.creative_config_json or {}).get("page_id")
+        if not page_id:
+            raise ValueError("投放模板未选择 Facebook 页面，请先编辑模板选择已同步页面")
+        page = self.db.query(MetaPage).filter(
+            MetaPage.page_id == str(page_id),
+            MetaPage.status == "ACTIVE",
+        ).first()
+        if not page:
+            raise ValueError("模板引用的 Facebook 页面已失效或不属于当前租户，请重新同步并选择页面")
 
         # 文档 §19：可投放判断统一由后端 AdAccountService 完成，
         # 前端/调用方不得自行拼接规则。此处把不可投放的账户直接剔除，

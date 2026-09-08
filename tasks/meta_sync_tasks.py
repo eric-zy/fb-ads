@@ -18,16 +18,81 @@ from celery import shared_task
 
 from core.database import SessionLocal
 from core.logger import logger
-from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task
-from models import AdAccount, MetaAccount, CampaignInstance, AdSetInstance, AdInstance
+from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task, bypass_tenant
+from models import AdAccount, MetaAccount, CampaignInstance, AdSetInstance, AdInstance, Credential
 from services.ad_account_resolver import resolve_tenant_of_ad_account_ref
 from services.ads_manager import AdsManager
 from services.meta import MetaSyncService
+from services.meta.page_service import MetaPageSyncService
 from services.credential_service import CredentialService
 
 
 def _log_to_dict(log) -> Dict:
     return log.to_dict() if log else {}
+
+
+@shared_task(bind=True, name="meta.sync_pages", max_retries=2, default_retry_delay=60)
+@tenant_task(lambda self, credential_id: resolve_tenant_of(Credential, credential_id))
+def sync_meta_pages_task(self, credential_id: str) -> Dict:
+    """按凭据同步该租户可管理的 Facebook Pages。"""
+    db = SessionLocal()
+    try:
+        return {"status": "success", **MetaPageSyncService(db).sync_credential(credential_id)}
+    except Exception as exc:
+        db.rollback()
+        logger.error(f"[meta_pages] 凭据 {credential_id} 页面同步失败: {exc}")
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            return {"status": "failed", "credential_id": credential_id, "error": str(exc)}
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="meta.sync_all_pages")
+@for_all_tenants
+def sync_all_meta_pages_task(self) -> Dict:
+    """定时巡检所有租户的有效 OAuth 凭据。"""
+    db = SessionLocal()
+    submitted = []
+    try:
+        with bypass_tenant():
+            credentials = db.query(Credential).filter(
+                Credential.source == "OAUTH",
+                Credential.status == "ACTIVE",
+            ).all()
+            for credential in credentials:
+                submitted.append(sync_meta_pages_task.delay(credential.id).id)
+        return {"status": "queued", "count": len(submitted), "task_ids": submitted}
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="meta.sync_authorization")
+@tenant_task(lambda self, credential_id: resolve_tenant_of(Credential, credential_id))
+def sync_meta_authorization_task(self, credential_id: str) -> Dict:
+    """XMP 式一次授权后的统一资产同步入口：BM、广告账户、Facebook Page。"""
+    db = SessionLocal()
+    try:
+        credential = db.query(Credential).filter(Credential.id == credential_id).first()
+        if not credential or not credential.meta_account_id:
+            return {"status": "failed", "error": "OAuth 凭据尚未绑定 BM"}
+        business_id = credential.meta_account_id
+        business_task = sync_business_task.delay(business_id)
+        account_task = sync_ad_accounts_task.delay(business_id)
+        page_task = sync_meta_pages_task.delay(credential_id)
+        return {
+            "status": "queued",
+            "credential_id": credential_id,
+            "business_id": business_id,
+            "task_ids": {
+                "business": business_task.id,
+                "ad_accounts": account_task.id,
+                "pages": page_task.id,
+            },
+        }
+    finally:
+        db.close()
 
 
 # 注意：任务参数名 `business_id` 沿用了历史签名，实际传的是 MetaAccount 的主键 id

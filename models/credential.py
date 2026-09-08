@@ -40,6 +40,10 @@ class Credential(TenantMixin, Base):
         index=True,
         comment="归属 BM（Business Manager）",
     )
+    connection_id = Column(
+        String(50), ForeignKey("meta_connections.id"), nullable=True, index=True,
+        comment="统一 Meta OAuth 授权连接",
+    )
     # 显式指定 foreign_keys：BM 侧新增 default_credential_id 后，
     # Credential 与 MetaAccount 之间存在两条外键路径，不指定会触发
     # AmbiguousForeignKeysError。
@@ -108,6 +112,7 @@ class Credential(TenantMixin, Base):
             "id": self.id,
             "tenant_id": self.tenant_id,
             "meta_account_id": self.meta_account_id,
+            "connection_id": self.connection_id,
             "name": self.name,
             "app_id": self.app_id,
             "token_type": self.token_type,

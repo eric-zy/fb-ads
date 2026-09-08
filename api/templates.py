@@ -13,9 +13,19 @@ from sqlalchemy.orm import Session
 from core.auth import get_current_active_user, require_admin
 from core.database import get_db
 from core.enums import TemplateStatus
-from models import CampaignTemplate
+from models import CampaignTemplate, MetaPage, User
 
 router = APIRouter(prefix="/api/v1/templates", tags=["投放模板"])
+
+
+def _validate_page_for_tenant(db: Session, creative_config: Optional[Dict[str, Any]]) -> None:
+    page_id = (creative_config or {}).get("page_id")
+    if not page_id:
+        raise HTTPException(status_code=400, detail="请选择已同步的 Facebook 页面")
+    if not db.query(MetaPage).filter(
+        MetaPage.page_id == str(page_id), MetaPage.status == "ACTIVE"
+    ).first():
+        raise HTTPException(status_code=400, detail="Facebook 页面未同步或不属于当前租户，请重新选择")
 
 
 # ==================== 请求模型 ====================
@@ -80,12 +90,13 @@ def list_templates(
 def create_template(
     req: TemplateCreate,
     db: Session = Depends(get_db),
-    _: object = Depends(require_admin),
+    _: User = Depends(require_admin),
 ):
     """创建投放模板"""
     if db.query(CampaignTemplate).filter(CampaignTemplate.name == req.name).first():
         raise HTTPException(status_code=400, detail=f"模板名称已存在: {req.name}")
 
+    _validate_page_for_tenant(db, req.creative_config_json)
     template = CampaignTemplate(
         id=uuid.uuid4().hex,
         **req.dict(exclude_none=False),
@@ -115,14 +126,17 @@ def update_template(
     template_id: str,
     req: TemplateUpdate,
     db: Session = Depends(get_db),
-    _: object = Depends(require_admin),
+    _: User = Depends(require_admin),
 ):
     """更新模板（仅更新传入字段）"""
     template = db.query(CampaignTemplate).filter(CampaignTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="模板不存在")
 
-    for field, value in req.dict(exclude_unset=True).items():
+    values = req.dict(exclude_unset=True)
+    if "creative_config_json" in values:
+        _validate_page_for_tenant(db, values["creative_config_json"])
+    for field, value in values.items():
         setattr(template, field, value)
     db.commit()
     db.refresh(template)

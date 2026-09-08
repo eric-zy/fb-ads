@@ -80,6 +80,8 @@ class AdAccount(TenantMixin, Base):
     )
     credential_id = Column(String(50), ForeignKey("credentials.id"), nullable=True, index=True,
                            comment="直接授权个人号时使用的 OAuth 凭据")
+    connection_id = Column(String(50), ForeignKey("meta_connections.id"), nullable=True, index=True,
+                            comment="所属 Meta OAuth 授权连接")
     owner_type = Column(String(20), nullable=False, default="BUSINESS",
                         comment="PERSONAL / BUSINESS")
     business = relationship("MetaAccount", back_populates="ad_accounts")
