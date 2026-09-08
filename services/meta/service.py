@@ -282,7 +282,7 @@ class MetaAdsService:
                 act,
                 params={
                     "fields": "id,name,currency,timezone_name,"
-                    "account_status,effective_status,disable_reason,"
+                    "account_status,disable_reason,"
                     "amount_spent,spend_cap",
                 },
             )
