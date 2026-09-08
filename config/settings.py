@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     FB_APP_SECRET: str = os.getenv("FB_APP_SECRET", "")
     FB_ACCESS_TOKEN: str = os.getenv("FB_ACCESS_TOKEN", "")
     FB_ACCOUNT_ID: str = os.getenv("FB_ACCOUNT_ID", "")
-    FB_API_VERSION: str = os.getenv("FB_API_VERSION", "v18.0")
+    # Meta API 版本由部署环境显式覆盖；默认跟随当前 SDK 主版本。
+    FB_API_VERSION: str = os.getenv("FB_API_VERSION", "v25.0")
     FB_OAUTH_REDIRECT_URI: str = os.getenv(
         "FB_OAUTH_REDIRECT_URI",
         "http://localhost:8000/api/v1/meta-auth/callback",

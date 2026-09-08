@@ -5,6 +5,8 @@ from facebook_business.adobjects.ad import Ad as FBAd
 from config.settings import settings
 from core.logger import logger
 from typing import List, Dict, Optional, Any
+import json
+import requests
 import time
 
 class FacebookClient:
@@ -21,6 +23,31 @@ class FacebookClient:
         except Exception as e:
             logger.error(f"Failed to initialize Facebook API: {str(e)}")
             raise
+
+    @staticmethod
+    def _graph_post(path: str, access_token: str, params: Optional[Dict] = None,
+                    files: Optional[Dict] = None) -> Dict[str, Any]:
+        """旧入口统一走 REST，避免继续使用 SDK remote_* 方法。"""
+        payload = dict(params or {})
+        for key, value in list(payload.items()):
+            if isinstance(value, (dict, list)):
+                payload[key] = json.dumps(value, separators=(",", ":"))
+        payload["access_token"] = access_token
+        response = requests.post(
+            f"https://graph.facebook.com/{settings.FB_API_VERSION}/{path.lstrip('/')}",
+            data=payload,
+            files=files,
+            timeout=settings.FB_API_TIMEOUT,
+        )
+        data = response.json()
+        if response.status_code >= 400 or data.get("error"):
+            error = data.get("error") or {}
+            raise RuntimeError(
+                f"Meta API {error.get('message', response.status_code)} "
+                f"code={error.get('code')} subcode={error.get('error_subcode')} "
+                f"fbtrace_id={error.get('fbtrace_id')}"
+            )
+        return data
     
     def get_ad_account(self, account_id: str) -> Optional[FBAdAccount]:
         """获取广告账户"""
@@ -104,8 +131,9 @@ class FacebookClient:
     def pause_campaign(self, campaign_id: str) -> bool:
         """暂停系列"""
         try:
-            campaign = FBCampaign(campaign_id)
-            campaign.update({FBCampaign.Field.status: FBCampaign.Status.paused})
+            if not settings.FB_ACCESS_TOKEN:
+                return False
+            self._graph_post(campaign_id, settings.FB_ACCESS_TOKEN, {"status": "PAUSED"})
             logger.info(f"Campaign {campaign_id} paused successfully")
             return True
         except Exception as e:
@@ -115,8 +143,9 @@ class FacebookClient:
     def resume_campaign(self, campaign_id: str) -> bool:
         """恢复系列"""
         try:
-            campaign = FBCampaign(campaign_id)
-            campaign.update({FBCampaign.Field.status: FBCampaign.Status.active})
+            if not settings.FB_ACCESS_TOKEN:
+                return False
+            self._graph_post(campaign_id, settings.FB_ACCESS_TOKEN, {"status": "ACTIVE"})
             logger.info(f"Campaign {campaign_id} resumed successfully")
             return True
         except Exception as e:
@@ -126,8 +155,13 @@ class FacebookClient:
     def update_campaign_budget(self, campaign_id: str, daily_budget: float) -> bool:
         """更新系列日预算"""
         try:
-            campaign = FBCampaign(campaign_id)
-            campaign.update({FBCampaign.Field.daily_budget: int(daily_budget * 100)})  # Facebook使用分为单位
+            if not settings.FB_ACCESS_TOKEN:
+                return False
+            self._graph_post(
+                campaign_id,
+                settings.FB_ACCESS_TOKEN,
+                {"daily_budget": int(daily_budget * 100)},
+            )
             logger.info(f"Campaign {campaign_id} budget updated to {daily_budget}")
             return True
         except Exception as e:
@@ -312,21 +346,15 @@ class FacebookClient:
             return {"hash": f"dev_hash_{target}_{int(__import__('time').time())}", "dev_mode": True}
 
         try:
-            from facebook_business.api import FacebookSession, FacebookAdsApi
-            from facebook_business.adobjects.adaccount import AdAccount
-            from facebook_business.adobjects.adimage import AdImage
-        except Exception as e:
-            logger.warning(f"[DEV] facebook_business 不可用，降级: {e}")
-            return {"hash": f"dev_hash_{target}", "dev_mode": True}
-
-        try:
-            session = FacebookSession(settings.FB_APP_ID, settings.FB_APP_SECRET, access_token)
-            api = FacebookAdsApi(session)
-            img = AdImage(act, api)
-            img[AdImage.Field.filename] = file_path
-            res = img.remote_create()
-            h = res.get("hash") if isinstance(res, dict) else getattr(res, "get", lambda k: None)("hash")
-            return {"hash": h, "dev_mode": False}
+            with open(file_path, "rb") as image_file:
+                result = self._graph_post(
+                    f"{act}/adimages",
+                    access_token,
+                    files={"filename": image_file},
+                )
+            images = result.get("images") or {}
+            image = next(iter(images.values()), {})
+            return {"hash": image.get("hash"), "dev_mode": False}
         except Exception as e:
             logger.error(f"图片上传失败: {str(e)}")
             return {"hash": None, "dev_mode": False, "error": str(e)}
@@ -344,21 +372,13 @@ class FacebookClient:
             return {"video_id": f"dev_video_{target}_{int(__import__('time').time())}", "dev_mode": True}
 
         try:
-            from facebook_business.api import FacebookSession, FacebookAdsApi
-            from facebook_business.adobjects.adaccount import AdAccount
-            from facebook_business.adobjects.advideo import AdVideo
-            from facebook_business.video_uploader import VideoUploader
-        except Exception as e:
-            logger.warning(f"[DEV] facebook_business 不可用，降级: {e}")
-            return {"video_id": f"dev_video_{target}", "dev_mode": True}
-
-        try:
-            session = FacebookSession(settings.FB_APP_ID, settings.FB_APP_SECRET, access_token)
-            api = FacebookAdsApi(session)
-            video = AdVideo(act, api)
-            video[AdVideo.Field.filepath] = file_path
-            VideoUploader().upload(video, wait_for_encoding=False)
-            return {"video_id": video.get("id") or video.get_id(), "dev_mode": False}
+            with open(file_path, "rb") as video_file:
+                result = self._graph_post(
+                    f"{act}/advideos",
+                    access_token,
+                    files={"source": video_file},
+                )
+            return {"video_id": result.get("id"), "dev_mode": False}
         except Exception as e:
             logger.error(f"视频上传失败: {str(e)}")
             return {"video_id": None, "dev_mode": False, "error": str(e)}
@@ -399,85 +419,70 @@ class FacebookClient:
                 "error": None,
             }
 
+        # 旧批量投放入口也统一走 REST，避免 remote_create 与新链路行为不一致。
         try:
-            from facebook_business.api import FacebookSession, FacebookAdsApi
-            from facebook_business.adobjects.adaccount import AdAccount as FBAdAccount
-            from facebook_business.adobjects.campaign import Campaign as FBCampaign
-            from facebook_business.adobjects.adset import AdSet
-            from facebook_business.adobjects.ad import Ad as FBAd
-            from facebook_business.adobjects.adcreative import AdCreative
-        except Exception as e:
-            logger.warning(f"[DEV] facebook_business 不可用，降级: {e}")
-            return {
-                "campaign_id": f"dev_camp_{target}_{ts}_{idx}",
-                "adset_id": f"dev_set_{target}_{ts}_{idx}",
-                "ad_id": f"dev_ad_{target}_{ts}_{idx}",
-                "dev_mode": True,
-                "error": None,
-            }
-
-        try:
-            session = FacebookSession(settings.FB_APP_ID, settings.FB_APP_SECRET, access_token)
-            api = FacebookAdsApi(session)
-            fb_account = FBAdAccount(act, api)
-
             camp_name = f"{name_prefix} C{idx}"
             set_name = f"{name_prefix} S{idx}"
             ad_name = f"{name_prefix} A{idx}"
-
-            # 1) Campaign
-            campaign = FBCampaign(api=api)
-            campaign[FBCampaign.Field.name] = camp_name
-            campaign[FBCampaign.Field.objective] = objective
-            campaign[FBCampaign.Field.status] = FBCampaign.Status.active
-            campaign[FBCampaign.Field.special_ad_categories] = []
-            campaign.remote_create(parent_id=fb_account.get_id_assured())
-
-            # 2) AdSet
-            adset = AdSet(api=api)
-            adset[AdSet.Field.name] = set_name
-            adset[AdSet.Field.campaign_id] = campaign.get_id()
-            adset[AdSet.Field.billing_event] = AdSet.BillingEvent.impressions
-            adset[AdSet.Field.optimization_goal] = AdSet.OptimizationGoal.reach
-            adset[AdSet.Field.daily_budget] = int(daily_budget * 100)
-            adset[AdSet.Field.targeting] = {"geo_locations": {"countries": ["US"]}}
-            adset[AdSet.Field.status] = AdSet.Status.active
-            adset.remote_create(parent_id=fb_account.get_id_assured())
-
-            # 3) Creative
-            creative = AdCreative(api=api)
-            creative[AdCreative.Field.name] = f"{ad_name} Creative"
-            if asset_type == "video":
-                creative[AdCreative.Field.object_story_spec] = {
-                    "page_id": "",  # 需由调用方补充真实 page_id
-                    "video_data": {
+            campaign = self._graph_post(
+                f"{act}/campaigns",
+                access_token,
+                {
+                    "name": camp_name,
+                    "objective": objective,
+                    "status": "PAUSED",
+                    "special_ad_categories": [],
+                },
+            )
+            campaign_id = campaign["id"]
+            adset = self._graph_post(
+                f"{act}/adsets",
+                access_token,
+                {
+                    "name": set_name,
+                    "campaign_id": campaign_id,
+                    "billing_event": "IMPRESSIONS",
+                    "optimization_goal": "REACH",
+                    "daily_budget": int(daily_budget * 100),
+                    "targeting": {"geo_locations": {"countries": ["US"]}},
+                    "status": "PAUSED",
+                },
+            )
+            adset_id = adset["id"]
+            story_spec = {
+                "page_id": "",
+                "video_data" if asset_type == "video" else "photo_data": (
+                    {
                         "video_id": video_id,
                         "title": headline,
                         "message": body,
-                    },
-                }
-            else:
-                creative[AdCreative.Field.object_story_spec] = {
-                    "page_id": "",
-                    "photo_data": {
+                    }
+                    if asset_type == "video"
+                    else {
                         "image_hash": image_hash,
                         "caption": headline,
-                    },
-                }
-            creative.remote_create(parent_id=fb_account.get_id_assured())
-
-            # 4) Ad
-            ad = FBAd(api=api)
-            ad[FBAd.Field.name] = ad_name
-            ad[FBAd.Field.adset_id] = adset.get_id()
-            ad[FBAd.Field.creative] = {"creative_id": creative.get_id()}
-            ad[FBAd.Field.status] = FBAd.Status.active
-            ad.remote_create(parent_id=fb_account.get_id_assured())
-
+                    }
+                ),
+            }
+            creative = self._graph_post(
+                f"{act}/adcreatives",
+                access_token,
+                {"name": f"{ad_name} Creative", "object_story_spec": story_spec},
+            )
+            ad = self._graph_post(
+                f"{act}/ads",
+                access_token,
+                {
+                    "name": ad_name,
+                    "adset_id": adset_id,
+                    "creative": {"creative_id": creative["id"]},
+                    "status": "PAUSED",
+                },
+            )
             return {
-                "campaign_id": campaign.get_id(),
-                "adset_id": adset.get_id(),
-                "ad_id": ad.get_id(),
+                "campaign_id": campaign_id,
+                "adset_id": adset_id,
+                "ad_id": ad["id"],
                 "dev_mode": False,
                 "error": None,
             }

@@ -55,7 +55,10 @@ class MetaClient:
                 access_token=self.access_token,
             )
             # 构造独立 Api 实例，不调用 FacebookAdsApi.init()（避免全局污染）
-            self._api = FacebookAdsApi(session)
+            self._api = FacebookAdsApi(
+                session,
+                api_version=settings.FB_API_VERSION,
+            )
         except Exception as e:
             logger.error(f"[MetaClient] 初始化失败: {e}")
             raise MetaApiError(f"Meta 客户端初始化失败: {e}", category=ErrorCategory.AUTH)
@@ -100,6 +103,46 @@ class MetaClient:
             response = requests.get(
                 f"https://graph.facebook.com/{settings.FB_API_VERSION}/{path.lstrip('/')}",
                 params=request_params,
+                timeout=settings.FB_API_TIMEOUT,
+            )
+            payload = response.json()
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if response.status_code >= 400 or error:
+                error = error or {}
+                code = error.get("code")
+                subcode = error.get("error_subcode")
+                raise MetaApiError(
+                    error.get("message", f"Graph API HTTP {response.status_code}"),
+                    category=classify(code, subcode, response.status_code),
+                    code=code,
+                    subcode=subcode,
+                    http_status=response.status_code,
+                    fbtrace_id=error.get("fbtrace_id"),
+                )
+            return payload
+        except MetaApiError:
+            raise
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            raise MetaApiError(str(exc), category=ErrorCategory.TEMPORARY)
+        except Exception as exc:
+            raise classify_facebook_error(exc)
+
+    def _post(self, path: str, params: dict, files: Optional[dict] = None) -> dict:
+        """统一的 Graph API POST 调用与错误映射。
+
+        写入接口使用账户凭证对应的 User Access Token；不使用全局
+        FB_ACCESS_TOKEN。列表/字典参数按 Graph API 的表单格式序列化。
+        """
+        try:
+            request_params = dict(params or {})
+            for key, value in list(request_params.items()):
+                if isinstance(value, (dict, list)):
+                    request_params[key] = json.dumps(value, separators=(",", ":"))
+            request_params["access_token"] = self.access_token
+            response = requests.post(
+                f"https://graph.facebook.com/{settings.FB_API_VERSION}/{path.lstrip('/')}",
+                data=request_params,
+                files=files,
                 timeout=settings.FB_API_TIMEOUT,
             )
             payload = response.json()

@@ -15,12 +15,6 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 import requests
-from facebook_business.adobjects.ad import Ad
-from facebook_business.adobjects.adcreative import AdCreative
-from facebook_business.adobjects.adimage import AdImage
-from facebook_business.adobjects.adset import AdSet
-from facebook_business.adobjects.advideo import AdVideo
-from facebook_business.adobjects.campaign import Campaign
 
 from config.settings import settings
 from core.enums import ErrorCategory
@@ -117,14 +111,33 @@ class MetaAdsService:
     # 创建类接口（设计文档第 19 节推荐接口）
     # ------------------------------------------------------------------
     def create_campaign(self, account_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """创建 Campaign。params 为 Meta 原生字段字典。"""
+        """创建 Campaign。
+
+        Campaign 创建使用直接 Graph API POST，而不是 SDK 的
+        ``remote_create``。SDK 在当前 API 版本会对部分字段做额外序列化，
+        导致 Meta 返回 code=100/subcode=4834011。这里只发送创建 Campaign
+        所需的最小字段，AdSet/Creative/Ad 仍由后续步骤创建。
+        """
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            campaign = Campaign(parent_id=act, api=self.client.api)
-            campaign.update(params)
-            campaign.remote_create()
-            return {"id": campaign.get_id()}
+            allowed = {"name", "objective", "status", "special_ad_categories"}
+            payload = {key: value for key, value in (params or {}).items() if key in allowed}
+            required = {"name", "objective", "status", "special_ad_categories"}
+            missing = required.difference(payload)
+            if missing:
+                raise MetaApiError(
+                    f"创建 Campaign 缺少必要参数: {', '.join(sorted(missing))}",
+                    category=ErrorCategory.VALIDATION,
+                )
+            result = self.client._post(f"{act}/campaigns", payload)
+            campaign_id = result.get("id")
+            if not campaign_id:
+                raise MetaApiError(
+                    "Meta 创建 Campaign 未返回 id",
+                    category=ErrorCategory.UNKNOWN,
+                )
+            return {"id": campaign_id}
 
         return self._execute(_do, f"create_campaign(act={act})", account_id=account_id)
 
@@ -133,10 +146,8 @@ class MetaAdsService:
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            adset = AdSet(parent_id=act, api=self.client.api)
-            adset.update(params)
-            adset.remote_create()
-            return {"id": adset.get_id()}
+            result = self.client._post(f"{act}/adsets", params)
+            return {"id": result["id"]}
 
         return self._execute(_do, f"create_adset(act={act})", account_id=account_id)
 
@@ -145,10 +156,8 @@ class MetaAdsService:
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            creative = AdCreative(parent_id=act, api=self.client.api)
-            creative.update(params)
-            creative.remote_create()
-            return {"id": creative.get_id()}
+            result = self.client._post(f"{act}/adcreatives", params)
+            return {"id": result["id"]}
 
         return self._execute(_do, f"create_creative(act={act})", account_id=account_id)
 
@@ -157,10 +166,8 @@ class MetaAdsService:
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            ad = Ad(parent_id=act, api=self.client.api)
-            ad.update(params)
-            ad.remote_create()
-            return {"id": ad.get_id()}
+            result = self.client._post(f"{act}/ads", params)
+            return {"id": result["id"]}
 
         return self._execute(_do, f"create_ad(act={act})", account_id=account_id)
 
@@ -181,12 +188,10 @@ class MetaAdsService:
             )
 
         def _do():
-            if level == "campaign":
-                obj = Campaign(object_id, api=self.client.api)
-            else:
-                obj = AdSet(object_id, api=self.client.api)
-            obj.update({AdSet.Field.daily_budget: int(round(budget_usd * 100))})
-            obj.remote_update()
+            self.client._post(
+                object_id,
+                {"daily_budget": int(round(budget_usd * 100))},
+            )
             return {"id": object_id, "daily_budget": budget_usd}
 
         return self._execute(_do, f"update_budget({level}={object_id})")
@@ -201,9 +206,7 @@ class MetaAdsService:
 
     def _set_campaign_status(self, campaign_id: str, status: str) -> Dict[str, Any]:
         def _do():
-            campaign = Campaign(campaign_id, api=self.client.api)
-            campaign.update({Campaign.Field.status: status})
-            campaign.remote_update()
+            self.client._post(campaign_id, {"status": status})
             return {"id": campaign_id, "status": status}
 
         return self._execute(_do, f"set_campaign_status({campaign_id}={status})")
@@ -316,51 +319,37 @@ class MetaAdsService:
     def list_adsets(self, campaign_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
         """读取 Campaign 下的 AdSet。"""
         def _do():
-            campaign = Campaign(campaign_id, api=self.client.api)
-            rows = campaign.get_ad_sets(
-                fields=[
-                    AdSet.Field.id,
-                    AdSet.Field.name,
-                    AdSet.Field.status,
-                    AdSet.Field.effective_status,
-                    AdSet.Field.daily_budget,
-                    AdSet.Field.lifetime_budget,
-                    AdSet.Field.optimization_goal,
-                    AdSet.Field.billing_event,
-                    AdSet.Field.targeting,
-                    AdSet.Field.updated_time,
-                ],
-                params={"limit": limit},
+            payload = self.client._get(
+                f"{campaign_id}/adsets",
+                {
+                    "fields": "id,name,status,effective_status,daily_budget,"
+                              "lifetime_budget,optimization_goal,billing_event,"
+                              "targeting,updated_time",
+                    "limit": limit,
+                },
             )
-            return [dict(row) for row in rows]
+            return payload.get("data", [])
 
         return self._execute(_do, f"list_adsets(campaign={campaign_id})")
 
     def list_ads(self, adset_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
         """读取 AdSet 下的 Ad。"""
         def _do():
-            adset = AdSet(adset_id, api=self.client.api)
-            rows = adset.get_ads(
-                fields=[
-                    Ad.Field.id,
-                    Ad.Field.name,
-                    Ad.Field.status,
-                    Ad.Field.effective_status,
-                    Ad.Field.creative,
-                    Ad.Field.updated_time,
-                ],
-                params={"limit": limit},
+            payload = self.client._get(
+                f"{adset_id}/ads",
+                {
+                    "fields": "id,name,status,effective_status,creative,updated_time",
+                    "limit": limit,
+                },
             )
-            return [dict(row) for row in rows]
+            return payload.get("data", [])
 
         return self._execute(_do, f"list_ads(adset={adset_id})")
 
     def update_campaign(self, campaign_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """更新 Campaign 属性，例如名称、预算或状态。"""
         def _do():
-            campaign = Campaign(campaign_id, api=self.client.api)
-            campaign.update(params)
-            campaign.remote_update()
+            self.client._post(campaign_id, params)
             return {"id": campaign_id, **params}
 
         return self._execute(_do, f"update_campaign({campaign_id})")
@@ -368,9 +357,7 @@ class MetaAdsService:
     def update_adset(self, adset_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """更新 AdSet 属性，例如预算、定向或状态。"""
         def _do():
-            adset = AdSet(adset_id, api=self.client.api)
-            adset.update(params)
-            adset.remote_update()
+            self.client._post(adset_id, params)
             return {"id": adset_id, **params}
 
         return self._execute(_do, f"update_adset({adset_id})")
@@ -378,9 +365,7 @@ class MetaAdsService:
     def update_ad(self, ad_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """更新 Ad 属性，例如名称或状态。"""
         def _do():
-            ad = Ad(ad_id, api=self.client.api)
-            ad.update(params)
-            ad.remote_update()
+            self.client._post(ad_id, params)
             return {"id": ad_id, **params}
 
         return self._execute(_do, f"update_ad({ad_id})")
@@ -390,10 +375,18 @@ class MetaAdsService:
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            image = AdImage(parent_id=act, api=self.client.api)
-            image[AdImage.Field.filename] = file_path
-            image.remote_create()
-            return {"hash": image[AdImage.Field.hash]}
+            with open(file_path, "rb") as image_file:
+                result = self.client._post(
+                    f"{act}/adimages",
+                    {},
+                    files={"filename": image_file},
+                )
+            images = result.get("images") or {}
+            first = next(iter(images.values()), {})
+            image_hash = first.get("hash")
+            if not image_hash:
+                raise MetaApiError("Meta 图片上传未返回 hash", category=ErrorCategory.UNKNOWN)
+            return {"hash": image_hash}
 
         return self._execute(_do, f"upload_image(act={act})", account_id=account_id)
 
@@ -402,10 +395,16 @@ class MetaAdsService:
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            video = AdVideo(parent_id=act, api=self.client.api)
-            video[AdVideo.Field.filepath] = file_path
-            video.remote_create()
-            return {"video_id": video.get_id()}
+            with open(file_path, "rb") as video_file:
+                result = self.client._post(
+                    f"{act}/advideos",
+                    {},
+                    files={"source": video_file},
+                )
+            video_id = result.get("id")
+            if not video_id:
+                raise MetaApiError("Meta 视频上传未返回 id", category=ErrorCategory.UNKNOWN)
+            return {"video_id": video_id}
 
         return self._execute(_do, f"upload_video(act={act})", account_id=account_id)
 
@@ -422,8 +421,7 @@ class MetaAdsService:
             for _ in range(20):  # 最多翻 20 页，避免死循环
                 if after:
                     params["after"] = after
-                response = self.client.api.call("GET", f"{bm_id}/adaccounts", params=params)
-                data = response.json()
+                data = self.client._get(f"{bm_id}/adaccounts", params=params)
                 for acc in data.get("data", []):
                     if acc.get("id", "").replace("act_", "") == target:
                         return {"verified": True, "account_name": acc.get("name")}
