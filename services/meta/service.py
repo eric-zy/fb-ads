@@ -10,6 +10,7 @@
 4. 限流：调用前按账户维度做窗口限流，超限则等待，
    Batch API 不能替代 Rate Limiting（设计文档第 25 / 26 节）。
 """
+import json
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -25,7 +26,7 @@ from config.settings import settings
 from core.enums import ErrorCategory
 from core.logger import logger
 from services.meta.client import MetaClient
-from services.meta.errors import MetaApiError, classify_facebook_error
+from services.meta.errors import MetaApiError, classify, classify_facebook_error
 from services.rate_limit import RateLimitManager
 
 
@@ -215,9 +216,57 @@ class MetaAdsService:
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            account = self.client.account(account_id)
-            insights = account.get_insights(params=params)
-            return [dict(i) for i in insights]
+            # facebook-business 18.0.0 在当前 App 配置下会错误返回
+            # ``(#200) Provide valid app ID``，而同一 User Token 直接调用
+            # Graph API 已验证可用。因此 Insights 走显式 HTTP 请求，
+            # 仍然使用当前账户的 User Access Token，不使用全局 Token。
+            request_params = {
+                "date_preset": params.get("date_preset", "yesterday"),
+                "level": params.get("level", "account"),
+                "fields": params.get(
+                    "fields",
+                    "date_start,date_stop,spend,impressions,clicks,actions,"
+                    "cost_per_action_type,ctr,cpc,cpm,frequency,reach,"
+                    "account_id,campaign_id,adset_id,ad_id",
+                ),
+            }
+            for key, value in params.items():
+                if key not in {"date_preset", "level", "fields"}:
+                    request_params[key] = value
+            for key, value in list(request_params.items()):
+                if isinstance(value, (dict, list)):
+                    request_params[key] = json.dumps(value, separators=(",", ":"))
+
+            try:
+                response = requests.get(
+                    f"https://graph.facebook.com/{settings.FB_API_VERSION}/{act}/insights",
+                    params={
+                        **request_params,
+                        "access_token": self.client.access_token,
+                    },
+                    timeout=settings.FB_API_TIMEOUT,
+                )
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                raise MetaApiError(str(exc), category=ErrorCategory.TEMPORARY)
+
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if response.status_code >= 400 or error:
+                error = error or {}
+                code = error.get("code")
+                subcode = error.get("error_subcode")
+                raise MetaApiError(
+                    error.get("message", f"Graph API HTTP {response.status_code}"),
+                    category=classify(code, subcode, response.status_code),
+                    code=code,
+                    subcode=subcode,
+                    http_status=response.status_code,
+                    fbtrace_id=error.get("fbtrace_id"),
+                )
+            return payload.get("data", []) if isinstance(payload, dict) else []
 
         return self._execute(_do, f"get_insights(act={act})", account_id=account_id)
 
