@@ -25,8 +25,8 @@
           <el-option label="图片" value="image" />
           <el-option label="视频" value="video" />
         </el-select>
-        <el-select v-model="filterMeta" placeholder="归属主账号" clearable filterable style="width: 220px" @change="load">
-          <el-option v-for="m in metaAccounts" :key="m.id" :label="m.name" :value="m.id" />
+        <el-select v-model="filterAccount" placeholder="选择广告账户" clearable filterable style="width: 260px" @change="load">
+          <el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} (${account.account_id})`" :value="account.id" />
         </el-select>
       </div>
 
@@ -81,13 +81,13 @@ import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { UploadFilled, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { mediaApi, type MediaItem } from '@/api/media'
-import { metaAccountApi, type MetaAccountItem } from '@/api/admin'
+import { accountApi, type AdAccountItem } from '@/api/admin'
 
 const list = ref<MediaItem[]>([])
 const loading = ref(false)
 const filterType = ref('')
-const filterMeta = ref('')
-const metaAccounts = ref<MetaAccountItem[]>([])
+const filterAccount = ref('')
+const accounts = ref<AdAccountItem[]>([])
 const bindingVisible = ref(false)
 const bindingLoading = ref(false)
 const bindings = ref<any[]>([])
@@ -99,7 +99,7 @@ const load = async () => {
   try {
     const { data } = await mediaApi.list({
       asset_type: filterType.value || undefined,
-      meta_account_id: filterMeta.value || undefined,
+      account_id: filterAccount.value || undefined,
     })
     list.value = data
   } finally {
@@ -111,7 +111,11 @@ const onSelect = async (file: any) => {
   const raw: File = file.raw
   if (!raw) return
   try {
-    const res = await mediaApi.upload(raw, { meta_account_id: filterMeta.value || undefined })
+    if (!filterAccount.value) {
+      ElMessage.warning('请先选择归属广告账户，再上传素材')
+      return
+    }
+    const res = await mediaApi.upload(raw, { account_id: filterAccount.value })
     ElMessage.success(`已上传：${res.data.name}`)
     await load()
   } catch (e: any) {
@@ -143,12 +147,13 @@ const formatSize = (n?: number | null) => {
 }
 
 onMounted(async () => {
-  await load()
   try {
-    metaAccounts.value = await metaAccountApi.list()
+    const { data } = await accountApi.list({ page: 1, page_size: 100 })
+    accounts.value = data || []
   } catch {
-    metaAccounts.value = []
+    accounts.value = []
   }
+  await load()
 })
 </script>
 
