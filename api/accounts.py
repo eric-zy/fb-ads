@@ -34,8 +34,7 @@ from models import (
     RiskEvent, RiskLevel, CampaignJobItem, MetaSyncLog,
 )
 from services.credential_service import CredentialError, CredentialService
-from services.fb_client import fb_client
-from services.meta import AdAccountService
+from services.meta import AdAccountService, MetaAdsService, MetaApiError, MetaClient
 from tasks.meta_sync_tasks import sync_ad_account_task
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["账户管理"])
@@ -125,11 +124,13 @@ def _verify_bm_ownership(
     验证不通过直接抛 400；调用 Meta 失败同样视为不通过（安全默认值）。
     """
     token = _resolve_bm_token(db, meta)
-    result = fb_client.verify_account_under_bm(
-        business_id=meta.business_id,
-        access_token=token,
-        target_account_id=account_id,
-    )
+    try:
+        result = MetaAdsService(MetaClient(access_token=token)).verify_account_under_bm(
+            business_id=meta.business_id,
+            target_account_id=account_id,
+        )
+    except MetaApiError as exc:
+        raise HTTPException(status_code=400, detail=f"Meta 账户归属校验失败：{exc}")
     if not result.get("verified"):
         raise HTTPException(
             status_code=400,

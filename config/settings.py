@@ -27,7 +27,8 @@ class Settings(BaseSettings):
         "http://localhost:8000/api/v1/meta-auth/callback",
     )
     FB_OAUTH_SCOPES: str = os.getenv(
-        "FB_OAUTH_SCOPES", "ads_management,ads_read,business_management"
+        "FB_OAUTH_SCOPES",
+        "business_management,ads_management,ads_read,pages_show_list,pages_read_engagement",
     )
     FRONTEND_BASE_URL: str = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
     FB_API_TIMEOUT: int = 30

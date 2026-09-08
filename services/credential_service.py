@@ -2,10 +2,7 @@
 
 统一入口：给定一个广告账户或 BM，解析出可用的明文 Access Token。
 
-解析优先级：
-    1. credentials 表（加密存储，推荐）
-    2. meta_accounts.access_token（兼容改造前的历史明文数据）
-    3. 全局 settings.FB_ACCESS_TOKEN（最后兜底）
+正式链路唯一来源为 credentials 表中的加密 OAuth 凭据。
 
 这是"多 BM / 多广告账户"架构的关键：每个账户解析出自己的 token，
 再用它构造独立的 MetaClient，而不是全系统共用一个全局 token。
@@ -64,7 +61,7 @@ class CredentialService:
                 if token:
                     return token, cred
 
-        # 1) 优先使用加密凭据表（2 / 3 级回退在 resolve_token_for_meta 内完成）
+        # BM 账户使用该 BM 当前生效的加密 OAuth 凭据。
         # 注意：AdAccount 通过 `business_id` 关联所属 BM，
         # 不存在 `meta_account_id` 属性（那是 Credential 上的字段）。
         if account.business_id:
@@ -77,11 +74,6 @@ class CredentialService:
                 logger.warning(
                     f"[CredentialService] 账户 {ad_account_id} 凭据解析失败: {e}"
                 )
-
-        # 4) 最后兜底：全局配置
-        if settings.FB_ACCESS_TOKEN:
-            logger.warning("[CredentialService] 回退使用全局 FB_ACCESS_TOKEN")
-            return settings.FB_ACCESS_TOKEN, None
 
         raise CredentialError(f"广告账户 {ad_account_id} 无可用凭据")
 
@@ -129,19 +121,15 @@ class CredentialService:
     def resolve_token_for_meta(
         self,
         meta_account_id: str,
-        *,
-        allow_global_fallback: bool = True,
     ) -> Tuple[str, Optional[Credential]]:
         """解析某个 BM 可用的明文 token
 
-        优先级：
-            1. credentials 表（加密存储，唯一正式来源）
-            2. 全局 settings.FB_ACCESS_TOKEN（最后兜底）
+        credentials 表中的加密 OAuth Token 是唯一来源。
 
         Meta 账号管理 V1 之后 `meta_accounts.access_token` 列已移除
         （BM 主表不再存明文 Token），因此不再有"回退 BM 明文"这一级。
 
-        返回 (token, credential|None)；credential 为 None 表示走的是全局兜底。
+        返回 (token, credential)。
         """
         if not meta_account_id:
             raise CredentialError("未指定 BM 主账号，无法解析凭据")
@@ -163,11 +151,6 @@ class CredentialService:
                 )
                 return token, cred
             logger.error(f"[CredentialService] 凭据 {cred.id} 解密失败")
-
-        # 2) 全局兜底（仅兼容旧管理/开发入口；账户生产链路显式关闭）
-        if allow_global_fallback and settings.FB_ACCESS_TOKEN:
-            logger.warning("[CredentialService] 回退使用全局 FB_ACCESS_TOKEN")
-            return settings.FB_ACCESS_TOKEN, None
 
         raise CredentialError(f"BM {meta_account_id} 无可用凭据")
 
@@ -197,10 +180,7 @@ class CredentialService:
                     return token, cred
 
         if account.business_id:
-            token, cred = self.resolve_token_for_meta(
-                account.business_id,
-                allow_global_fallback=False,
-            )
+            token, cred = self.resolve_token_for_meta(account.business_id)
             if cred:
                 return token, cred
 
@@ -324,16 +304,15 @@ class CredentialService:
         if not plain_token:
             return {"valid": False, "dev_mode": False, "error": "Token 为空", "token_info": None}
 
-        # 与 services/fb_client.py 保持一致的开发降级策略：
-        # 未配置真实 FB 凭据时不做真实网络调用，避免本地开发被外部依赖卡死
-        if not settings.FB_ACCESS_TOKEN:
-            logger.warning("[CredentialService] 未配置 FB 凭据，跳过 Token 真实校验（开发模式）")
+        # 只有显式的开发环境才允许跳过外部调用。生产环境本来就不应配置
+        # 全局 FB_ACCESS_TOKEN，不能用它是否存在来判断开发模式。
+        if settings.ENVIRONMENT.lower() in {"development", "test"} and not settings.FB_APP_ID:
+            logger.warning("[CredentialService] 开发环境未配置 Meta App，跳过 Token 真实校验")
             return {"valid": True, "dev_mode": True, "error": None, "token_info": None}
 
         try:
             client = MetaClient(access_token=plain_token)
-            response = client.api.call("GET", "me", params={"fields": "id,name"})
-            data = response.json()
+            data = client._get("me", {"fields": "id,name"})
         except MetaApiError as e:
             return {"valid": False, "dev_mode": False, "error": str(e)[:300], "token_info": None}
         except Exception as e:  # SDK / 网络异常

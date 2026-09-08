@@ -48,6 +48,14 @@ class MetaPageSyncService:
             if not page:
                 page = MetaPage(id=uuid.uuid4().hex, page_id=page_id, tenant_id=credential.tenant_id)
                 self.db.add(page)
+            elif page.connection_id and page.connection_id != credential.connection_id:
+                # 当前表结构按租户+Page 唯一，不能安全保存同一 Page 在多个 OAuth
+                # 连接下的不同 Page Token。禁止后授权静默覆盖前一授权。
+                logger.warning(
+                    f"[meta_pages] Page {page_id} 已属于连接 {page.connection_id}，"
+                    f"忽略连接 {credential.connection_id} 的覆盖"
+                )
+                continue
             page.page_name = remote.get("name") or page_id
             page.category = remote.get("category")
             page.tasks = remote.get("tasks") or []

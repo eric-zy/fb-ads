@@ -121,7 +121,7 @@ class MetaAdsService:
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            allowed = {"name", "objective", "status", "special_ad_categories"}
+            allowed = {"name", "objective", "status", "special_ad_categories", "buying_type"}
             payload = {key: value for key, value in (params or {}).items() if key in allowed}
             required = {"name", "objective", "status", "special_ad_categories"}
             missing = required.difference(payload)
@@ -247,36 +247,44 @@ class MetaAdsService:
                 if isinstance(value, (dict, list)):
                     request_params[key] = json.dumps(value, separators=(",", ":"))
 
-            try:
-                response = requests.get(
-                    f"https://graph.facebook.com/{settings.FB_API_VERSION}/{act}/insights",
-                    params={
-                        **request_params,
-                        "access_token": self.client.access_token,
-                    },
-                    timeout=settings.FB_API_TIMEOUT,
-                )
-            except (requests.Timeout, requests.ConnectionError) as exc:
-                raise MetaApiError(str(exc), category=ErrorCategory.TEMPORARY)
+            rows: List[Dict[str, Any]] = []
+            after = None
+            for _ in range(20):
+                page_params = dict(request_params)
+                page_params["limit"] = min(int(page_params.get("limit", 500)), 500)
+                if after:
+                    page_params["after"] = after
+                try:
+                    response = requests.get(
+                        f"https://graph.facebook.com/{settings.FB_API_VERSION}/{act}/insights",
+                        params={**page_params, "access_token": self.client.access_token},
+                        timeout=settings.FB_API_TIMEOUT,
+                    )
+                except (requests.Timeout, requests.ConnectionError) as exc:
+                    raise MetaApiError(str(exc), category=ErrorCategory.TEMPORARY)
 
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = {}
-            error = payload.get("error") if isinstance(payload, dict) else None
-            if response.status_code >= 400 or error:
-                error = error or {}
-                code = error.get("code")
-                subcode = error.get("error_subcode")
-                raise MetaApiError(
-                    error.get("message", f"Graph API HTTP {response.status_code}"),
-                    category=classify(code, subcode, response.status_code),
-                    code=code,
-                    subcode=subcode,
-                    http_status=response.status_code,
-                    fbtrace_id=error.get("fbtrace_id"),
-                )
-            return payload.get("data", []) if isinstance(payload, dict) else []
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+                error = payload.get("error") if isinstance(payload, dict) else None
+                if response.status_code >= 400 or error:
+                    error = error or {}
+                    code = error.get("code")
+                    subcode = error.get("error_subcode")
+                    raise MetaApiError(
+                        error.get("message", f"Graph API HTTP {response.status_code}"),
+                        category=classify(code, subcode, response.status_code),
+                        code=code,
+                        subcode=subcode,
+                        http_status=response.status_code,
+                        fbtrace_id=error.get("fbtrace_id"),
+                    )
+                rows.extend(payload.get("data", []) if isinstance(payload, dict) else [])
+                after = ((payload.get("paging") or {}).get("cursors") or {}).get("after")
+                if not after:
+                    break
+            return rows
 
         return self._execute(_do, f"get_insights(act={act})", account_id=account_id)
 
@@ -314,39 +322,53 @@ class MetaAdsService:
                 payload = self.client._get(f"{act}/campaigns", params=params)
                 rows.extend(payload.get("data", []))
                 after = (payload.get("paging") or {}).get("cursors", {}).get("after")
-                if not after or len(rows) >= limit:
+                if not after:
                     break
-            return rows[:limit]
+            return rows
 
         return self._execute(_do, f"list_campaigns(act={act})", account_id=account_id)
 
     def list_adsets(self, campaign_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
         """读取 Campaign 下的 AdSet。"""
         def _do():
-            payload = self.client._get(
-                f"{campaign_id}/adsets",
-                {
+            rows: List[Dict[str, Any]] = []
+            after = None
+            for _ in range(20):
+                params = {
                     "fields": "id,name,status,effective_status,daily_budget,"
                               "lifetime_budget,optimization_goal,billing_event,"
                               "targeting,updated_time",
                     "limit": limit,
-                },
-            )
-            return payload.get("data", [])
+                }
+                if after:
+                    params["after"] = after
+                payload = self.client._get(f"{campaign_id}/adsets", params)
+                rows.extend(payload.get("data", []))
+                after = ((payload.get("paging") or {}).get("cursors") or {}).get("after")
+                if not after:
+                    break
+            return rows
 
         return self._execute(_do, f"list_adsets(campaign={campaign_id})")
 
     def list_ads(self, adset_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
         """读取 AdSet 下的 Ad。"""
         def _do():
-            payload = self.client._get(
-                f"{adset_id}/ads",
-                {
+            rows: List[Dict[str, Any]] = []
+            after = None
+            for _ in range(20):
+                params = {
                     "fields": "id,name,status,effective_status,creative,updated_time",
                     "limit": limit,
-                },
-            )
-            return payload.get("data", [])
+                }
+                if after:
+                    params["after"] = after
+                payload = self.client._get(f"{adset_id}/ads", params)
+                rows.extend(payload.get("data", []))
+                after = ((payload.get("paging") or {}).get("cursors") or {}).get("after")
+                if not after:
+                    break
+            return rows
 
         return self._execute(_do, f"list_ads(adset={adset_id})")
 

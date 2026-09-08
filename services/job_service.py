@@ -16,7 +16,15 @@ from sqlalchemy.orm import Session
 
 from core.enums import ActionType, InstanceStatus, JobItemStatus, JobStatus
 from core.logger import logger
-from models import CampaignJob, CampaignJobItem, CampaignTemplate, MetaPage
+from models import (
+    AdAccount,
+    CampaignInstance,
+    CampaignJob,
+    CampaignJobItem,
+    CampaignTemplate,
+    MetaPage,
+)
+from services.meta.page_access import page_account_access_error
 from tasks.campaign_tasks import (
     execute_campaign_job,
     retry_failed_job_items,
@@ -65,7 +73,6 @@ class JobService:
         status: str = "PAUSED",
     ) -> Dict[str, Any]:
         """返回可读的发布前检查结果；不创建 Job，不调用 Meta 写接口。"""
-        from models import MetaPage
         from services.meta import AdAccountService
 
         errors: List[Dict[str, Any]] = []
@@ -77,7 +84,7 @@ class JobService:
             errors.append({"code": "TEMPLATE_INACTIVE", "message": "投放模板不是 ACTIVE 状态"})
         if status not in (InstanceStatus.PAUSED.value, InstanceStatus.ACTIVE.value):
             errors.append({"code": "INVALID_STATUS", "message": "初始状态只能是 PAUSED 或 ACTIVE"})
-        budget = budget_override if budget_override is not None else ((template.daily_budget or 0) / 100)
+        budget = budget_override if budget_override is not None else (template.daily_budget or 0)
         if budget <= 0:
             errors.append({"code": "INVALID_BUDGET", "message": "预算必须大于 0"})
         config = template.creative_config_json or {}
@@ -92,6 +99,20 @@ class JobService:
 
         ids = list(dict.fromkeys(ad_account_ids or []))
         available, rejected = AdAccountService(self.db).filter_available_ids(ids)
+        page = self.db.query(MetaPage).filter(
+            MetaPage.page_id == page_id, MetaPage.status == "ACTIVE"
+        ).first() if page_id else None
+        if page:
+            compatible = []
+            for account_pk in available:
+                account = self.db.query(AdAccount).filter(AdAccount.id == account_pk).first()
+                reason = page_account_access_error(page, account) if account else "账户不存在"
+                if reason:
+                    rejected.append({"account_id": account_pk, "reason": reason})
+                else:
+                    compatible.append(account_pk)
+            available = compatible
+
         account_results = [{"account_id": x, "status": "READY"} for x in available]
         account_results += [{"account_id": x.get("account_id"), "status": "BLOCKED", "reason": x.get("reason")} for x in rejected]
         if rejected:
@@ -164,6 +185,15 @@ class JobService:
         from services.meta import AdAccountService
 
         ad_account_ids, rejected = AdAccountService(self.db).filter_available_ids(ad_account_ids)
+        compatible_ids = []
+        for account_pk in ad_account_ids:
+            account = self.db.query(AdAccount).filter(AdAccount.id == account_pk).first()
+            reason = page_account_access_error(page, account) if account else "账户不存在"
+            if reason:
+                rejected.append({"account_id": account_pk, "reason": reason})
+            else:
+                compatible_ids.append(account_pk)
+        ad_account_ids = compatible_ids
         if not ad_account_ids:
             detail = "；".join(f"{r['account_id']}: {r['reason']}" for r in rejected[:5])
             raise ValueError(f"所选账户均不可参与投放：{detail}")

@@ -19,7 +19,8 @@ from core.auth import get_current_active_user
 from core.logger import logger
 from models import CreativeAsset, MetaAccount, AdAccount, MetaAssetBinding
 from services.credential_service import CredentialError, CredentialService
-from services.fb_client import fb_client
+from services.meta import MetaAdsService, MetaClient
+from services.meta.errors import MetaApiError
 from config.settings import settings
 from tasks.campaign_tasks import retry_asset_binding_task
 
@@ -182,17 +183,23 @@ async def upload_media(
     # 解析用于 FB 上传的 token / account
     # BM 主表自 V1 起不再存明文 Token，统一由 CredentialService 解析
     access_token = None
-    fb_account = account_id or (f"act_{meta_account_id}" if meta_account_id else None)
+    fb_account = None
     if account_id:
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        if not account:
+            raise HTTPException(status_code=404, detail="广告账户不存在")
         try:
             access_token, _ = CredentialService(db).resolve_account_token(account_id)
         except CredentialError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        fb_account = account.account_id
     elif meta_account_id:
-        try:
-            access_token, _ = CredentialService(db).resolve_token_for_meta(meta_account_id)
-        except CredentialError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(
+            status_code=400,
+            detail="Meta 素材必须指定广告账户；上传接口属于广告账户而非 BM",
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Meta 素材必须指定广告账户")
 
     asset = CreativeAsset(
         id=str(uuid.uuid4()),
@@ -209,16 +216,17 @@ async def upload_media(
     )
 
     # 调用 FB 上传
-    if asset_type == "image":
-        res = fb_client.upload_image(fb_account or "act_0", access_token, info["dest"])
-        asset.fb_hash = res.get("hash")
-    else:
-        res = fb_client.upload_video(fb_account or "act_0", access_token, info["dest"])
-        asset.fb_video_id = res.get("video_id")
-
-    if res.get("error"):
+    try:
+        service = MetaAdsService(MetaClient(access_token=access_token))
+        if asset_type == "image":
+            res = service.upload_image(fb_account, info["dest"])
+            asset.fb_hash = res.get("hash")
+        else:
+            res = service.upload_video(fb_account, info["dest"])
+            asset.fb_video_id = res.get("video_id")
+    except MetaApiError as exc:
         asset.status = "failed"
-        asset.error = res["error"]
+        asset.error = str(exc)[:500]
     else:
         asset.status = "ready"
 

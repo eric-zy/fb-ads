@@ -30,10 +30,10 @@ class CampaignTemplate(TenantMixin, Base):
     buying_type = Column(String(64), default="AUCTION", comment="购买类型")
     special_ad_categories = Column(JSON, comment="特殊广告类别，JSON 数组")
 
-    # ---- 预算（最小货币单位，见 core/money.py） ----
+    # ---- 预算（前后端使用主货币单位；调用 Meta 前统一转换为最小货币单位） ----
     budget_type = Column(String(32), default="DAILY", comment="DAILY / LIFETIME")
-    daily_budget = Column(BigInteger, comment="日预算（最小货币单位）")
-    lifetime_budget = Column(BigInteger, comment="总预算（最小货币单位）")
+    daily_budget = Column(BigInteger, comment="日预算（主货币单位）")
+    lifetime_budget = Column(BigInteger, comment="总预算（主货币单位）")
 
     # ---- 出价与优化 ----
     bid_strategy = Column(String(64), comment="出价策略")

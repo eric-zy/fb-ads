@@ -37,9 +37,8 @@ from models import (
     User,
 )
 from services.credential_service import CredentialError, CredentialService
-from services.fb_client import fb_client
 from api.accounts import account_to_dict
-from services.meta import BusinessService, MetaSyncService
+from services.meta import BusinessService, MetaAdsService, MetaClient, MetaSyncService
 from services.meta.ad_account_service import UNDEPLOYABLE_META_STATUS
 from services.meta.errors import MetaApiError
 from tasks.meta_sync_tasks import sync_ad_accounts_task, sync_business_task
@@ -393,11 +392,13 @@ def verify_account(
     meta = _get_meta_or_404(db, payload.meta_account_id)
     token = _resolve_token(db, meta)
 
-    return fb_client.verify_account_under_bm(
-        business_id=meta.business_id,
-        access_token=token,
-        target_account_id=payload.account_id,
-    )
+    try:
+        return MetaAdsService(MetaClient(access_token=token)).verify_account_under_bm(
+            business_id=meta.business_id,
+            target_account_id=payload.account_id,
+        )
+    except MetaApiError as exc:
+        raise HTTPException(status_code=400, detail=f"Meta 账户归属校验失败：{exc}")
 
 
 @router.get("/{meta_id}/credentials", response_model=List[dict])
@@ -615,7 +616,10 @@ def list_ad_accounts_from_meta(
         )
 
     return {
-        "dev_mode": not settings.FB_ACCESS_TOKEN,
+        "dev_mode": (
+            settings.ENVIRONMENT.lower() in ("development", "test")
+            and not settings.FB_APP_ID
+        ),
         "total": len(accounts),
         "accounts": accounts,
     }

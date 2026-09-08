@@ -28,6 +28,29 @@ def _validate_page_for_tenant(db: Session, creative_config: Optional[Dict[str, A
         raise HTTPException(status_code=400, detail="Facebook 页面未同步或不属于当前租户，请重新选择")
 
 
+def _validate_delivery_config(values: Dict[str, Any]) -> None:
+    buying_type = str(values.get("buying_type") or "AUCTION").upper()
+    if buying_type != "AUCTION":
+        raise HTTPException(status_code=400, detail="当前系统只支持 AUCTION 购买类型")
+
+    budget_type = str(values.get("budget_type") or "DAILY").upper()
+    if budget_type not in {"DAILY", "LIFETIME"}:
+        raise HTTPException(status_code=400, detail="budget_type 只能是 DAILY 或 LIFETIME")
+    budget = values.get("lifetime_budget") if budget_type == "LIFETIME" else values.get("daily_budget")
+    if budget is None or float(budget) <= 0:
+        raise HTTPException(status_code=400, detail="模板预算必须大于 0")
+
+    config = values.get("creative_config_json") or {}
+    if budget_type == "LIFETIME" and not (config.get("schedule") or {}).get("end_time"):
+        raise HTTPException(status_code=400, detail="总预算模板必须配置 schedule.end_time")
+    optimization_goal = str(values.get("optimization_goal") or "LINK_CLICKS").upper()
+    if optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE"} and not config.get("promoted_object"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"优化目标 {optimization_goal} 必须配置 promoted_object",
+        )
+
+
 # ==================== 请求模型 ====================
 
 class TemplateCreate(BaseModel):
@@ -97,6 +120,7 @@ def create_template(
         raise HTTPException(status_code=400, detail=f"模板名称已存在: {req.name}")
 
     _validate_page_for_tenant(db, req.creative_config_json)
+    _validate_delivery_config(req.dict(exclude_none=False))
     template = CampaignTemplate(
         id=uuid.uuid4().hex,
         **req.dict(exclude_none=False),
@@ -134,6 +158,9 @@ def update_template(
         raise HTTPException(status_code=404, detail="模板不存在")
 
     values = req.dict(exclude_unset=True)
+    merged = template.to_dict()
+    merged.update(values)
+    _validate_delivery_config(merged)
     if "creative_config_json" in values:
         _validate_page_for_tenant(db, values["creative_config_json"])
     for field, value in values.items():

@@ -15,7 +15,6 @@ from models import (
     PublishedAd,
 )
 from services.ad_account_resolver import resolve_ad_account
-from services.fb_client import fb_client
 from services.credential_service import CredentialError, CredentialService
 from config.settings import settings
 from core.logger import logger
@@ -373,6 +372,9 @@ class AdsManager:
         Args:
             daily_budget_minor: 日预算，**最小货币单位**（默认 5000 = $50.00）
         """
+        # 旧接口已从路由下线；延迟导入可避免应用启动时初始化全局 SDK。
+        from services.fb_client import fb_client
+
         assets = []
         if asset_ids:
             assets = self.db.query(CreativeAsset).filter(CreativeAsset.id.in_(asset_ids)).all()

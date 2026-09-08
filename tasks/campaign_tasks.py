@@ -27,6 +27,7 @@ from models import CampaignInstance, CampaignJob, CampaignJobItem, CreativeAsset
 from services.campaign_builder import CampaignDeploymentBuilder
 from services.credential_service import CredentialError, CredentialService
 from services.meta import MetaApiError
+from services.meta.page_access import page_account_access_error
 import copy
 import os
 
@@ -208,8 +209,9 @@ def _mark_item_failed(
         message=message,
         category=category,
     )
-    # Token 失效/权限不足时标记凭据，避免后续任务重复做无效调用
-    if category in (ErrorCategory.AUTH, ErrorCategory.PERMISSION):
+    # 只有 Token 本身失效才禁用凭据。对象级权限不足不代表该 Token 对
+    # 其它 BM/账户也无效，不能因此切断整条 OAuth 授权连接。
+    if category == ErrorCategory.AUTH:
         CredentialService(db).mark_invalid_by_account(item.ad_account_id, message)
     db.commit()
 
@@ -323,6 +325,12 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             )
             db.commit()
             return {"error": "facebook page unavailable"}
+
+        page_error = page_account_access_error(page, account)
+        if page_error:
+            item.mark_failed("PAGE_ACCOUNT_MISMATCH", page_error, ErrorCategory.AUTH)
+            db.commit()
+            return {"error": page_error}
 
         params = job.params or {}
         budget_override = params.get("budget_override")

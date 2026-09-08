@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 import requests
 
 from config.settings import settings
+from core.enums import ErrorCategory
 from core.logger import logger
 from services.meta.client import MetaClient
 from services.meta.errors import MetaApiError
@@ -172,7 +173,7 @@ class MetaOAuthService:
         self._require_config()
         params = {
             "access_token": access_token,
-            "fields": "id,name,account_status,effective_status,currency,timezone_name,amount_spent,spend_cap,business{id,name}",
+            "fields": "id,name,account_status,currency,timezone_name,amount_spent,spend_cap,business{id,name}",
             "limit": 100,
         }
         accounts: list[dict] = []
@@ -192,4 +193,6 @@ class MetaOAuthService:
         try:
             return MetaClient(access_token=access_token).get_business(business_id)
         except MetaApiError as exc:
-            raise MetaOAuthError(f"授权账号无权访问该 BM: {exc}") from exc
+            if exc.category in {ErrorCategory.AUTH, ErrorCategory.PERMISSION}:
+                raise MetaOAuthError(f"授权账号无权访问该 BM: {exc}") from exc
+            raise MetaOAuthError(f"读取 BM 信息失败: {exc}") from exc

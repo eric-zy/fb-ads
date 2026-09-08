@@ -201,10 +201,6 @@ class MetaSyncService:
 
         供前端展示"Meta 有哪些账户"并勾选。
         """
-        if not settings.FB_ACCESS_TOKEN:
-            logger.warning(f"[DEV] 未配置 FB 凭据，跳过拉取 BM {business_id} 的账户")
-            return []
-
         business = self.db.query(MetaAccount).filter(MetaAccount.id == business_id).first()
         if not business:
             raise ValueError(f"BM 不存在: {business_id}")
@@ -219,9 +215,6 @@ class MetaSyncService:
 
         只导入给定的 account_ids，不做全量同步。
         """
-        if not settings.FB_ACCESS_TOKEN:
-            return self._dev_mode_log(business_id, SyncType.AD_ACCOUNT.value)
-
         business = self.db.query(MetaAccount).filter(MetaAccount.id == business_id).first()
         if not business:
             raise ValueError(f"BM 不存在: {business_id}")

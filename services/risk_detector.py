@@ -3,7 +3,6 @@ from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
 from models import RiskEvent, RiskLevel, RiskEventType, AdAccount, Campaign, Ad, SystemStatus
 from services.ad_account_resolver import resolve_ad_account
-from services.fb_client import fb_client
 from services.ads_manager import AdsManager
 from config.settings import settings
 from core.logger import logger

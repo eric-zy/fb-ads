@@ -108,6 +108,14 @@
         <el-form-item v-else label="总预算(美元)">
           <el-input-number v-model="form.lifetime_budget" :min="0" :step="100" />
         </el-form-item>
+        <template v-if="form.budget_type === 'LIFETIME'">
+          <el-form-item label="开始时间">
+            <el-date-picker v-model="form.schedule_start" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" placeholder="可选，默认立即开始" style="width:100%" />
+          </el-form-item>
+          <el-form-item label="结束时间" required>
+            <el-date-picker v-model="form.schedule_end" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" placeholder="总预算必须设置结束时间" style="width:100%" />
+          </el-form-item>
+        </template>
 
         </section>
         <section v-if="templateStep === 2">
@@ -130,6 +138,14 @@
         <el-form-item label="出价策略">
           <el-input v-model="form.bid_strategy" placeholder="可留空，如 LOWEST_COST_WITHOUT_CAP" />
         </el-form-item>
+        <template v-if="['OFFSITE_CONVERSIONS', 'VALUE'].includes(form.optimization_goal)">
+          <el-form-item label="Pixel ID" required>
+            <el-input v-model="form.pixel_id" placeholder="Meta Pixel ID" />
+          </el-form-item>
+          <el-form-item label="转化事件" required>
+            <el-input v-model="form.custom_event_type" placeholder="例如 PURCHASE / LEAD" />
+          </el-form-item>
+        </template>
         <el-divider content-position="left">受众定向</el-divider>
         <el-form-item label="国家/地区">
           <el-input v-model="targetingForm.countries" placeholder="多个国家用逗号分隔，例如 US,CA,GB" />
@@ -236,7 +252,11 @@ const form = reactive({
   budget_type: 'DAILY',
   daily_budget: 50,
   lifetime_budget: 0,
+  schedule_start: '',
+  schedule_end: '',
   optimization_goal: 'LINK_CLICKS',
+  pixel_id: '',
+  custom_event_type: 'PURCHASE',
   billing_event: 'IMPRESSIONS',
   bid_strategy: '',
   targeting_json: DEFAULT_TARGETING,
@@ -258,17 +278,31 @@ const selectedAsset = (id: string) => mediaAssets.value.find(asset => asset.id =
 const addCreative = () => creativeForm.creatives.push(newCreative())
 const removeCreative = (index: number) => creativeForm.creatives.splice(index, 1)
 const buildCreativeJson = () => {
-  form.creative_config_json = JSON.stringify({
+  const config: Record<string, any> = {
     page_id: creativeForm.page_id,
     creatives: creativeForm.creatives.map(item => {
       const asset = selectedAsset(item.asset_id)
       return { ...item, image_hash: asset?.fb_hash || item.image_hash, video_id: asset?.fb_video_id || item.video_id }
     }),
-  }, null, 2)
+  }
+  if (form.budget_type === 'LIFETIME') {
+    config.schedule = { start_time: form.schedule_start || undefined, end_time: form.schedule_end }
+  }
+  if (['OFFSITE_CONVERSIONS', 'VALUE'].includes(form.optimization_goal)) {
+    config.promoted_object = {
+      pixel_id: form.pixel_id,
+      custom_event_type: form.custom_event_type,
+    }
+  }
+  form.creative_config_json = JSON.stringify(config, null, 2)
 }
 const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
   const cfg = value || {}
   creativeForm.page_id = cfg.page_id || ''
+  form.schedule_start = cfg.schedule?.start_time || ''
+  form.schedule_end = cfg.schedule?.end_time || ''
+  form.pixel_id = cfg.promoted_object?.pixel_id || ''
+  form.custom_event_type = cfg.promoted_object?.custom_event_type || 'PURCHASE'
   creativeForm.creatives.splice(0, creativeForm.creatives.length, ...(Array.isArray(cfg.creatives) && cfg.creatives.length ? cfg.creatives.map((item: any) => ({ ...newCreative(), ...item })) : [newCreative()]))
 }
 const buildTargetingJson = () => {
@@ -279,7 +313,13 @@ const buildTargetingJson = () => {
     genders: targetingForm.genders,
   }
   if (targetingForm.interests.trim()) targeting.flexible_spec = [{ interests: targetingForm.interests.split(',').map(v => ({ name: v.trim() })).filter(v => v.name) }]
-  if (targetingForm.placements.length) targeting.publisher_platforms = targetingForm.placements
+  if (targetingForm.placements.length) {
+    const facebook = targetingForm.placements.filter(v => v.startsWith('facebook_')).map(v => v.replace('facebook_', ''))
+    const instagram = targetingForm.placements.filter(v => v.startsWith('instagram_')).map(v => v.replace('instagram_', ''))
+    targeting.publisher_platforms = [facebook.length ? 'facebook' : '', instagram.length ? 'instagram' : ''].filter(Boolean)
+    if (facebook.length) targeting.facebook_positions = facebook
+    if (instagram.length) targeting.instagram_positions = instagram
+  }
   form.targeting_json = JSON.stringify(targeting, null, 2)
 }
 const loadTargetingForm = (value: Record<string, any> | null | undefined) => {
@@ -289,7 +329,10 @@ const loadTargetingForm = (value: Record<string, any> | null | undefined) => {
   targetingForm.age_max = targeting.age_max || 65
   targetingForm.genders = targeting.genders?.length ? targeting.genders : [1, 2]
   targetingForm.interests = (targeting.flexible_spec?.[0]?.interests || []).map((v: any) => v.name || '').filter(Boolean).join(',')
-  targetingForm.placements = targeting.publisher_platforms || []
+  targetingForm.placements = [
+    ...(targeting.facebook_positions || []).map((v: string) => `facebook_${v}`),
+    ...(targeting.instagram_positions || []).map((v: string) => `instagram_${v}`),
+  ]
 }
 
 const loadTemplates = async () => {
@@ -319,7 +362,11 @@ const resetForm = () => {
   form.budget_type = 'DAILY'
   form.daily_budget = 50
   form.lifetime_budget = 0
+  form.schedule_start = ''
+  form.schedule_end = ''
   form.optimization_goal = 'LINK_CLICKS'
+  form.pixel_id = ''
+  form.custom_event_type = 'PURCHASE'
   form.billing_event = 'IMPRESSIONS'
   form.bid_strategy = ''
   form.targeting_json = DEFAULT_TARGETING
@@ -372,6 +419,16 @@ const parseJsonField = (text: string, label: string) => {
 const submit = async () => {
   if (!form.name.trim()) {
     ElMessage.warning('请填写模板名称')
+    return
+  }
+  if (form.budget_type === 'LIFETIME' && !form.schedule_end) {
+    ElMessage.warning('总预算模板必须设置结束时间')
+    templateStep.value = 1
+    return
+  }
+  if (['OFFSITE_CONVERSIONS', 'VALUE'].includes(form.optimization_goal) && (!form.pixel_id.trim() || !form.custom_event_type.trim())) {
+    ElMessage.warning('转化优化必须填写 Pixel ID 和转化事件')
+    templateStep.value = 2
     return
   }
 

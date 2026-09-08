@@ -80,10 +80,15 @@ class AdAccountService:
         if cred.is_expired():
             return False, "凭据已过期"
 
-        # 4) Meta 侧状态（未同步时 account_status 为空，按宽容处理放行）
+        # 4) Meta 侧状态。投放属于写操作，未同步或未知状态必须安全拒绝，
+        # 避免仅凭本地 system_status=ACTIVE 就向 Meta 创建对象。
         meta_status = (account.account_status or "").strip().upper()
-        if meta_status and meta_status in UNDEPLOYABLE_META_STATUS:
+        if not meta_status:
+            return False, "尚未同步 Meta 账户状态"
+        if meta_status in UNDEPLOYABLE_META_STATUS:
             return False, f"Meta 侧状态为 {account.account_status}"
+        if meta_status not in {"1", "ACTIVE"}:
+            return False, f"Meta 侧状态未知或不可投放：{account.account_status}"
 
         return True, "ok"
 

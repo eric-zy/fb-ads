@@ -14,7 +14,7 @@
 
 职责：
     - 校验 Credential / BM 与 Meta 的连通性（文档 §14 添加 BM 时的"验证连接"）
-    - 拉取 BM 基础信息并回填（timezone / currency）
+    - 拉取 BM 基础信息并回填名称与验证状态
 """
 from typing import Dict, Optional
 
@@ -81,7 +81,11 @@ class BusinessService:
             client = MetaClient(access_token=token)
             data = client.get_business(business.business_id)
         except MetaApiError as e:
-            if not settings.FB_ACCESS_TOKEN and e.category == ErrorCategory.AUTH:
+            if (
+                settings.ENVIRONMENT.lower() in ("development", "test")
+                and not settings.FB_APP_ID
+                and e.category == ErrorCategory.AUTH
+            ):
                 return self._dev_mode_result(business, "连通性校验")
             logger.error(f"[BusinessService] 校验 BM {business.business_id} 失败: {e}")
             return {"ok": False, "dev_mode": False, "error": str(e), "business": None,
@@ -103,7 +107,7 @@ class BusinessService:
     # 基础信息回填
     # ------------------------------------------------------------------
     def fetch_business_info(self, business: MetaAccount) -> Optional[Dict]:
-        """拉取并回填 BM 的 timezone / currency / 名称
+        """拉取并回填 BM 名称。
 
         返回 Meta 原始数据；dev 模式或失败时返回 None（不影响调用方主流程）。
         """
@@ -111,7 +115,11 @@ class BusinessService:
             token = self._resolve_token(business)
             data = MetaClient(access_token=token).get_business(business.business_id)
         except MetaApiError as e:
-            if not settings.FB_ACCESS_TOKEN and e.category == ErrorCategory.AUTH:
+            if (
+                settings.ENVIRONMENT.lower() in ("development", "test")
+                and not settings.FB_APP_ID
+                and e.category == ErrorCategory.AUTH
+            ):
                 self._dev_mode_result(business, "信息拉取")
                 return None
             logger.error(f"[BusinessService] 拉取 BM {business.business_id} 信息失败: {e}")
@@ -119,9 +127,4 @@ class BusinessService:
 
         if data.get("name"):
             business.name = data["name"]
-        if data.get("currency"):
-            business.currency = data["currency"]
-        if data.get("timezone_id"):
-            business.timezone = str(data["timezone_id"])
-
         return data

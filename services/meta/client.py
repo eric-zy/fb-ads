@@ -193,7 +193,10 @@ class MetaClient:
         bid = self.normalize_business_id(business_id)
         return self._get(
             bid,
-            params={"fields": "id,name,timezone_id,currency,created_time"},
+            # BM 对象在较新的 Graph API 版本中并不稳定提供 currency、
+            # timezone_id、created_time；绑定 BM 只需要确认对象存在、名称
+            # 和授权范围，避免可选字段导致整个 OAuth 校验失败。
+            params={"fields": "id,name,verification_status"},
         )
 
     def get_ad_accounts(self, business_id: str, max_pages: int = 20) -> List[dict]:
@@ -201,7 +204,7 @@ class MetaClient:
         bid = self.normalize_business_id(business_id)
         path = f"{bid}/adaccounts"
         params = {
-            "fields": "id,name,account_status,effective_status,currency,timezone_name,"
+            "fields": "id,name,account_status,currency,timezone_name,"
                       "spend_cap,amount_spent,balance,disable_reason",
             "limit": 200,
         }
@@ -225,7 +228,7 @@ class MetaClient:
         return self._get(
             f"/{act}",
             params={
-                "fields": "id,name,account_status,effective_status,currency,"
+                "fields": "id,name,account_status,currency,"
                           "timezone_name,spend_cap,amount_spent,balance,disable_reason",
             },
         )

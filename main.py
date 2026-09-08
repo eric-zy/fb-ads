@@ -16,7 +16,6 @@ from services.ad_account_resolver import resolve_ad_account
 from services.ads_manager import AdsManager
 from services.risk_detector import RiskDetector
 from services.analytics import AnalyticsEngine
-from services.fb_client import fb_client
 from services.rate_limit import RateLimitManager
 # 必须先导入 celery_app（其内部会 set_default），
 # 保证后续 @shared_task 在运行时解析到本项目 Celery 实例（redis broker）。
@@ -575,96 +574,30 @@ class BatchPublishRequest(BaseModel):
     notify_on_complete: bool = False
     notify_email: Optional[str] = None
 
-@app.post("/api/v1/campaigns/batch-publish")
-async def batch_publish_api(request: BatchPublishRequest, db: Session = Depends(get_db)):
-    """批量投放广告系列"""
-    try:
-        # 若启用频次检查，先做安全间隔与频次校验
-        if request.enable_frequency_check:
-            try:
-                rate_manager = RateLimitManager(request.account_id)
-                if not rate_manager.check_limit("hour"):
-                    raise HTTPException(
-                        status_code=429,
-                        detail="当前账户已达到 API 调用频次上限，请稍后再试"
-                    )
-            except HTTPException:
-                raise
-            except Exception:
-                pass
+@app.post("/api/v1/campaigns/batch-publish", deprecated=True)
+async def batch_publish_api(
+    request: BatchPublishRequest,
+    _=Depends(get_current_active_user),
+):
+    """已停用的旧批量投放入口；正式投放统一走 Job Center。"""
+    raise HTTPException(
+        status_code=410,
+        detail="旧批量投放接口已停用，请使用 POST /api/v1/jobs/campaign-create",
+    )
 
-        # 真实投放需调用 Facebook API；FB 不可用时优雅降级为已接收
-        try:
-            fb_client.api_init()
-            # 此处可调用 services.ads_manager 的发布逻辑
-            # 当前先记录任务并返回已提交状态
-        except Exception as e:
-            logger.warning(f"FB client init skipped for batch publish: {str(e)}")
+@app.post("/api/v1/campaigns/{campaign_id}/pause", deprecated=True)
+async def pause_campaign_api(campaign_id: str, _=Depends(get_current_active_user)):
+    raise HTTPException(
+        status_code=410,
+        detail="旧暂停接口已停用，请使用 POST /api/v1/campaigns/actions",
+    )
 
-        logger.info(
-            f"Batch publish received: account={request.account_id}, "
-            f"count={len(request.campaigns)}, type={request.publish_type}"
-        )
-        return {
-            "status": "submitted",
-            "account_id": request.account_id,
-            "campaign_count": len(request.campaigns),
-            "publish_type": request.publish_type,
-            "message": "批量投放任务已接收，将在后台处理",
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to batch publish: {str(e)}")
-        raise HTTPException(status_code=500, detail="批量投放失败")
-
-@app.post("/api/v1/campaigns/{campaign_id}/pause")
-async def pause_campaign_api(campaign_id: str, db: Session = Depends(get_db)):
-    """暂停广告系列"""
-    try:
-        from models import Campaign, CampaignStatus
-        campaign = (
-            db.query(Campaign).filter(Campaign.campaign_id == campaign_id).first()
-        )
-        if not campaign:
-            raise HTTPException(status_code=404, detail="系列不存在")
-        try:
-            fb_client.api_init()
-            fb_client.pause_campaign(campaign_id)
-        except Exception as e:
-            logger.warning(f"FB pause skipped: {str(e)}")
-        campaign.status = CampaignStatus.PAUSED
-        db.commit()
-        return {"status": "success", "campaign_id": campaign_id, "state": "PAUSED"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to pause campaign: {str(e)}")
-        raise HTTPException(status_code=500, detail="暂停系列失败")
-
-@app.post("/api/v1/campaigns/{campaign_id}/resume")
-async def resume_campaign_api(campaign_id: str, db: Session = Depends(get_db)):
-    """恢复广告系列"""
-    try:
-        from models import Campaign, CampaignStatus
-        campaign = (
-            db.query(Campaign).filter(Campaign.campaign_id == campaign_id).first()
-        )
-        if not campaign:
-            raise HTTPException(status_code=404, detail="系列不存在")
-        try:
-            fb_client.api_init()
-            fb_client.resume_campaign(campaign_id)
-        except Exception as e:
-            logger.warning(f"FB resume skipped: {str(e)}")
-        campaign.status = CampaignStatus.ACTIVE
-        db.commit()
-        return {"status": "success", "campaign_id": campaign_id, "state": "ACTIVE"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to resume campaign: {str(e)}")
-        raise HTTPException(status_code=500, detail="恢复系列失败")
+@app.post("/api/v1/campaigns/{campaign_id}/resume", deprecated=True)
+async def resume_campaign_api(campaign_id: str, _=Depends(get_current_active_user)):
+    raise HTTPException(
+        status_code=410,
+        detail="旧恢复接口已停用，请使用 POST /api/v1/campaigns/actions",
+    )
 
 @app.get("/api/v1/accounts/{account_id}/safe-publish-interval")
 async def safe_publish_interval_api(account_id: str):

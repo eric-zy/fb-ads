@@ -262,7 +262,8 @@ def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session =
                 db.add(existing)
             existing.account_name = item.get("name")
             existing.account_status = str(item.get("account_status")) if item.get("account_status") is not None else None
-            existing.effective_status = str(item.get("effective_status")) if item.get("effective_status") is not None else None
+            # AdAccount 节点没有 effective_status；该字段只用于 Campaign/AdSet/Ad。
+            existing.effective_status = None
             existing.currency = item.get("currency") or existing.currency
             existing.timezone = item.get("timezone_name") or existing.timezone
             existing.credential_id = None if meta else cred.id
@@ -340,7 +341,7 @@ def oauth_complete(payload: OAuthCompleteRequest, db: Session = Depends(get_db),
             for old_cred in db.query(Credential).filter(Credential.meta_account_id==existing.id, Credential.status==CredentialStatus.ACTIVE.value).all(): old_cred.status=CredentialStatus.DISABLED.value
             cred.meta_account_id=existing.id; cred.name=f"Meta OAuth - {business.get('name') or existing.name}"; existing.default_credential_id=cred.id; db.delete(pending); target=existing
         else:
-            pending.name=business.get("name") or f"Meta BM {business_id}"; pending.business_id=business_id; pending.status="ACTIVE"; pending.timezone=business.get("timezone_id"); pending.currency=business.get("currency"); pending.description="通过 Meta OAuth 2.0 接入"; cred.name=f"Meta OAuth - {pending.name}"; target=pending
+            pending.name=business.get("name") or f"Meta BM {business_id}"; pending.business_id=business_id; pending.status="ACTIVE"; pending.timezone=None; pending.currency=None; pending.description="通过 Meta OAuth 2.0 接入"; cred.name=f"Meta OAuth - {pending.name}"; target=pending
         target.connection_id = cred.connection_id
         db.commit()
         try:

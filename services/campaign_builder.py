@@ -84,18 +84,6 @@ class CampaignBuilder:
         self.template = template
         self.meta_ad_account_id = meta_ad_account_id
         self.status = status
-        self.created_meta_ids: List[str] = []
-
-    def _cleanup_created(self) -> List[str]:
-        """逆序清理本次创建的 Meta 对象，返回清理失败的对象。"""
-        failed = []
-        for object_id in reversed(self.created_meta_ids):
-            try:
-                self.service.delete_object(object_id)
-            except Exception as exc:
-                failed.append(object_id)
-                logger.error(f"[Deployment] 补偿删除失败 object={object_id}: {exc}")
-        return failed
         self.name_suffix = name_suffix
 
     def build_params(self) -> Dict[str, Any]:
@@ -120,16 +108,6 @@ class CampaignBuilder:
         return params
 
     def build(self) -> Dict[str, Any]:
-        try:
-            return self._build()
-        except Exception as exc:
-            failed_cleanup = self._cleanup_created()
-            if failed_cleanup:
-                logger.error(f"[Deployment] 需要人工清理 Meta 对象: {failed_cleanup}")
-                setattr(exc, "cleanup_failed_ids", failed_cleanup)
-            raise
-
-    def _build(self) -> Dict[str, Any]:
         return self.service.create_campaign(self.meta_ad_account_id, self.build_params())
 
 
@@ -164,6 +142,13 @@ class AdSetBuilder:
         return _usd_to_cents(self.template.daily_budget)
 
     def build_params(self) -> Dict[str, Any]:
+        budget_cents = self._resolve_budget_cents()
+        if not budget_cents or budget_cents <= 0:
+            raise ValueError("广告组预算必须大于 0")
+
+        targeting = dict(self.template.targeting_json or {"geo_locations": {"countries": ["US"]}})
+        # Meta 将 publisher_platforms/facebook_positions 等版位字段放在 targeting 中。
+        targeting.update(self.template.placement_json or {})
         params: Dict[str, Any] = {
             "name": f"{self.template.name}{self.name_suffix} AdSet",
             "campaign_id": self.campaign_id,
@@ -171,17 +156,42 @@ class AdSetBuilder:
             "billing_event": self.template.billing_event or "IMPRESSIONS",
             "optimization_goal": self.template.optimization_goal or "LINK_CLICKS",
             # 定向来自模板 JSONB，避免硬编码（原实现硬编码 US + reach）
-            "targeting": self.template.targeting_json or {"geo_locations": {"countries": ["US"]}},
+            "targeting": targeting,
         }
 
-        budget_cents = self._resolve_budget_cents()
         if self.template.budget_type == "LIFETIME":
+            schedule = (self.template.creative_config_json or {}).get("schedule") or {}
+            end_time = schedule.get("end_time")
+            if not end_time:
+                raise ValueError("总预算投放必须配置 schedule.end_time")
             params["lifetime_budget"] = budget_cents
+            params["end_time"] = end_time
+            if schedule.get("start_time"):
+                params["start_time"] = schedule["start_time"]
         else:
             params["daily_budget"] = budget_cents
 
+        optimization_goal = str(params["optimization_goal"]).upper()
+        if optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE"}:
+            promoted_object = (self.template.creative_config_json or {}).get("promoted_object")
+            if not promoted_object:
+                raise ValueError(
+                    f"优化目标 {optimization_goal} 必须配置 creative_config_json.promoted_object"
+                )
+            params["promoted_object"] = promoted_object
+
         if self.template.bid_strategy:
-            params["bid_strategy"] = self.template.bid_strategy
+            bid_strategy = self.template.bid_strategy.upper()
+            params["bid_strategy"] = bid_strategy
+            bidding = (self.template.creative_config_json or {}).get("bidding") or {}
+            if bid_strategy in {"LOWEST_COST_WITH_BID_CAP", "COST_CAP"}:
+                if not bidding.get("bid_amount"):
+                    raise ValueError(f"出价策略 {bid_strategy} 必须配置 bidding.bid_amount")
+                params["bid_amount"] = int(bidding["bid_amount"])
+            if bid_strategy == "LOWEST_COST_WITH_MIN_ROAS":
+                if not bidding.get("bid_constraints"):
+                    raise ValueError("最低 ROAS 出价必须配置 bidding.bid_constraints")
+                params["bid_constraints"] = bidding["bid_constraints"]
         return params
 
     def build(self) -> Dict[str, Any]:
@@ -214,6 +224,8 @@ class CreativeBuilder:
 
         # 按素材类型组装 object_story_spec（原实现将 page_id 硬编码为空串，导致创建必失败）
         if asset_type == "video":
+            if not cfg.get("video_id"):
+                raise ValueError("视频创意缺少已上传到目标广告账户的 video_id")
             media_data: Dict[str, Any] = {
                 "video_id": cfg.get("video_id"),
                 "title": cfg.get("headline", ""),
@@ -226,12 +238,15 @@ class CreativeBuilder:
                 }
             story_key = "video_data"
         else:
+            if not cfg.get("image_hash"):
+                raise ValueError("图片创意缺少已上传到目标广告账户的 image_hash")
+            if not cfg.get("landing_url"):
+                raise ValueError("图片链接广告缺少 landing_url")
             media_data = {
                 "image_hash": cfg.get("image_hash"),
                 "message": cfg.get("primary_text", ""),
+                "link": cfg["landing_url"],
             }
-            if cfg.get("landing_url"):
-                media_data["link"] = cfg["landing_url"]
             if cfg.get("headline"):
                 media_data["name"] = cfg["headline"]
             if cfg.get("description"):
@@ -241,7 +256,9 @@ class CreativeBuilder:
                     "type": cfg["cta"],
                     "value": {"link": cfg.get("landing_url", "")},
                 }
-            story_key = "photo_data" if cfg.get("image_hash") else "link_data"
+            # 带落地页、标题和 CTA 的图片广告属于 link_data；photo_data
+            # 不接受 message/name/description/call_to_action 这些字段。
+            story_key = "link_data"
 
         object_story_spec = {
             "page_id": self.page_id,
@@ -317,6 +334,18 @@ class CampaignDeploymentBuilder:
         self.meta_ad_account_id = meta_ad_account_id
         self.budget_override = budget_override
         self.status = status
+        self.created_meta_ids: List[str] = []
+
+    def _cleanup_created(self) -> List[str]:
+        """逆序删除本次已创建的 Meta 对象，返回未能清理的对象 ID。"""
+        failed: List[str] = []
+        for object_id in reversed(self.created_meta_ids):
+            try:
+                self.service.delete_object(object_id)
+            except Exception as exc:
+                failed.append(object_id)
+                logger.error(f"[Deployment] 补偿删除失败 object={object_id}: {exc}")
+        return failed
 
     def find_existing(self) -> Optional[CampaignInstance]:
         """幂等查询：同一模板在同一账户是否已部署（设计文档第 29 节）"""
@@ -347,6 +376,17 @@ class CampaignDeploymentBuilder:
                 ],
             }
 
+        try:
+            return self._build()
+        except Exception as exc:
+            self.db.rollback()
+            failed_cleanup = self._cleanup_created()
+            if failed_cleanup:
+                logger.error(f"[Deployment] 需要人工清理 Meta 对象: {failed_cleanup}")
+                setattr(exc, "cleanup_failed_ids", failed_cleanup)
+            raise
+
+    def _build(self) -> Dict[str, Any]:
         meta_account_id = self.meta_ad_account_id
 
         # ---- 1. Campaign ----
