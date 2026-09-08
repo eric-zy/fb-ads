@@ -336,6 +336,7 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
         budget_override = params.get("budget_override")
         # 默认 PAUSED：批量创建后不直接花钱，由用户确认后再启用
         status = params.get("status", InstanceStatus.PAUSED.value)
+        sinan = params.get("sinan_snapshot") or {}
 
         # 每个账户解析自己的 token（多 BM / 多账户架构的关键）
         try:
@@ -347,6 +348,13 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             return {"error": str(e)}
 
         original_creative_config = template.creative_config_json
+        original_template_name = template.name
+        if sinan.get("landing_url"):
+            patched_config = copy.deepcopy(template.creative_config_json or {})
+            creatives = patched_config.get("creatives") if isinstance(patched_config.get("creatives"), list) else [patched_config]
+            for creative in creatives: creative["landing_url"] = sinan["landing_url"]
+            patched_config["creatives"] = creatives
+            template.creative_config_json = patched_config
         template.creative_config_json = _prepare_template_assets(
             db, service, template, item.ad_account_id, account.account_id
         )
@@ -360,11 +368,14 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 meta_ad_account_id=account.account_id,
                 budget_override=budget_override,
                 status=status,
+                campaign_name=sinan.get("campaign_name"),
+                adset_name=sinan.get("adset_name"),
             )
             result = builder.build()
         finally:
             # 账户专属 hash/video_id 只应进入映射表，不能污染公共模板。
             template.creative_config_json = original_creative_config
+            template.name = original_template_name
 
         item.status = JobItemStatus.SUCCESS.value
         item.campaign_instance_id = result.get("campaign_instance_id")

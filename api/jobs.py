@@ -30,6 +30,8 @@ class CampaignCreateRequest(BaseModel):
     ad_account_ids: List[str] = Field(..., description="目标广告账户 id 列表")
     budget_override: Optional[float] = Field(None, description="覆盖模板预算（USD/天）")
     status: str = Field("PAUSED", description="创建后状态，默认 PAUSED，避免直接产生花费")
+    sinan_promotion_id: Optional[str] = None
+    sinan_snapshot: Optional[dict] = None
 
 class CampaignPreflightRequest(CampaignCreateRequest):
     pass
@@ -162,6 +164,8 @@ def create_campaign_batch(
         params={
             "budget_override": req.budget_override,
             "status": req.status,
+            "sinan_promotion_id": req.sinan_promotion_id,
+            "sinan_snapshot": req.sinan_snapshot,
         },
         created_by=current_user,
     )

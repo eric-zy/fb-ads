@@ -40,6 +40,7 @@ from api import templates as templates_api
 from api import jobs as jobs_api
 from api import campaigns as campaigns_api
 from api import reports as reports_api
+from api import sinan_integration as sinan_api
 from core.auth import get_current_active_user, require_admin
 from core.middleware import (
     AuthEnforcementMiddleware,
@@ -166,6 +167,7 @@ app.include_router(templates_api.router)
 app.include_router(jobs_api.router)
 app.include_router(campaigns_api.router)
 app.include_router(reports_api.router)
+app.include_router(sinan_api.router)
 
 # 静态文件：上传的素材可直接访问
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

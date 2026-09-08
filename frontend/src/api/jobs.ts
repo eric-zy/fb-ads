@@ -55,6 +55,8 @@ export interface CreateCampaignPayload {
   ad_account_ids: string[]
   budget_override?: number
   status?: string
+  sinan_promotion_id?: string
+  sinan_snapshot?: { landing_url?: string; campaign_name?: string; adset_name?: string; promotion_id?: string }
 }
 
 export interface TemplateActionPayload {

@@ -28,6 +28,8 @@
             <el-menu-item index="accounts"><span>账号总览</span></el-menu-item>
           </el-sub-menu>
           <el-menu-item index="settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
+          <el-menu-item index="sinan-settings"><el-icon><Connection /></el-icon><span>司南配置</span></el-menu-item>
+          <el-menu-item v-if="sinanVerified" index="sinan-promotions"><el-icon><Promotion /></el-icon><span>司南推广链</span></el-menu-item>
         </el-menu>
       </el-aside>
 
@@ -79,9 +81,10 @@ import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/userStore'
 import { useAccountStore } from '@/stores/accountStore'
+import { sinanApi } from '@/api/sinan'
 import {
   DocumentCopy, Promotion, Collection, Upload, List, Picture, Timer,
-  PieChart, Warning, OfficeBuilding, Setting, Switch, ArrowDown, Bell,
+  PieChart, Warning, OfficeBuilding, Setting, Switch, ArrowDown, Bell, Connection,
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -89,6 +92,7 @@ const route = useRoute()
 const userStore = useUserStore()
 const accountStore = useAccountStore()
 const notificationCount = ref(0)
+const sinanVerified = ref(false)
 
 const activeMenu = computed(() => {
   const path = route.path.split('/').pop()
@@ -111,6 +115,7 @@ const handleLogout = async () => {
 }
 
 onMounted(async () => {
+  try { sinanVerified.value = !!(await sinanApi.status()).data.verified } catch { sinanVerified.value = false }
   if (userStore.user && !accountStore.accounts.length) await accountStore.fetchAccounts(userStore.user.id)
 })
 </script>

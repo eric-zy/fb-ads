@@ -79,15 +79,17 @@ class CampaignBuilder:
         *,
         status: str = InstanceStatus.PAUSED.value,
         name_suffix: str = "",
+        campaign_name: Optional[str] = None,
     ):
         self.service = service
         self.template = template
         self.meta_ad_account_id = meta_ad_account_id
         self.status = status
         self.name_suffix = name_suffix
+        self.campaign_name = campaign_name
 
     def build_params(self) -> Dict[str, Any]:
-        name = f"{self.template.name}{self.name_suffix}"
+        name = self.campaign_name or f"{self.template.name}{self.name_suffix}"
         raw_objective = (self.template.objective or "").strip().upper()
         objective = _OBJECTIVE_ALIASES.get(raw_objective, raw_objective)
         if objective not in _VALID_OBJECTIVES:
@@ -124,6 +126,7 @@ class AdSetBuilder:
         budget_override: Optional[float] = None,
         status: str = InstanceStatus.PAUSED.value,
         name_suffix: str = "",
+        adset_name: Optional[str] = None,
     ):
         self.service = service
         self.template = template
@@ -132,6 +135,7 @@ class AdSetBuilder:
         self.budget_override = budget_override
         self.status = status
         self.name_suffix = name_suffix
+        self.adset_name = adset_name
 
     def _resolve_budget_cents(self) -> Optional[int]:
         """预算优先级：Job 覆盖值 > 模板日预算 > 模板总预算"""
@@ -150,7 +154,7 @@ class AdSetBuilder:
         # Meta 将 publisher_platforms/facebook_positions 等版位字段放在 targeting 中。
         targeting.update(self.template.placement_json or {})
         params: Dict[str, Any] = {
-            "name": f"{self.template.name}{self.name_suffix} AdSet",
+            "name": self.adset_name or f"{self.template.name}{self.name_suffix} AdSet",
             "campaign_id": self.campaign_id,
             "status": self.status,
             "billing_event": self.template.billing_event or "IMPRESSIONS",
@@ -286,6 +290,8 @@ class AdBuilder:
         *,
         name: str = "Ad",
         status: str = InstanceStatus.PAUSED.value,
+        campaign_name: Optional[str] = None,
+        adset_name: Optional[str] = None,
     ):
         self.service = service
         self.meta_ad_account_id = meta_ad_account_id
@@ -334,6 +340,8 @@ class CampaignDeploymentBuilder:
         self.meta_ad_account_id = meta_ad_account_id
         self.budget_override = budget_override
         self.status = status
+        self.campaign_name = campaign_name
+        self.adset_name = adset_name
         self.created_meta_ids: List[str] = []
 
     def _cleanup_created(self) -> List[str]:
@@ -391,7 +399,7 @@ class CampaignDeploymentBuilder:
 
         # ---- 1. Campaign ----
         campaign = CampaignBuilder(
-            self.service, self.template, meta_account_id, status=self.status
+            self.service, self.template, meta_account_id, status=self.status, campaign_name=self.campaign_name
         ).build()
         self.created_meta_ids.append(campaign["id"])
         campaign_instance = CampaignInstance(
@@ -413,6 +421,7 @@ class CampaignDeploymentBuilder:
             campaign["id"],
             budget_override=self.budget_override,
             status=self.status,
+            adset_name=self.adset_name,
         ).build()
         self.created_meta_ids.append(adset["id"])
         adset_instance = AdSetInstance(

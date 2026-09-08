@@ -31,6 +31,7 @@ from models.audit_log import AuditLog
 # Meta 同步日志（Meta 账号管理 V1 §10）—— 同步结果，与操作审计分开记录
 from models.sync_log import MetaSyncLog, SyncType, SyncLogStatus
 from models.async_task import AsyncTaskRecord
+from models.sinan_credential import SinanCredential
 
 __all__ = [
     # 租户
@@ -77,4 +78,5 @@ __all__ = [
     'SyncType',
     'SyncLogStatus',
     'AsyncTaskRecord',
+    'SinanCredential',
 ]

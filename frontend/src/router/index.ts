@@ -25,6 +25,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'risk-control', name: 'RiskControl', component: () => import('@/pages/dashboard/RiskControl.vue'), meta: { title: '风险控制' } },
       { path: 'accounts', name: 'Accounts', component: () => import('@/pages/dashboard/Accounts.vue'), meta: { title: '账号中心' } },
       { path: 'settings', name: 'Settings', component: () => import('@/pages/dashboard/Settings.vue'), meta: { title: '设置' } },
+      { path: 'sinan-settings', name: 'SinanSettings', component: () => import('@/pages/dashboard/SinanSettings.vue'), meta: { title: '司南配置' } },
+      { path: 'sinan-promotions', name: 'SinanPromotions', component: () => import('@/pages/dashboard/SinanPromotions.vue'), meta: { title: '司南推广链' } },
     ],
   },
   {
