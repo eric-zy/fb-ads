@@ -45,7 +45,11 @@ def _client(db, user):
 
 @router.post('/promotions/query')
 async def promotions_query(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    return (await _client(db, user).promotion_list(payload.get('page', 1), payload.get('page_size', 20))).get('data', {})
+    try:
+        return (await _client(db, user).promotion_list(payload.get('page', 1), payload.get('page_size', 20))).get('data', {})
+    except HTTPException: raise
+    except Exception as exc:
+        raise HTTPException(502, f'司南推广链查询失败：{exc}')
 
 @router.get('/promotions/{promotion_id}')
 async def promotion_detail(promotion_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)):

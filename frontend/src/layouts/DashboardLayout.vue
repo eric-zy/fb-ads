@@ -16,6 +16,7 @@
             <el-menu-item index="batch-publish"><el-icon><Upload /></el-icon><span>批量投放</span></el-menu-item>
             <el-menu-item index="jobs"><el-icon><List /></el-icon><span>执行任务</span></el-menu-item>
             <el-menu-item index="scheduled-tasks"><el-icon><Timer /></el-icon><span>定时任务</span></el-menu-item>
+            <el-menu-item v-if="sinanVerified" index="sinan-promotions"><el-icon><Promotion /></el-icon><span>司南推广链</span></el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="analytics">
             <template #title><el-icon><PieChart /></el-icon><span>数据分析</span></template>
@@ -29,7 +30,6 @@
           </el-sub-menu>
           <el-menu-item index="settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
           <el-menu-item index="sinan-settings"><el-icon><Connection /></el-icon><span>司南配置</span></el-menu-item>
-          <el-menu-item v-if="sinanVerified" index="sinan-promotions"><el-icon><Promotion /></el-icon><span>司南推广链</span></el-menu-item>
         </el-menu>
       </el-aside>
 
