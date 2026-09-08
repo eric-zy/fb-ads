@@ -22,6 +22,7 @@ from core.logger import logger
 from core.money import to_major, to_minor
 from core.redis_client import redis_client
 import json
+import hashlib
 
 
 def _minor_int(value) -> Optional[int]:
@@ -88,8 +89,14 @@ class AdsManager:
                     updated_count += 1
                 else:
                     # 创建新记录
+                    # 内部主键必须保持在 VARCHAR(50) 内；Meta Campaign ID
+                    # 与账户主键拼接后可能超过 50 字符，使用稳定哈希避免
+                    # 重复同步产生重复记录，同时不改变外部 campaign_id。
+                    internal_id = hashlib.sha256(
+                        f"{account.id}:{campaign_id}".encode("utf-8")
+                    ).hexdigest()[:32]
                     new_campaign = Campaign(
-                        id=f"{account.id}_{campaign_id}",
+                        id=internal_id,
                         campaign_id=campaign_id,
                         ad_account_id=account.id,  # 外键存主键
                         name=campaign_data.get('name'),

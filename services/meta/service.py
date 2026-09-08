@@ -281,7 +281,7 @@ class MetaAdsService:
             return self.client._get(
                 act,
                 params={
-                    "fields": "id,name,currency,timezone,timezone_name,"
+                    "fields": "id,name,currency,timezone_name,"
                     "account_status,effective_status,disable_reason,"
                     "amount_spent,spend_cap",
                 },
