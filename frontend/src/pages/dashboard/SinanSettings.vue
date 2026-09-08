@@ -8,7 +8,7 @@
         <el-form-item label="App ID" required><el-input v-model="form.app_id" /></el-form-item>
         <el-form-item label="司南账号" required><el-input v-model="form.account" autocomplete="off" /></el-form-item>
         <el-form-item label="司南密码" required><el-input v-model="form.password" type="password" show-password autocomplete="new-password" placeholder="不会回显已保存密码" /></el-form-item>
-        <el-form-item label="Distributor Menu ID" required><el-input v-model="form.menu_id" /></el-form-item>
+        <el-form-item label="推广链权限"><el-alert title="登录后自动获取，无需手工填写 Menu ID" type="info" :closable="false" /></el-form-item>
         <el-form-item label="当前状态"><el-tag :type="status.verified ? 'success' : status.configured ? 'warning' : 'info'">{{ status.verified ? '已验证' : status.configured ? '待验证' : '未配置' }}</el-tag></el-form-item>
         <el-form-item><el-button type="primary" :loading="saving" @click="save">保存并测试登录</el-button><el-button :loading="testing" :disabled="!status.configured" @click="test">重新测试</el-button></el-form-item>
       </el-form>
@@ -19,7 +19,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { sinanApi, type SinanStatus } from '@/api/sinan'
-const form = reactive({ base_url: 'https://api.sinan-partner.com', app_id: '894783', account: '', password: '', menu_id: '' })
+const form = reactive({ base_url: 'https://api.sinan-partner.com', app_id: '894783', account: '', password: '' })
 const status = ref<SinanStatus>({ configured: false, verified: false }); const saving = ref(false); const testing = ref(false); const notice = ref(''); const noticeType = ref<'success'|'warning'|'error'>('success')
 async function load() { try { const { data } = await sinanApi.status(); status.value = data } catch {} }
 async function save() { saving.value = true; try { await sinanApi.save(form); await load(); noticeType.value='success'; notice.value='配置已保存，司南登录验证成功'; ElMessage.success(notice.value) } catch { noticeType.value='error'; notice.value='保存或登录验证失败' } finally { saving.value=false } }

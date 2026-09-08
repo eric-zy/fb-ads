@@ -15,7 +15,6 @@ class ConfigRequest(BaseModel):
     app_id: str
     account: str
     password: str
-    menu_id: str
 
 def _row(db, user):
     return db.query(SinanCredential).filter(SinanCredential.tenant_id == user.tenant_id).first()
@@ -29,10 +28,31 @@ async def _login(row):
         access = cookies.get('access_token') or data.get('data', {}).get('access_token') or ''
         refresh = cookies.get('refresh_token') or data.get('data', {}).get('refresh_token') or ''
         row.set_tokens(access, refresh)
+        # 司南的推广链 menu_id 来自权限树，不应由用户手工填写。
+        menus = await client.get(
+            row.base_url.rstrip('/') + '/permission/get_dist_menu/v1',
+            params={'app_id': row.app_id},
+            headers={'distributor-menu-id': '0'},
+        )
+        menu_data = menus.json()
+        menu_id = _find_promotion_menu_id(menu_data.get('data') or [])
+        if not menu_id:
+            raise ValueError('司南权限中未找到推广链菜单，请确认账号已开通推广链权限')
+        row.menu_id = menu_id
         check = await client.get(row.base_url.rstrip('/') + '/delivery/drama/info/v1', params={'app_id': row.app_id, 'drama_id': '1'}, headers={'distributor-menu-id': row.menu_id})
         if check.status_code >= 400: raise ValueError('司南登录成功但业务接口校验失败')
         row.status = 'ACTIVE'; row.last_error = None; row.last_verified_at = datetime.utcnow()
         return data.get('data', {}).get('user_id')
+
+def _find_promotion_menu_id(nodes):
+    """从司南权限树中查找推广链管理节点的 permission_id。"""
+    for node in nodes or []:
+        if node.get('code') == 'dist:pro-chain:manage':
+            return str(node.get('permission_id') or '') or None
+        found = _find_promotion_menu_id(node.get('children'))
+        if found:
+            return found
+    return None
 
 @router.get('/status')
 def status(db: Session = Depends(get_db), user: User = Depends(require_admin)):
@@ -62,7 +82,7 @@ async def content_search(payload: dict, db: Session = Depends(get_db), user: Use
 @router.post('/config')
 async def save_config(payload: ConfigRequest, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     row = _row(db, user) or SinanCredential(id=uuid.uuid4().hex)
-    row.base_url, row.app_id, row.menu_id = payload.base_url, payload.app_id, payload.menu_id
+    row.base_url, row.app_id = payload.base_url, payload.app_id
     row.set_account(payload.account); row.set_password(payload.password); row.status = 'VERIFYING'
     if not row.tenant_id: row.tenant_id = user.tenant_id
     db.add(row)
