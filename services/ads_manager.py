@@ -67,7 +67,7 @@ class AdsManager:
             return 0, 0
 
         try:
-            campaigns = fb_client.get_campaigns(account.account_id)
+            campaigns = CredentialService(self.db).build_service(account.id).list_campaigns(account.account_id)
             created_count = 0
             updated_count = 0
             
@@ -121,13 +121,14 @@ class AdsManager:
                 return cached
             
             # 从Facebook API获取
-            insights = fb_client.get_insights(
-                account_id=self.db.query(Campaign).filter_by(campaign_id=campaign_id).first().ad_account_id,
-                date_start=str(date_start),
-                date_stop=str(date_stop),
-                level='campaign',
-                params={'campaign_ids': [campaign_id]}
-            )
+            campaign = self.db.query(Campaign).filter_by(campaign_id=campaign_id).first()
+            if not campaign:
+                return None
+            account = resolve_ad_account(self.db, campaign.ad_account_id)
+            if not account:
+                return None
+            insights = self._account_insights(account, str(date_start), str(date_stop), 'campaign')
+            insights = [row for row in insights if row.get('campaign_id') == campaign_id]
             
             if insights:
                 result = insights[0]
@@ -171,7 +172,9 @@ class AdsManager:
                     
                     # 如果CTR过低或CPC过高
                     if (ctr < ctr_threshold and ctr > 0) or (cpc > cpc_threshold and cpc > 0):
-                        if fb_client.pause_campaign(campaign.campaign_id):
+                        account = resolve_ad_account(self.db, campaign.ad_account_id)
+                        if account:
+                            CredentialService(self.db).build_service(account.id).pause_campaign(campaign.campaign_id)
                             campaign.status = CampaignStatus.PAUSED
                             paused_count += 1
             
@@ -200,12 +203,7 @@ class AdsManager:
 
         try:
             today = date.today()
-            insights = fb_client.get_insights(
-                account_id=account.account_id,  # Meta API 需要 act_xxx
-                date_start=str(today),
-                date_stop=str(today),
-                level='account'
-            )
+            insights = self._account_insights(account, str(today), str(today), 'account')
             
             if insights:
                 return to_minor(float(insights[0].get('spend', 0) or 0))
@@ -402,9 +400,9 @@ class AdsManager:
         credential_service = CredentialService(self.db)
 
         for acc in accounts:
-            # Token 由凭据服务按所属 BM 解析（加密凭据优先，最后兜底全局配置）
+            # 必须按广告账户解析绑定凭证；个人账户 business_id 为空也能正常投放。
             try:
-                access_token, _ = credential_service.resolve_token_for_meta(acc.business_id)
+                access_token, _ = credential_service.resolve_account_token(acc.id)
             except CredentialError as e:
                 logger.error(f"[AdsManager] 账户 {acc.account_id} 凭据不可用，跳过: {e}")
                 continue

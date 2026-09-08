@@ -171,9 +171,9 @@ class FacebookClient:
             }
         """
         # 开发降级：未配置真实 FB 凭据或 SDK 不可用时，放行以便本地开发测试
-        if not settings.FB_ACCESS_TOKEN or not access_token:
+        if not access_token:
             logger.warning(
-                f"[DEV] 未配置 FB 凭据，跳过拉取 BM {business_id} 的广告账户（开发模式）"
+                f"[DEV] 未配置 BM User Access Token，跳过拉取 BM {business_id} 的广告账户（开发模式）"
             )
             return {"ok": True, "dev_mode": True, "error": None, "accounts": []}
 
@@ -307,8 +307,8 @@ class FacebookClient:
         target = account_id.replace("act_", "")
         act = f"act_{target}"
 
-        if not settings.FB_ACCESS_TOKEN or not access_token:
-            logger.warning("[DEV] 未配置 FB 凭据，跳过图片上传（开发模式返回占位 hash）")
+        if not access_token:
+            logger.warning("[DEV] 未配置账户 User Access Token，跳过图片上传（开发模式返回占位 hash）")
             return {"hash": f"dev_hash_{target}_{int(__import__('time').time())}", "dev_mode": True}
 
         try:
@@ -339,8 +339,8 @@ class FacebookClient:
         target = account_id.replace("act_", "")
         act = f"act_{target}"
 
-        if not settings.FB_ACCESS_TOKEN or not access_token:
-            logger.warning("[DEV] 未配置 FB 凭据，跳过视频上传（开发模式返回占位 video_id）")
+        if not access_token:
+            logger.warning("[DEV] 未配置账户 User Access Token，跳过视频上传（开发模式返回占位 video_id）")
             return {"video_id": f"dev_video_{target}_{int(__import__('time').time())}", "dev_mode": True}
 
         try:
@@ -389,8 +389,8 @@ class FacebookClient:
         act = f"act_{target}"
         ts = int(__import__('time').time())
 
-        if not settings.FB_ACCESS_TOKEN or not access_token:
-            logger.warning("[DEV] 未配置 FB 凭据，跳过真实发布（开发模式返回占位 id）")
+        if not access_token:
+            logger.warning("[DEV] 未配置账户 User Access Token，跳过真实发布（开发模式返回占位 id）")
             return {
                 "campaign_id": f"dev_camp_{target}_{ts}_{idx}",
                 "adset_id": f"dev_set_{target}_{ts}_{idx}",
@@ -427,10 +427,10 @@ class FacebookClient:
 
             # 1) Campaign
             campaign = FBCampaign(api=api)
-            campaign[Campaign.Field.name] = camp_name
-            campaign[Campaign.Field.objective] = objective
-            campaign[Campaign.Field.status] = FBCampaign.Status.active
-            campaign[Campaign.Field.special_ad_categories] = []
+            campaign[FBCampaign.Field.name] = camp_name
+            campaign[FBCampaign.Field.objective] = objective
+            campaign[FBCampaign.Field.status] = FBCampaign.Status.active
+            campaign[FBCampaign.Field.special_ad_categories] = []
             campaign.remote_create(parent_id=fb_account.get_id_assured())
 
             # 2) AdSet

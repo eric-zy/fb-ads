@@ -181,14 +181,18 @@ async def upload_media(
 
     # 解析用于 FB 上传的 token / account
     # BM 主表自 V1 起不再存明文 Token，统一由 CredentialService 解析
-    access_token = settings.FB_ACCESS_TOKEN
+    access_token = None
     fb_account = account_id or (f"act_{meta_account_id}" if meta_account_id else None)
-    if meta_account_id:
+    if account_id:
+        try:
+            access_token, _ = CredentialService(db).resolve_account_token(account_id)
+        except CredentialError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    elif meta_account_id:
         try:
             access_token, _ = CredentialService(db).resolve_token_for_meta(meta_account_id)
-        except CredentialError:
-            # 凭据不可用时回退全局配置，保持原有行为
-            logger.warning(f"[media] BM {meta_account_id} 凭据不可用，回退全局 Token")
+        except CredentialError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     asset = CreativeAsset(
         id=str(uuid.uuid4()),

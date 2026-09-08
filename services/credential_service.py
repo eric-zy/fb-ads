@@ -126,7 +126,12 @@ class CredentialService:
             .first()
         )
 
-    def resolve_token_for_meta(self, meta_account_id: str) -> Tuple[str, Optional[Credential]]:
+    def resolve_token_for_meta(
+        self,
+        meta_account_id: str,
+        *,
+        allow_global_fallback: bool = True,
+    ) -> Tuple[str, Optional[Credential]]:
         """解析某个 BM 可用的明文 token
 
         优先级：
@@ -159,16 +164,53 @@ class CredentialService:
                 return token, cred
             logger.error(f"[CredentialService] 凭据 {cred.id} 解密失败")
 
-        # 2) 全局兜底
-        if settings.FB_ACCESS_TOKEN:
+        # 2) 全局兜底（仅兼容旧管理/开发入口；账户生产链路显式关闭）
+        if allow_global_fallback and settings.FB_ACCESS_TOKEN:
             logger.warning("[CredentialService] 回退使用全局 FB_ACCESS_TOKEN")
             return settings.FB_ACCESS_TOKEN, None
 
         raise CredentialError(f"BM {meta_account_id} 无可用凭据")
 
+    def resolve_account_token(self, ad_account_id: str) -> Tuple[str, Credential]:
+        """严格解析广告账户凭证。
+
+        投放、洞察、素材和状态操作都必须使用广告账户实际绑定的
+        User Access Token；生产链路禁止回退到全局 ``FB_ACCESS_TOKEN``，
+        否则多个 BM/个人账户之间会发生身份串用。
+        """
+        account = self.db.query(AdAccount).filter(AdAccount.id == ad_account_id).first()
+        if not account:
+            raise CredentialError(f"广告账户不存在: {ad_account_id}")
+
+        if account.credential_id:
+            cred = self.db.query(Credential).filter(
+                Credential.id == account.credential_id,
+                Credential.status == CredentialStatus.ACTIVE.value,
+            ).first()
+            if cred:
+                if cred.is_expired():
+                    cred.status = CredentialStatus.EXPIRED.value
+                    self.db.commit()
+                    raise CredentialExpiredError(f"广告账户 {ad_account_id} 的凭据已过期")
+                token = cred.get_access_token()
+                if token:
+                    return token, cred
+
+        if account.business_id:
+            token, cred = self.resolve_token_for_meta(
+                account.business_id,
+                allow_global_fallback=False,
+            )
+            if cred:
+                return token, cred
+
+        raise CredentialError(
+            f"广告账户 {ad_account_id} 未绑定可用凭据，请重新授权或绑定凭据"
+        )
+
     def build_service(self, ad_account_id: str, **service_kwargs) -> MetaAdsService:
-        """构建该账户可用的 MetaAdsService（多账户架构的入口）"""
-        token, _ = self.resolve_token(ad_account_id)
+        """构建账户专属 MetaAdsService，生产链路不使用全局 Token。"""
+        token, _ = self.resolve_account_token(ad_account_id)
         client = MetaClient(access_token=token)
         return MetaAdsService(client, **service_kwargs)
 
