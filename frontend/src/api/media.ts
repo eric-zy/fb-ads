@@ -46,7 +46,7 @@ export const mediaApi = {
     if (extra?.meta_account_id) form.append('meta_account_id', extra.meta_account_id)
     if (extra?.account_id) form.append('account_id', extra.account_id)
     return request.post<MediaItem>('/api/v1/media/upload', form, {
-      headers: { 'Content-Type': 'multipart/form-data' },
+      // 不要手动设置 Content-Type；浏览器需要自动补 multipart boundary。
       onUploadProgress: onProgress,
     })
   },
