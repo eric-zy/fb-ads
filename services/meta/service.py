@@ -220,8 +220,8 @@ class MetaAdsService:
             # ``(#200) Provide valid app ID``，而同一 User Token 直接调用
             # Graph API 已验证可用。因此 Insights 走显式 HTTP 请求，
             # 仍然使用当前账户的 User Access Token，不使用全局 Token。
+            date_preset = params.get("date_preset", "yesterday")
             request_params = {
-                "date_preset": params.get("date_preset", "yesterday"),
                 "level": params.get("level", "account"),
                 "fields": params.get(
                     "fields",
@@ -230,6 +230,9 @@ class MetaAdsService:
                     "account_id,campaign_id,adset_id,ad_id",
                 ),
             }
+            # Meta Graph API 不允许 date_preset=custom；自定义日期必须只传 time_range。
+            if date_preset != "custom":
+                request_params["date_preset"] = date_preset
             for key, value in params.items():
                 if key not in {"date_preset", "level", "fields"}:
                     request_params[key] = value
