@@ -127,7 +127,14 @@ class MetaClient:
         except Exception as exc:
             raise classify_facebook_error(exc)
 
-    def _post(self, path: str, params: dict, files: Optional[dict] = None) -> dict:
+    def _post(
+        self,
+        path: str,
+        params: dict,
+        files: Optional[dict] = None,
+        *,
+        timeout: Optional[int] = None,
+    ) -> dict:
         """统一的 Graph API POST 调用与错误映射。
 
         写入接口使用账户凭证对应的 User Access Token；不使用全局
@@ -143,7 +150,7 @@ class MetaClient:
                 f"https://graph.facebook.com/{settings.FB_API_VERSION}/{path.lstrip('/')}",
                 data=request_params,
                 files=files,
-                timeout=settings.FB_API_TIMEOUT,
+                timeout=timeout or settings.FB_API_TIMEOUT,
             )
             payload = response.json()
             error = payload.get("error") if isinstance(payload, dict) else None

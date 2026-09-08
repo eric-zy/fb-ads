@@ -426,6 +426,7 @@ class MetaAdsService:
                     f"{act}/advideos",
                     {},
                     files={"source": video_file},
+                    timeout=settings.FB_VIDEO_UPLOAD_TIMEOUT,
                 )
             video_id = result.get("id")
             if not video_id:
