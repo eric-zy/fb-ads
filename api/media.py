@@ -8,7 +8,7 @@ import os
 import uuid
 import mimetypes
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from pydantic import BaseModel
@@ -156,8 +156,8 @@ def _save_local(file: UploadFile) -> dict:
 @router.post("/upload", response_model=MediaItem)
 async def upload_media(
     file: UploadFile = File(...),
-    meta_account_id: Optional[str] = None,
-    account_id: Optional[str] = None,
+    meta_account_id: Optional[str] = Form(None),
+    account_id: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_active_user),
 ):
