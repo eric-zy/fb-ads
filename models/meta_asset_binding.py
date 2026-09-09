@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Text, Index, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Text, Index, UniqueConstraint, Integer
 from core.database import Base
 from core.tenant import TenantMixin
 
@@ -25,6 +25,9 @@ class MetaAssetBinding(TenantMixin, Base):
     last_verified_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    retry_count = Column(Integer, default=0, nullable=False)
+    processing_status = Column(String(30), nullable=True)
+    error_code = Column(String(80), nullable=True)
 
     def to_dict(self) -> dict:
         return {
@@ -37,4 +40,7 @@ class MetaAssetBinding(TenantMixin, Base):
             "error_message": self.error_message,
             "uploaded_at": self.uploaded_at.isoformat() if self.uploaded_at else None,
             "last_verified_at": self.last_verified_at.isoformat() if self.last_verified_at else None,
+            "retry_count": self.retry_count,
+            "processing_status": self.processing_status,
+            "error_code": self.error_code,
         }

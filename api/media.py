@@ -7,6 +7,7 @@
 import os
 import uuid
 import mimetypes
+import hashlib
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
@@ -23,6 +24,7 @@ from services.meta import MetaAdsService, MetaClient
 from services.meta.errors import MetaApiError
 from config.settings import settings
 from tasks.campaign_tasks import retry_asset_binding_task
+from tasks.media_tasks import upload_asset_task
 
 router = APIRouter(prefix="/api/v1/media", tags=["素材库"])
 
@@ -48,6 +50,8 @@ class MediaItem(BaseModel):
     status: str
     error: Optional[str]
     created_at: Optional[str]
+    binding_id: Optional[str] = None
+    task_id: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -136,12 +140,14 @@ def _save_local(file: UploadFile) -> dict:
     stored = f"{uuid.uuid4().hex}{ext}"
     dest = os.path.join(settings.UPLOAD_DIR, stored)
     size = 0
+    digest = hashlib.sha256()
     with open(dest, "wb") as f:
         while True:
             chunk = file.file.read(1024 * 1024)
             if not chunk:
                 break
             size += len(chunk)
+            digest.update(chunk)
             f.write(chunk)
     mime = file.content_type or mimetypes.guess_type(dest)[0] or "application/octet-stream"
     return {
@@ -150,6 +156,7 @@ def _save_local(file: UploadFile) -> dict:
         "size": size,
         "mime": mime,
         "url": f"/uploads/{stored}",
+        "sha256": digest.hexdigest(),
     }
 
 
@@ -180,19 +187,11 @@ async def upload_media(
     info = _save_local(file)
     asset_type = "image" if is_image else "video"
 
-    # 解析用于 FB 上传的 token / account
-    # BM 主表自 V1 起不再存明文 Token，统一由 CredentialService 解析
-    access_token = None
-    fb_account = None
+    # 这里只校验账户归属；凭据解析和 Meta 写操作都放到 Worker。
     if account_id:
         account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
         if not account:
             raise HTTPException(status_code=404, detail="广告账户不存在")
-        try:
-            access_token, _ = CredentialService(db).resolve_account_token(account_id)
-        except CredentialError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        fb_account = account.account_id
     elif meta_account_id:
         raise HTTPException(
             status_code=400,
@@ -200,6 +199,29 @@ async def upload_media(
         )
     else:
         raise HTTPException(status_code=400, detail="Meta 素材必须指定广告账户")
+
+    # 同租户、同类型、同内容直接复用本地素材，避免重复占盘。
+    existing = db.query(CreativeAsset).filter(
+        CreativeAsset.sha256 == info["sha256"], CreativeAsset.asset_type == asset_type,
+        CreativeAsset.status != "ARCHIVED",
+    ).first()
+    if existing:
+        try:
+            os.remove(info["dest"])
+        except OSError:
+            pass
+        binding = db.query(MetaAssetBinding).filter(
+            MetaAssetBinding.asset_id == existing.id, MetaAssetBinding.ad_account_id == account.id
+        ).first()
+        if not binding:
+            binding = MetaAssetBinding(id=uuid.uuid4().hex, asset_id=existing.id, ad_account_id=account.id,
+                                       meta_asset_type=asset_type, status="PENDING")
+            db.add(binding); db.commit()
+        if binding.status != "READY":
+            upload_asset_task.delay(binding.id)
+        data = existing.to_dict()
+        data.update({"binding_id": binding.id})
+        return data
 
     asset = CreativeAsset(
         id=str(uuid.uuid4()),
@@ -212,28 +234,19 @@ async def upload_media(
         url=info["url"],
         size=info["size"],
         mime_type=info["mime"],
-        status="uploading",
+        status="PENDING",
+        sha256=info["sha256"],
     )
-
-    # 调用 FB 上传
-    try:
-        service = MetaAdsService(MetaClient(access_token=access_token))
-        if asset_type == "image":
-            res = service.upload_image(fb_account, info["dest"])
-            asset.fb_hash = res.get("hash")
-        else:
-            res = service.upload_video(fb_account, info["dest"])
-            asset.fb_video_id = res.get("video_id")
-    except MetaApiError as exc:
-        asset.status = "failed"
-        asset.error = str(exc)[:500]
-    else:
-        asset.status = "ready"
-
     db.add(asset)
     db.commit()
     db.refresh(asset)
-    return asset.to_dict()
+    binding = MetaAssetBinding(id=uuid.uuid4().hex, asset_id=asset.id, ad_account_id=account.id,
+                               meta_asset_type=asset_type, status="PENDING")
+    db.add(binding); db.commit()
+    task = upload_asset_task.delay(binding.id)
+    data = asset.to_dict()
+    data.update({"binding_id": binding.id, "task_id": task.id})
+    return data
 
 
 @router.get("", response_model=List[MediaItem])

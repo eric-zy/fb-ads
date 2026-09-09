@@ -30,6 +30,7 @@ class CreativeAsset(TenantMixin, Base):
     filename = Column(String(255), comment="服务器存储文件名")
     file_path = Column(String(512), comment="本地存储相对路径（UPLOAD_DIR 下）")
     url = Column(String(1024), comment="可访问的 URL（本地或对象存储）")
+    sha256 = Column(String(64), nullable=True, index=True, comment="文件内容指纹")
 
     # Facebook 引用标识（上传到 FB 后回填）
     fb_hash = Column(String(255), comment="图片 hash（AdImage）")
@@ -42,7 +43,8 @@ class CreativeAsset(TenantMixin, Base):
     mime_type = Column(String(100))
     duration = Column(Float, comment="视频时长（秒）")
 
-    status = Column(String(20), default="ready", comment="ready / uploading / failed")
+    status = Column(String(20), default="PENDING", comment="PENDING/UPLOADING/PROCESSING/READY/FAILED/ARCHIVED")
+    retry_count = Column(Integer, default=0, nullable=False)
     error = Column(Text, comment="上传失败原因")
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -53,6 +55,7 @@ class CreativeAsset(TenantMixin, Base):
     __table_args__ = (
         Index("ix_creative_assets_tenant_meta", "tenant_id", "meta_account_id"),
         Index("ix_creative_assets_tenant_account", "tenant_id", "account_id"),
+        Index("ix_creative_assets_tenant_sha256", "tenant_id", "sha256", "asset_type"),
     )
 
     def to_dict(self) -> dict:
@@ -64,6 +67,7 @@ class CreativeAsset(TenantMixin, Base):
             "meta_account_id": self.meta_account_id,
             "account_id": self.account_id,
             "url": self.url,
+            "sha256": self.sha256,
             "fb_hash": self.fb_hash,
             "fb_video_id": self.fb_video_id,
             "width": self.width,
@@ -72,6 +76,7 @@ class CreativeAsset(TenantMixin, Base):
             "mime_type": self.mime_type,
             "duration": self.duration,
             "status": self.status,
+            "retry_count": self.retry_count,
             "error": self.error,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

@@ -115,6 +115,7 @@ for _task_module in (
     "tasks.campaign_tasks",
     "tasks.meta_sync_tasks",  # Meta 账号管理 V1：BM / 广告账户同步
     "tasks.credential_tasks",  # 凭据到期巡检
+    "tasks.media_tasks",  # 异步 Meta 素材上传与视频处理
 ):
     try:
         __import__(_task_module)
