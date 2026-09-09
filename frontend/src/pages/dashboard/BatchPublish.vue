@@ -334,7 +334,8 @@ const loadAccounts = async () => {
   loadingAccounts.value = true
   try {
     const { data } = await accountApi.availableForDeployment()
-    accounts.value = data
+    // 接口返回 { total, accounts }，不能把整个响应对象当成账户数组。
+    accounts.value = data.accounts || []
   } finally {
     loadingAccounts.value = false
   }
