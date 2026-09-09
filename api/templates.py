@@ -4,6 +4,7 @@ Campaign Template 是整个系统最核心的业务对象：
 用户配置一次模板，即可批量部署到多个广告账户（设计文档第 3.1 / 10 节）。
 """
 import uuid
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -29,6 +30,9 @@ def _validate_page_for_tenant(db: Session, creative_config: Optional[Dict[str, A
 
 
 def _validate_delivery_config(values: Dict[str, Any]) -> None:
+    objective = str(values.get("objective") or "").upper()
+    if objective not in {"OUTCOME_AWARENESS", "OUTCOME_TRAFFIC", "OUTCOME_ENGAGEMENT", "OUTCOME_LEADS", "OUTCOME_SALES", "OUTCOME_APP_PROMOTION", "TRAFFIC", "REACH", "BRAND_AWARENESS", "VIDEO_VIEWS", "ENGAGEMENT", "LEAD_GENERATION", "CONVERSIONS", "LINK_CLICKS"}:
+        raise HTTPException(status_code=400, detail="请选择有效的 Meta 广告系列目标")
     buying_type = str(values.get("buying_type") or "AUCTION").upper()
     if buying_type != "AUCTION":
         raise HTTPException(status_code=400, detail="当前系统只支持 AUCTION 购买类型")
@@ -40,6 +44,13 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
     if budget is None or float(budget) <= 0:
         raise HTTPException(status_code=400, detail="模板预算必须大于 0")
 
+    targeting = values.get("targeting_json") or {}
+    countries = ((targeting.get("geo_locations") or {}).get("countries") or [])
+    if not countries:
+        raise HTTPException(status_code=400, detail="定向必须至少选择一个国家")
+    if targeting.get("age_min") is not None and targeting.get("age_max") is not None and int(targeting["age_min"]) > int(targeting["age_max"]):
+        raise HTTPException(status_code=400, detail="年龄范围无效：最小年龄不能大于最大年龄")
+
     config = values.get("creative_config_json") or {}
     if budget_type == "LIFETIME" and not (config.get("schedule") or {}).get("end_time"):
         raise HTTPException(status_code=400, detail="总预算模板必须配置 schedule.end_time")
@@ -49,6 +60,24 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
             status_code=400,
             detail=f"优化目标 {optimization_goal} 必须配置 promoted_object",
         )
+    creatives = config.get("creatives") or []
+    if not creatives:
+        raise HTTPException(status_code=400, detail="至少配置一个广告创意")
+    allowed_cta = {"LEARN_MORE", "SHOP_NOW", "SIGN_UP", "BOOK_NOW", "DOWNLOAD", "GET_OFFER", "CONTACT_US", "SUBSCRIBE"}
+    for index, creative in enumerate(creatives, 1):
+        asset_type = str(creative.get("asset_type") or "image").lower()
+        if asset_type == "image" and not creative.get("image_hash"):
+            raise HTTPException(status_code=400, detail=f"创意 {index} 缺少已同步的图片素材")
+        if asset_type == "video" and not creative.get("video_id"):
+            raise HTTPException(status_code=400, detail=f"创意 {index} 缺少已同步的视频素材")
+        if not str(creative.get("primary_text") or "").strip():
+            raise HTTPException(status_code=400, detail=f"创意 {index} 的主文案不能为空")
+        landing_url = str(creative.get("landing_url") or "")
+        parsed = urlparse(landing_url)
+        if not parsed.scheme in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(status_code=400, detail=f"创意 {index} 的落地页必须是有效的 http/https URL")
+        if creative.get("cta") and str(creative["cta"]).upper() not in allowed_cta:
+            raise HTTPException(status_code=400, detail=f"创意 {index} 的行动按钮不受 Meta 支持")
 
 
 # ==================== 请求模型 ====================
@@ -57,6 +86,7 @@ class TemplateCreate(BaseModel):
     name: str = Field(..., description="模板名称，如 US Sales V1")
     objective: Optional[str] = Field(None, description="推广目标 OUTCOME_SALES / OUTCOME_TRAFFIC")
     buying_type: str = "AUCTION"
+    is_adset_budget_sharing_enabled: bool = False
     special_ad_categories: List[str] = Field(default_factory=list)
 
     budget_type: str = Field("DAILY", description="DAILY / LIFETIME")
@@ -80,6 +110,7 @@ class TemplateUpdate(BaseModel):
     name: Optional[str] = None
     objective: Optional[str] = None
     buying_type: Optional[str] = None
+    is_adset_budget_sharing_enabled: Optional[bool] = None
     special_ad_categories: Optional[List[str]] = None
     budget_type: Optional[str] = None
     daily_budget: Optional[float] = None
@@ -186,6 +217,7 @@ def clone_template(
         name=f"{source.name} - 副本",
         objective=source.objective,
         buying_type=source.buying_type,
+        is_adset_budget_sharing_enabled=source.is_adset_budget_sharing_enabled,
         special_ad_categories=source.special_ad_categories,
         budget_type=source.budget_type,
         daily_budget=source.daily_budget,

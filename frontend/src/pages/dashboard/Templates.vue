@@ -85,6 +85,15 @@
         <el-form-item label="购买类型">
           <el-input v-model="form.buying_type" placeholder="AUCTION" />
         </el-form-item>
+        <el-form-item label="特殊广告类别">
+          <el-checkbox-group v-model="form.special_ad_categories">
+            <el-checkbox label="HOUSING">住房</el-checkbox>
+            <el-checkbox label="EMPLOYMENT">就业</el-checkbox>
+            <el-checkbox label="CREDIT">信贷</el-checkbox>
+            <el-checkbox label="ISSUES_ELECTIONS_POLITICS">社会议题/选举/政治</el-checkbox>
+          </el-checkbox-group>
+          <div class="tip">如广告涉及以上类别，必须选择对应类别；不涉及则保持为空。</div>
+        </el-form-item>
         <el-form-item label="状态">
           <el-select v-model="form.status" style="width: 100%">
             <el-option label="启用 ACTIVE" value="ACTIVE" />
@@ -107,6 +116,10 @@
         </el-form-item>
         <el-form-item v-else label="总预算(美元)">
           <el-input-number v-model="form.lifetime_budget" :min="0" :step="100" />
+        </el-form-item>
+        <el-form-item label="广告组预算共享">
+          <el-switch v-model="form.is_adset_budget_sharing_enabled" />
+          <span class="tip-inline">关闭时使用广告组独立预算；Meta 要求明确传入 True/False</span>
         </el-form-item>
         <template v-if="form.budget_type === 'LIFETIME'">
           <el-form-item label="开始时间">
@@ -248,6 +261,8 @@ const form = reactive({
   name: '',
   objective: 'OUTCOME_SALES',
   buying_type: 'AUCTION',
+  special_ad_categories: [] as string[],
+  is_adset_budget_sharing_enabled: false,
   status: 'ACTIVE',
   budget_type: 'DAILY',
   daily_budget: 50,
@@ -361,6 +376,7 @@ const resetForm = () => {
   form.name = ''
   form.objective = 'OUTCOME_SALES'
   form.buying_type = 'AUCTION'
+  form.special_ad_categories = []
   form.status = 'ACTIVE'
   form.budget_type = 'DAILY'
   form.daily_budget = 50
@@ -392,6 +408,8 @@ const openEdit = (row: CampaignTemplate) => {
   form.name = row.name
   form.objective = row.objective || 'OUTCOME_SALES'
   form.buying_type = row.buying_type || 'AUCTION'
+  form.special_ad_categories = [...(row.special_ad_categories || [])]
+  form.is_adset_budget_sharing_enabled = row.is_adset_budget_sharing_enabled ?? false
   form.status = row.status || 'ACTIVE'
   form.budget_type = row.budget_type || 'DAILY'
   form.daily_budget = row.daily_budget ?? 50
@@ -429,6 +447,33 @@ const submit = async () => {
     templateStep.value = 1
     return
   }
+  if (!creativeForm.page_id) {
+    ElMessage.warning('请选择已授权的 Facebook 页面')
+    templateStep.value = 3
+    return
+  }
+  for (let i = 0; i < creativeForm.creatives.length; i++) {
+    const creative = creativeForm.creatives[i]
+    const asset = selectedAsset(creative.asset_id)
+    if (!asset || String(asset.status).toUpperCase() !== 'READY') {
+      ElMessage.warning(`创意 ${i + 1} 必须选择已同步完成的素材`)
+      templateStep.value = 3
+      return
+    }
+    if (!creative.primary_text.trim()) {
+      ElMessage.warning(`请填写创意 ${i + 1} 的主文案`)
+      templateStep.value = 3
+      return
+    }
+    try {
+      const url = new URL(creative.landing_url)
+      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('invalid')
+    } catch {
+      ElMessage.warning(`创意 ${i + 1} 的落地页必须是有效的 http/https URL`)
+      templateStep.value = 3
+      return
+    }
+  }
   if (['OFFSITE_CONVERSIONS', 'VALUE'].includes(form.optimization_goal) && (!form.pixel_id.trim() || !form.custom_event_type.trim())) {
     ElMessage.warning('转化优化必须填写 Pixel ID 和转化事件')
     templateStep.value = 2
@@ -452,6 +497,8 @@ const submit = async () => {
       name: form.name,
       objective: form.objective,
       buying_type: form.buying_type,
+      special_ad_categories: form.special_ad_categories,
+      is_adset_budget_sharing_enabled: form.is_adset_budget_sharing_enabled,
       status: form.status,
       budget_type: form.budget_type,
       daily_budget: form.budget_type === 'DAILY' ? form.daily_budget : undefined,

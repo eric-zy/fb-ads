@@ -102,6 +102,7 @@ class CampaignBuilder:
             "objective": objective,
             "status": self.status,
             "special_ad_categories": self.template.special_ad_categories or [],
+            "is_adset_budget_sharing_enabled": bool(self.template.is_adset_budget_sharing_enabled),
         }
         # AUCTION 是 Meta 默认值；不主动发送可减少不同账户/版本的参数兼容问题。
         buying_type = (self.template.buying_type or "AUCTION").strip().upper()

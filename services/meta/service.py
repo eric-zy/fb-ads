@@ -121,7 +121,7 @@ class MetaAdsService:
         act = self.client.normalize_account_id(account_id)
 
         def _do():
-            allowed = {"name", "objective", "status", "special_ad_categories", "buying_type"}
+            allowed = {"name", "objective", "status", "special_ad_categories", "buying_type", "is_adset_budget_sharing_enabled"}
             payload = {key: value for key, value in (params or {}).items() if key in allowed}
             required = {"name", "objective", "status", "special_ad_categories"}
             missing = required.difference(payload)
