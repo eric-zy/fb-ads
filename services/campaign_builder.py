@@ -330,6 +330,8 @@ class CampaignDeploymentBuilder:
         *,
         budget_override: Optional[float] = None,
         status: str = InstanceStatus.PAUSED.value,
+        campaign_name: Optional[str] = None,
+        adset_name: Optional[str] = None,
     ):
         self.db = db
         self.service = service
