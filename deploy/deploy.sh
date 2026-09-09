@@ -7,9 +7,11 @@ cd "$(dirname "$0")"
 docker compose build api nginx
 
 # 先确保数据库已启动，再用刚构建的镜像检查迁移状态。
-# current --check-heads：已在最新 head 时返回 0，避免每次部署重复执行迁移。
+# 兼容未提供 current --check-heads 的旧版 Alembic：当前版本输出包含
+# "(head)" 时视为已是最新，否则执行升级。
 docker compose up -d db redis
-if docker compose run --rm api alembic current --check-heads; then
+current_revision="$(docker compose run --rm api alembic current 2>/dev/null || true)"
+if printf '%s\n' "$current_revision" | grep -q '(head)'; then
   echo "[deploy] 数据库已是最新版本，跳过迁移。"
 else
   echo "[deploy] 检测到待执行迁移，开始升级数据库。"
