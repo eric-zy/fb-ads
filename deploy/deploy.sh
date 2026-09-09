@@ -5,10 +5,21 @@ cd "$(dirname "$0")"
 
 # API/Worker/Beat 共用 fbads-api:latest，只构建一次，避免三个服务并行生成重复镜像。
 docker compose build api nginx
-docker compose up -d --force-recreate api celery-worker celery-beat nginx
 
-# 迁移必须在服务更新后执行；失败时保留现场，不清理镜像。
-docker compose run --rm api alembic upgrade head
+# 先确保数据库已启动，再用刚构建的镜像检查迁移状态。
+# current --check-heads：已在最新 head 时返回 0，避免每次部署重复执行迁移。
+docker compose up -d db redis
+if docker compose run --rm api alembic current --check-heads; then
+  echo "[deploy] 数据库已是最新版本，跳过迁移。"
+else
+  echo "[deploy] 检测到待执行迁移，开始升级数据库。"
+  # 迁移失败立即退出，API/Worker 不切换到可能不匹配的版本。
+  docker compose run --rm api alembic upgrade head
+  echo "[deploy] 数据库迁移完成。"
+fi
+
+# 数据库结构确认后再切换 API/Worker/Beat，避免出现 ORM 已更新而表结构未更新的窗口。
+docker compose up -d --force-recreate api celery-worker celery-beat nginx
 
 # 仅清理不再被容器使用的旧镜像和构建缓存，不触碰任何 Volume。
 docker image prune -f
