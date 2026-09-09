@@ -363,7 +363,26 @@ const loadTemplates = async () => {
   }
 }
 const loadMediaAssets = async () => {
-  try { const { data } = await mediaApi.list(); mediaAssets.value = data } catch { mediaAssets.value = [] }
+  try {
+    const { data } = await mediaApi.list()
+    // 素材主表的 status 可能仍是 PENDING；模板投放实际使用账户级 binding。
+    // 用 READY binding 回填 Meta ID，避免素材库已映射但模板仍显示“待同步”。
+    mediaAssets.value = await Promise.all(data.map(async asset => {
+      try {
+        const bindingRes = await mediaApi.bindings(asset.id)
+        const ready = bindingRes.data.find(binding => String(binding.status).toUpperCase() === 'READY' && binding.meta_asset_id)
+        if (!ready) return asset
+        return {
+          ...asset,
+          status: 'READY',
+          fb_hash: asset.asset_type === 'image' ? (asset.fb_hash || ready.meta_asset_id) : asset.fb_hash,
+          fb_video_id: asset.asset_type === 'video' ? (asset.fb_video_id || ready.meta_asset_id) : asset.fb_video_id,
+        }
+      } catch {
+        return asset
+      }
+    }))
+  } catch { mediaAssets.value = [] }
 }
 const loadMetaPages = async () => {
   try { const { data } = await metaPagesApi.list(); metaPages.value = data } catch { metaPages.value = [] }
