@@ -3,8 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# 统一构建一次，API/Worker/Beat 共用同一镜像，避免重复产生镜像层。
-docker compose build api celery-worker celery-beat nginx
+# API/Worker/Beat 共用 fbads-api:latest，只构建一次，避免三个服务并行生成重复镜像。
+docker compose build api nginx
 docker compose up -d --force-recreate api celery-worker celery-beat nginx
 
 # 迁移必须在服务更新后执行；失败时保留现场，不清理镜像。
