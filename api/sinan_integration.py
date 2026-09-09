@@ -79,6 +79,34 @@ async def promotion_detail(promotion_id: str, db: Session = Depends(get_db), use
 async def content_search(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     return (await _client(db, user).content_list(payload.get('content_type', 'SHORT_VIDEO'), payload.get('keyword', ''), payload.get('page', 1), payload.get('page_size', 20))).get('data', {})
 
+async def _sinan_data(db, user, fn):
+    try: return (await fn(_client(db, user))).get('data', {})
+    except HTTPException: raise
+    except Exception as exc: raise HTTPException(502, f'司南接口调用失败：{exc}')
+
+@router.get('/apps')
+async def apps(db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.app_tree())
+@router.get('/filter-options')
+async def filter_options(db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.filter_options())
+@router.get('/pixels/{real_app_id}')
+async def pixels(real_app_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.pixels(1, real_app_id))
+@router.get('/recharge-templates/{real_app_id}')
+async def recharge_templates(real_app_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.recharge_templates(real_app_id))
+@router.get('/return-rules')
+async def return_rules(db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.return_rules())
+@router.get('/price')
+async def default_price(drama_id: str, real_app_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.default_price(drama_id, real_app_id))
+@router.get('/chapters/{drama_id}')
+async def chapters(drama_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.chapters(drama_id))
+
+@router.post('/promotions/create')
+async def create_promotion(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    return await _sinan_data(db, user, lambda c: c.create_promotion(payload))
+
+@router.post('/promotions/update')
+async def update_promotion(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    return await _sinan_data(db, user, lambda c: c.update_promotion(payload))
+
 @router.post('/config')
 async def save_config(payload: ConfigRequest, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     row = _row(db, user) or SinanCredential(id=uuid.uuid4().hex)

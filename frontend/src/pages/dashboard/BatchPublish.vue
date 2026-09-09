@@ -229,7 +229,6 @@ import { ElMessage } from 'element-plus'
 import { accountApi, type DeployableAccount } from '@/api/admin'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { mediaApi, type MetaAssetBinding } from '@/api/media'
-import { sinanPromotionsApi, type SinanPromotion } from '@/api/sinanPromotions'
 import {
   jobsApi,
   isFinalStatus,
@@ -250,7 +249,6 @@ const submitting = ref(false)
 const preflighting = ref(false)
 const preflightResult = ref<any>(null)
 const assetBindings = ref<MetaAssetBinding[]>([])
-const sinanPromotion = ref<SinanPromotion | null>(null)
 const activeStep = ref(0)
 
 let pollTimer: number | null = null
@@ -402,7 +400,6 @@ const submit = async () => {
   }
   submitting.value = true
   try {
-    if (form.sinan_promotion_id) sinanPromotion.value = (await sinanPromotionsApi.detail(form.sinan_promotion_id)).data
     // 素材是按广告账户生成 Meta 映射的；先创建映射占位，再提交创建任务。
     // 真正的上传由后端异步投放任务处理，避免前端等待多个账户上传。
     const creatives = selectedTemplate.value?.creative_config_json?.creatives
@@ -420,7 +417,6 @@ const submit = async () => {
       budget_override: form.budget_override || undefined,
       status: form.status,
       sinan_promotion_id: form.sinan_promotion_id || undefined,
-      sinan_snapshot: sinanPromotion.value ? { promotion_id: sinanPromotion.value.promotion_id, landing_url: sinanPromotion.value.landing_url, campaign_name: sinanPromotion.value.promotion_name, adset_name: sinanPromotion.value.ad_group } : undefined,
     })
     if (data.rejected_accounts?.length) {
       ElMessage.warning(`有 ${data.rejected_accounts.length} 个账号未进入任务，请检查账号状态`)
@@ -441,8 +437,7 @@ const runPreflight = async () => {
   if (!form.template_id || !form.ad_account_ids.length) return
   preflighting.value = true
   try {
-  if (form.sinan_promotion_id) sinanPromotion.value = (await sinanPromotionsApi.detail(form.sinan_promotion_id)).data
-  const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined, sinan_snapshot: sinanPromotion.value ? { promotion_id: sinanPromotion.value.promotion_id, landing_url: sinanPromotion.value.landing_url, campaign_name: sinanPromotion.value.promotion_name, adset_name: sinanPromotion.value.ad_group } : undefined })
+  const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined })
     preflightResult.value = data
     if (!data.passed) ElMessage.error('预检未通过，请处理阻断项')
   } finally { preflighting.value = false }

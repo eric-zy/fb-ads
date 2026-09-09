@@ -23,11 +23,13 @@ from core.enums import (
 )
 from core.logger import logger
 from core.tenant import resolve_tenant_of, tenant_task
-from models import CampaignInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, AdAccount, MetaPage
+from models import CampaignInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, AdAccount, MetaPage, SinanCredential
 from services.campaign_builder import CampaignDeploymentBuilder
 from services.credential_service import CredentialError, CredentialService
 from services.meta import MetaApiError
 from services.meta.page_access import page_account_access_error
+from services.integrations.sinan_client import SinanClient
+from core.security import decrypt_token
 import copy
 import os
 
@@ -336,7 +338,23 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
         budget_override = params.get("budget_override")
         # 默认 PAUSED：批量创建后不直接花钱，由用户确认后再启用
         status = params.get("status", InstanceStatus.PAUSED.value)
-        sinan = params.get("sinan_snapshot") or {}
+        sinan = {}
+        sinan_promotion_id = params.get("sinan_promotion_id")
+        if sinan_promotion_id:
+            sinan_credential = db.query(SinanCredential).first()
+            if not sinan_credential or sinan_credential.status != "ACTIVE":
+                raise ValueError("司南账号未验证，无法读取推广链")
+            sinan = SinanClient(
+                sinan_credential.base_url,
+                sinan_credential.app_id,
+                decrypt_token(sinan_credential.access_token_encrypted),
+                decrypt_token(sinan_credential.refresh_token_encrypted),
+                sinan_credential.menu_id,
+            ).promotion_detail_sync(sinan_promotion_id)
+            if str(sinan.get("status")).upper() in {"0", "DISABLED", "INACTIVE", "ARCHIVED"}:
+                raise ValueError("司南推广链已停用或不可投放")
+            if not sinan.get("landing_url"):
+                raise ValueError("司南推广链未返回有效推广链接")
 
         # 每个账户解析自己的 token（多 BM / 多账户架构的关键）
         try:

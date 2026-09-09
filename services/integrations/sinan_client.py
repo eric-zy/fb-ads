@@ -21,3 +21,18 @@ class SinanClient:
     async def promotion_list(self, page=1, page_size=20): return await self.request('POST', '/delivery/promotion/query/v1', json={'page': page, 'page_size': page_size})
     async def promotion_detail(self, promotion_id): return await self.request('GET', '/delivery/promotion/query_by_id/v1', params={'promotion_id': promotion_id})
     async def create_promotion(self, payload): return await self.request('POST', '/delivery/promotion/create/v1', json=payload)
+    async def app_tree(self): return await self.request('GET', '/account/org_tree/v1')
+    async def filter_options(self): return await self.request('GET', '/delivery/filter_options/v1')
+    async def pixels(self, media_channel, real_app_id): return await self.request('GET', '/delivery/promotion/pixel/query/v1', params={'media_channel': media_channel, 'real_app_id': real_app_id})
+    async def recharge_templates(self, real_app_id): return await self.request('GET', '/delivery/recharge_template/query/v1', params={'page': 1, 'page_size': 100, 'dis_app_id': real_app_id})
+    async def return_rules(self): return await self.request('GET', '/delivery/ad_convt_config/query/v1', params={'page': 1, 'page_size': 200, 'status': 1, 'is_query_self_create': 'true'})
+    async def default_price(self, drama_id, real_app_id): return await self.request('GET', '/delivery/promotion/default_price/v1', params={'drama_id': drama_id, 'real_app_id': real_app_id})
+    async def update_promotion(self, payload): return await self.request('POST', '/delivery/promotion/update/v1', json=payload)
+    def promotion_detail_sync(self, promotion_id):
+        q = {'app_id': self.app_id, 'promotion_id': promotion_id}
+        with httpx.Client(timeout=25) as client:
+            res = client.get(self.base_url + '/delivery/promotion/query_by_id/v1', params=q, cookies=self.cookies, headers={'distributor-menu-id': self.menu_id, 'Accept': 'application/json'})
+        if res.status_code >= 400: raise RuntimeError(f'Sinan HTTP {res.status_code}')
+        data = res.json()
+        if data.get('code') != 0: raise RuntimeError(data.get('message') or '司南推广链查询失败')
+        return data.get('data') or {}
