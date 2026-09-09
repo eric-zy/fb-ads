@@ -273,7 +273,10 @@ const targetingForm = reactive({
 type CreativeForm = { asset_type: 'image' | 'video'; image_hash: string; video_id: string; headline: string; primary_text: string; description: string; cta: string; landing_url: string; asset_id: string }
 const newCreative = (): CreativeForm => ({ asset_type: 'image', image_hash: '', video_id: '', headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '', asset_id: '' })
 const creativeForm = reactive<{ page_id: string; creatives: CreativeForm[] }>({ page_id: '', creatives: [newCreative()] })
-const availableAssets = (type: string) => mediaAssets.value.filter(asset => asset.asset_type === type && asset.status === 'ready')
+// 异步素材流程使用大写 READY；兼容历史数据中的小写 ready。
+const availableAssets = (type: string) => mediaAssets.value.filter(
+  asset => asset.asset_type === type && String(asset.status).toUpperCase() === 'READY',
+)
 const selectedAsset = (id: string) => mediaAssets.value.find(asset => asset.id === id)
 const addCreative = () => creativeForm.creatives.push(newCreative())
 const removeCreative = (index: number) => creativeForm.creatives.splice(index, 1)
