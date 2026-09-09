@@ -15,8 +15,17 @@ def upload_asset_task(self, binding_id: str):
         binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
         asset = db.query(CreativeAsset).filter(CreativeAsset.id == binding.asset_id).first() if binding else None
         account = db.query(AdAccount).filter(AdAccount.id == binding.ad_account_id).first() if binding else None
-        if not binding or not asset or not account or not asset.file_path or not os.path.exists(asset.file_path):
-            raise RuntimeError("素材、账户或素材文件不存在")
+        if not binding or not asset or not account:
+            raise RuntimeError("素材映射或广告账户不存在")
+        if not asset.file_path or not os.path.isfile(asset.file_path):
+            # 文件缺失属于不可重试错误，继续重试只会浪费 Meta API 配额并触发限流。
+            binding.status = "FAILED"
+            binding.error_code = "ASSET_FILE_MISSING"
+            binding.error_message = f"素材文件不存在: {asset.file_path or '<empty>'}"
+            asset.status = "FAILED"
+            asset.error = binding.error_message
+            db.commit()
+            return {"status": "failed", "error_code": binding.error_code, "error": binding.error_message}
         if binding.status == "READY" and binding.meta_asset_id:
             return {"status": "success", "binding_id": binding_id, "meta_asset_id": binding.meta_asset_id}
         binding.status = "UPLOADING"
