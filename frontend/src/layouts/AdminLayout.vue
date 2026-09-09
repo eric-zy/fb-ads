@@ -6,25 +6,29 @@
           <h2>🛡️ 管理后台</h2>
         </div>
         <el-menu :default-active="activeMenu" router>
-          <el-menu-item index="dashboard">
+          <el-menu-item index="/admin/dashboard">
             <el-icon><DataLine /></el-icon>
             <span>仪表板</span>
           </el-menu-item>
-          <el-menu-item index="users">
+          <el-menu-item index="/admin/users">
             <el-icon><User /></el-icon>
             <span>用户管理</span>
           </el-menu-item>
           <el-divider />
-          <el-menu-item index="meta-connections">
+          <el-menu-item index="/admin/meta-connections">
             <el-icon><Key /></el-icon>
             <span>Meta 授权</span>
           </el-menu-item>
-          <el-menu-item index="accounts">
+          <el-menu-item index="/admin/accounts">
             <el-icon><Postcard /></el-icon>
             <span>广告账户</span>
           </el-menu-item>
+          <el-menu-item index="/admin/meta-accounts">
+            <el-icon><Postcard /></el-icon>
+            <span>BM 管理</span>
+          </el-menu-item>
           <el-divider />
-          <el-menu-item index="overview" @click="goDashboard">
+          <el-menu-item index="/dashboard/overview">
             <el-icon><Back /></el-icon>
             <span>返回用户端</span>
           </el-menu-item>
@@ -68,7 +72,14 @@ const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 
-const activeMenu = computed(() => route.path.split('/').pop() || 'dashboard')
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/admin/accounts')) return '/admin/accounts'
+  if (route.path.startsWith('/admin/meta-connections')) return '/admin/meta-connections'
+  if (route.path.startsWith('/admin/meta-accounts') || route.path.startsWith('/admin/businesses')) return '/admin/meta-accounts'
+  if (route.path.startsWith('/admin/users')) return '/admin/users'
+  return '/admin/dashboard'
+})
+
 
 // 侧边栏由 el-menu 的 router 模式按 index 自动跳转；
 // 「返回用户端」对应 /admin/overview 路由，已配置重定向到用户端首页

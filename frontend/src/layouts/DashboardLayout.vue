@@ -3,7 +3,7 @@
     <el-container>
       <el-aside width="200px" class="sidebar">
         <div class="logo"><h2>📊 META_ADS</h2></div>
-        <el-menu :default-active="activeMenu" @select="handleMenuSelect" router>
+        <el-menu :default-active="activeMenu" @select="handleMenuSelect">
           <el-menu-item index="overview"><el-icon><DocumentCopy /></el-icon><span>工作台</span></el-menu-item>
           <el-sub-menu index="content">
             <template #title><el-icon><Collection /></el-icon><span>内容管理</span></template>
