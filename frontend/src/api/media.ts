@@ -18,6 +18,7 @@ export interface MediaItem {
   duration: number | null
   status: string
   error: string | null
+  retry_count?: number
   created_at: string | null
 }
 
@@ -25,9 +26,10 @@ export interface MetaAssetBinding {
   id: string
   asset_id: string
   ad_account_id: string
+  account_name?: string | null
   meta_asset_id: string | null
   meta_asset_type: string
-  status: 'PENDING' | 'UPLOADING' | 'READY' | 'FAILED' | 'EXPIRED' | string
+  status: 'PENDING' | 'UPLOADING' | 'PROCESSING' | 'READY' | 'FAILED' | 'EXPIRED' | string
   error_message: string | null
   uploaded_at: string | null
   last_verified_at: string | null

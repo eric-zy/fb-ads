@@ -71,7 +71,27 @@ def list_asset_bindings(
     asset = db.query(CreativeAsset).filter(CreativeAsset.id == asset_id).first()
     if not asset:
         raise HTTPException(status_code=404, detail="素材不存在")
-    return [row.to_dict() for row in db.query(MetaAssetBinding).filter(MetaAssetBinding.asset_id == asset_id).all()]
+    rows = db.query(MetaAssetBinding).filter(MetaAssetBinding.asset_id == asset_id).all()
+    # 兼容异步改造前已上传到 Meta 的历史素材：旧流程只写 fb_hash/fb_video_id，
+    # 没有创建账户级 binding。首次打开映射时补齐一条 READY 映射。
+    if not rows and asset.account_id and (asset.fb_hash or asset.fb_video_id):
+        account = db.query(AdAccount).filter(AdAccount.id == asset.account_id).first()
+        if account:
+            binding = MetaAssetBinding(
+                id=uuid.uuid4().hex, asset_id=asset.id, ad_account_id=account.id,
+                meta_asset_id=asset.fb_video_id or asset.fb_hash,
+                meta_asset_type=asset.asset_type, status="READY",
+                processing_status="READY", uploaded_at=asset.created_at,
+                last_verified_at=datetime.utcnow(),
+            )
+            db.add(binding); db.commit(); rows = [binding]
+    result = []
+    for row in rows:
+        item = row.to_dict()
+        account = db.query(AdAccount).filter(AdAccount.id == row.ad_account_id).first()
+        item["account_name"] = account.account_name if account else row.ad_account_id
+        result.append(item)
+    return result
 
 @router.post("/{asset_id}/prepare")
 def prepare_asset_bindings(

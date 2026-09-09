@@ -49,8 +49,11 @@
               <span class="size">{{ formatSize(item.size) }}</span>
             </div>
             <div class="status">
-              <el-tag v-if="item.status === 'ready'" size="small" type="success">就绪</el-tag>
-              <el-tag v-else-if="item.status === 'uploading'" size="small" type="info">上传中</el-tag>
+              <el-tag v-if="['ready', 'READY'].includes(item.status)" size="small" type="success">就绪</el-tag>
+              <el-tag v-else-if="['uploading', 'UPLOADING', 'PENDING', 'PROCESSING'].includes(item.status)" size="small" type="info">上传中</el-tag>
+              <el-tooltip v-else-if="item.status === 'FAILED' || item.status === 'failed'" :content="item.error || '点击查看失败原因'" placement="top">
+                <el-tag size="small" type="danger" class="clickable" @click="openFailure(item)">失败</el-tag>
+              </el-tooltip>
               <el-tag v-else size="small" type="danger">失败</el-tag>
               <span v-if="item.fb_hash || item.fb_video_id" class="fb-ok">✓ 已同步FB</span>
             </div>
@@ -68,12 +71,22 @@
     </el-card>
     <el-dialog v-model="bindingVisible" title="账号素材映射" width="720px" @closed="stopBindingPolling">
       <el-table :data="bindings" v-loading="bindingLoading" size="small">
-        <el-table-column prop="ad_account_id" label="账号" min-width="180" />
+        <el-table-column prop="account_name" label="账号" min-width="180" />
         <el-table-column prop="status" label="状态" width="110" />
         <el-table-column prop="meta_asset_id" label="Meta 素材 ID" min-width="180" show-overflow-tooltip />
         <el-table-column prop="error_message" label="错误" min-width="180" show-overflow-tooltip />
         <el-table-column label="操作" width="90"><template #default="{ row }"><el-button v-if="row.status === 'FAILED'" link type="primary" @click="retryBinding(row)">重试</el-button></template></el-table-column>
       </el-table>
+    </el-dialog>
+    <el-dialog v-model="failureVisible" title="素材上传失败原因" width="620px">
+      <el-descriptions v-if="failureAsset" :column="1" border size="small">
+        <el-descriptions-item label="素材">{{ failureAsset.name }}</el-descriptions-item>
+        <el-descriptions-item label="状态">{{ failureAsset.status }}</el-descriptions-item>
+        <el-descriptions-item label="重试次数">{{ failureAsset.retry_count ?? 0 }}</el-descriptions-item>
+        <el-descriptions-item label="错误信息">
+          <pre class="error-detail">{{ failureAsset.error || '未记录具体错误，请查看 Worker 日志' }}</pre>
+        </el-descriptions-item>
+      </el-descriptions>
     </el-dialog>
   </div>
 </template>
@@ -95,6 +108,8 @@ const bindingVisible = ref(false)
 const bindingLoading = ref(false)
 const bindings = ref<any[]>([])
 const bindingAssetId = ref('')
+const failureVisible = ref(false)
+const failureAsset = ref<MediaItem | null>(null)
 let bindingTimer: number | null = null
 
 const load = async () => {
@@ -145,6 +160,7 @@ const refreshBindings = async () => { if (!bindingAssetId.value) return; const {
 const openBindings = async (item: MediaItem) => { bindingAssetId.value = item.id; bindingVisible.value = true; bindingLoading.value = true; try { await refreshBindings(); if (bindingTimer !== null) window.clearInterval(bindingTimer); bindingTimer = window.setInterval(refreshBindings, 2000) } finally { bindingLoading.value = false } }
 const retryBinding = async (row: any) => { try { await mediaApi.retryBinding(bindingAssetId.value, row.id); row.status = 'PENDING'; row.error_message = null; ElMessage.success('已提交素材重试任务') } catch { /* 全局拦截器提示错误 */ } }
 const stopBindingPolling = () => { if (bindingTimer !== null) { window.clearInterval(bindingTimer); bindingTimer = null } }
+const openFailure = (item: MediaItem) => { failureAsset.value = item; failureVisible.value = true }
 onBeforeUnmount(() => { if (bindingTimer !== null) window.clearInterval(bindingTimer) })
 
 const formatSize = (n?: number | null) => {
@@ -173,6 +189,8 @@ onMounted(async () => {
   .page-title { margin: 0; font-size: 18px; }
   .page-desc { margin: 4px 0 0; font-size: 13px; color: #909399; }
 }
+.clickable { cursor: pointer; }
+.error-detail { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: inherit; color: #f56c6c; }
 .filters {
   display: flex;
   gap: 12px;
