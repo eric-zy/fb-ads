@@ -88,7 +88,8 @@ services:
     image: fbads-nginx:latest
     restart: unless-stopped
     ports:
-      - "80:80"
+      # 主机 80 端口由 Caddy 占用；由 Caddy 反代到本项目 Nginx。
+      - "127.0.0.1:18080:80"
     depends_on:
       - api
     networks: [fbnet]
