@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     # ========== Facebook API 配置 ==========
     FB_APP_ID: str = os.getenv("FB_APP_ID", "")
     FB_APP_SECRET: str = os.getenv("FB_APP_SECRET", "")
+    FB_LOGIN_CONFIG_ID: str = os.getenv("FB_LOGIN_CONFIG_ID", "")
     FB_ACCESS_TOKEN: str = os.getenv("FB_ACCESS_TOKEN", "")
     FB_ACCOUNT_ID: str = os.getenv("FB_ACCOUNT_ID", "")
     # Meta API 版本由部署环境显式覆盖；默认跟随当前 SDK 主版本。

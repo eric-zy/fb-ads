@@ -90,6 +90,10 @@ class AdAccountService:
         if meta_status not in {"1", "ACTIVE"}:
             return False, f"Meta 侧状态未知或不可投放：{account.account_status}"
 
+        payment_status = (account.payment_status or "UNKNOWN").upper()
+        if payment_status in {"MISSING", "PAST_DUE", "RESTRICTED"}:
+            return False, account.payment_error_message or "广告账户付款配置不可用，请检查 BM 账单与付款"
+
         return True, "ok"
 
     # ------------------------------------------------------------------

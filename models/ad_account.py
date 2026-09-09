@@ -102,6 +102,14 @@ class AdAccount(TenantMixin, Base):
     balance = Column(BigInteger, default=0, comment="当前余额")
     disable_reason = Column(String(255), comment="Meta 侧禁用原因")
 
+    # ---------- 付款/账单状态（只保存状态，不保存卡号或支付凭据） ----------
+    payment_status = Column(String(32), default="UNKNOWN", nullable=False,
+                            comment="UNKNOWN/AVAILABLE/MISSING/PAST_DUE/RESTRICTED")
+    payment_source = Column(String(32), comment="BM_CENTRAL/BILLING_CREDIT/ACCOUNT_DIRECT")
+    payment_error_code = Column(String(64))
+    payment_error_message = Column(String(500))
+    payment_checked_at = Column(DateTime)
+
     # ---------- 系统侧状态（同步不得覆盖） ----------
     system_status = Column(
         String(32),

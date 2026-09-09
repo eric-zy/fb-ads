@@ -32,12 +32,15 @@ class MetaOAuthService:
 
     def authorization_url(self, state: str) -> str:
         self._require_config()
+        if not settings.FB_LOGIN_CONFIG_ID:
+            raise MetaOAuthError("Meta Login for Business 未配置 FB_LOGIN_CONFIG_ID")
         query = urlencode({
             "client_id": settings.FB_APP_ID,
             "redirect_uri": settings.FB_OAUTH_REDIRECT_URI,
             "state": state,
             "response_type": "code",
-            "scope": settings.FB_OAUTH_SCOPES,
+            "config_id": settings.FB_LOGIN_CONFIG_ID,
+            "override_default_response_type": "true",
         })
         return f"https://www.facebook.com/{settings.FB_API_VERSION}/dialog/oauth?{query}"
 

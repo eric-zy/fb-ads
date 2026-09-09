@@ -238,6 +238,11 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
         "account_status": a.account_status,
         "effective_status": a.effective_status,
         "disable_reason": a.disable_reason,
+        "payment_status": a.payment_status or "UNKNOWN",
+        "payment_source": a.payment_source,
+        "payment_error_code": a.payment_error_code,
+        "payment_error_message": a.payment_error_message,
+        "payment_checked_at": a.payment_checked_at.isoformat() if a.payment_checked_at else None,
         # ---- 系统侧状态（同步不覆盖） ----
         "system_status": a.system_status,
         "system_status_reason": a.system_status_reason,

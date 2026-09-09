@@ -44,7 +44,7 @@ def sdk_config(_: User = Depends(require_admin)):
     """返回可公开给浏览器 SDK 的 App ID；绝不返回 App Secret。"""
     if not settings.FB_APP_ID:
         raise HTTPException(status_code=503, detail="Meta App ID 未配置")
-    return {"app_id": settings.FB_APP_ID, "version": settings.FB_API_VERSION}
+    return {"app_id": settings.FB_APP_ID, "version": settings.FB_API_VERSION, "login_config_id": settings.FB_LOGIN_CONFIG_ID or None}
 
 @router.post("/sdk-login")
 def sdk_login(payload: SDKLoginRequest, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):

@@ -2238,61 +2238,67 @@ Dashboard
 
 ------------------------------------------------------------------------
 
-# 50. MVP 开发顺序
+# 50. MVP 开发顺序（以当前代码库为准）
+
+> 详细执行清单以 `参考开发规范/13-开发任务拆分.md` 为准。本节只保留路线总览；当前项目已经完成其中多项基础建设，不应再次按“从零开发”执行。
+
+当前实现基线：PostgreSQL、Alembic、多租户、MetaConnection/Credential/MetaAccount/AdAccount、CampaignTemplate、CampaignJob、Celery、素材映射、Insights 和基础风险控制均已存在。后续重点是收敛和补齐可靠性，而不是替换数据库或重写核心模型。
 
 建议按以下顺序实施：
 
 ``` text
-Phase 1
+Phase 1：基线收敛
 │
-├── FastAPI 项目
-├── PostgreSQL
-├── SQLAlchemy
-└── 用户权限
+├── 统一模型与任务职责
+├── 清理旧发布链路
+├── API 错误和 request_id
+└── 测试与开发环境可启动
 
-Phase 2
+Phase 2：账号与资产
 │
 ├── BM 管理
 ├── Credential
-└── Ad Account 同步
+├── Ad Account 同步
+├── Page / Instagram / Dataset
+└── 资产权限与健康状态
 
-Phase 3
+Phase 3：投放链路
 │
 ├── Campaign Template
 ├── Creative
-└── Builder
+├── Builder
+├── Preflight / Dry Run
+└── 幂等、审计和部分成功
 
-Phase 4
+Phase 4：任务可靠性
 │
-├── Celery
-├── Redis
-├── Job
-└── Retry
+├── Celery / Redis
+├── Job 状态恢复
+├── 并发锁和限流
+└── 失败重试
 
-Phase 5
+Phase 5：数据闭环
 │
-├── Campaign
-├── AdSet
-├── Ad
-└── Batch Create
+├── Insights 多粒度同步
+├── 最近数据回补
+├── Revenue Import
+└── Profit / ROI / ROAS 统一口径
 
-Phase 6
+Phase 6：风险控制
 │
-├── Pause
-├── Enable
-└── Budget Update
+├── RiskRule 配置化
+├── Dry Run / Cooldown
+├── 白名单 / Kill Switch
+└── 自动暂停审计
 
-Phase 7
+Phase 7：上线准备
 │
-├── Insights
-├── Dashboard
-└── Sync
+├── 权限与租户隔离测试
+├── 限流、慢 SQL 和告警
+├── 灰度发布
+└── 回滚演练
 
-Phase 8
-│
-├── Strategy Rule
-├── Auto Pause
-└── Auto Scale
+当前 V1 不包含：MySQL 迁移、主键整体迁移、TikTok/Google Ads 实际接入、自动扩量和默认自动恢复。
 ```
 
 ------------------------------------------------------------------------
