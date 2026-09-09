@@ -9,6 +9,7 @@ export const sinanPromotionsApi = {
   pixels: (id: string) => request.get(`/api/v1/integrations/sinan/pixels/${id}`),
   rechargeTemplates: (id: string) => request.get(`/api/v1/integrations/sinan/recharge-templates/${id}`),
   returnRules: () => request.get('/api/v1/integrations/sinan/return-rules'),
+  defaultPrice: (dramaId: string, appId: string) => request.get(`/api/v1/integrations/sinan/price?drama_id=${dramaId}&real_app_id=${appId}`),
   create: (data: any) => request.post('/api/v1/integrations/sinan/promotions/create', data),
   update: (data: any) => request.post('/api/v1/integrations/sinan/promotions/update', data),
 }
