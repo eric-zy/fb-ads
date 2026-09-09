@@ -260,6 +260,7 @@ def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session =
                                      owner_type="BUSINESS" if meta else "PERSONAL",
                                      account_id=meta_id, system_status=SystemStatus.ACTIVE.value)
                 db.add(existing)
+            existing.meta_business_id = business_id or None
             existing.account_name = item.get("name")
             existing.account_status = str(item.get("account_status")) if item.get("account_status") is not None else None
             # AdAccount 节点没有 effective_status；该字段只用于 Campaign/AdSet/Ad。

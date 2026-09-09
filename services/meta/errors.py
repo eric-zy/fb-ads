@@ -38,6 +38,9 @@ class MetaApiError(Exception):
         subcode: Optional[int] = None,
         http_status: Optional[int] = None,
         fbtrace_id: Optional[str] = None,
+        error_user_title: Optional[str] = None,
+        error_user_msg: Optional[str] = None,
+        error_type: Optional[str] = None,
     ):
         super().__init__(message)
         self.message = message
@@ -46,6 +49,9 @@ class MetaApiError(Exception):
         self.subcode = subcode
         self.http_status = http_status
         self.fbtrace_id = fbtrace_id
+        self.error_user_title = error_user_title
+        self.error_user_msg = error_user_msg
+        self.error_type = error_type
 
     @property
     def retryable(self) -> bool:
@@ -60,6 +66,10 @@ class MetaApiError(Exception):
             parts.append(f"subcode={self.subcode}")
         if self.fbtrace_id:
             parts.append(f"fbtrace_id={self.fbtrace_id}")
+        if self.error_user_title:
+            parts.append(f"error_user_title={self.error_user_title}")
+        if self.error_user_msg:
+            parts.append(f"error_user_msg={self.error_user_msg}")
         return " ".join(parts)
 
     def to_dict(self) -> dict:
@@ -70,6 +80,10 @@ class MetaApiError(Exception):
             "subcode": self.subcode,
             "http_status": self.http_status,
             "retryable": self.retryable,
+            "fbtrace_id": self.fbtrace_id,
+            "error_user_title": self.error_user_title,
+            "error_user_msg": self.error_user_msg,
+            "error_type": self.error_type,
         }
 
 
@@ -136,6 +150,13 @@ def classify_facebook_error(exc: Exception) -> MetaApiError:
             fbtrace_id = exc.body().get("error", {}).get("fbtrace_id")
         except Exception:
             fbtrace_id = None
+        try:
+            body_error = exc.body().get("error", {})
+            error_user_title = body_error.get("error_user_title")
+            error_user_msg = body_error.get("error_user_msg")
+            error_type = body_error.get("type")
+        except Exception:
+            error_user_title = error_user_msg = error_type = None
 
         return MetaApiError(
             message,
@@ -144,6 +165,9 @@ def classify_facebook_error(exc: Exception) -> MetaApiError:
             subcode=subcode,
             http_status=http_status,
             fbtrace_id=fbtrace_id,
+            error_user_title=error_user_title,
+            error_user_msg=error_user_msg,
+            error_type=error_type,
         )
 
     # 非 SDK 异常（网络超时等）默认按临时错误处理

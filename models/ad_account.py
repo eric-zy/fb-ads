@@ -78,6 +78,8 @@ class AdAccount(TenantMixin, Base):
         index=True,
         comment="所属 BM；个人广告账户可为空",
     )
+    meta_business_id = Column(String(64), nullable=True, index=True,
+                              comment="Meta 原始 BM ID；个人广告账户为空")
     credential_id = Column(String(50), ForeignKey("credentials.id"), nullable=True, index=True,
                            comment="直接授权个人号时使用的 OAuth 凭据")
     connection_id = Column(String(50), ForeignKey("meta_connections.id"), nullable=True, index=True,

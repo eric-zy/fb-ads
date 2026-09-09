@@ -202,6 +202,7 @@ def account_to_dict(a: AdAccount) -> dict:
         "timezone": a.timezone,
         # ---- 归属 BM ----
         "business_id": a.business_id,
+        "meta_business_id": a.meta_business_id,
         "business_name": a.business.name if a.business else None,
         "owner_type": a.owner_type,
         "credential_id": a.credential_id,

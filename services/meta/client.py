@@ -146,6 +146,8 @@ class MetaClient:
                 if isinstance(value, (dict, list)):
                     request_params[key] = json.dumps(value, separators=(",", ":"))
             request_params["access_token"] = self.access_token
+            log_params = {k: v for k, v in request_params.items() if k != "access_token"}
+            logger.info("[MetaAPI] POST path=%s params=%s files=%s", path, log_params, list((files or {}).keys()))
             response = requests.post(
                 f"https://graph.facebook.com/{settings.FB_API_VERSION}/{path.lstrip('/')}",
                 data=request_params,
@@ -165,7 +167,11 @@ class MetaClient:
                     subcode=subcode,
                     http_status=response.status_code,
                     fbtrace_id=error.get("fbtrace_id"),
+                    error_user_title=error.get("error_user_title"),
+                    error_user_msg=error.get("error_user_msg"),
+                    error_type=error.get("type"),
                 )
+            logger.info("[MetaAPI] POST success path=%s status=%s keys=%s", path, response.status_code, list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__)
             return payload
         except MetaApiError:
             raise

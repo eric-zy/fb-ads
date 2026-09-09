@@ -282,6 +282,7 @@ class MetaSyncService:
         # Graph API 返回 act_xxx 形式，统一带前缀存储
         if not account_id.startswith("act_"):
             account_id = f"act_{account_id}"
+        raw_business_id = str((raw.get("business") or {}).get("id") or "").strip()
 
         account = existing
         if account is None and business is not None:
@@ -311,6 +312,8 @@ class MetaSyncService:
             ).first()
             if credential and credential.connection_id:
                 account.connection_id = credential.connection_id
+
+        account.meta_business_id = raw_business_id or (business.business_id if business else None)
 
         # ---- Meta 侧字段：每次同步覆盖 ----
         account.account_name = raw.get("name") or account.account_name
