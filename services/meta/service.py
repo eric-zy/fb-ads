@@ -130,6 +130,12 @@ class MetaAdsService:
                     f"创建 Campaign 缺少必要参数: {', '.join(sorted(missing))}",
                     category=ErrorCategory.VALIDATION,
                 )
+            # 记录实际提交参数，便于定位 Meta code=100；这里不包含 access_token。
+            logger.info(
+                "[MetaAdsService] create_campaign payload account=%s payload=%s",
+                act,
+                payload,
+            )
             result = self.client._post(f"{act}/campaigns", payload)
             campaign_id = result.get("id")
             if not campaign_id:
