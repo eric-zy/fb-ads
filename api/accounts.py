@@ -30,7 +30,7 @@ from core.database import get_db
 from core.auth import get_current_active_user, require_admin
 from core.logger import logger
 from models import (
-    AdAccount, User, UserAccount, MetaAccount, SystemStatus,
+    AdAccount, User, UserAccount, MetaAccount, Credential, SystemStatus,
     RiskEvent, RiskLevel, CampaignJobItem, MetaSyncLog,
 )
 from services.credential_service import CredentialError, CredentialService
@@ -188,12 +188,32 @@ def _apply_meta_transfer(
     account.business_id = target_business_id
 
 
-def account_to_dict(a: AdAccount) -> dict:
+def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
     """账户统一序列化出口
 
     所有返回账户信息的接口（/accounts、/users/{id}/accounts 等）必须复用本函数，
     避免出现"同一资源两套字段契约"的问题（前端类型与实际响应对不上）。
     """
+    credential = None
+    if db:
+        if a.business_id and a.business:
+            credential = db.query(Credential).filter(Credential.id == a.business.default_credential_id).first()
+        elif a.credential_id:
+            credential = db.query(Credential).filter(Credential.id == a.credential_id).first()
+    authorized_by = None
+    if credential and credential.granted_by_user_id and db:
+        authorized_by = db.query(User).filter(User.id == credential.granted_by_user_id).first()
+    availability_reason = None
+    is_deployable = False
+    missing_scopes = []
+    if db:
+        if credential:
+            granted_scopes = set(credential.scopes or [])
+            missing_scopes = [scope for scope in ("ads_management", "ads_read") if scope not in granted_scopes]
+        is_deployable, availability_reason = AdAccountService(db).check_available(a)
+        if is_deployable and missing_scopes:
+            is_deployable = False
+            availability_reason = f"缺少权限: {', '.join(missing_scopes)}"
     return {
         "id": a.id,
         "account_id": a.account_id,
@@ -206,6 +226,14 @@ def account_to_dict(a: AdAccount) -> dict:
         "business_name": a.business.name if a.business else None,
         "owner_type": a.owner_type,
         "credential_id": a.credential_id,
+        "credential_status": credential.status if credential else None,
+        "credential_expires_at": credential.expires_at.isoformat() if credential and credential.expires_at else None,
+        "credential_last_verified_at": credential.last_verified_at.isoformat() if credential and credential.last_verified_at else None,
+        "authorized_by_user_id": credential.granted_by_user_id if credential else None,
+        "authorized_by_username": authorized_by.username if authorized_by else None,
+        "credential_missing_scopes": missing_scopes,
+        "is_deployable": is_deployable,
+        "availability_reason": availability_reason or "可投放",
         # ---- Meta 侧状态（同步覆盖） ----
         "account_status": a.account_status,
         "effective_status": a.effective_status,
@@ -279,7 +307,7 @@ def list_accounts(
         .all()
     )
     response.headers["X-Total-Count"] = str(total)
-    return [account_to_dict(a) for a in items]
+    return [account_to_dict(a, db) for a in items]
 
 
 @router.get("/available-for-deployment", response_model=dict)
@@ -445,7 +473,7 @@ def get_account(
         ).first()
         if not linked:
             raise HTTPException(status_code=403, detail="无权访问该账户")
-    return account_to_dict(a)
+    return account_to_dict(a, db)
 
 
 @router.post("", response_model=dict, status_code=201)

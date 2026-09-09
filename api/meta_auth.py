@@ -11,7 +11,6 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from config.settings import settings
@@ -238,6 +237,7 @@ def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session =
             raise MetaOAuthError("所选广告账户不在当前授权范围内")
         imported = []
         sync_credential_ids = set()
+        business_credential_ids = set()
         for meta_id, item in selected.items():
             business = item.get("business") or {}
             business_id = str(business.get("id") or "").strip()
@@ -248,11 +248,10 @@ def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session =
                 db.add(meta); db.flush()
             elif meta and cred.connection_id:
                 meta.connection_id = cred.connection_id
+            # 账号是 Meta 侧的稳定资源。重新授权后 credential_id、BM 归属都可能变化，
+            # 不能把旧凭证或旧归属作为匹配条件，否则会产生重复账号或继续引用 DISABLED 凭证。
             existing = db.query(AdAccount).filter(
                 AdAccount.account_id == meta_id,
-                AdAccount.business_id == (meta.id if meta else None),
-                # 允许已软解绑账号重新授权恢复，避免重复创建同一 Meta 账户。
-                or_(AdAccount.credential_id == (None if meta else cred.id), AdAccount.owner_type == "UNBOUND"),
             ).first()
             if not existing:
                 existing = AdAccount(id=uuid.uuid4().hex, business_id=meta.id if meta else None,
@@ -261,6 +260,7 @@ def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session =
                                      account_id=meta_id, system_status=SystemStatus.ACTIVE.value)
                 db.add(existing)
             existing.meta_business_id = business_id or None
+            existing.business_id = meta.id if meta else None
             existing.account_name = item.get("name")
             existing.account_status = str(item.get("account_status")) if item.get("account_status") is not None else None
             # AdAccount 节点没有 effective_status；该字段只用于 Campaign/AdSet/Ad。
@@ -314,12 +314,29 @@ def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session =
                         active.connection_id = cred.connection_id
                         active.last_verified_at = datetime.utcnow()
                 sync_credential_ids.add(active.id)
+                business_credential_ids.add(active.id)
+                # BM 账号不直接绑定 OAuth 凭证，投放时通过 BM 默认凭证取 Token。
+                # 每次重新授权都显式更新默认凭证，避免仍回退到旧凭证。
+                meta.default_credential_id = active.id
+                logger.info(
+                    "[meta-auth] 广告账号 %s 绑定 BM=%s default_credential=%s",
+                    meta_id, meta.business_id, active.id,
+                )
             else:
                 sync_credential_ids.add(cred.id)
+                logger.info(
+                    "[meta-auth] 个人广告账号 %s 绑定 OAuth credential=%s",
+                    meta_id, cred.id,
+                )
         db.commit()
         for sync_credential_id in sync_credential_ids:
             try:
-                sync_meta_authorization_task.delay(sync_credential_id)
+                # BM 凭据走统一的 BM/账户/Page 同步；个人账号没有 MetaAccount，
+                # 不能调用 sync_meta_authorization，否则会被判定为“尚未绑定 BM”。
+                if sync_credential_id in business_credential_ids:
+                    sync_meta_authorization_task.delay(sync_credential_id)
+                else:
+                    sync_meta_pages_task.delay(sync_credential_id)
             except Exception as exc:
                 logger.warning(f"[meta-auth] 广告账户 {sync_credential_id} 自动同步任务投递失败: {exc}")
         return {"success": True, "accounts": imported}
