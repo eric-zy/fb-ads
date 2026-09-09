@@ -1,16 +1,27 @@
 # 后端镜像：FastAPI + Celery（worker/beat 复用同一镜像，由 compose 覆盖 command）
-FROM python:3.12-slim
+FROM python:3.12-slim AS builder
 
 # 系统依赖：libpq5 给 psycopg2-binary 兜底，build-essential 兜底个别源码包
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential libpq5 curl \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /build
 
 # 先装依赖（利用 docker 层缓存）
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /app
+
+COPY --from=builder /opt/venv /opt/venv
 
 # 复制项目代码
 COPY . .
