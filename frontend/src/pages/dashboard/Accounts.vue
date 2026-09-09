@@ -13,10 +13,10 @@
     </div>
 
     <div class="stats-grid">
-      <el-card shadow="never"><div class="stat-label">平台</div><div class="stat-value">Meta</div><div class="stat-desc">OAuth 2.0</div></el-card>
-      <el-card shadow="never"><div class="stat-label">授权连接</div><div class="stat-value">{{ credentialRows.filter(row => row.status === 'ACTIVE').length }}</div><div class="stat-desc">当前有效凭据</div></el-card>
-      <el-card shadow="never"><div class="stat-label">账号</div><div class="stat-value">{{ accounts.length }}</div><div class="stat-desc">已同步账号</div></el-card>
-      <el-card shadow="never"><div class="stat-label">可投放</div><div class="stat-value">{{ activeCount }}</div><div class="stat-desc">系统状态 ACTIVE</div></el-card>
+      <el-card shadow="never"><div class="stat-label">授权账号</div><div class="stat-value">{{ accounts.length }}</div><div class="stat-desc">已接入 Meta 广告账号</div></el-card>
+      <el-card shadow="never"><div class="stat-label">可投放</div><div class="stat-value success-value">{{ deployableCount }}</div><div class="stat-desc">授权、状态和凭证均正常</div></el-card>
+      <el-card shadow="never"><div class="stat-label">需处理</div><div class="stat-value danger-value">{{ unavailableCount }}</div><div class="stat-desc">不可投放或待同步</div></el-card>
+      <el-card shadow="never"><div class="stat-label">待同步</div><div class="stat-value warning-value">{{ pendingCount }}</div><div class="stat-desc">等待 Meta 状态同步</div></el-card>
     </div>
 
     <el-tabs v-model="activeTab" class="account-tabs" @tab-change="handleTabChange">
@@ -56,7 +56,7 @@
       </div>
         </el-card>
       </el-tab-pane>
-      <el-tab-pane label="账号列表" name="accounts-list">
+      <el-tab-pane label="广告账号" name="accounts-list">
         <el-card shadow="never" class="tab-card">
           <div class="list-toolbar">
             <el-input v-model="accountSearch" clearable placeholder="搜索账号名称 / Account ID" class="list-search" />
@@ -75,9 +75,9 @@
             <el-table-column type="selection" width="48" :selectable="isAccountSelectable" />
             <el-table-column label="账号" min-width="190"><template #default="{ row }">{{ row.account_name || row.account_id }}</template></el-table-column>
             <el-table-column prop="account_id" label="Account ID" min-width="160" />
-            <el-table-column label="归属" min-width="150"><template #default="{ row }">{{ row.business_name || '账号' }}</template></el-table-column>
-            <el-table-column label="Meta 状态" width="130"><template #default="{ row }"><el-tag :type="row.effective_status === 'ACTIVE' ? 'success' : 'warning'" size="small">{{ row.effective_status || row.account_status || '待同步' }}</el-tag></template></el-table-column>
-            <el-table-column label="投放状态" width="120"><template #default="{ row }"><el-tag :type="row.system_status === 'ACTIVE' ? 'success' : 'danger'" size="small">{{ row.system_status === 'ACTIVE' ? '可投放' : '已停用' }}</el-tag></template></el-table-column>
+            <el-table-column label="归属" min-width="150"><template #default="{ row }">{{ row.business_name || '个人账号' }}</template></el-table-column>
+            <el-table-column label="授权/投放状态" min-width="180"><template #default="{ row }"><el-tag :type="accountAvailabilityType(row)" size="small">{{ accountAvailabilityLabel(row) }}</el-tag><div class="status-detail">{{ accountStatusDetail(row) }}</div></template></el-table-column>
+            <el-table-column label="Meta 状态" width="110"><template #default="{ row }"><el-tag :type="metaStatusType(row)" size="small">{{ row.account_status || '待同步' }}</el-tag></template></el-table-column>
             <el-table-column label="操作" width="80"><template #default="{ row }"><el-button link type="primary" @click="openAccount({ type: 'account', source: row, accountId: row.account_id, label: row.account_name || row.account_id })">详情</el-button></template></el-table-column>
           </el-table>
           <el-pagination v-if="accountTotal > accountPageSize" v-model:current-page="accountPage" :page-size="accountPageSize" :total="accountTotal" layout="total, prev, pager, next" @current-change="load" />
@@ -92,68 +92,6 @@
           </div>
           <el-empty v-if="!isAdmin" description="当前账号没有接入广告账户的权限" />
           <el-alert v-else type="info" :closable="false" show-icon title="授权说明">只会读取你在 Facebook 中有权限访问的广告账户，Access Token 由服务端加密保存。</el-alert>
-        </el-card>
-      </el-tab-pane>
-      <el-tab-pane label="授权凭据" name="credentials">
-        <el-card shadow="never" class="tab-card">
-          <el-table :data="credentialRows" v-loading="credentialLoading" stripe>
-            <el-table-column type="expand" width="48">
-              <template #default="{ row }">
-                <div class="credential-linked">
-                  <span class="linked-title">关联广告账户</span>
-                  <el-tag v-for="account in (row.linked_accounts || [])" :key="account.id" size="small" effect="plain">
-                    {{ account.name || account.account_id }} · {{ account.owner_type === 'PERSONAL' ? '个人' : 'BM' }}
-                  </el-tag>
-                  <span v-if="!row.linked_accounts?.length" class="muted-text">暂无直接关联账户</span>
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column label="授权范围" min-width="180">
-              <template #default="{ row }">{{ row.meta_account_name || (row.linked_personal_account_count ? '个人广告账户' : '未绑定资产') }}</template>
-            </el-table-column>
-            <el-table-column prop="name" label="凭据名称" min-width="150" />
-            <el-table-column prop="status" label="状态" width="110">
-              <template #default="{ row }"><el-tag :type="credentialTagType(row.status)">{{ credentialLabel(row.status) }}</el-tag></template>
-            </el-table-column>
-            <el-table-column prop="access_token_masked" label="Token" width="180" />
-            <el-table-column prop="expires_at" label="过期时间" width="190" />
-            <el-table-column prop="last_verified_at" label="最近验证" width="190" />
-            <el-table-column label="权限" min-width="220">
-              <template #default="{ row }">
-                <el-tag v-for="scope in (row.scopes || [])" :key="scope" size="small" effect="plain" style="margin-right:4px">{{ scope }}</el-tag>
-                <span v-if="!row.scopes?.length" class="muted-text">未记录</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="投放权限" width="110">
-              <template #default="{ row }"><el-tag :type="row.permission_ready ? 'success' : 'danger'" size="small">{{ row.permission_ready ? '正常' : '缺少权限' }}</el-tag></template>
-            </el-table-column>
-            <el-table-column label="关联账户" width="110">
-              <template #default="{ row }"><el-tag size="small">{{ row.linked_account_count || 0 }} 个</el-tag></template>
-            </el-table-column>
-            <el-table-column label="账户类型" width="130">
-              <template #default="{ row }">{{ row.linked_personal_account_count ? `个人 ${row.linked_personal_account_count} 个` : '企业 / BM' }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="110">
-              <template #default="{ row }"><el-button v-if="isAdmin && (!row.permission_ready || row.is_expired || row.status !== 'ACTIVE')" link type="primary" @click="reauthorizeCredential(row)">重新授权</el-button></template>
-            </el-table-column>
-          </el-table>
-          <el-empty v-if="!credentialLoading && !credentialRows.length" description="暂无授权凭据" />
-        </el-card>
-      </el-tab-pane>
-      <el-tab-pane label="同步记录" name="sync">
-        <el-card shadow="never" class="tab-card">
-          <el-table :data="syncRows" v-loading="syncLoading" stripe>
-            <el-table-column prop="business_name" label="企业资产" min-width="180" />
-            <el-table-column prop="sync_type" label="同步类型" width="130" />
-            <el-table-column prop="status" label="状态" width="140">
-              <template #default="{ row }"><el-tag :type="row.status === 'SUCCESS' ? 'success' : row.status === 'FAILED' ? 'danger' : 'warning'">{{ row.status }}</el-tag></template>
-            </el-table-column>
-            <el-table-column prop="total_count" label="总数" width="90" />
-            <el-table-column prop="success_count" label="成功" width="90" />
-            <el-table-column prop="failed_count" label="失败" width="90" />
-            <el-table-column prop="created_at" label="创建时间" min-width="190" />
-          </el-table>
-          <el-empty v-if="!syncLoading && !syncRows.length" description="暂无同步记录" />
         </el-card>
       </el-tab-pane>
     </el-tabs>
@@ -214,7 +152,20 @@ import { formatMoney } from '@/utils/money'
 
 type DiscoveredBusiness = { id: string; name?: string | null; verification_status?: string | null }
 type TreeNode = { id: string; label: string; type: 'platform' | 'business' | 'account'; children?: TreeNode[]; businessId?: string; metaBusinessId?: string; credentialStatus?: string; syncStatus?: string; accountCount?: number; accountId?: string; accountStatus?: string | null; effectiveStatus?: string | null; systemStatus?: string; amountSpent?: number; currency?: string; businessName?: string | null; source?: AdAccountItem }
-const router = useRouter(); const route = useRoute(); const userStore = useUserStore(); const activeTab = ref('overview'); const treeRef = ref<InstanceType<typeof ElTree>>(); const loading = ref(false); const credentialLoading = ref(false); const syncLoading = ref(false); const filterText = ref(''); const accountSearch = ref(''); const accountMetaStatus = ref(''); const accountSystemStatus = ref(''); const selectedAccountRows = ref<AdAccountItem[]>([]); const accountPage = ref(1); const accountPageSize = 20; const accountTotal = ref(0); const accounts = ref<AdAccountItem[]>([]); const metaAccounts = ref<MetaAccountItem[]>([]); const credentialRows = ref<CredentialItem[]>([]); const syncRows = ref<Array<SyncLogItem & { business_name: string }>>([]); const drawerVisible = ref(false); const selectedBusiness = ref<TreeNode | null>(null); const selectedAccount = ref<TreeNode | null>(null); const addDialogVisible = ref(false); const authorizing = ref(false); const completing = ref(false); const oauthCredentialId = ref<string | null>(null); const oauthStep = ref<'login' | 'businesses' | 'success'>('login'); const oauthError = ref(''); const discoveredBusinesses = ref<DiscoveredBusiness[]>([]); const selectedDiscoveredBusinessId = ref<string | null>(null); const oauthAdAccounts = ref<any[]>([]); const selectedOAuthAccountIds = ref<string[]>([]); const oauthOwnerFilter = ref<'ALL'|'PERSONAL'|'BUSINESS'>('ALL'); const isAdmin = computed(() => userStore.isAdmin); const activeCount = computed(() => accounts.value.filter(a => a.system_status === 'ACTIVE').length); const treeProps = { children: 'children', label: 'label' }
+const router = useRouter(); const route = useRoute(); const userStore = useUserStore(); const activeTab = ref('accounts-list'); const treeRef = ref<InstanceType<typeof ElTree>>(); const loading = ref(false); const credentialLoading = ref(false); const syncLoading = ref(false); const filterText = ref(''); const accountSearch = ref(''); const accountMetaStatus = ref(''); const accountSystemStatus = ref(''); const selectedAccountRows = ref<AdAccountItem[]>([]); const accountPage = ref(1); const accountPageSize = 20; const accountTotal = ref(0); const accounts = ref<AdAccountItem[]>([]); const metaAccounts = ref<MetaAccountItem[]>([]); const credentialRows = ref<CredentialItem[]>([]); const syncRows = ref<Array<SyncLogItem & { business_name: string }>>([]); const drawerVisible = ref(false); const selectedBusiness = ref<TreeNode | null>(null); const selectedAccount = ref<TreeNode | null>(null); const addDialogVisible = ref(false); const authorizing = ref(false); const completing = ref(false); const oauthCredentialId = ref<string | null>(null); const oauthStep = ref<'login' | 'businesses' | 'success'>('login'); const oauthError = ref(''); const discoveredBusinesses = ref<DiscoveredBusiness[]>([]); const selectedDiscoveredBusinessId = ref<string | null>(null); const oauthAdAccounts = ref<any[]>([]); const selectedOAuthAccountIds = ref<string[]>([]); const oauthOwnerFilter = ref<'ALL'|'PERSONAL'|'BUSINESS'>('ALL'); const isAdmin = computed(() => userStore.isAdmin); const activeCount = computed(() => accounts.value.filter(a => a.system_status === 'ACTIVE').length); const treeProps = { children: 'children', label: 'label' }
+const accountCredentialStatus = (account: AdAccountItem) => {
+  const meta = account.business_id ? metaAccounts.value.find(item => item.id === account.business_id) : null
+  const credential = account.credential_id ? credentialRows.value.find(item => item.id === account.credential_id) : null
+  return meta?.credential_status || credential?.status || 'NONE'
+}
+const accountIsDeployable = (account: AdAccountItem) => account.system_status === 'ACTIVE' && account.account_status === '1' && accountCredentialStatus(account) === 'ACTIVE'
+const deployableCount = computed(() => accounts.value.filter(accountIsDeployable).length)
+const unavailableCount = computed(() => accounts.value.filter(account => !accountIsDeployable(account)).length)
+const pendingCount = computed(() => accounts.value.filter(account => !account.account_status || accountCredentialStatus(account) === 'NONE').length)
+function accountAvailabilityLabel(account: AdAccountItem) { if (!account.account_status) return '待同步'; if (accountCredentialStatus(account) !== 'ACTIVE') return '授权失效'; if (account.system_status !== 'ACTIVE') return '已停用'; return account.account_status === '1' ? '可投放' : '不可投放' }
+function accountAvailabilityType(account: AdAccountItem): 'success'|'danger'|'warning'|'info' { return accountIsDeployable(account) ? 'success' : !account.account_status || accountCredentialStatus(account) === 'NONE' ? 'warning' : 'danger' }
+function accountStatusDetail(account: AdAccountItem) { const status = accountCredentialStatus(account); return status === 'ACTIVE' ? (account.system_status === 'ACTIVE' ? '凭证正常' : '系统已停用') : status === 'NONE' ? '未绑定有效凭证' : `凭证${status}` }
+function metaStatusType(account: AdAccountItem): 'success'|'danger'|'warning' { return account.account_status === '1' ? 'success' : account.account_status ? 'danger' : 'warning' }
 const filteredAccounts = computed(() => accounts.value.filter(account => { const q = accountSearch.value.trim().toLowerCase(); const meta = account.effective_status || account.account_status || 'PENDING'; return (!q || `${account.account_name || ''} ${account.account_id}`.toLowerCase().includes(q)) && (!accountMetaStatus.value || meta === accountMetaStatus.value) && (!accountSystemStatus.value || account.system_status === accountSystemStatus.value) }))
 async function syncSelectedAccounts() { const ids = selectedAccountRows.value.map(account => account.id); if (!ids.length) return; try { await accountApi.syncBatch({ account_ids: ids }); ElMessage.success(`已提交 ${ids.length} 个账号的同步任务`); selectedAccountRows.value = []; await load() } catch { /* 全局请求拦截器提示错误 */ } }
 async function setSelectedAccountsStatus(action: 'freeze' | 'unfreeze') { const ids = selectedAccountRows.value.map(account => account.id); if (!ids.length) return; try { await accountApi.bulk({ action, account_ids: ids, reason: action === 'freeze' ? '管理员批量停用' : undefined }); ElMessage.success(`已批量${action === 'freeze' ? '停用' : '启用'} ${ids.length} 个账号`); selectedAccountRows.value = []; await load() } catch { /* 全局请求拦截器提示错误 */ } }
@@ -246,12 +197,12 @@ async function handleTabChange(tab: string | number) { if (tab === 'credentials'
 function handleOAuthMessage(e: MessageEvent) { if (e.origin !== window.location.origin) return; if (e.data?.type === 'meta-oauth-ready') openBusinessDiscovery(e.data.credential_id); if (e.data?.type === 'meta-oauth-completed') load() }
 async function authorizeBusiness(n: TreeNode | null) { if (!n?.businessId) return; try { const { data } = await credentialApi.oauthAuthorize(n.businessId); window.location.assign(data.authorization_url) } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '无法发起 Meta 重新授权') } }
 async function reauthorizeCredential(row: CredentialItem) { try { const { data } = row.meta_account_id ? await credentialApi.oauthAuthorize(row.meta_account_id) : await credentialApi.oauthAuthorizeFirst(); window.location.assign(data.authorization_url) } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '无法发起 Meta 重新授权') } }
-async function load(page = accountPage.value) { accountPage.value = page; loading.value = true; try { const r = await accountApi.list({ page, page_size: accountPageSize }); accounts.value = r.data || []; accountTotal.value = Number(r.headers?.['x-total-count'] || accounts.value.length); if (isAdmin.value) { try { const m = await metaAccountApi.list(); metaAccounts.value = m.data || [] } catch { metaAccounts.value = [] } } } catch { accounts.value = []; accountTotal.value = 0; metaAccounts.value = [] } finally { loading.value = false; await nextTick(); if (filterText.value) treeRef.value?.filter(filterText.value) } }
+async function load(page = accountPage.value) { accountPage.value = page; loading.value = true; try { const r = await accountApi.list({ page, page_size: accountPageSize }); accounts.value = r.data || []; accountTotal.value = Number(r.headers?.['x-total-count'] || accounts.value.length); if (isAdmin.value) { try { const m = await metaAccountApi.list(); metaAccounts.value = m.data || []; await loadCredentials() } catch { metaAccounts.value = [] } } } catch { accounts.value = []; accountTotal.value = 0; metaAccounts.value = [] } finally { loading.value = false; await nextTick(); if (filterText.value) treeRef.value?.filter(filterText.value) } }
 function handleOAuthRoute() { const auth = String(route.query.meta_auth || ''); if (auth === 'businesses') { if (window.opener) { const id = String(route.query.credential_id || ''); if (id) { window.opener.postMessage({ type: 'meta-oauth-ready', credential_id: id }, window.location.origin); setTimeout(() => window.close(), 200) } } else openBusinessDiscovery(String(route.query.credential_id || '')) } else if (auth === 'success') { if (window.opener) { window.opener.postMessage({ type: 'meta-oauth-completed', meta_account_id: String(route.query.meta_account_id || '') }, window.location.origin); setTimeout(() => window.close(), 200) } else { ElMessage.success('Meta 授权成功，BM、广告账户和 Page 正在同步'); void load() } } else if (auth === 'error') { const message = String(route.query.message || 'Meta 授权失败或已取消'); if (window.opener) { window.opener.postMessage({ type: 'meta-oauth-error', message }, window.location.origin); setTimeout(() => window.close(), 200) } else { addDialogVisible.value = true; oauthStep.value = 'login'; oauthError.value = message } } }
 onMounted(async () => { window.addEventListener('message', handleOAuthMessage); await load(); handleOAuthRoute() })
 onBeforeUnmount(() => window.removeEventListener('message', handleOAuthMessage))
 </script>
 
 <style scoped lang="scss">
-.page-container{min-height:100%}.page-head{display:flex;justify-content:space-between;gap:24px;margin-bottom:18px}.eyebrow{color:#6b7f95;font-size:12px}.page-title{margin:5px 0;color:#102a43;font-size:28px}.page-subtitle{margin:0;color:#627d98;font-size:13px}.head-actions,.node-actions{display:flex;align-items:center;gap:8px}.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:12px}.stat-label,.stat-desc{color:#829ab1;font-size:12px}.stat-value{margin:7px 0;color:#102a43;font-size:25px;font-weight:700}.account-tabs{margin-top:2px}.tab-card,.tree-card{border:none}.card-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.card-header span{margin-left:10px;color:#9fb3c8;font-size:12px}.search-input{width:340px}.tree-wrap{min-height:380px}.tree-node{display:flex;justify-content:space-between;align-items:center;width:100%;padding-right:10px;gap:15px}.node-main{display:flex;align-items:center;gap:8px;min-width:0}.node-name{max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.connect-panel{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:20px}.connect-panel h3{margin:0 0 8px;color:#102a43}.connect-panel p{margin:0;color:#829ab1;font-size:13px}.oauth-hero{display:flex;align-items:center;gap:14px;margin-bottom:20px}.oauth-logo{display:flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:14px;background:#eef6ff;color:#1877f2;font-size:24px}.oauth-title{font-size:18px;font-weight:600;color:#102a43}.oauth-subtitle,.steps p,.select-desc{color:#829ab1;font-size:12px}.steps{display:grid;gap:15px;margin-bottom:20px}.steps p{margin:5px 0 0}.business-list{display:flex;flex-direction:column;width:100%;gap:10px;margin-top:15px}.business-option{padding:14px;border:1px solid #e5edf5;border-radius:10px;cursor:pointer}.business-option.selected{border-color:#409eff;background:#f5f9ff}.business-option>div{margin:7px 0 0 24px;color:#829ab1;font-size:12px}.select-title{margin-top:15px;font-size:16px;font-weight:600;color:#243b53}.success-state{text-align:center;padding:45px}.success-state .el-icon{font-size:52px;color:#18a058}.success-state h3{margin:15px 0 5px}.success-state p{color:#829ab1}.drawer-button{margin-top:20px}@media(max-width:900px){.stats-grid{grid-template-columns:repeat(2,1fr)}.page-head,.card-header,.connect-panel{flex-direction:column;align-items:stretch}.search-input{width:100%}}@media(max-width:600px){.stats-grid{grid-template-columns:1fr}.tree-node{align-items:flex-start;flex-direction:column}.node-actions{width:100%}}
+.page-container{min-height:100%}.page-head{display:flex;justify-content:space-between;gap:24px;margin-bottom:18px}.eyebrow{color:#6b7f95;font-size:12px}.page-title{margin:5px 0;color:#102a43;font-size:28px}.page-subtitle{margin:0;color:#627d98;font-size:13px}.head-actions,.node-actions{display:flex;align-items:center;gap:8px}.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:12px}.stat-label,.stat-desc{color:#829ab1;font-size:12px}.stat-value{margin:7px 0;color:#102a43;font-size:25px;font-weight:700}.success-value{color:#18a058}.danger-value{color:#f56c6c}.warning-value{color:#e6a23c}.account-tabs{margin-top:2px}.tab-card,.tree-card{border:none}.card-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.card-header span{margin-left:10px;color:#9fb3c8;font-size:12px}.search-input{width:340px}.tree-wrap{min-height:380px}.tree-node{display:flex;justify-content:space-between;align-items:center;width:100%;padding-right:10px;gap:15px}.node-main{display:flex;align-items:center;gap:8px;min-width:0}.node-name{max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.status-detail{margin-top:3px;color:#9aaabd;font-size:11px}.connect-panel{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:20px}.connect-panel h3{margin:0 0 8px;color:#102a43}.connect-panel p{margin:0;color:#829ab1;font-size:13px}.oauth-hero{display:flex;align-items:center;gap:14px;margin-bottom:20px}.oauth-logo{display:flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:14px;background:#eef6ff;color:#1877f2;font-size:24px}.oauth-title{font-size:18px;font-weight:600;color:#102a43}.oauth-subtitle,.steps p,.select-desc{color:#829ab1;font-size:12px}.steps{display:grid;gap:15px;margin-bottom:20px}.steps p{margin:5px 0 0}.business-list{display:flex;flex-direction:column;width:100%;gap:10px;margin-top:15px}.business-option{padding:14px;border:1px solid #e5edf5;border-radius:10px;cursor:pointer}.business-option.selected{border-color:#409eff;background:#f5f9ff}.business-option>div{margin:7px 0 0 24px;color:#829ab1;font-size:12px}.select-title{margin-top:15px;font-size:16px;font-weight:600;color:#243b53}.success-state{text-align:center;padding:45px}.success-state .el-icon{font-size:52px;color:#18a058}.success-state h3{margin:15px 0 5px}.success-state p{color:#829ab1}.drawer-button{margin-top:20px}@media(max-width:900px){.stats-grid{grid-template-columns:repeat(2,1fr)}.page-head,.card-header,.connect-panel{flex-direction:column;align-items:stretch}.search-input{width:100%}}@media(max-width:600px){.stats-grid{grid-template-columns:1fr}.tree-node{align-items:flex-start;flex-direction:column}.node-actions{width:100%}}
 </style>
