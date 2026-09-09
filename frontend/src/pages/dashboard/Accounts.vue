@@ -59,6 +59,7 @@
       <el-tab-pane label="广告账号" name="accounts-list">
         <el-card shadow="never" class="tab-card">
           <div class="list-toolbar">
+            <div class="filter-group">
             <el-input v-model="accountSearch" clearable placeholder="搜索账号名称 / Account ID" class="list-search" />
             <el-select v-model="accountMetaStatus" clearable placeholder="Meta 状态" class="status-select">
               <el-option label="正常" value="ACTIVE" /><el-option label="已停用" value="DISABLED" /><el-option label="待同步" value="PENDING" />
@@ -66,10 +67,14 @@
             <el-select v-model="accountSystemStatus" clearable placeholder="投放状态" class="status-select">
               <el-option label="可投放" value="ACTIVE" /><el-option label="已停用" value="DISABLED" />
             </el-select>
+            <el-button link type="info" @click="resetFilters">重置</el-button>
+            </div>
+            <div class="batch-actions">
             <el-button type="primary" plain :disabled="!selectedAccountRows.length" @click="syncSelectedAccounts">批量同步</el-button>
             <el-button type="success" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('unfreeze')">批量启用</el-button>
             <el-button type="warning" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('freeze')">批量停用</el-button>
             <el-button type="primary" :disabled="!selectedAccountRows.length" @click="goBatchPublish">批量投放</el-button>
+            </div>
           </div>
           <el-table :data="filteredAccounts" v-loading="loading" stripe @selection-change="selectedAccountRows = $event">
             <el-table-column type="selection" width="48" :selectable="isAccountSelectable" />
@@ -167,6 +172,7 @@ function accountAvailabilityType(account: AdAccountItem): 'success'|'danger'|'wa
 function accountStatusDetail(account: AdAccountItem) { return account.availability_reason || '后端预检未返回原因' }
 function metaStatusType(account: AdAccountItem): 'success'|'danger'|'warning' { return account.account_status === '1' ? 'success' : account.account_status ? 'danger' : 'warning' }
 const filteredAccounts = computed(() => accounts.value.filter(account => { const q = accountSearch.value.trim().toLowerCase(); const meta = account.effective_status || account.account_status || 'PENDING'; return (!q || `${account.account_name || ''} ${account.account_id}`.toLowerCase().includes(q)) && (!accountMetaStatus.value || meta === accountMetaStatus.value) && (!accountSystemStatus.value || account.system_status === accountSystemStatus.value) }))
+function resetFilters() { accountSearch.value = ''; accountMetaStatus.value = ''; accountSystemStatus.value = '' }
 async function syncSelectedAccounts() { const ids = selectedAccountRows.value.map(account => account.id); if (!ids.length) return; try { await accountApi.syncBatch({ account_ids: ids }); ElMessage.success(`已提交 ${ids.length} 个账号的同步任务`); selectedAccountRows.value = []; await load() } catch { /* 全局请求拦截器提示错误 */ } }
 async function setSelectedAccountsStatus(action: 'freeze' | 'unfreeze') { const ids = selectedAccountRows.value.map(account => account.id); if (!ids.length) return; try { await accountApi.bulk({ action, account_ids: ids, reason: action === 'freeze' ? '管理员批量停用' : undefined }); ElMessage.success(`已批量${action === 'freeze' ? '停用' : '启用'} ${ids.length} 个账号`); selectedAccountRows.value = []; await load() } catch { /* 全局请求拦截器提示错误 */ } }
 async function setAccountStatus(account: AdAccountItem | undefined, action: 'freeze' | 'unfreeze') { if (!account) return; await accountApi.bulk({ action, account_ids: [account.id], reason: action === 'freeze' ? '管理员停用账号' : undefined }); ElMessage.success(action === 'freeze' ? '账号已停用' : '账号已启用'); await load() }
@@ -210,4 +216,5 @@ onBeforeUnmount(() => window.removeEventListener('message', handleOAuthMessage))
 
 <style scoped lang="scss">
 .page-container{min-height:100%}.page-head{display:flex;justify-content:space-between;gap:24px;margin-bottom:18px}.eyebrow{color:#6b7f95;font-size:12px}.page-title{margin:5px 0;color:#102a43;font-size:28px}.page-subtitle{margin:0;color:#627d98;font-size:13px}.head-actions,.node-actions{display:flex;align-items:center;gap:8px}.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:12px}.stat-label,.stat-desc{color:#829ab1;font-size:12px}.stat-value{margin:7px 0;color:#102a43;font-size:25px;font-weight:700}.success-value{color:#18a058}.danger-value{color:#f56c6c}.warning-value{color:#e6a23c}.account-tabs{margin-top:2px}.tab-card,.tree-card{border:none}.card-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.card-header span{margin-left:10px;color:#9fb3c8;font-size:12px}.search-input{width:340px}.tree-wrap{min-height:380px}.tree-node{display:flex;justify-content:space-between;align-items:center;width:100%;padding-right:10px;gap:15px}.node-main{display:flex;align-items:center;gap:8px;min-width:0}.node-name{max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.status-detail{margin-top:3px;color:#9aaabd;font-size:11px}.connect-panel{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:20px}.connect-panel h3{margin:0 0 8px;color:#102a43}.connect-panel p{margin:0;color:#829ab1;font-size:13px}.oauth-hero{display:flex;align-items:center;gap:14px;margin-bottom:20px}.oauth-logo{display:flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:14px;background:#eef6ff;color:#1877f2;font-size:24px}.oauth-title{font-size:18px;font-weight:600;color:#102a43}.oauth-subtitle,.steps p,.select-desc{color:#829ab1;font-size:12px}.steps{display:grid;gap:15px;margin-bottom:20px}.steps p{margin:5px 0 0}.business-list{display:flex;flex-direction:column;width:100%;gap:10px;margin-top:15px}.business-option{padding:14px;border:1px solid #e5edf5;border-radius:10px;cursor:pointer}.business-option.selected{border-color:#409eff;background:#f5f9ff}.business-option>div{margin:7px 0 0 24px;color:#829ab1;font-size:12px}.select-title{margin-top:15px;font-size:16px;font-weight:600;color:#243b53}.success-state{text-align:center;padding:45px}.success-state .el-icon{font-size:52px;color:#18a058}.success-state h3{margin:15px 0 5px}.success-state p{color:#829ab1}.drawer-button{margin-top:20px}@media(max-width:900px){.stats-grid{grid-template-columns:repeat(2,1fr)}.page-head,.card-header,.connect-panel{flex-direction:column;align-items:stretch}.search-input{width:100%}}@media(max-width:600px){.stats-grid{grid-template-columns:1fr}.tree-node{align-items:flex-start;flex-direction:column}.node-actions{width:100%}}
+.list-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:4px 0 16px}.filter-group,.batch-actions{display:flex;align-items:center;gap:10px}.list-search{width:280px}.status-select{width:140px}@media(max-width:1100px){.list-toolbar{align-items:stretch;flex-direction:column}.filter-group,.batch-actions{flex-wrap:wrap}.list-search{flex:1;min-width:240px}}@media(max-width:600px){.filter-group,.batch-actions{width:100%}.list-search,.status-select{width:100%}}
 </style>
