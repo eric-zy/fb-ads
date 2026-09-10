@@ -3,11 +3,11 @@
     <div class="page-head">
       <div>
         <div class="eyebrow">账号中心 / Meta</div>
-        <h2 class="page-title">账号</h2>
+        <h2 class="page-title">{{ t('pages.accounts') }}</h2>
         <p class="page-subtitle">统一接入和管理各广告平台账户，当前支持 Meta。</p>
       </div>
       <div class="head-actions">
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="load">{{ t('pages.refresh') }}</el-button>
         <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="openAddDialog">接入账号</el-button>
       </div>
     </div>
@@ -78,10 +78,10 @@
           </div>
           <el-table :data="filteredAccounts" v-loading="loading" stripe @selection-change="selectedAccountRows = $event">
             <el-table-column type="selection" width="48" :selectable="isAccountSelectable" />
-            <el-table-column label="账号" min-width="190"><template #default="{ row }">{{ row.account_name || row.account_id }}</template></el-table-column>
+            <el-table-column :label="t('pages.account')" min-width="190"><template #default="{ row }">{{ row.account_name || row.account_id }}</template></el-table-column>
             <el-table-column prop="account_id" label="Account ID" min-width="160" />
             <el-table-column label="归属" min-width="170"><template #default="{ row }"><div>{{ row.business_name || '个人账号' }}</div><span class="status-detail">{{ row.owner_type === 'BUSINESS' ? 'BM 资产' : '个人授权' }}{{ row.meta_business_id ? ` · ${row.meta_business_id}` : '' }}</span></template></el-table-column>
-            <el-table-column label="授权/投放状态" min-width="180"><template #default="{ row }"><el-tag :type="accountAvailabilityType(row)" size="small">{{ accountAvailabilityLabel(row) }}</el-tag><div class="status-detail">{{ accountStatusDetail(row) }}</div></template></el-table-column>
+            <el-table-column :label="t('pages.authorized')" min-width="180"><template #default="{ row }"><el-tag :type="accountAvailabilityType(row)" size="small">{{ accountAvailabilityLabel(row) }}</el-tag><div class="status-detail">{{ accountStatusDetail(row) }}</div></template></el-table-column>
           <el-table-column label="Meta 状态" width="110"><template #default="{ row }"><el-tag :type="metaStatusType(row)" size="small">{{ row.account_status || '待同步' }}</el-tag><div class="status-detail">付款：{{ paymentStatusLabel(row.payment_status) }}</div></template></el-table-column>
             <el-table-column label="操作" width="150"><template #default="{ row }"><el-button link type="primary" @click="openAccount({ type: 'account', source: row, accountId: row.account_id, label: row.account_name || row.account_id })">详情</el-button><el-button v-if="isAdmin && !accountIsDeployable(row)" link type="warning" @click="reauthorizeAccount(row)">重新授权</el-button></template></el-table-column>
           </el-table>
@@ -154,6 +154,8 @@ import { Connection, CreditCard, OfficeBuilding, Platform, Plus, Refresh, Search
 import { accountApi, credentialApi, metaAccountApi, type AdAccountItem, type MetaAccountItem, type CredentialItem, type SyncLogItem } from '@/api/admin'
 import { useUserStore } from '@/stores/userStore'
 import { formatMoney } from '@/utils/money'
+import { useLocale } from '@/stores/localeStore'
+const { t } = useLocale()
 
 type DiscoveredBusiness = { id: string; name?: string | null; verification_status?: string | null }
 type TreeNode = { id: string; label: string; type: 'platform' | 'business' | 'account'; children?: TreeNode[]; businessId?: string; metaBusinessId?: string; credentialStatus?: string; syncStatus?: string; accountCount?: number; accountId?: string; accountStatus?: string | null; effectiveStatus?: string | null; systemStatus?: string; amountSpent?: number; currency?: string; businessName?: string | null; source?: AdAccountItem }

@@ -4,7 +4,7 @@
       <template #header>
         <div class="header-bar">
           <div>
-            <h2 class="page-title">批量投放</h2>
+            <h2 class="page-title">{{ t('pages.batch') }}</h2>
             <p class="page-desc">
               选择<b>投放模板</b>与目标广告账户，系统按「模板 → 账户」生成部署任务：
               每个账户独立创建 Campaign / AdSet / Ad，全部进入队列异步执行，
@@ -137,9 +137,9 @@
           </el-alert>
         </section>
         <div class="step-actions">
-          <el-button v-if="activeStep > 0" @click="activeStep--">上一步</el-button>
-          <el-button v-if="activeStep < 3" type="primary" :loading="preflighting" :disabled="!canNext" @click="nextStep">下一步</el-button>
-          <el-button v-else type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit">提交批量投放</el-button>
+          <el-button v-if="activeStep > 0" @click="activeStep--">{{ t('pages.previous') }}</el-button>
+          <el-button v-if="activeStep < 3" type="primary" :loading="preflighting" :disabled="!canNext" @click="nextStep">{{ t('pages.next') }}</el-button>
+          <el-button v-else type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit">{{ t('pages.submit') }}</el-button>
         </div>
       </el-form>
 
@@ -229,6 +229,8 @@ import { ElMessage } from 'element-plus'
 import { accountApi, type DeployableAccount } from '@/api/admin'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { mediaApi, type MetaAssetBinding } from '@/api/media'
+import { useLocale } from '@/stores/localeStore'
+const { t } = useLocale()
 import {
   jobsApi,
   isFinalStatus,

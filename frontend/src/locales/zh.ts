@@ -1,0 +1,5 @@
+export default {
+  common: { loginExpired: '登录已过期，请重新登录', requestFailed: '请求失败', timeout: '请求超时，请稍后重试', network: '网络异常，请检查网络连接', badRequest: '请求参数有误', forbidden: '权限不足', notFound: '请求的资源不存在', conflict: '资源冲突', validation: '请求数据校验失败', tooMany: '请求过于频繁，请稍后再试', server: '服务器内部错误，请稍后重试', unavailable: '服务暂时不可用，请稍后重试' },
+  menu: { overview: '经营总览', delivery: '投放管理', accounts: '账号中心', reports: '数据中心', risk: '风控中心', system: '系统管理', templates: '投放模板', batch: '批量投放', jobs: '任务中心', material: '素材资产', settings: '系统设置' },
+  pages: { accounts: '账号', templates: '投放模板', batch: '批量投放', refresh: '刷新', connect: '接入账号', create: '新建模板', save: '保存', cancel: '取消', next: '下一步', previous: '上一步', submit: '提交批量投放', status: '状态', actions: '操作', account: '广告账户', template: '投放模板', view: '查看', edit: '编辑', copy: '复制', remove: '删除', name: '名称', objective: '目标', budget: '预算', optimize: '优化目标', targeting: '定向', creatives: '创意数', updated: '更新时间', metaStatus: 'Meta 状态', deliveryStatus: '投放状态', accountId: 'Account ID', ownership: '归属', authorized: '授权/投放状态', reset: '重置', sync: '批量同步', enable: '批量启用', disable: '批量停用' }
+}

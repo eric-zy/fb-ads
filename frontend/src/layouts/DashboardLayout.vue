@@ -36,17 +36,18 @@
       <el-container>
         <el-header class="header">
           <div class="header-left">
-            <el-select v-model="accountStore.selectedAccountId" placeholder="选择账号" @change="handleAccountChange" class="account-selector" clearable>
+            <el-select v-model="accountStore.selectedAccountId" :placeholder="t('menu.accounts')" @change="handleAccountChange" class="account-selector" clearable>
               <el-option v-for="account in accountStore.accounts" :key="account.id" :label="account.account_name" :value="account.id" />
             </el-select>
             <el-breadcrumb v-if="route.path === '/dashboard/accounts'" separator="/" class="breadcrumb">
-              <el-breadcrumb-item>账号中心</el-breadcrumb-item>
+              <el-breadcrumb-item>{{ t('menu.accounts') }}</el-breadcrumb-item>
               <el-breadcrumb-item>Meta</el-breadcrumb-item>
               <el-breadcrumb-item>账号中心</el-breadcrumb-item>
             </el-breadcrumb>
           </div>
 
           <div class="header-right">
+            <LanguageSwitcher />
             <el-badge :value="notificationCount" class="notification-badge">
               <el-button text @click="showNotifications"><el-icon><Bell /></el-icon></el-button>
             </el-badge>
@@ -59,9 +60,9 @@
                 </div>
               </template>
               <div class="dropdown-menu">
-                <div class="menu-item" @click="goToSettings"><el-icon><Setting /></el-icon><span>用户设置</span></div>
+                <div class="menu-item" @click="goToSettings"><el-icon><Setting /></el-icon><span>{{ t('menu.settings') }}</span></div>
                 <el-divider style="margin: 10px 0" />
-                <div class="menu-item" @click="handleLogout"><el-icon><Switch /></el-icon><span>登出</span></div>
+                <div class="menu-item" @click="handleLogout"><el-icon><Switch /></el-icon><span>{{ isZh ? '登出' : 'Log out' }}</span></div>
               </div>
             </el-popover>
           </div>
@@ -86,6 +87,8 @@ import {
   DocumentCopy, Promotion, Collection, Upload, List, Picture, Timer,
   PieChart, Warning, OfficeBuilding, Setting, Switch, ArrowDown, Bell, Connection,
 } from '@element-plus/icons-vue'
+import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
+import { useLocale } from '@/stores/localeStore'
 
 const router = useRouter()
 const route = useRoute()
@@ -93,6 +96,7 @@ const userStore = useUserStore()
 const accountStore = useAccountStore()
 const notificationCount = ref(0)
 const sinanVerified = ref(false)
+const { t, isZh } = useLocale()
 
 const activeMenu = computed(() => {
   const path = route.path.split('/').pop()

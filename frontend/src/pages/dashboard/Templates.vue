@@ -4,20 +4,20 @@
       <template #header>
         <div class="header-bar">
           <div>
-            <h2 class="page-title">投放模板</h2>
+            <h2 class="page-title">{{ t('pages.templates') }}</h2>
             <p class="page-desc">
               投放模板是系统最核心的业务对象：配置一次，即可批量部署到任意数量的广告账户。
               模板保存目标、预算、定向与素材文案，部署时按「模板 → 账户」生成 Campaign / AdSet / Ad。
             </p>
           </div>
-          <el-button type="primary" @click="openCreate">新建模板</el-button>
+          <el-button type="primary" @click="openCreate">{{ t('pages.create') }}</el-button>
         </div>
       </template>
 
       <el-table :data="templates" v-loading="loading" size="small">
-        <el-table-column prop="name" label="模板名称" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="name" :label="t('pages.name')" min-width="160" show-overflow-tooltip />
         <el-table-column prop="objective" label="目标" width="150" show-overflow-tooltip />
-        <el-table-column label="预算" width="140">
+        <el-table-column :label="t('pages.budget')" width="140">
           <template #default="{ row }">
             <span v-if="row.budget_type === 'LIFETIME'">
               ${{ row.lifetime_budget ?? '-' }} 总
@@ -25,26 +25,26 @@
             <span v-else>${{ row.daily_budget ?? '-' }}/天</span>
           </template>
         </el-table-column>
-        <el-table-column prop="optimization_goal" label="优化目标" width="160" show-overflow-tooltip />
-        <el-table-column label="定向" width="120">
+        <el-table-column prop="optimization_goal" :label="t('pages.optimize')" width="160" show-overflow-tooltip />
+        <el-table-column :label="t('pages.targeting')" width="120">
           <template #default="{ row }">
             <span>{{ geoSummary(row.targeting_json) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="创意数" width="90">
+        <el-table-column :label="t('pages.creatives')" width="90">
           <template #default="{ row }">
             {{ creativeCount(row.creative_config_json) }}
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column :label="t('pages.status')" width="100">
           <template #default="{ row }">
             <el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'" size="small">
               {{ row.status }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="updated_at" label="更新时间" width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column prop="updated_at" :label="t('pages.updated')" width="180" show-overflow-tooltip />
+        <el-table-column :label="t('pages.actions')" width="200" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="primary" @click="handleClone(row)">复制</el-button>
@@ -230,6 +230,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { mediaApi, type MediaItem } from '@/api/media'
 import { metaPagesApi, type MetaPage } from '@/api/metaPages'
+import { useLocale } from '@/stores/localeStore'
+const { t } = useLocale()
 
 const templates = ref<CampaignTemplate[]>([])
 const mediaAssets = ref<MediaItem[]>([])

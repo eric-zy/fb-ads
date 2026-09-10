@@ -12,6 +12,7 @@
 import axios, { AxiosError, type AxiosProgressEvent } from 'axios'
 import { ElMessage } from 'element-plus'
 import Cookies from 'js-cookie'
+import { translate } from '@/stores/localeStore'
 
 // 扩展 axios 请求配置：业务方可声明静默，跳过全局错误弹框
 declare module 'axios' {
@@ -78,21 +79,21 @@ function friendlyMessage(error: AxiosError<BackendErrorBody>): string {
     error.response?.data?.error ||
     error.message
 
-  if (error.code === 'ECONNABORTED') return '请求超时，请稍后重试'
-  if (error.code === 'ERR_NETWORK' || !error.response) return '网络异常，请检查网络连接'
+  if (error.code === 'ECONNABORTED') return translate('common.timeout')
+  if (error.code === 'ERR_NETWORK' || !error.response) return translate('common.network')
   switch (status) {
-    case 400: return detail || '请求参数有误'
-    case 401: return '登录已过期，请重新登录'
-    case 403: return '权限不足：' + (detail || '无访问权限')
-    case 404: return detail || '请求的资源不存在'
-    case 409: return detail || '资源冲突'
-    case 422: return detail || '请求数据校验失败'
-    case 429: return '请求过于频繁，请稍后再试'
-    case 500: return '服务器内部错误，请稍后重试'
+    case 400: return detail || translate('common.badRequest')
+    case 401: return translate('common.loginExpired')
+    case 403: return `${translate('common.forbidden')}: ${detail || translate('common.forbidden')}`
+    case 404: return detail || translate('common.notFound')
+    case 409: return detail || translate('common.conflict')
+    case 422: return detail || translate('common.validation')
+    case 429: return translate('common.tooMany')
+    case 500: return translate('common.server')
     case 502:
     case 503:
     case 504: return '服务暂时不可用，请稍后重试'
-    default: return detail || '请求失败'
+    default: return detail || translate('common.requestFailed')
   }
 }
 
