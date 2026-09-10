@@ -1,0 +1,2 @@
+<template><PublicPage><h1>关于公司</h1><p>myAds 由安徽品城网络科技有限公司运营，为企业用户提供 Meta 广告账户接入、广告创建管理、批量投放、投放状态同步和数据报表服务。</p><h2>公司信息</h2><p>公司名称：安徽品城网络科技有限公司</p><p>统一社会信用代码：91340100MA2NK6PE05</p><p>企业类型：有限责任公司（自然人投资或控股）</p><p>注册地址：合肥市高新区红枫路19号柏岭大厦办公2120室</p><p>成立日期：2017年4月26日</p><h2>服务说明</h2><p>平台仅在用户明确授权的范围内访问 Business Manager、广告账户和 Facebook Page，并用于广告管理、投放监控和报表服务。</p></PublicPage></template>
+<script setup lang="ts">import PublicPage from '@/components/PublicPage.vue'</script>

@@ -1,6 +1,6 @@
 <template>
   <main class="public-page"><article class="public-card">
-    <header><div class="brand">myAds</div><nav><RouterLink to="/">首页</RouterLink><RouterLink to="/privacy-policy">隐私政策</RouterLink><RouterLink to="/terms">服务条款</RouterLink><RouterLink to="/data-deletion">数据删除</RouterLink><RouterLink to="/contact">联系我们</RouterLink></nav></header>
+    <header><div class="brand">myAds</div><nav><RouterLink to="/">首页</RouterLink><RouterLink to="/about">关于公司</RouterLink><RouterLink to="/privacy-policy">隐私政策</RouterLink><RouterLink to="/terms">服务条款</RouterLink><RouterLink to="/data-deletion">数据删除</RouterLink><RouterLink to="/contact">联系我们</RouterLink><RouterLink to="/login">平台登录</RouterLink></nav></header>
     <slot /><footer>安徽品城网络科技有限公司 · <a href="mailto:yz6837053@gmail.com">yz6837053@gmail.com</a></footer>
   </article></main>
 </template>

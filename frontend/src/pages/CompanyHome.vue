@@ -1,2 +1,2 @@
-<template><PublicPage><h1>myAds 广告管理平台</h1><p>安徽品城网络科技有限公司提供 Meta 广告账户接入、广告创建、批量投放、投放状态同步和数据报表服务。</p><h2>平台功能</h2><ul><li>连接用户明确授权的 Business Manager 和广告账户</li><li>创建和管理广告系列、广告组、广告及广告创意</li><li>同步投放状态、花费和成效数据</li></ul><h2>数据与授权</h2><p>平台仅访问用户授权的业务资产，不出售或共享 Meta 数据。用户可以随时撤销授权或申请删除数据。</p></PublicPage></template>
+<template><PublicPage><h1>myAds 广告管理平台</h1><p>安徽品城网络科技有限公司提供 Meta 广告账户接入、广告创建、批量投放、投放状态同步和数据报表服务。</p><p><RouterLink to="/login">平台登录</RouterLink></p><h2>平台功能</h2><ul><li>连接用户明确授权的 Business Manager 和广告账户</li><li>创建和管理广告系列、广告组、广告及广告创意</li><li>同步投放状态、花费和成效数据</li></ul><h2>数据与授权</h2><p>平台仅访问用户授权的业务资产，不出售或共享 Meta 数据。用户可以随时撤销授权或申请删除数据。</p></PublicPage></template>
 <script setup lang="ts">import PublicPage from '@/components/PublicPage.vue'</script>
