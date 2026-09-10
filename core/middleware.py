@@ -35,6 +35,7 @@ class AuthEnforcementMiddleware(BaseHTTPMiddleware):
         # Meta 浏览器回调不携带本系统 Bearer Token；身份与租户由短时签名 state 校验。
         "/api/v1/meta-auth/callback",
         "/health",
+        "/api/v1/public/locale",
     }
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:

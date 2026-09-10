@@ -58,6 +58,16 @@ app = FastAPI(
     debug=settings.DEBUG
 )
 
+@app.get("/api/v1/public/locale")
+async def public_locale(request: Request):
+    """Return a coarse locale hint from reverse-proxy country headers."""
+    country = (request.headers.get("CF-IPCountry") or request.headers.get("X-Country-Code") or "").upper()
+    if country:
+        return {"locale": "zh" if country in {"CN", "TW", "HK", "MO"} else "en"}
+    # Keep browser-language detection as the client-side fallback when no
+    # trusted reverse-proxy GeoIP header is available.
+    return {"locale": None}
+
 # ==================== 中间件 ====================
 # 注意：Starlette 中后添加的中间件在外层、先执行。
 # 请求进入顺序 = CORS → 日志 → 统一鉴权 → 限流 → 路由。
