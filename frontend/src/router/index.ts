@@ -2,6 +2,7 @@ import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router'
 import { useUserStore } from '@/stores/userStore'
 
 const routes: RouteRecordRaw[] = [
+  { path: '/', name: 'CompanyHome', component: () => import('@/pages/CompanyHome.vue'), meta: { requiresAuth: false } },
   {
     path: '/login', name: 'Login', component: () => import('@/pages/Login.vue'), meta: { requiresAuth: false },
   },
@@ -11,6 +12,9 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/privacy-policy', name: 'PrivacyPolicy', component: () => import('@/pages/PrivacyPolicy.vue'), meta: { requiresAuth: false },
   },
+  { path: '/terms', name: 'Terms', component: () => import('@/pages/Terms.vue'), meta: { requiresAuth: false } },
+  { path: '/data-deletion', name: 'DataDeletion', component: () => import('@/pages/DataDeletion.vue'), meta: { requiresAuth: false } },
+  { path: '/contact', name: 'Contact', component: () => import('@/pages/Contact.vue'), meta: { requiresAuth: false } },
   {
     path: '/dashboard', component: () => import('@/layouts/DashboardLayout.vue'), meta: { requiresAuth: true },
     children: [

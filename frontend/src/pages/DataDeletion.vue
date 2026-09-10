@@ -1,0 +1,2 @@
+<template><PublicPage><h1>数据删除说明</h1><p>如需删除 myAds 中与 Facebook/Meta 授权相关的数据，请发送邮件至 <a href="mailto:yz6837053@gmail.com?subject=myAds%20data%20deletion">yz6837053@gmail.com</a>，主题填写“myAds 数据删除申请”，并提供注册邮箱或用户 ID。</p><h2>处理流程</h2><ol><li>核验申请人身份及账户归属。</li><li>撤销对应 Meta 授权并停止后续同步。</li><li>删除授权凭据、账户关联及可删除的业务数据。</li><li>完成处理后通过邮件通知申请人。</li></ol><p>Meta 平台中的数据还需在 Facebook 设置中单独删除或撤销授权。</p></PublicPage></template>
+<script setup lang="ts">import PublicPage from '@/components/PublicPage.vue'</script>

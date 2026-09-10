@@ -1,0 +1,2 @@
+<template><PublicPage><h1>服务条款</h1><p>最后更新：2026年9月10日</p><p>使用 myAds 即表示您同意遵守本条款及适用法律法规。</p><h2>服务范围</h2><p>myAds 提供广告账户连接、广告创建管理、投放监控和报表服务。所有 Meta 资产操作均以用户授权和平台权限为前提。</p><h2>用户责任</h2><p>用户应确保拥有所连接资产的合法权限，并对广告内容、落地页、预算、付款方式及投放行为负责，不得发布违法、欺诈或违反 Meta 政策的内容。</p><h2>服务限制</h2><p>因 Meta 接口、账户状态、审核、支付或网络原因造成的限制，不视为 myAds 对投放结果的保证。</p><h2>联系我们</h2><p>邮箱：<a href="mailto:yz6837053@gmail.com">yz6837053@gmail.com</a></p></PublicPage></template>
+<script setup lang="ts">import PublicPage from '@/components/PublicPage.vue'</script>
