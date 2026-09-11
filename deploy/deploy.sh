@@ -6,6 +6,9 @@ cd "$(dirname "$0")"
 # API/Worker/Beat 共用 fbads-api:latest，只构建一次，避免三个服务并行生成重复镜像。
 docker compose build api nginx
 
+echo "[deploy] 校验 API 容器媒体工具：ffprobe..."
+docker compose run --rm api ffprobe -version >/dev/null
+
 docker compose up -d --wait db redis
 
 # upgrade head 是幂等操作：已执行的版本会跳过，未执行的版本会按链路补齐。

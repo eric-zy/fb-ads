@@ -36,6 +36,8 @@ from api import meta_auth as meta_auth_api
 from api import meta_pages as meta_pages_api
 from api import meta_connections as meta_connections_api
 from api import media as media_api
+from api import creative_asset_groups as creative_asset_groups_api
+from api import creative_asset_tags as creative_asset_tags_api
 from api import templates as templates_api
 from api import jobs as jobs_api
 from api import campaigns as campaigns_api
@@ -175,6 +177,8 @@ app.include_router(account_groups_api.router)
 
 # 注册素材库路由
 app.include_router(media_api.router)
+app.include_router(creative_asset_groups_api.router)
+app.include_router(creative_asset_tags_api.router)
 
 # 注册投放模板路由（系统核心业务对象）
 app.include_router(templates_api.router)

@@ -146,7 +146,7 @@ def _submit(
 @router.post("/campaign-preflight")
 def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     """发布前检查；只读，不创建任务、不调用 Meta 写接口。"""
-    return JobService(db).preflight_campaign(req.template_id, req.ad_account_ids, req.budget_override, req.status)
+    return JobService(db).preflight_campaign(req.template_id, req.ad_account_ids, req.budget_override, req.status, created_by=current_user.id)
 
 @router.post("/campaign-create")
 def create_campaign_batch(

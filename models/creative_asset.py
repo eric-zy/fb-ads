@@ -17,6 +17,10 @@ class CreativeAsset(TenantMixin, Base):
     id = Column(String(50), primary_key=True, index=True)
     name = Column(String(255), nullable=False, comment="素材名称（原始文件名）")
 
+    created_by = Column(String(50), ForeignKey("users.id"), nullable=True, index=True, comment="上传用户")
+    visibility = Column(String(20), nullable=False, default="ACCOUNT", server_default="ACCOUNT", comment="PRIVATE/ACCOUNT/TENANT")
+    group_id = Column(String(50), ForeignKey("creative_asset_groups.id", ondelete="SET NULL"), nullable=True, index=True)
+
     # 素材类型
     asset_type = Column(String(20), nullable=False, comment="image / video")
 
@@ -51,6 +55,7 @@ class CreativeAsset(TenantMixin, Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     meta_account = relationship("MetaAccount", back_populates=None)
+    tags = relationship("CreativeAssetTag", secondary="creative_asset_tag_links", lazy="selectin")
 
     __table_args__ = (
         Index("ix_creative_assets_tenant_meta", "tenant_id", "meta_account_id"),
@@ -63,6 +68,10 @@ class CreativeAsset(TenantMixin, Base):
             "id": self.id,
             "tenant_id": self.tenant_id,
             "name": self.name,
+            "created_by": self.created_by,
+            "visibility": self.visibility,
+            "group_id": self.group_id,
+            "tag_ids": [tag.id for tag in getattr(self, "tags", [])],
             "asset_type": self.asset_type,
             "meta_account_id": self.meta_account_id,
             "account_id": self.account_id,

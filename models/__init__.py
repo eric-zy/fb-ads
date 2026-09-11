@@ -6,6 +6,8 @@ from models.tenant import Tenant, TenantStatus, TenantPlan, UserRole
 from models.ad_account import AdAccount, AccountStatus, SystemStatus
 from models.meta_account import MetaAccount, BusinessStatus, SyncStatus
 from models.creative_asset import CreativeAsset
+from models.creative_asset_group import CreativeAssetGroup, creative_asset_group_members
+from models.creative_asset_tag import CreativeAssetTag, creative_asset_tag_links
 from models.meta_asset_binding import MetaAssetBinding
 from models.campaign import Campaign, CampaignStatus
 from models.ad_group import AdGroup

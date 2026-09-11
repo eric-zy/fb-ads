@@ -30,7 +30,7 @@
 | 服务 | 镜像 | 说明 |
 |---|---|---|
 | nginx | 自构建（多阶段 node build + nginx） | 80 端口，托管前端 + 反代后端 |
-| api | 自构建（python:3.12-slim） | uvicorn main:app |
+| api | 自构建（python:3.12-slim + ffmpeg/ffprobe） | uvicorn main:app |
 | celery-worker | 同 api 镜像 | `celery -A celery_app worker` |
 | celery-beat | 同 api 镜像 | `celery -A celery_app beat` 定时调度 |
 | redis | redis:7-alpine | broker + result backend + 限流 |
@@ -171,6 +171,8 @@ fb-ads-nginx-1         fbads-nginx       Up
 生产部署脚本会自动执行幂等迁移：每次部署都会运行 `alembic upgrade head`，已执行的版本会自动跳过，未执行的版本按链路补齐。迁移成功后才切换 API、Worker 和 Beat，避免代码与表结构不一致。
 
 数据库迁移统一由 `deploy/deploy.sh` 自动执行。脚本会启动并等待 PostgreSQL 健康检查，重新构建 API 镜像以带入最新迁移文件，检查迁移前版本，执行 `alembic upgrade head`，再输出迁移后的当前版本。任一步失败都会停止，不会继续重启业务容器。
+
+API/Worker 共用的后端镜像已内置 `ffmpeg`，其中包含 `ffprobe`，用于服务端解析视频尺寸、比例和时长。部署脚本会在迁移前执行 `ffprobe -version` 校验。
 
 手动执行时：
 ```bash

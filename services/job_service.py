@@ -23,6 +23,7 @@ from models import (
     CampaignJobItem,
     CampaignTemplate,
     MetaPage,
+    MetaAssetBinding,
 )
 from services.meta.page_access import page_account_access_error
 from tasks.campaign_tasks import (
@@ -70,7 +71,7 @@ class JobService:
     # ------------------------------------------------------------------
     def preflight_campaign(
         self, template_id: str, ad_account_ids: List[str], budget_override: Optional[float] = None,
-        status: str = "PAUSED",
+        status: str = "PAUSED", created_by: Optional[str] = None,
     ) -> Dict[str, Any]:
         """返回可读的发布前检查结果；不创建 Job，不调用 Meta 写接口。"""
         from services.meta import AdAccountService
@@ -99,6 +100,25 @@ class JobService:
 
         ids = list(dict.fromkeys(ad_account_ids or []))
         available, rejected = AdAccountService(self.db).filter_available_ids(ids, user_id=created_by)
+        asset_ids = [str(item.get("asset_id")) for item in creatives if item.get("asset_id")]
+        if asset_ids and available:
+            ready_bindings = self.db.query(MetaAssetBinding.ad_account_id, MetaAssetBinding.asset_id).filter(
+                MetaAssetBinding.ad_account_id.in_(available),
+                MetaAssetBinding.asset_id.in_(asset_ids),
+                MetaAssetBinding.status == "READY",
+                MetaAssetBinding.meta_asset_id.isnot(None),
+            ).all()
+            ready_by_account = {}
+            for account_id, asset_id in ready_bindings:
+                ready_by_account.setdefault(account_id, set()).add(asset_id)
+            missing_accounts = []
+            for account_id in list(available):
+                missing = sorted(set(asset_ids) - ready_by_account.get(account_id, set()))
+                if missing:
+                    missing_accounts.append({"account_id": account_id, "reason": "素材尚未同步完成", "asset_ids": missing})
+            if missing_accounts:
+                rejected.extend(missing_accounts)
+                available = [account_id for account_id in available if account_id not in {item["account_id"] for item in missing_accounts}]
         page = self.db.query(MetaPage).filter(
             MetaPage.page_id == page_id, MetaPage.status == "ACTIVE"
         ).first() if page_id else None

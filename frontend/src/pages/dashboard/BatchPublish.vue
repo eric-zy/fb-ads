@@ -134,6 +134,9 @@
             <template #title>{{ preflightResult.passed ? `预检通过：${preflightResult.ready_account_ids.length} 个账户可投放` : '预检未通过，暂不能提交' }}</template>
             <div v-for="item in preflightResult.errors" :key="item.code">{{ item.message }}</div>
             <div v-for="item in preflightResult.warnings" :key="item.code" class="preflight-warning">{{ item.message }}</div>
+            <el-button v-if="missingAssetAccounts.length" type="primary" size="small" style="margin-top:8px" :loading="syncingAssets" @click="syncMissingAssets">
+              立即同步缺失素材
+            </el-button>
           </el-alert>
         </section>
         <div class="step-actions">
@@ -248,6 +251,7 @@ const loadingTemplates = ref(false)
 const loadingAccounts = ref(false)
 const loadingJobs = ref(false)
 const submitting = ref(false)
+const syncingAssets = ref(false)
 const preflighting = ref(false)
 const preflightResult = ref<any>(null)
 const assetBindings = ref<MetaAssetBinding[]>([])
@@ -444,6 +448,23 @@ const runPreflight = async () => {
     preflightResult.value = data
     if (!data.passed) ElMessage.error('预检未通过，请处理阻断项')
   } finally { preflighting.value = false }
+}
+
+const missingAssetAccounts = computed(() => (preflightResult.value?.warnings || []).filter((item: any) => item.code === 'ACCOUNTS_REJECTED' && item.items?.some((row: any) => row.reason === '素材尚未同步完成')))
+
+const syncMissingAssets = async () => {
+  const rows = missingAssetAccounts.value.flatMap((warning: any) => warning.items || []).filter((row: any) => row.reason === '素材尚未同步完成')
+  const assetIds = [...new Set(rows.flatMap((row: any) => row.asset_ids || []))]
+  const accountIds = [...new Set(rows.map((row: any) => row.account_id))]
+  if (!assetIds.length || !accountIds.length) return
+  syncingAssets.value = true
+  try {
+    await Promise.all(assetIds.map(assetId => mediaApi.prepare(String(assetId), accountIds)))
+    ElMessage.success('已提交缺失素材同步任务，请稍后重新预检')
+    await runPreflight()
+  } finally {
+    syncingAssets.value = false
+  }
 }
 
 const viewJob = async (id: string) => {

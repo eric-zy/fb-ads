@@ -15,7 +15,7 @@ RUN python -m venv /opt/venv \
 
 FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends libpq5 curl \
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/opt/venv/bin:$PATH"
