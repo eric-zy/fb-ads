@@ -9,9 +9,17 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
-    op.add_column("users", sa.Column("role_id", sa.String(50), nullable=True))
-    op.create_index("ix_users_role_id", "users", ["role_id"])
-    op.create_foreign_key("fk_users_role_id", "users", "roles", ["role_id"], ["id"], ondelete="SET NULL")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    if "role_id" not in columns:
+        op.add_column("users", sa.Column("role_id", sa.String(50), nullable=True))
+    indexes = {index["name"] for index in inspector.get_indexes("users")}
+    if "ix_users_role_id" not in indexes:
+        op.create_index("ix_users_role_id", "users", ["role_id"])
+    foreign_keys = {foreign_key.get("name") for foreign_key in inspector.get_foreign_keys("users")}
+    if "fk_users_role_id" not in foreign_keys:
+        op.create_foreign_key("fk_users_role_id", "users", "roles", ["role_id"], ["id"], ondelete="SET NULL")
 
 def downgrade() -> None:
     op.drop_constraint("fk_users_role_id", "users", type_="foreignkey")

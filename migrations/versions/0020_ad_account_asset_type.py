@@ -10,11 +10,17 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "ad_accounts",
-        sa.Column("asset_type", sa.String(20), nullable=False, server_default="OWNED"),
-    )
-    op.create_index("ix_ad_accounts_tenant_asset_type", "ad_accounts", ["tenant_id", "asset_type"])
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {column["name"] for column in inspector.get_columns("ad_accounts")}
+    if "asset_type" not in columns:
+        op.add_column(
+            "ad_accounts",
+            sa.Column("asset_type", sa.String(20), nullable=False, server_default="OWNED"),
+        )
+    indexes = {index["name"] for index in inspector.get_indexes("ad_accounts")}
+    if "ix_ad_accounts_tenant_asset_type" not in indexes:
+        op.create_index("ix_ad_accounts_tenant_asset_type", "ad_accounts", ["tenant_id", "asset_type"])
 
 
 def downgrade() -> None:

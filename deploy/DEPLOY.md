@@ -168,13 +168,15 @@ fb-ads-nginx-1         fbads-nginx       Up
 ## 5. 初始化数据库与管理员
 
 ### 5.1 跑数据库迁移
-生产部署脚本会自动执行迁移检查：数据库已处于最新 head 时跳过；检测到未执行迁移时才运行 `alembic upgrade head`。迁移成功后才切换 API、Worker 和 Beat，避免代码与表结构不一致。
+生产部署脚本会自动执行幂等迁移：每次部署都会运行 `alembic upgrade head`，已执行的版本会自动跳过，未执行的版本按链路补齐。迁移成功后才切换 API、Worker 和 Beat，避免代码与表结构不一致。
+
+数据库迁移统一由 `deploy/deploy.sh` 自动执行。脚本会启动并等待 PostgreSQL 健康检查，重新构建 API 镜像以带入最新迁移文件，检查迁移前版本，执行 `alembic upgrade head`，再校验所有 head。任一步失败都会停止，不会继续重启业务容器。
 
 手动执行时：
 ```bash
 docker compose up -d db redis
-docker compose run --rm api alembic current --check-heads
 docker compose run --rm api alembic upgrade head
+docker compose run --rm api alembic current
 ```
 
 > 若 `alembic` 提示找不到，改用项目的初始化命令：
