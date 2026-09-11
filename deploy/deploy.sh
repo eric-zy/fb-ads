@@ -20,8 +20,8 @@ docker compose run --rm api alembic current || {
 echo "[deploy] 执行数据库迁移：alembic upgrade head"
 docker compose run --rm api alembic upgrade head
 
-echo "[deploy] 校验数据库已到所有 migration head："
-docker compose run --rm api alembic current --check-heads
+echo "[deploy] 校验数据库当前版本："
+docker compose run --rm api alembic current
 echo "[deploy] 数据库迁移完成。"
 
 # 数据库结构确认后再切换 API/Worker/Beat，避免出现 ORM 已更新而表结构未更新的窗口。

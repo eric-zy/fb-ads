@@ -170,7 +170,7 @@ fb-ads-nginx-1         fbads-nginx       Up
 ### 5.1 跑数据库迁移
 生产部署脚本会自动执行幂等迁移：每次部署都会运行 `alembic upgrade head`，已执行的版本会自动跳过，未执行的版本按链路补齐。迁移成功后才切换 API、Worker 和 Beat，避免代码与表结构不一致。
 
-数据库迁移统一由 `deploy/deploy.sh` 自动执行。脚本会启动并等待 PostgreSQL 健康检查，重新构建 API 镜像以带入最新迁移文件，检查迁移前版本，执行 `alembic upgrade head`，再校验所有 head。任一步失败都会停止，不会继续重启业务容器。
+数据库迁移统一由 `deploy/deploy.sh` 自动执行。脚本会启动并等待 PostgreSQL 健康检查，重新构建 API 镜像以带入最新迁移文件，检查迁移前版本，执行 `alembic upgrade head`，再输出迁移后的当前版本。任一步失败都会停止，不会继续重启业务容器。
 
 手动执行时：
 ```bash
