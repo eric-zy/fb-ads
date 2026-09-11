@@ -55,6 +55,18 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  const refreshProfile = async () => {
+    if (!token.value) return false
+    try {
+      const response = await request.get('/api/v1/auth/me')
+      user.value = response.data
+      localStorage.setItem(USER_KEY, JSON.stringify(response.data))
+      return true
+    } catch {
+      return false
+    }
+  }
+
   // 登录
   const login = async (email: string, password: string) => {
     isLoading.value = true
@@ -127,6 +139,7 @@ export const useUserStore = defineStore('user', () => {
     isManager,
     isPlatformAdmin,
     initAuth,
+    refreshProfile,
     login,
     logout,
     updateSettings,

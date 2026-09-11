@@ -30,7 +30,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'risk-control', name: 'RiskControl', component: () => import('@/pages/dashboard/RiskControl.vue'), meta: { title: '风险控制' } },
       { path: 'accounts', name: 'Accounts', component: () => import('@/pages/dashboard/Accounts.vue'), meta: { title: '账号中心' } },
       { path: 'settings', name: 'Settings', component: () => import('@/pages/dashboard/Settings.vue'), meta: { title: '设置' } },
-      { path: 'sinan-settings', name: 'SinanSettings', component: () => import('@/pages/dashboard/SinanSettings.vue'), meta: { title: '司南配置' } },
+      { path: 'sinan-settings', name: 'SinanSettings', component: () => import('@/pages/dashboard/SinanSettings.vue'), meta: { title: '司南配置', permissions: ['sinan:manage'] } },
       { path: 'sinan-promotions', name: 'SinanPromotions', component: () => import('@/pages/dashboard/SinanPromotions.vue'), meta: { title: '司南推广链' } },
     ],
   },
@@ -41,9 +41,12 @@ const routes: RouteRecordRaw[] = [
       { path: 'users', name: 'AdminUsers', component: () => import('@/pages/admin/Users.vue'), meta: { title: '用户管理' } },
       { path: 'accounts', name: 'AdminAccounts', component: () => import('@/pages/admin/Accounts.vue'), meta: { title: '广告账户管理' } },
       { path: 'accounts/:id', name: 'AdminAccountDetail', component: () => import('@/pages/admin/AccountDetail.vue'), meta: { title: '广告账户详情' } },
-      { path: 'meta-accounts', name: 'AdminMetaAccounts', component: () => import('@/pages/admin/MetaAccounts.vue'), meta: { title: 'BM 管理' } },
-      { path: 'businesses/:id', name: 'AdminBusinessDetail', component: () => import('@/pages/admin/BusinessDetail.vue'), meta: { title: 'BM 详情' } },
-      { path: 'meta-connections', name: 'AdminMetaConnections', component: () => import('@/pages/admin/MetaConnections.vue'), meta: { title: 'Meta 授权' } },
+      { path: 'meta-accounts', name: 'AdminMetaAccounts', component: () => import('@/pages/admin/MetaAccounts.vue'), meta: { title: 'BM 管理', permissions: ['meta_account:read'] } },
+      { path: 'businesses/:id', name: 'AdminBusinessDetail', component: () => import('@/pages/admin/BusinessDetail.vue'), meta: { title: 'BM 详情', permissions: ['meta_account:read'] } },
+      { path: 'meta-connections', name: 'AdminMetaConnections', component: () => import('@/pages/admin/MetaConnections.vue'), meta: { title: 'Meta 授权', permissions: ['meta_connection:read'] } },
+      { path: 'operations', name: 'AdminOperations', component: () => import('@/pages/admin/Operations.vue'), meta: { title: '运维中心' } },
+      { path: 'roles', name: 'AdminRoles', component: () => import('@/pages/admin/Roles.vue'), meta: { title: '角色权限' } },
+      { path: 'account-groups', name: 'AdminAccountGroups', component: () => import('@/pages/admin/AccountGroups.vue'), meta: { title: '账户组' } },
       { path: 'overview', redirect: '/dashboard/overview' },
     ],
   },
@@ -57,8 +60,16 @@ router.beforeEach(async (to, from, next) => {
   if (!userStore.isAuthenticated && !userStore.user) userStore.initAuth()
   const requiresAuth = to.matched.some(record => record.meta.requiresAuth)
   const requiresAdmin = to.matched.some(record => record.meta.requiresAdmin)
+  const requiredPermissions = to.matched.flatMap(record => {
+    const value = record.meta.permissions
+    return Array.isArray(value) ? value as string[] : value ? [String(value)] : []
+  })
+  const hasRequiredPermissions = requiredPermissions.length === 0 || requiredPermissions.every(permission =>
+    userStore.isAdmin || userStore.hasPermission(permission),
+  )
   if (requiresAuth && !userStore.isAuthenticated) next('/login')
   else if (requiresAdmin && !userStore.isAdmin) next('/dashboard/overview')
+  else if (!hasRequiredPermissions) next('/dashboard/overview')
   else next()
 })
 

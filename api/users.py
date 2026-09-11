@@ -11,7 +11,7 @@ import uuid
 from core.database import get_db
 from core.logger import logger
 from core.auth import get_current_active_user, require_admin
-from models import AdAccount, Tenant, User
+from models import AdAccount, Tenant, User, Role
 from models.tenant import UserRole
 from api.accounts import account_to_dict
 
@@ -47,17 +47,23 @@ async def get_user_accounts(
     """获取用户的广告账户列表"""
     try:
         from models import UserAccount
+        from models.account_group import account_group_accounts, account_group_users
         
         # 获取用户的所有账户
         user_accounts = db.query(UserAccount).filter(
             UserAccount.user_id == user_id
         ).all()
         
-        account_ids = [ua.account_id for ua in user_accounts]
+        account_ids = {ua.account_id for ua in user_accounts}
+        grouped_ids = db.query(account_group_accounts.c.account_id).join(
+            account_group_users,
+            account_group_users.c.group_id == account_group_accounts.c.group_id,
+        ).filter(account_group_users.c.user_id == user_id).all()
+        account_ids.update(row[0] for row in grouped_ids)
         
         # 查询账户详情
         accounts = db.query(AdAccount).filter(
-            AdAccount.id.in_(account_ids)
+            AdAccount.id.in_(list(account_ids))
         ).all()
         
         return UserAccountsResponse(
@@ -145,6 +151,8 @@ class UserCreate(BaseModel):
     role: str = "user"
     company_id: Optional[str] = None
     is_active: bool = True
+    permissions: List[str] = []
+    role_id: Optional[str] = None
     # 仅平台管理员可指定（为空表示归属当前管理员所在租户）
     tenant_id: Optional[str] = None
 
@@ -156,6 +164,7 @@ class UserUpdate(BaseModel):
     company_id: Optional[str] = None
     is_active: Optional[bool] = None
     permissions: Optional[list] = None
+    role_id: Optional[str] = None
 
 
 class PasswordReset(BaseModel):
@@ -169,6 +178,7 @@ def _user_to_dict(u: User) -> dict:
         "email": u.email,
         "username": u.username,
         "role": u.role,
+        "role_id": getattr(u, "role_id", None),
         "company_id": u.company_id,
         "is_active": u.is_active,
         "is_verified": u.is_verified,
@@ -218,6 +228,10 @@ def create_user(
         raise HTTPException(status_code=400, detail="该邮箱已注册")
     if db.query(User).filter(User.username == data.username).first():
         raise HTTPException(status_code=400, detail="该用户名已存在")
+    if data.role_id:
+        role = db.query(Role).filter(Role.id == data.role_id).first()
+        if not role or (current_user.tenant_id and role.tenant_id != current_user.tenant_id):
+            raise HTTPException(status_code=400, detail="角色不存在或不属于当前租户")
 
     target_tenant_id = data.tenant_id
     if target_tenant_id and not UserRole.is_platform_admin(current_user.role):
@@ -246,7 +260,8 @@ def create_user(
         company_id=data.company_id,
         is_active=data.is_active,
         is_verified=True,
-        permissions=[],
+        permissions=data.permissions or [],
+        role_id=data.role_id,
     )
     db.add(u)
     db.commit()
@@ -275,7 +290,7 @@ def update_user(
         if db.query(User).filter(User.username == data.username).first():
             raise HTTPException(status_code=400, detail="该用户名已被其他用户使用")
         u.username = data.username
-    for field in ("company_id", "is_active", "permissions"):
+    for field in ("company_id", "is_active", "permissions", "role_id"):
         val = getattr(data, field)
         if val is not None:
             setattr(u, field, val)
@@ -289,6 +304,11 @@ def update_user(
                 status_code=403, detail="只有平台管理员可授予平台管理员角色"
             )
         u.role = new_role
+    if data.role_id is not None:
+        role = db.query(Role).filter(Role.id == data.role_id).first()
+        if not role or (current_user.tenant_id and role.tenant_id != current_user.tenant_id):
+            raise HTTPException(status_code=400, detail="角色不存在或不属于当前租户")
+        u.role_id = data.role_id
     db.commit()
     return _user_to_dict(u)
 

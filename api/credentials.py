@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 
 from core.audit import record_audit
 from config.settings import settings
-from core.auth import require_admin
+from core.auth import require_meta_asset_admin as require_admin
 from core.database import get_db
 from core.enums import CredentialStatus, CredentialSource
 from core.logger import logger

@@ -26,6 +26,24 @@
       </div>
     </div>
 
+    <el-alert
+      v-if="detail && detail.credential_source === 'NONE'"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="该 BM 尚未完成 Meta 授权，暂时无法同步广告账户。"
+      class="detail-alert"
+    />
+
+    <el-card v-if="detail" shadow="never" class="overview-card">
+      <el-descriptions :column="4" border size="small">
+        <el-descriptions-item label="Business ID">{{ detail.business_id }}</el-descriptions-item>
+        <el-descriptions-item label="凭据类型">{{ detail.credential_source === 'NONE' ? '未授权' : '已加密托管' }}</el-descriptions-item>
+        <el-descriptions-item label="Token 状态">{{ detail.credential_status || 'NONE' }}</el-descriptions-item>
+        <el-descriptions-item label="过期时间">{{ formatTime(detail.credential_expires_at) }}</el-descriptions-item>
+      </el-descriptions>
+    </el-card>
+
     <el-row :gutter="16" class="stat-row">
       <el-col :xs="12" :sm="6"><el-card shadow="never" class="stat-card"><div class="stat-value">{{ stats.total }}</div><div class="stat-label">广告账户</div></el-card></el-col>
       <el-col :xs="12" :sm="6"><el-card shadow="never" class="stat-card"><div class="stat-value ok">{{ stats.system_active }}</div><div class="stat-label">可投放</div></el-card></el-col>
@@ -123,6 +141,8 @@ onMounted(async () => { await loadDetail(); await loadLogs() })
 .head-left { display: flex; align-items: flex-start; gap: 10px; }
 .head-actions { display: flex; gap: 8px; }
 .oauth-status { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.detail-alert { margin-bottom: 16px; }
+.overview-card { margin-bottom: 16px; }
 .ml8 { margin-left: 8px; }
 .stat-row { margin-bottom: 16px; }
 .stat-card { text-align: center; }

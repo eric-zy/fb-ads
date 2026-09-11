@@ -86,6 +86,8 @@ class AdAccount(TenantMixin, Base):
                             comment="所属 Meta OAuth 授权连接")
     owner_type = Column(String(20), nullable=False, default="BUSINESS",
                         comment="PERSONAL / BUSINESS")
+    asset_type = Column(String(20), nullable=False, default="OWNED",
+                        comment="OWNED / CLIENT；Meta 侧 BM 资产关系分类")
     business = relationship("MetaAccount", back_populates="ad_accounts")
 
     # ---------- Meta 侧基础信息 ----------

@@ -98,7 +98,7 @@ class JobService:
             errors.append({"code": "CREATIVE_REQUIRED", "message": "模板至少需要一个有效素材"})
 
         ids = list(dict.fromkeys(ad_account_ids or []))
-        available, rejected = AdAccountService(self.db).filter_available_ids(ids)
+        available, rejected = AdAccountService(self.db).filter_available_ids(ids, user_id=created_by)
         page = self.db.query(MetaPage).filter(
             MetaPage.page_id == page_id, MetaPage.status == "ACTIVE"
         ).first() if page_id else None
@@ -184,7 +184,7 @@ class JobService:
         # 避免把已禁用、凭据失效或 Meta 侧异常的账户派发给 Meta。
         from services.meta import AdAccountService
 
-        ad_account_ids, rejected = AdAccountService(self.db).filter_available_ids(ad_account_ids)
+        ad_account_ids, rejected = AdAccountService(self.db).filter_available_ids(ad_account_ids, user_id=created_by)
         compatible_ids = []
         for account_pk in ad_account_ids:
             account = self.db.query(AdAccount).filter(AdAccount.id == account_pk).first()

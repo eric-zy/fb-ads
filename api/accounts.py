@@ -53,6 +53,7 @@ class AccountCreate(BaseModel):
     daily_spend_limit: int = Field(0, description="日限额，最小货币单位")
     monthly_spend_limit: int = Field(0, description="月限额，最小货币单位")
     risk_score: float = 0
+    asset_type: str = Field("OWNED", description="Meta 资产类型 OWNED / CLIENT")
     skip_verification: bool = Field(False, description="跳过 Meta 归属校验（应急开关）")
 
 
@@ -65,6 +66,7 @@ class AccountUpdate(BaseModel):
     daily_spend_limit: Optional[int] = Field(None, description="日限额，最小货币单位")
     monthly_spend_limit: Optional[int] = Field(None, description="月限额，最小货币单位")
     risk_score: Optional[float] = None
+    asset_type: Optional[str] = Field(None, description="Meta 资产类型 OWNED / CLIENT")
     business_id: Optional[str] = Field(
         None, description="变更归属的 BM（会先验证归属，验证不通过不生效）"
     )
@@ -225,6 +227,7 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
         "meta_business_id": a.meta_business_id,
         "business_name": a.business.name if a.business else None,
         "owner_type": a.owner_type,
+        "asset_type": a.asset_type or "OWNED",
         "credential_id": a.credential_id,
         "credential_status": credential.status if credential else None,
         "credential_expires_at": credential.expires_at.isoformat() if credential and credential.expires_at else None,
@@ -273,6 +276,7 @@ def list_accounts(
     system_status: Optional[str] = Query(None, description="系统状态过滤 ACTIVE / DISABLED"),
     account_status: Optional[str] = Query(None, description="Meta 侧状态过滤"),
     business_id: Optional[str] = Query(None, description="按归属的 BM 过滤"),
+    asset_type: Optional[str] = Query(None, description="Meta 资产类型 OWNED / CLIENT"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     include_unbound: bool = Query(False, description="是否包含已解绑的历史账号"),
@@ -303,6 +307,10 @@ def list_accounts(
         q = q.filter(AdAccount.account_status == account_status)
     if business_id:
         q = q.filter(AdAccount.business_id == business_id)
+    if asset_type:
+        if asset_type not in ("OWNED", "CLIENT"):
+            raise HTTPException(status_code=400, detail="asset_type 只能是 OWNED / CLIENT")
+        q = q.filter(AdAccount.asset_type == asset_type)
 
     total = q.count()
     items = (
@@ -328,7 +336,8 @@ def list_available_for_deployment(
 
     返回结果自带 BM 与凭据上下文（脱敏），投放模块可直接用于创建批量任务。
     """
-    items = AdAccountService(db).list_available(business_id=business_id)
+    user_id = None if current_user.is_admin() else current_user.id
+    items = AdAccountService(db).list_available(business_id=business_id, user_id=user_id)
     return {"total": len(items), "accounts": items}
 
 
@@ -525,6 +534,8 @@ def create_account(
 
     if data.system_status not in (s.value for s in SystemStatus):
         raise HTTPException(status_code=400, detail="system_status 只能是 ACTIVE / DISABLED")
+    if data.asset_type not in ("OWNED", "CLIENT"):
+        raise HTTPException(status_code=400, detail="asset_type 只能是 OWNED / CLIENT")
 
     a = AdAccount(
         id=str(uuid.uuid4()),
@@ -538,6 +549,7 @@ def create_account(
         daily_spend_limit=data.daily_spend_limit,
         monthly_spend_limit=data.monthly_spend_limit,
         risk_score=data.risk_score,
+        asset_type=data.asset_type,
         capabilities={},
     )
     db.add(a)
@@ -576,6 +588,8 @@ def update_account(
             if value not in (s.value for s in SystemStatus):
                 raise HTTPException(status_code=400, detail="system_status 只能是 ACTIVE / DISABLED")
             a.system_status_at = datetime.utcnow()
+        if field == "asset_type" and value not in ("OWNED", "CLIENT"):
+            raise HTTPException(status_code=400, detail="asset_type 只能是 OWNED / CLIENT")
         setattr(a, field, value)
     db.commit()
     db.refresh(a)

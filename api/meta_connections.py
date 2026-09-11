@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from core.auth import require_admin
+from core.auth import require_meta_asset_admin as require_admin
 from core.database import get_db
 from core.tenant import bypass_tenant
 from models import AdAccount, Credential, MetaAccount, MetaConnection, MetaPage, User

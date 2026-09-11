@@ -23,7 +23,7 @@ import uuid
 from config.settings import settings
 from core.audit import record_audit
 from core.database import get_db
-from core.auth import require_admin
+from core.auth import require_meta_asset_admin as require_admin
 from core.enums import CredentialStatus
 from core.logger import logger
 from models import (
@@ -623,6 +623,40 @@ def list_ad_accounts_from_meta(
         "total": len(accounts),
         "accounts": accounts,
     }
+
+
+@router.get("/pending-ad-accounts", response_model=dict)
+def list_pending_ad_accounts(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """发现各 BM 可访问但尚未导入本地的账户；只读，不自动入库。"""
+    pending, errors = [], []
+    metas = db.query(MetaAccount).filter(MetaAccount.status == BusinessStatus.ACTIVE.value).all()
+    for meta in metas:
+        try:
+            remote = MetaSyncService(db).fetch_ad_accounts_from_meta(meta.id)
+            local_ids = {a.account_id for a in db.query(AdAccount).filter(AdAccount.business_id == meta.id).all()}
+            for item in remote:
+                account_id = str(item.get("id", "")).strip()
+                normalized = account_id if account_id.startswith("act_") else f"act_{account_id}"
+                if normalized in local_ids:
+                    continue
+                owner_business = str((item.get("business") or {}).get("id") or "")
+                pending.append({
+                    "id": normalized,
+                    "name": item.get("name"),
+                    "account_status": item.get("account_status"),
+                    "currency": item.get("currency"),
+                    "meta_account_id": meta.id,
+                    "business_id": meta.business_id,
+                    "business_name": meta.name,
+                    "asset_type": "CLIENT" if owner_business and owner_business != meta.business_id else "OWNED",
+                })
+        except Exception as exc:
+            logger.warning("[meta_accounts] pending scan failed for %s: %s", meta.id, exc)
+            errors.append({"meta_account_id": meta.id, "business_name": meta.name, "error": str(exc)})
+    return {"total": len(pending), "accounts": pending, "errors": errors}
 
 
 class ImportAccountsRequest(BaseModel):

@@ -2,18 +2,18 @@
 import request from '@/utils/request'
 
 // ============ 用户管理 ============
-export interface AdminUser { id: string; email: string; username: string; role: string; company_id: string | null; is_active: boolean; is_verified: boolean; permissions: string[]; created_at: string | null; last_login: string | null }
+export interface AdminUser { id: string; email: string; username: string; role: string; role_id?: string | null; company_id: string | null; is_active: boolean; is_verified: boolean; permissions: string[]; created_at: string | null; last_login: string | null }
 export const userApi = {
   list: (params?: { search?: string; role?: string; is_active?: boolean; page?: number; page_size?: number }) => request.get('/api/v1/users', { params }),
   create: (data: { email: string; username: string; password?: string; role?: string; company_id?: string; is_active?: boolean }) => request.post('/api/v1/users', data),
-  update: (id: string, data: Partial<{ email: string; username: string; role: string; company_id: string; is_active: boolean; permissions: string[] }>) => request.put('/api/v1/users/' + id, data),
+  update: (id: string, data: Partial<{ email: string; username: string; role: string; role_id: string | null; company_id: string; is_active: boolean; permissions: string[] }>) => request.put('/api/v1/users/' + id, data),
   resetPassword: (id: string, password: string) => request.post('/api/v1/users/' + id + '/reset-password', { password }),
   toggleActive: (id: string) => request.post('/api/v1/users/' + id + '/toggle-active'),
   delete: (id: string) => request.delete('/api/v1/users/' + id),
 }
 
 export type SystemStatus = 'ACTIVE' | 'DISABLED'
-export interface AdAccountItem { id: string; account_id: string; account_name: string; currency: string; timezone: string | null; business_id: string | null; meta_business_id: string | null; business_name: string | null; owner_type: 'PERSONAL' | 'BUSINESS' | string; credential_id: string | null; credential_status?: string | null; credential_expires_at?: string | null; credential_last_verified_at?: string | null; authorized_by_user_id?: string | null; authorized_by_username?: string | null; credential_missing_scopes?: string[]; is_deployable?: boolean; availability_reason?: string | null; payment_status?: string; payment_source?: string | null; payment_error_message?: string | null; account_status: string | null; effective_status: string | null; disable_reason: string | null; system_status: SystemStatus; system_status_reason: string | null; system_status_at: string | null; capabilities: Record<string, unknown> | null; spend_cap: number; amount_spent: number; balance: number; daily_spend_limit: number; monthly_spend_limit: number; risk_score: number; last_risk_check: string | null; last_synced_at: string | null; last_sync_error: string | null; created_at: string | null; updated_at: string | null }
+export interface AdAccountItem { id: string; account_id: string; account_name: string; currency: string; timezone: string | null; business_id: string | null; meta_business_id: string | null; business_name: string | null; owner_type: 'PERSONAL' | 'BUSINESS' | string; credential_id: string | null; credential_status?: string | null; credential_expires_at?: string | null; credential_last_verified_at?: string | null; authorized_by_user_id?: string | null; authorized_by_username?: string | null; credential_missing_scopes?: string[]; is_deployable?: boolean; availability_reason?: string | null; payment_status?: string; payment_source?: string | null; payment_error_code?: string | null; payment_error_message?: string | null; payment_checked_at?: string | null; account_status: string | null; effective_status: string | null; disable_reason: string | null; system_status: SystemStatus; system_status_reason: string | null; system_status_at: string | null; capabilities: Record<string, unknown> | null; spend_cap: number; amount_spent: number; balance: number; daily_spend_limit: number; monthly_spend_limit: number; risk_score: number; last_risk_check: string | null; last_synced_at: string | null; last_sync_error: string | null; created_at: string | null; updated_at: string | null }
 export interface DeployableAccount { id: string; account_id: string; account_name: string; currency: string; system_status: SystemStatus; account_status: string | null; business: { id: string | null; name: string | null; business_id: string | null }; credential: { id: string | null; status: string | null; is_expired: boolean | null; masked: string | null } }
 export interface AccountUser { user_id: string; username: string; email: string; role: string }
 export const accountApi = {
@@ -44,6 +44,7 @@ export interface BusinessVerifyResult { ok: boolean; dev_mode: boolean; error: s
 export interface SyncLogItem { id: string; business_id: string | null; sync_type: 'BUSINESS' | 'AD_ACCOUNT' | 'FULL'; status: 'RUNNING' | 'SUCCESS' | 'PARTIAL_SUCCESS' | 'FAILED'; total_count: number; success_count: number; failed_count: number; error_message: string | null; error_detail: string | null; celery_task_id: string | null; started_at: string | null; finished_at: string | null; created_at: string | null }
 export interface SyncSubmitResult { success: boolean; job_id: string; status: 'QUEUED'; message: string }
 export const metaAccountApi = {
+  pendingAdAccounts: () => request.get('/api/v1/meta-accounts/pending-ad-accounts'),
   list: () => request.get('/api/v1/meta-accounts'), detail: (id: string) => request.get('/api/v1/meta-accounts/' + id), getDefault: () => request.get('/api/v1/meta-accounts/default'),
   create: (data: { name: string; business_id: string; access_token?: string; app_id?: string; is_default?: boolean; token_type?: string; timezone?: string; currency?: string; description?: string; verify_before_save?: boolean }) => request.post('/api/v1/meta-accounts', data),
   update: (id: string, data: Partial<{ name: string; business_id: string; access_token: string; app_id: string; is_default: boolean; status: BusinessStatus; timezone: string; currency: string; description: string }>) => request.put('/api/v1/meta-accounts/' + id, data),
@@ -71,4 +72,22 @@ export const credentialApi = {
   oauthSdkLogin: (access_token: string) => request.post('/api/v1/meta-auth/sdk-login', { access_token }),
   oauthBusinesses: (credentialId: string) => request.get('/api/v1/meta-auth/businesses', { params: { credential_id: credentialId } }),
   oauthComplete: (data: { credential_id: string; business_id: string }) => request.post('/api/v1/meta-auth/complete', data), oauthAdAccounts: (credentialId: string) => request.get('/api/v1/meta-auth/ad-accounts', { params: { credential_id: credentialId } }), oauthCompleteAccounts: (data: { credential_id: string; account_ids: string[] }) => request.post('/api/v1/meta-auth/complete-accounts', data),
+}
+
+export const operationsApi = {
+  syncTasks: (params?: { status?: string; limit?: number }) => request.get('/api/v1/operations/sync-tasks', { params }),
+  credentialHealth: () => request.get('/api/v1/operations/credential-health'),
+  auditLogs: (params?: { action?: string; resource_type?: string; limit?: number }) => request.get('/api/v1/operations/audit-logs', { params }),
+}
+export const roleApi = {
+  list: () => request.get('/api/v1/roles'),
+  create: (data: any) => request.post('/api/v1/roles', data),
+  update: (id: string, data: any) => request.put(`/api/v1/roles/${id}`, data),
+  remove: (id: string) => request.delete(`/api/v1/roles/${id}`),
+}
+export const accountGroupApi = {
+  list: () => request.get('/api/v1/account-groups'),
+  create: (data: any) => request.post('/api/v1/account-groups', data),
+  update: (id: string, data: any) => request.put(`/api/v1/account-groups/${id}`, data),
+  remove: (id: string) => request.delete(`/api/v1/account-groups/${id}`),
 }

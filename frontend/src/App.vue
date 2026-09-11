@@ -15,9 +15,12 @@ import { useAccountStore } from '@/stores/accountStore'
 const userStore = useUserStore()
 const accountStore = useAccountStore()
 
-onMounted(() => {
+onMounted(async () => {
   // 初始化认证状态
   userStore.initAuth()
+
+  // 每次启动刷新角色模板和有效权限，避免使用旧的本地权限缓存。
+  if (userStore.isAuthenticated) await userStore.refreshProfile()
   
   // 如果用户已登录，加载账户列表
   if (userStore.user) {

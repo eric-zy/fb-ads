@@ -314,6 +314,10 @@ class MetaSyncService:
                 account.connection_id = credential.connection_id
 
         account.meta_business_id = raw_business_id or (business.business_id if business else None)
+        # Meta 返回的 business 与当前 BM 不一致时，表示当前 BM 以合作方身份管理该客户账户。
+        # 未返回 owner business 时保守按当前 BM 自有资产处理，避免误标记客户资产。
+        if business:
+            account.asset_type = "CLIENT" if raw_business_id and raw_business_id != business.business_id else "OWNED"
 
         # ---- Meta 侧字段：每次同步覆盖 ----
         account.account_name = raw.get("name") or account.account_name

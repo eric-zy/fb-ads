@@ -15,6 +15,7 @@ export interface NavItem {
   label: string
   route: string
   roles?: NavRole[]
+  permissions?: string[]
   badge?: string
 }
 
@@ -98,4 +99,8 @@ export function canAccessNavItem(item: NavItem, role?: NavRole | null): boolean 
   if (!item.roles || item.roles.length === 0) return true
   if (!role) return false
   return item.roles.includes(role)
+}
+
+export function canAccessPermission(permission: string, permissions?: string[] | null): boolean {
+  return !!permissions?.includes(permission)
 }

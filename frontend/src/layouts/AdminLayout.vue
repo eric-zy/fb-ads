@@ -27,6 +27,18 @@
             <el-icon><Postcard /></el-icon>
             <span>BM 管理</span>
           </el-menu-item>
+          <el-menu-item index="/admin/operations">
+            <el-icon><DataLine /></el-icon>
+            <span>运维中心</span>
+          </el-menu-item>
+          <el-menu-item index="/admin/roles">
+            <el-icon><User /></el-icon>
+            <span>角色权限</span>
+          </el-menu-item>
+          <el-menu-item index="/admin/account-groups">
+            <el-icon><Postcard /></el-icon>
+            <span>账户组</span>
+          </el-menu-item>
           <el-divider />
           <el-menu-item index="/dashboard/overview">
             <el-icon><Back /></el-icon>

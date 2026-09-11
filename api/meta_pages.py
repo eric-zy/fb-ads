@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from core.auth import get_current_active_user, require_admin
+from core.auth import get_current_active_user, require_meta_asset_admin as require_admin
 from core.database import get_db
 from core.enums import CredentialStatus
 from core.tenant import bypass_tenant

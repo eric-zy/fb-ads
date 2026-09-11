@@ -24,12 +24,12 @@
           </el-sub-menu>
           <el-menu-item index="risk-control"><el-icon><Warning /></el-icon><span>风控中心</span></el-menu-item>
           <el-divider />
-          <el-sub-menu index="accounts-group">
+          <el-sub-menu v-if="canSeeAccountsMenu" index="accounts-group">
             <template #title><el-icon><OfficeBuilding /></el-icon><span>账号中心</span></template>
             <el-menu-item index="accounts"><span>账号总览</span></el-menu-item>
           </el-sub-menu>
-          <el-menu-item index="settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
-          <el-menu-item index="sinan-settings"><el-icon><Connection /></el-icon><span>司南配置</span></el-menu-item>
+          <el-menu-item v-if="canSeeSettings" index="settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
+          <el-menu-item v-if="canManageSinan" index="sinan-settings"><el-icon><Connection /></el-icon><span>司南配置</span></el-menu-item>
         </el-menu>
       </el-aside>
 
@@ -97,6 +97,9 @@ const accountStore = useAccountStore()
 const notificationCount = ref(0)
 const sinanVerified = ref(false)
 const { t, isZh } = useLocale()
+const canSeeAccountsMenu = computed(() => userStore.isAdmin || userStore.isManager || userStore.hasPermission('ad_account:read'))
+const canSeeSettings = computed(() => userStore.isAdmin || userStore.hasPermission('settings:read'))
+const canManageSinan = computed(() => userStore.isAdmin || userStore.hasPermission('sinan:manage'))
 
 const activeMenu = computed(() => {
   const path = route.path.split('/').pop()

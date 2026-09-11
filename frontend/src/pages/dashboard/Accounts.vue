@@ -69,7 +69,7 @@
             </el-select>
             <el-button link type="info" @click="resetFilters">重置</el-button>
             </div>
-            <div class="batch-actions">
+            <div v-if="isAdmin || userStore.isManager || userStore.hasPermission('ad_account:manage')" class="batch-actions">
             <el-button type="primary" plain :disabled="!selectedAccountRows.length" @click="syncSelectedAccounts">批量同步</el-button>
             <el-button type="success" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('unfreeze')">批量启用</el-button>
             <el-button type="warning" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('freeze')">批量停用</el-button>

@@ -14,6 +14,8 @@ from models.publish_task import PublishTask, PublishedAd
 from models.insights import AccountInsight, CampaignInsight, AdInsight, AdSetInsight
 from models.risk_control import RiskEvent, RiskLevel, RiskEventType, RiskRule
 from models.user import User, UserAccount
+from models.role import Role
+from models.account_group import AccountGroup
 
 # ---- 对齐设计文档新增的核心模型 ----
 # Campaign Template：系统最核心业务对象（设计文档第 3.1 / 10 节）
@@ -63,6 +65,8 @@ __all__ = [
     'RiskRule',
     'User',
     'UserAccount',
+    'Role',
+    'AccountGroup',
     # 新增
     'CampaignTemplate',
     'CampaignInstance',

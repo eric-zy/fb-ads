@@ -4,13 +4,11 @@
       <div>
         <h2 class="page-title">主账号管理（Business Manager）</h2>
         <p class="page-subtitle">
-          BM 只保存主数据，Access Token 由
-          <el-link type="primary" @click="goCredentials()">凭据管理</el-link>
-          单独加密存储，二者解耦
+          统一管理 BM 状态、授权健康度和广告账户资产。Token 仅在服务端加密保存。
         </p>
       </div>
       <div class="head-actions">
-        <el-button type="primary" @click="authorizeMeta(defaultRow)">Meta OAuth 授权</el-button>
+        <el-button type="primary" @click="authorizeMeta(defaultRow)">连接 Meta</el-button>
         <el-button :icon="Plus" @click="openCreate">新增 BM</el-button>
       </div>
     </div>
@@ -72,10 +70,8 @@
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="goDetail(row)">查看</el-button>
             <el-button link type="primary" size="small" @click="syncAccounts(row)">同步</el-button>
-            <el-button link type="info" size="small" @click="openLogs(row)">日志</el-button>
-            <el-button link type="info" size="small" @click="verifyConnection(row)">验证</el-button>
-            <el-button link type="warning" size="small" @click="openRotate(row)">换 Token</el-button>
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button link type="info" size="small" @click="openLogs(row)">同步记录</el-button>
+            <el-button link type="info" size="small" @click="verifyConnection(row)">校验</el-button>
             <el-dropdown trigger="click" @command="(cmd: string) => onMoreCommand(cmd, row)">
               <el-button link type="danger" size="small">
                 更多<el-icon class="el-icon--right"><ArrowDown /></el-icon>

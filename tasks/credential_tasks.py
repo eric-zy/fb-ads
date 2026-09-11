@@ -34,6 +34,7 @@ from services.notifications import NotificationService
 
 # 到期前多少天开始告警
 DEFAULT_WARN_DAYS = 7
+REQUIRED_META_SCOPES = {"ads_read", "ads_management", "business_management"}
 
 
 def _bm_name(db, meta_account_id: str) -> str:
@@ -111,22 +112,44 @@ def check_expiring_credentials(self, warn_days: int = None) -> Dict:
                     "expires_at": cred.expires_at.isoformat(),
                     "remain_days": remain,
                     "level": "WARNING",
-                }
-            )
+                    }
+                )
 
-        # 3) 汇总通知（只在有情况时发，避免每天噪声）
-        if result["expired"] or result["expiring"]:
+        # 3) OAuth 权限异常：授权仍有效，但缺少平台所需权限。
+        permission_missing = []
+        oauth_credentials = db.query(Credential).filter(
+            Credential.source == "OAUTH",
+            Credential.status == CredentialStatus.ACTIVE.value,
+        ).all()
+        for cred in oauth_credentials:
+            missing = sorted(REQUIRED_META_SCOPES - set(cred.scopes or []))
+            if missing:
+                permission_missing.append({
+                    "credential_id": cred.id,
+                    "meta_account_id": cred.meta_account_id,
+                    "missing_scopes": missing,
+                    "level": "PERMISSION",
+                })
+        result["permission_missing"] = len(permission_missing)
+        result["details"].extend(permission_missing)
+
+        # 4) 汇总通知（只在有情况时发，避免每天噪声）
+        if result["expired"] or result["expiring"] or permission_missing:
             lines: List[str] = []
             for d in result["details"]:
                 if d["level"] == "EXPIRED":
                     lines.append(f"- [已过期] {d['bm']}（{d['expires_at']}）")
                 else:
-                    lines.append(
+                    if d["level"] == "PERMISSION":
+                        lines.append(f"- [权限不足] {d['meta_account_id']} 缺少：{', '.join(d['missing_scopes'])}")
+                    else:
+                        lines.append(
                         f"- [即将过期] {d['bm']} 剩余 {d['remain_days']} 天（{d['expires_at']}）"
-                    )
+                        )
             message = (
                 f"Meta 凭据巡检：{result['expired']} 条已过期，"
-                f"{result['expiring']} 条将在 {warn_days} 天内过期。\n"
+                f"{result['expiring']} 条将在 {warn_days} 天内过期，"
+                f"{result.get('permission_missing', 0)} 条权限不足。\n"
                 + "\n".join(lines)
                 + "\n\n请到「凭据管理」重新授权（Meta 长期 Token 有效期 60 天，无法自动续期）。"
             )

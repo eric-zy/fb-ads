@@ -104,11 +104,22 @@ class AdAccountService:
         *,
         business_id: Optional[str] = None,
         include_reason: bool = False,
+        user_id: Optional[str] = None,
     ) -> List[Dict]:
         """列出可参与批量投放的账户（含 BM / 凭据上下文，供投放模块直接使用）"""
         q = self.db.query(AdAccount)
         if business_id:
             q = q.filter(AdAccount.business_id == business_id)
+        if user_id:
+            from models import User, UserAccount
+            user = self.db.query(User).filter(User.id == user_id).first()
+            if user and not user.is_admin():
+                assigned = self.db.query(UserAccount.account_id).filter(UserAccount.user_id == user_id)
+                from models.account_group import account_group_accounts, account_group_users
+                grouped = self.db.query(account_group_accounts.c.account_id).join(
+                    account_group_users, account_group_users.c.group_id == account_group_accounts.c.group_id
+                ).filter(account_group_users.c.user_id == user_id)
+                q = q.filter(AdAccount.id.in_(assigned.union(grouped)))
 
         result: List[Dict] = []
         for account in q.order_by(AdAccount.created_at.desc()).all():
@@ -149,7 +160,7 @@ class AdAccountService:
 
         return result
 
-    def filter_available_ids(self, ad_account_ids: List[str]) -> Tuple[List[str], List[Dict]]:
+    def filter_available_ids(self, ad_account_ids: List[str], user_id: Optional[str] = None) -> Tuple[List[str], List[Dict]]:
         """从给定账户 ID 中筛出可投放的，返回 (可用 ID 列表, 被剔除的原因列表)
 
         供 JobService 在创建批量任务前做前置校验。
@@ -162,6 +173,20 @@ class AdAccountService:
             if not account:
                 rejected.append({"account_id": pk, "reason": "账户不存在"})
                 continue
+            if user_id:
+                from models import User, UserAccount
+                user = self.db.query(User).filter(User.id == user_id).first()
+                if user and not user.is_admin():
+                    assigned = self.db.query(UserAccount).filter(
+                        UserAccount.user_id == user_id, UserAccount.account_id == account.id
+                    ).first()
+                    from models.account_group import account_group_accounts, account_group_users
+                    grouped = self.db.query(account_group_accounts.c.account_id).join(
+                        account_group_users, account_group_users.c.group_id == account_group_accounts.c.group_id
+                    ).filter(account_group_users.c.user_id == user_id, account_group_accounts.c.account_id == account.id).first()
+                    if not assigned and not grouped:
+                        rejected.append({"account_id": account.account_id, "reason": "账户未分配给当前用户"})
+                        continue
             ok, reason = self.check_available(account)
             if ok:
                 available_ids.append(pk)

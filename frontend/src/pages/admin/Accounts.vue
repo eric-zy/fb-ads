@@ -12,6 +12,12 @@
 
     <el-card class="card-shadow" shadow="never">
       <div class="toolbar">
+        <el-radio-group v-model="assetFilter" size="small" @change="loadAccounts">
+          <el-radio-button label="ALL">全部</el-radio-button>
+          <el-radio-button label="OWNED">自有账户</el-radio-button>
+          <el-radio-button label="CLIENT">客户账户</el-radio-button>
+          <el-radio-button label="PENDING">待导入</el-radio-button>
+        </el-radio-group>
         <el-input
           v-model="search"
           placeholder="搜索账户名 / ID"
@@ -53,13 +59,19 @@
         ref="tableRef"
         @selection-change="onSelectionChange"
       >
-        <el-table-column type="selection" width="46" />
+        <el-table-column v-if="assetFilter !== 'PENDING'" type="selection" width="46" />
         <el-table-column prop="account_name" label="账户名" min-width="140" />
         <el-table-column prop="account_id" label="账户 ID" min-width="140" />
         <el-table-column label="归属 BM" min-width="150">
           <template #default="{ row }">
             <span v-if="row.business_name">{{ row.business_name }}</span>
             <el-tag v-else type="info" size="small" effect="plain">未归属</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="资产类型" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="assetType(row) === 'OWNED'" type="success" effect="plain" size="small">自有</el-tag>
+            <el-tag v-else type="warning" effect="plain" size="small">客户</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="系统状态" width="110">
@@ -95,7 +107,7 @@
         <el-table-column label="分配用户" width="90">
           <template #default="{ row }">{{ userCount[row.id] ?? '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="390" fixed="right">
+        <el-table-column v-if="assetFilter !== 'PENDING'" label="操作" width="390" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="goDetail(row)">详情</el-button>
             <el-button link type="primary" size="small" @click="openTransfer(row)">转移归属</el-button>
@@ -108,8 +120,16 @@
             <el-button link type="danger" size="small" @click="remove(row)">删除</el-button>
           </template>
         </el-table-column>
+        <el-table-column v-else label="操作" width="150" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="openPendingBm(row)">去 BM 导入</el-button>
+          </template>
+        </el-table-column>
         <template #empty>
-          <el-empty description="暂无账户" />
+        <el-empty :description="assetFilter === 'PENDING' ? '暂无待导入账户' : '暂无账户'">
+            <el-button v-if="assetFilter === 'PENDING'" type="primary" :loading="loading" @click="loadAccounts">重新扫描 Meta</el-button>
+            <el-button v-if="assetFilter === 'PENDING'" @click="goMetaAccounts">打开 BM 管理</el-button>
+          </el-empty>
         </template>
       </el-table>
     </el-card>
@@ -244,6 +264,7 @@ const search = ref('')
 const systemStatusFilter = ref('')
 const accountStatusFilter = ref('')
 const businessFilter = ref('')
+const assetFilter = ref('ALL')
 const businesses = ref<MetaAccountItem[]>([])
 const userCount = ref<Record<string, number>>({})
 const tableRef = ref<any>(null)
@@ -320,6 +341,25 @@ async function loadAccounts() {
     if (systemStatusFilter.value) params.system_status = systemStatusFilter.value
     if (accountStatusFilter.value) params.account_status = accountStatusFilter.value
     if (businessFilter.value) params.business_id = businessFilter.value
+    if (assetFilter.value !== 'ALL' && assetFilter.value !== 'PENDING') params.asset_type = assetFilter.value
+
+    if (assetFilter.value === 'PENDING') {
+      const { data } = await metaAccountApi.pendingAdAccounts()
+      accounts.value = (data.accounts || []).map((row: any) => ({
+        id: `pending-${row.meta_account_id}-${row.id}`,
+        account_id: row.id,
+        account_name: row.name || row.id,
+        business_name: row.business_name,
+        business_id: row.meta_account_id,
+        asset_type: row.asset_type,
+        account_status: row.account_status,
+        system_status: 'DISABLED',
+        currency: row.currency,
+      })) as AdAccountItem[]
+      userCount.value = {}
+      loading.value = false
+      return
+    }
 
     const { data } = await accountApi.list(params)
     accounts.value = data
@@ -342,6 +382,12 @@ async function loadAccounts() {
     loading.value = false
   }
 }
+
+function assetType(row: AdAccountItem): string {
+  return (row as AdAccountItem & { asset_type?: string }).asset_type || 'OWNED'
+}
+function goMetaAccounts() { router.push({ name: 'AdminMetaAccounts' }) }
+function openPendingBm(row: AdAccountItem) { router.push({ name: 'AdminBusinessDetail', params: { id: row.business_id } }) }
 
 function onSelectionChange(rows: AdAccountItem[]) {
   selected.value = rows

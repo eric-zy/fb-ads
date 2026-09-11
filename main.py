@@ -166,6 +166,12 @@ app.include_router(credentials_api.router)
 app.include_router(meta_auth_api.router)
 app.include_router(meta_pages_api.router)
 app.include_router(meta_connections_api.router)
+from api import operations as operations_api
+app.include_router(operations_api.router)
+from api import roles as roles_api
+app.include_router(roles_api.router)
+from api import account_groups as account_groups_api
+app.include_router(account_groups_api.router)
 
 # 注册素材库路由
 app.include_router(media_api.router)
@@ -214,13 +220,18 @@ class LoginRequest(BaseModel):
 async def auth_login(request: LoginRequest, db: Session = Depends(get_db)):
     """用户登录"""
     try:
-        from models import User
+        from models import User, Role
         user = db.query(User).filter(User.email == request.email).first()
         if not user or user.hashed_password != _hash_password(request.password):
             raise HTTPException(status_code=401, detail="邮箱或密码错误")
         if not user.is_active:
             raise HTTPException(status_code=403, detail="账户已被禁用")
 
+        role_permissions = []
+        if getattr(user, "role_id", None):
+            role = db.query(Role).filter(Role.id == user.role_id).first()
+            role_permissions = role.permissions if role else []
+        effective_permissions = sorted(set((user.permissions or []) + (role_permissions or [])))
         token = _create_access_token(user.id, user.email, user.role, user.tenant_id)
         return {
             "access_token": token,
@@ -233,7 +244,7 @@ async def auth_login(request: LoginRequest, db: Session = Depends(get_db)):
                 "tenant_id": user.tenant_id,
                 "company_id": user.company_id,  # 已废弃，兼容老前端
                 "is_platform_admin": user.is_platform_admin(),
-                "permissions": user.permissions or [],
+                "permissions": effective_permissions,
                 "settings": user.settings or {},
             },
         }
@@ -531,7 +542,7 @@ async def auth_me(current_user: "User" = Depends(get_current_active_user)):
         "tenant_id": getattr(current_user, "tenant_id", None),
         "company_id": current_user.company_id,  # 已废弃，兼容老前端
         "is_platform_admin": current_user.is_platform_admin(),
-        "permissions": current_user.permissions or [],
+        "permissions": sorted(set(current_user.permissions or [])),
         "settings": current_user.settings or {},
     }
 

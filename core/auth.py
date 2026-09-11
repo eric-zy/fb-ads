@@ -162,6 +162,13 @@ async def get_current_active_user(
             detail="账户已被禁用",
         )
 
+    # 自定义角色权限与用户额外权限合并，角色权限不写回用户 JSON。
+    from models import Role
+    if getattr(user, "role_id", None):
+        role = db.query(Role).filter(Role.id == user.role_id).first()
+        if role:
+            user.permissions = sorted(set((user.permissions or []) + (role.permissions or [])))
+
     # 建立租户上下文：优先用库里的实时值（避免令牌中的 tid 过期）
     tenant_id = getattr(user, "tenant_id", None)
     set_current_tenant_id(tenant_id)
@@ -218,3 +225,29 @@ async def require_platform_admin(
             detail="需要平台管理员权限",
         )
     return current_user
+
+
+def require_permission(permission: str):
+    """Create a dependency for a fine-grained permission.
+
+    Administrators remain compatible with the existing role model; other
+    users must explicitly carry the permission in ``User.permissions``.
+    """
+    async def dependency(
+        current_user: "User" = Depends(get_current_active_user),
+    ) -> "User":
+        from models.tenant import UserRole
+
+        if UserRole.is_admin(current_user.role):
+            return current_user
+        if permission not in (current_user.permissions or []):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="没有执行该操作的权限",
+            )
+        return current_user
+
+    return dependency
+
+
+require_meta_asset_admin = require_permission("meta_asset:manage")

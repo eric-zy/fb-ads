@@ -148,6 +148,52 @@
         </el-descriptions>
       </el-card>
 
+      <!-- 支付配置：支付方式由 Meta 管理，本系统只展示同步状态，不保存卡号或支付凭据 -->
+      <el-card shadow="never" class="section payment-card">
+        <template #header>
+          <div class="payment-header">
+            <span class="card-title">支付配置</span>
+            <el-tag :type="paymentStatusType(detail.payment_status)" size="small">
+              {{ paymentStatusLabel(detail.payment_status) }}
+            </el-tag>
+          </div>
+        </template>
+        <el-alert
+          v-if="paymentNeedsAttention"
+          type="warning"
+          :closable="false"
+          show-icon
+          title="请先在 Meta 账单中心完善付款方式，否则广告发布可能被拒绝。"
+        />
+        <el-descriptions :column="2" border class="payment-details">
+          <el-descriptions-item label="支付来源">
+            {{ paymentSourceLabel(detail.payment_source) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="账户归属 BM">
+            {{ detail.business_name || detail.business_id || '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="最近检查">
+            {{ formatTime(detail.payment_checked_at) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="支付错误">
+            <span :class="{ 'text-danger': detail.payment_error_message }">
+              {{ detail.payment_error_message || '-' }}
+            </span>
+          </el-descriptions-item>
+        </el-descriptions>
+        <div class="payment-actions">
+          <el-button type="primary" plain @click="openMetaBilling">
+            在 Meta 账单中心配置
+          </el-button>
+          <el-button :icon="Refresh" :loading="syncing" @click="handleSync">
+            配置完成后重新同步
+          </el-button>
+        </div>
+        <div class="setting-hint payment-hint">
+          选择 BM 统一付款时，请在 Meta 的 BM「账单与付款」中配置付款方式。本系统只同步支付状态，不接收或保存银行卡信息。
+        </div>
+      </el-card>
+
       <!-- 金额（文档 §9：最小货币单位存储，展示层换算） -->
       <el-card shadow="never" class="section">
         <template #header><span class="card-title">金额</span></template>
@@ -218,6 +264,7 @@ const detail = ref<AdAccountItem | null>(null)
 const deployEnabled = ref(false)
 
 const isDeployEnabled = computed(() => detail.value?.system_status === 'ACTIVE')
+const paymentNeedsAttention = computed(() => ['UNKNOWN', 'MISSING', 'PAST_DUE', 'RESTRICTED'].includes((detail.value?.payment_status || 'UNKNOWN').toUpperCase()))
 
 function formatTime(v: string | null) {
   if (!v) return '-'
@@ -296,6 +343,22 @@ async function onDeploySwitch(val: boolean) {
   }
 }
 
+function paymentStatusLabel(v?: string | null) {
+  return ({ AVAILABLE: '支付可用', BM_CENTRAL: 'BM 统一付款', MISSING: '未配置', PAST_DUE: '存在欠费', RESTRICTED: '支付受限', UNKNOWN: '待检查' } as Record<string, string>)[(v || 'UNKNOWN').toUpperCase()] || v || '待检查'
+}
+
+function paymentStatusType(v?: string | null): 'success' | 'danger' | 'warning' | 'info' {
+  const status = (v || 'UNKNOWN').toUpperCase()
+  if (status === 'AVAILABLE') return 'success'
+  if (status === 'PAST_DUE' || status === 'RESTRICTED') return 'danger'
+  if (status === 'MISSING') return 'warning'
+  return 'info'
+}
+
+function paymentSourceLabel(v?: string | null) {
+  return ({ BM_CENTRAL: 'BM 统一付款', BILLING_CREDIT: '账单额度', ACCOUNT_DIRECT: '广告账户直接付款' } as Record<string, string>)[(v || '').toUpperCase()] || v || '未同步'
+}
+
 async function unbindAccount() {
   if (!detail.value) return
   try {
@@ -319,6 +382,10 @@ function goBack() {
 
 function goBusiness(id: string) {
   router.push({ name: 'AdminBusinessDetail', params: { id } })
+}
+
+function openMetaBilling() {
+  window.open('https://business.facebook.com/billing_hub/', '_blank', 'noopener,noreferrer')
 }
 
 onMounted(load)
@@ -376,6 +443,22 @@ onMounted(load)
   font-size: 12px;
   color: #909399;
   font-weight: 400;
+}
+.payment-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.payment-details {
+  margin-top: 12px;
+}
+.payment-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+.payment-hint {
+  margin-top: 12px;
 }
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

@@ -83,6 +83,21 @@
             <el-option label="普通用户" value="user" />
           </el-select>
         </el-form-item>
+        <el-form-item label="角色模板">
+          <el-select v-model="form.role_id" clearable placeholder="选择角色模板" style="width: 100%">
+            <el-option v-for="role in roles" :key="role.id" :label="role.name" :value="role.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="权限">
+          <el-checkbox-group v-model="form.permissions">
+            <el-checkbox label="meta_asset:manage">Meta 资产</el-checkbox>
+            <el-checkbox label="ad_account:read">查看账户</el-checkbox>
+            <el-checkbox label="ad_account:manage">管理账户</el-checkbox>
+            <el-checkbox label="job:create">创建投放</el-checkbox>
+            <el-checkbox label="job:retry">重试任务</el-checkbox>
+            <el-checkbox label="insight:read">查看报表</el-checkbox>
+          </el-checkbox-group>
+        </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="form.is_active" />
         </el-form-item>
@@ -113,6 +128,7 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
 import { userApi, type AdminUser } from '../../api/admin'
+import { roleApi } from '../../api/admin'
 
 const users = ref<AdminUser[]>([])
 const loading = ref(false)
@@ -129,6 +145,8 @@ const form = ref<Partial<AdminUser> & { password?: string }>({
 const showPwd = ref(false)
 const pwdUser = ref<AdminUser | null>(null)
 const pwdValue = ref('')
+const roles = ref<any[]>([])
+const permissionDefaults = [] as string[]
 
 let timer: number | undefined
 function debouncedLoad() {
@@ -158,9 +176,10 @@ async function loadUsers() {
     loading.value = false
   }
 }
+async function loadRoles() { try { roles.value = (await roleApi.list()).data } catch { roles.value = [] } }
 
 function openCreate() {
-  form.value = { username: '', email: '', password: '123456', role: 'user', is_active: true }
+  form.value = { username: '', email: '', password: '123456', role: 'user', is_active: true, permissions: [...permissionDefaults] }
   showForm.value = true
 }
 function openEdit(u: AdminUser) {
@@ -230,7 +249,7 @@ async function remove(u: AdminUser) {
   }
 }
 
-onMounted(loadUsers)
+onMounted(async () => { await Promise.all([loadUsers(), loadRoles()]) })
 </script>
 
 <style scoped>

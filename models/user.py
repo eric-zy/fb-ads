@@ -33,6 +33,7 @@ class User(TenantMixin, Base):
     # 【废弃】company_id 已被 tenant_id 取代，仅保留字段兼容历史数据/前端
     company_id = Column(String(50), index=True)
     role = Column(String(50), default=UserRole.USER.value)  # 见 UserRole
+    role_id = Column(String(50), nullable=True, index=True, comment="租户自定义角色 ID")
 
     # 权限
     permissions = Column(JSON, default=[])

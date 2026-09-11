@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from config.settings import settings
-from core.auth import require_admin
+from core.auth import require_meta_asset_admin as require_admin
 from core.database import get_db
 from core.enums import CredentialSource, CredentialStatus
 from core.logger import logger
