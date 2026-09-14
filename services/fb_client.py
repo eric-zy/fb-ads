@@ -228,39 +228,32 @@ class FacebookClient:
             api = FacebookAdsApi(session)
             bm_id = business_id.replace("bm", "") if business_id.startswith("bm") else business_id
 
-            url = f"{bm_id}/adaccounts"
             params = {
                 "fields": "id,name,account_status,currency",
                 "limit": 200,
             }
-            after = None
-            for _ in range(20):  # 最多翻 20 页，避免死循环
-                if after:
-                    params["after"] = after
-                response = api.call("GET", url, params=params)
-                data = response.json()
-                for acc in data.get("data", []):
-                    acc_id = acc.get("id", "").replace("act_", "")
-                    accounts.append(
-                        {
-                            "id": acc_id,
-                            "name": acc.get("name"),
-                            "account_status": acc.get("account_status"),
-                            "currency": acc.get("currency"),
-                        }
-                    )
-                    if target and acc_id == target:
-                        # 归属校验命中即停，避免大 BM 下无谓翻页
-                        return {
-                            "ok": True,
-                            "dev_mode": False,
-                            "error": None,
-                            "accounts": accounts,
-                        }
-                paging = data.get("paging", {})
-                after = paging.get("cursors", {}).get("after")
-                if not after:
-                    break
+            seen = set()
+            for edge in ("owned_ad_accounts", "client_ad_accounts"):
+                after = None
+                for _ in range(20):  # 最多翻 20 页，避免死循环
+                    if after:
+                        params["after"] = after
+                    else:
+                        params.pop("after", None)
+                    response = api.call("GET", f"{bm_id}/{edge}", params=params)
+                    data = response.json()
+                    for acc in data.get("data", []):
+                        acc_id = acc.get("id", "").replace("act_", "")
+                        if acc_id in seen:
+                            continue
+                        seen.add(acc_id)
+                        accounts.append({"id": acc_id, "name": acc.get("name"), "account_status": acc.get("account_status"), "currency": acc.get("currency")})
+                        if target and acc_id == target:
+                            return {"ok": True, "dev_mode": False, "error": None, "accounts": accounts}
+                    paging = data.get("paging", {})
+                    after = paging.get("cursors", {}).get("after")
+                    if not after:
+                        break
 
             return {"ok": True, "dev_mode": False, "error": None, "accounts": accounts}
 

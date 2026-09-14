@@ -449,18 +449,9 @@ class MetaAdsService:
         bm_id = business_id[2:] if business_id.startswith("bm") else business_id
 
         def _do():
-            params = {"fields": "id,name", "limit": 200}
-            after = None
-            for _ in range(20):  # 最多翻 20 页，避免死循环
-                if after:
-                    params["after"] = after
-                data = self.client._get(f"{bm_id}/adaccounts", params=params)
-                for acc in data.get("data", []):
-                    if acc.get("id", "").replace("act_", "") == target:
-                        return {"verified": True, "account_name": acc.get("name")}
-                after = data.get("paging", {}).get("cursors", {}).get("after")
-                if not after:
-                    break
+            for acc in self.client.get_ad_accounts(bm_id):
+                if acc.get("id", "").replace("act_", "") == target:
+                    return {"verified": True, "account_name": acc.get("name")}
             return {
                 "verified": False,
                 "error": f"广告账户 act_{target} 不在 BM({business_id}) 下",

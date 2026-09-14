@@ -215,7 +215,6 @@ class MetaClient:
     def get_ad_accounts(self, business_id: str, max_pages: int = 20) -> List[dict]:
         """分页拉取 BM 下的广告账户（文档 §23 同步流程的 Meta 侧入口）"""
         bid = self.normalize_business_id(business_id)
-        path = f"{bid}/adaccounts"
         params = {
             "fields": "id,name,account_status,currency,timezone_name,"
                       "spend_cap,amount_spent,balance,disable_reason",
@@ -223,16 +222,29 @@ class MetaClient:
         }
 
         accounts: List[dict] = []
-        after = None
-        for _ in range(max_pages):
-            if after:
-                params["after"] = after
-            data = self._get(path, params)
-            accounts.extend(data.get("data", []))
-            paging = data.get("paging", {}) or {}
-            after = (paging.get("cursors") or {}).get("after")
-            if not after:
-                break
+        seen: set[str] = set()
+        for edge in ("owned_ad_accounts", "client_ad_accounts"):
+            after = None
+            for _ in range(max_pages):
+                if after:
+                    params["after"] = after
+                else:
+                    params.pop("after", None)
+                try:
+                    data = self._get(f"{bid}/{edge}", params)
+                except MetaApiError:
+                    if edge == "client_ad_accounts" and accounts:
+                        break
+                    raise
+                for account in data.get("data", []):
+                    account_id = str(account.get("id") or "")
+                    if account_id and account_id not in seen:
+                        seen.add(account_id)
+                        accounts.append(account)
+                paging = data.get("paging", {}) or {}
+                after = (paging.get("cursors") or {}).get("after")
+                if not after:
+                    break
         return accounts
 
     def get_ad_account(self, account_id: str) -> dict:
