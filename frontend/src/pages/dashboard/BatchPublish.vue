@@ -164,14 +164,27 @@
             <el-table-column prop="account_id" label="Account ID" show-overflow-tooltip />
             <el-table-column prop="payment_status" label="支付状态" width="140" />
             <el-table-column prop="business.name" label="归属 BM" show-overflow-tooltip />
+            <el-table-column v-if="preflightBlockedAccounts.length" label="预检结果" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span v-if="preflightReasonByAccount[row.id] || preflightReasonByAccount[row.account_id]" class="preflight-blocked">
+                  {{ preflightReasonByAccount[row.id] || preflightReasonByAccount[row.account_id] }}
+                </span>
+                <span v-else class="preflight-ready">可投放</span>
+              </template>
+            </el-table-column>
           </el-table>
           <el-alert type="warning" :closable="false" show-icon title="提交后将创建异步投放任务">
             系统会逐账户执行，失败账户不会影响已成功账户，可在任务中心重试失败项。
           </el-alert>
           <el-alert v-if="preflightResult" :type="preflightResult.passed ? 'success' : 'error'" :closable="false" show-icon style="margin-top:12px">
             <template #title>{{ preflightResult.passed ? `预检通过：${preflightResult.ready_account_ids.length} 个账户可投放` : '预检未通过，暂不能提交' }}</template>
-            <div v-for="item in preflightResult.errors" :key="item.code">{{ item.message }}</div>
-            <div v-for="item in preflightResult.warnings" :key="item.code" class="preflight-warning">{{ item.message }}</div>
+            <div v-for="item in preflightResult.errors" :key="`error-${item.code}`" class="preflight-error-item">{{ item.message }}</div>
+            <div v-for="item in preflightResult.warnings" :key="`warning-${item.code}`" class="preflight-warning">
+              <div>{{ item.message }}</div>
+              <div v-for="blocked in (item.items || [])" :key="`${item.code}-${blocked.account_id}-${blocked.reason}`" class="preflight-detail">
+                账户 {{ blocked.account_id }}：{{ blocked.reason }}
+              </div>
+            </div>
             <el-button v-if="missingAssetAccounts.length" type="primary" size="small" style="margin-top:8px" :loading="syncingAssets" @click="syncMissingAssets">
               立即同步缺失素材
             </el-button>
@@ -545,6 +558,8 @@ const runPreflight = async () => {
 watch(form, loadRateLimitStatus, { deep: true })
 
 const missingAssetAccounts = computed(() => (preflightResult.value?.warnings || []).filter((item: any) => item.code === 'ACCOUNTS_REJECTED' && item.items?.some((row: any) => row.reason === '素材尚未同步完成')))
+const preflightBlockedAccounts = computed(() => (preflightResult.value?.warnings || []).flatMap((item: any) => item.items || []))
+const preflightReasonByAccount = computed<Record<string, string>>(() => Object.fromEntries(preflightBlockedAccounts.value.map((item: any) => [item.account_id, item.reason || '预检未通过'])))
 
 const syncMissingAssets = async () => {
   const rows = missingAssetAccounts.value.flatMap((warning: any) => warning.items || []).filter((row: any) => row.reason === '素材尚未同步完成')
@@ -608,6 +623,11 @@ onUnmounted(stopPolling)
 </script>
 
 <style scoped lang="scss">
+.preflight-error-item { color: #f56c6c; margin-top: 4px; }
+.preflight-warning { color: #e6a23c; margin-top: 4px; }
+.preflight-detail { color: #606266; font-size: 12px; margin: 3px 0 0 16px; }
+.preflight-blocked { color: #f56c6c; }
+.preflight-ready { color: #67c23a; }
 .header-bar {
   .page-title { margin: 0; font-size: 18px; }
   .page-desc { margin: 4px 0 0; font-size: 13px; color: #909399; line-height: 1.6; }

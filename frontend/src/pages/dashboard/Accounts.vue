@@ -81,22 +81,12 @@
             <el-table-column :label="t('pages.account')" min-width="190"><template #default="{ row }">{{ row.account_name || row.account_id }}</template></el-table-column>
             <el-table-column prop="account_id" label="Account ID" min-width="160" />
             <el-table-column label="归属" min-width="170"><template #default="{ row }"><div>{{ row.business_name || '个人账号' }}</div><span class="status-detail">{{ row.owner_type === 'BUSINESS' ? 'BM 资产' : '个人授权' }}{{ row.meta_business_id ? ` · ${row.meta_business_id}` : '' }}</span></template></el-table-column>
-            <el-table-column :label="t('pages.authorized')" min-width="180"><template #default="{ row }"><el-tag :type="accountAvailabilityType(row)" size="small">{{ accountAvailabilityLabel(row) }}</el-tag><div class="status-detail">{{ accountStatusDetail(row) }}</div></template></el-table-column>
+            <el-table-column :label="t('pages.authorized')" min-width="220"><template #default="{ row }"><el-tag :type="accountAvailabilityType(row)" size="small">{{ accountAvailabilityLabel(row) }}</el-tag><div class="status-detail">{{ accountStatusDetail(row) }}</div><div v-if="row.last_sync_error" class="status-detail error-detail">同步：{{ row.last_sync_error }}</div><div v-else-if="row.payment_error_message" class="status-detail error-detail">支付：{{ row.payment_error_message }}</div></template></el-table-column>
           <el-table-column label="Meta 状态" width="110"><template #default="{ row }"><el-tag :type="metaStatusType(row)" size="small">{{ row.account_status || '待同步' }}</el-tag><div class="status-detail">付款：{{ paymentStatusLabel(row.payment_status) }}</div></template></el-table-column>
             <el-table-column label="操作" width="150"><template #default="{ row }"><el-button link type="primary" @click="openAccount({ type: 'account', source: row, accountId: row.account_id, label: row.account_name || row.account_id })">详情</el-button><el-button v-if="isAdmin && !accountIsDeployable(row)" link type="warning" @click="reauthorizeAccount(row)">重新授权</el-button></template></el-table-column>
           </el-table>
           <el-pagination v-if="accountTotal > accountPageSize" v-model:current-page="accountPage" :page-size="accountPageSize" :total="accountTotal" layout="total, prev, pager, next" @current-change="load" />
           <el-empty v-if="!loading && !accounts.length" description="暂无可投账号" />
-        </el-card>
-      </el-tab-pane>
-      <el-tab-pane label="接入账户" name="connect">
-        <el-card shadow="never" class="tab-card">
-          <div class="connect-panel">
-            <div><h3>接入账号</h3><p>通过 Facebook 授权读取当前用户可访问的账号，系统会自动同步 BM 归属。</p></div>
-            <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="openAddDialog">接入账号</el-button>
-          </div>
-          <el-empty v-if="!isAdmin" description="当前账号没有接入广告账户的权限" />
-          <el-alert v-else type="info" :closable="false" show-icon title="授权说明">只会读取你在 Facebook 中有权限访问的广告账户，Access Token 由服务端加密保存。</el-alert>
         </el-card>
       </el-tab-pane>
     </el-tabs>
@@ -199,7 +189,24 @@ function openAddDialog() { oauthStep.value = 'login'; oauthError.value = ''; dis
 function closeAddDialog() { addDialogVisible.value = false; if (route.query.meta_auth || route.query.credential_id) router.replace({ query: { ...route.query, meta_auth: undefined, credential_id: undefined, message: undefined } }) }
 async function startOAuth() { const popup = window.open('', 'meta-oauth', 'width=620,height=760,resizable=yes,scrollbars=yes'); authorizing.value = true; oauthError.value = ''; try { const { data } = await credentialApi.oauthAuthorizeFirst(); if (!data.authorization_url) throw new Error('Meta 未返回授权地址'); if (popup) popup.location.href = data.authorization_url; else window.location.assign(data.authorization_url) } catch (e: any) { popup?.close(); oauthError.value = e?.response?.data?.detail || e?.message || '无法启动 Facebook 登录'; ElMessage.error(oauthError.value) } finally { authorizing.value = false } }
 async function openBusinessDiscovery(id?: string) { addDialogVisible.value = true; oauthStep.value = 'businesses'; oauthError.value = ''; const credentialId = id || String(route.query.credential_id || ''); if (!credentialId) { oauthError.value = '缺少本次 OAuth 授权凭据，请重新授权'; return } oauthCredentialId.value = credentialId; try { const { data } = await credentialApi.oauthAdAccounts(credentialId); oauthAdAccounts.value = data.accounts || []; } catch (e: any) { oauthError.value = e?.response?.data?.detail || '无法读取 Meta 可访问广告账户，请重新授权' } }
-async function completeOAuth() { if (!oauthCredentialId.value || !selectedOAuthAccountIds.value.length) return; completing.value = true; try { await credentialApi.oauthCompleteAccounts({ credential_id: oauthCredentialId.value, account_ids: selectedOAuthAccountIds.value }); oauthStep.value = 'success'; ElMessage.success('授权资产已接入，BM、广告账户和 Page 正在同步'); await load(); } catch (e: any) { oauthError.value = e?.response?.data?.detail || '广告账户接入失败，请重试'; ElMessage.error(oauthError.value) } finally { completing.value = false } }
+async function completeOAuth() {
+  if (!oauthCredentialId.value || !selectedOAuthAccountIds.value.length) return
+  completing.value = true
+  try {
+    await credentialApi.oauthCompleteAccounts({ credential_id: oauthCredentialId.value, account_ids: selectedOAuthAccountIds.value })
+    oauthStep.value = 'success'
+    ElMessage.success('授权资产已接入，广告账号正在同步')
+    // 接入接口只负责入队，广告账户由 Celery 异步落库；短轮询避免用户看到空列表。
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await new Promise(resolve => window.setTimeout(resolve, 1500))
+      await load(1)
+      if (selectedOAuthAccountIds.value.every(id => accounts.value.some(account => account.account_id === id))) break
+    }
+  } catch (e: any) {
+    oauthError.value = e?.response?.data?.detail || '广告账户接入失败，请重试'
+    ElMessage.error(oauthError.value)
+  } finally { completing.value = false }
+}
 async function loadCredentials() { if (!isAdmin.value) return; credentialLoading.value = true; try { const r = await credentialApi.list({ page: 1, page_size: 100 }); credentialRows.value = r.data || [] } catch { credentialRows.value = [] } finally { credentialLoading.value = false } }
 async function loadSyncLogs() { if (!isAdmin.value) return; syncLoading.value = true; try { const results = await Promise.all(metaAccounts.value.map(async business => { try { const r = await metaAccountApi.syncLogs(business.id, { limit: 20 }); return (r.data || []).map((row: SyncLogItem) => ({ ...row, business_name: business.name })) } catch { return [] } })); syncRows.value = results.flat().sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))) } finally { syncLoading.value = false } }
 async function handleTabChange(tab: string | number) { if (tab === 'credentials') await loadCredentials(); if (tab === 'sync') await loadSyncLogs() }
