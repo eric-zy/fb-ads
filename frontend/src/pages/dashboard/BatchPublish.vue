@@ -24,10 +24,12 @@
         <section v-if="activeStep === 0" class="step-panel">
           <h3>选择投放方式</h3>
           <p class="step-desc">可以复用已有模板，也可以直接填写一份投放配置；两种方式最终使用同一套发布链路。</p>
-          <el-radio-group v-model="form.publish_mode" class="publish-mode">
-            <el-radio-button value="TEMPLATE">使用投放模板</el-radio-button>
-            <el-radio-button value="DIRECT">直接配置投放</el-radio-button>
-          </el-radio-group>
+          <el-form-item label="投放方式" required>
+            <el-select v-model="form.publish_mode" style="width:100%" placeholder="请选择投放方式">
+              <el-option label="使用投放模板" value="TEMPLATE" />
+              <el-option label="直接配置投放" value="DIRECT" />
+            </el-select>
+          </el-form-item>
           <template v-if="form.publish_mode === 'TEMPLATE'">
           <el-form-item label="投放模板" required>
           <el-select
@@ -102,10 +104,10 @@
             </div>
             <el-button plain type="primary" @click="addDirectCreative">+ 添加创意</el-button>
             <div class="tip">素材必须先在素材库上传；提交后系统会按目标广告账户分别同步素材。</div>
-            <el-form-item label="模板名称">
-              <el-input v-model="form.template_name" placeholder="可选；另存为模板时使用" />
-            </el-form-item>
             <el-checkbox v-model="form.save_as_template">保存为投放模板</el-checkbox>
+            <el-form-item v-if="form.save_as_template" label="模板名称" required>
+              <el-input v-model="form.template_name" placeholder="请输入模板名称" />
+            </el-form-item>
           </template>
         </section>
         <section v-else-if="activeStep === 1" class="step-panel">
@@ -439,7 +441,7 @@ const adsetCount = (template: CampaignTemplate | null) => {
 }
 const canNext = computed(() => {
   if (activeStep.value === 0) return form.publish_mode === 'DIRECT'
-    ? !!directConfig.value?.page_id && !!directConfig.value?.name && directForm.adsets.length > 0 && directForm.adsets.every(item => !!item.name && !!item.country && Number(item.budget) > 0 && item.age_min <= item.age_max) && directForm.creatives.length > 0 && directForm.creatives.every(item => !!item.asset_id && !!item.primary_text && /^https?:\/\//.test(item.landing_url))
+    ? !!directConfig.value?.page_id && !!directConfig.value?.name && (!form.save_as_template || !!form.template_name.trim()) && directForm.adsets.length > 0 && directForm.adsets.every(item => !!item.name && !!item.country && Number(item.budget) > 0 && item.age_min <= item.age_max) && directForm.creatives.length > 0 && directForm.creatives.every(item => !!item.asset_id && !!item.primary_text && /^https?:\/\//.test(item.landing_url))
     : !!form.template_id && templateReady.value
   if (activeStep.value === 2) return form.ad_account_ids.length > 0
   return true
@@ -690,6 +692,9 @@ watch(() => form.publish_mode, mode => {
   form.template_id = ''
   preflightResult.value = null
   if (mode === 'TEMPLATE') form.save_as_template = false
+})
+watch(() => form.save_as_template, enabled => {
+  if (!enabled) form.template_name = ''
 })
 
 const missingAssetAccounts = computed(() => (preflightResult.value?.warnings || []).filter((item: any) => item.code === 'ACCOUNTS_REJECTED' && item.items?.some((row: any) => row.reason === '素材尚未同步完成')))

@@ -49,6 +49,8 @@ def _ensure_template(db: Session, req: CampaignCreateRequest) -> str:
     """把模板请求和直接配置请求统一成现有发布器可消费的模板。"""
     if req.template_id:
         return req.template_id
+    if req.save_as_template and not str(req.template_name or "").strip():
+        raise HTTPException(status_code=400, detail="已勾选保存为投放模板，请填写模板名称")
     config = req.inline_config or {}
     if not isinstance(config, dict):
         raise HTTPException(status_code=400, detail="inline_config 必须是对象")
