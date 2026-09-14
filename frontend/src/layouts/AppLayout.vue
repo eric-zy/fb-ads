@@ -149,7 +149,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { campaignsApi } from '@/api/campaigns'
 import { ArrowDown, Bell } from '@element-plus/icons-vue'
 import { useUserStore } from '@/stores/userStore'
 import { useAccountStore } from '@/stores/accountStore'
@@ -225,8 +226,20 @@ function handleAccountChange(accountId: string) {
   accountStore.selectAccount(accountId)
 }
 
-function showNotifications() {
-  ElMessage.info('已为你保留通知入口，后续可接风控告警和任务提醒。')
+async function showNotifications() {
+  try {
+    const { data } = await campaignsApi.alerts()
+    if (!data.length) {
+      ElMessage.success('暂无未处理的 Meta 同步告警')
+      return
+    }
+    const content = data.map((item) => `${item.title}\n${item.message}\n时间：${item.created_at || '-'}`).join('\n\n')
+    await ElMessageBox.confirm(content, `未处理告警（${data.length}）`, { confirmButtonText: '全部标记已处理', cancelButtonText: '稍后处理', type: 'warning' })
+    await Promise.all(data.map((item) => campaignsApi.resolveAlert(item.id)))
+    ElMessage.success('告警已标记为已处理')
+  } catch {
+    ElMessage.error('告警加载失败，请稍后重试')
+  }
 }
 
 function showHelp() {

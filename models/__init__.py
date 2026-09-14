@@ -33,6 +33,7 @@ from models.meta_connection import MetaConnection
 from models.job import CampaignJob, CampaignJobItem
 # 审计日志（设计文档第 41.3 节）
 from models.audit_log import AuditLog
+from models.sync_alert import SyncAlert
 # Meta 同步日志（Meta 账号管理 V1 §10）—— 同步结果，与操作审计分开记录
 from models.sync_log import MetaSyncLog, SyncType, SyncLogStatus
 from models.async_task import AsyncTaskRecord

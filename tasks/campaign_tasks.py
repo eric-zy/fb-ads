@@ -30,6 +30,7 @@ from services.meta import MetaApiError
 from services.meta.page_access import page_account_access_error
 from services.integrations.sinan_client import SinanClient
 from core.security import decrypt_token
+from tasks.meta_sync_tasks import sync_delivery_objects_task
 import copy
 import os
 
@@ -88,7 +89,17 @@ def _prepare_template_assets(db: Session, service: Any, template: Any, ad_accoun
     creatives = config.get("creatives")
     if not isinstance(creatives, list):
         creatives = [config] if config else []
-    for creative in creatives:
+    # 直接投放时创意可能挂在 adsets[].creatives，而不是顶层 creatives。
+    # 两种结构都要注入当前广告账户对应的 image_hash/video_id。
+    creative_groups = [creatives]
+    creative_groups.extend(
+        adset.get("creatives")
+        for adset in (config.get("adsets") or [])
+        if isinstance(adset, dict) and isinstance(adset.get("creatives"), list)
+    )
+    for creative in (item for group in creative_groups for item in group):
+        if not isinstance(creative, dict):
+            continue
         asset_id = creative.get("asset_id")
         if not asset_id:
             continue
@@ -406,6 +417,10 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
         item.response_payload = result
         db.commit()
 
+        # 发布完成后自动拉取一次 Meta 状态，详情页无需等待人工点击“同步 Meta”。
+        # 同步失败不影响已成功的发布结果，由同步任务自身记录并可在页面手动重试。
+        sync_delivery_objects_task.delay(item.ad_account_id)
+
         logger.info(
             f"[JobItem {job_item_id}] 部署成功 campaign={result.get('meta_campaign_id')}"
         )
@@ -414,28 +429,54 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
     except MetaApiError as e:
         db.rollback()
         logger.error(f"[JobItem {job_item_id}] Meta 调用失败: {e}")
+        cleanup_attempted = getattr(e, "cleanup_attempted_ids", [])
         cleanup = getattr(e, "cleanup_failed_ids", [])
         if cleanup:
             item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
             if item:
-                item.response_payload = {"cleanup_failed": True, "cleanup_object_ids": cleanup}
-        message = e.message + (f"；补偿清理失败对象: {', '.join(cleanup)}" if cleanup else "")
+                item.response_payload = {
+                    "cleanup_attempted": True,
+                    "cleanup_attempted_object_ids": cleanup_attempted,
+                    "cleanup_failed": True,
+                    "cleanup_object_ids": cleanup,
+                }
+        message = e.message
+        if cleanup:
+            message += f"；补偿清理失败对象: {', '.join(cleanup)}"
         _mark_item_failed(db, job_item_id, e.code, message, e.category)
         return {"error": message, "category": e.category.value}
     except ValueError as e:
         # 模板参数在调用 Meta 前校验，按业务校验失败记录，避免被归类为 UNKNOWN。
         db.rollback()
         logger.error(f"[JobItem {job_item_id}] 投放参数校验失败: {e}")
-        _mark_item_failed(db, job_item_id, "INVALID_TEMPLATE", str(e), ErrorCategory.VALIDATION)
-        return {"error": str(e), "category": ErrorCategory.VALIDATION.value}
+        cleanup_attempted = getattr(e, "cleanup_attempted_ids", [])
+        cleanup = getattr(e, "cleanup_failed_ids", [])
+        if cleanup_attempted or cleanup:
+            item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
+            if item:
+                item.response_payload = {
+                    "cleanup_attempted": True,
+                    "cleanup_attempted_object_ids": cleanup_attempted,
+                    "cleanup_failed": bool(cleanup),
+                    "cleanup_object_ids": cleanup,
+                }
+        message = str(e) + (f"；补偿清理失败对象: {', '.join(cleanup)}" if cleanup else "")
+        _mark_item_failed(db, job_item_id, "INVALID_TEMPLATE", message, ErrorCategory.VALIDATION)
+        return {"error": message, "category": ErrorCategory.VALIDATION.value}
     except Exception as e:  # 兜底，避免 worker 静默吞异常
         db.rollback()
         logger.exception(f"[JobItem {job_item_id}] 未预期异常")
+        cleanup_attempted = getattr(e, "cleanup_attempted_ids", [])
         cleanup = getattr(e, "cleanup_failed_ids", [])
-        if cleanup:
+        if cleanup_attempted or cleanup:
             item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
             if item:
-                item.response_payload = {"cleanup_failed": True, "cleanup_object_ids": cleanup}
+                item.response_payload = {
+                    "cleanup_attempted": True,
+                    "cleanup_attempted_object_ids": cleanup_attempted,
+                    "cleanup_failed": bool(cleanup),
+                    "cleanup_object_ids": cleanup,
+                }
         message = str(e) + (f"；补偿清理失败对象: {', '.join(cleanup)}" if cleanup else "")
         _mark_item_failed(db, job_item_id, None, message, ErrorCategory.UNKNOWN)
         return {"error": message}

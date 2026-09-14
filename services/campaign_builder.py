@@ -382,6 +382,7 @@ class CampaignDeploymentBuilder:
         for object_id in reversed(self.created_meta_ids):
             try:
                 self.service.delete_object(object_id)
+                logger.info(f"[Deployment] 补偿清理成功 object={object_id}")
             except Exception as exc:
                 failed.append(object_id)
                 logger.error(f"[Deployment] 补偿删除失败 object={object_id}: {exc}")
@@ -421,9 +422,10 @@ class CampaignDeploymentBuilder:
         except Exception as exc:
             self.db.rollback()
             failed_cleanup = self._cleanup_created()
+            setattr(exc, "cleanup_attempted_ids", list(reversed(self.created_meta_ids)))
+            setattr(exc, "cleanup_failed_ids", failed_cleanup)
             if failed_cleanup:
                 logger.error(f"[Deployment] 需要人工清理 Meta 对象: {failed_cleanup}")
-                setattr(exc, "cleanup_failed_ids", failed_cleanup)
             raise
 
     def _build(self) -> Dict[str, Any]:

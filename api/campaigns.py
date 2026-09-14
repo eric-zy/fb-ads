@@ -10,12 +10,27 @@ from sqlalchemy.orm import Session
 from core.auth import get_current_active_user
 from core.database import get_db
 from core.enums import ActionType
-from models import AdSetInstance, AdInstance, CampaignInstance, AsyncTaskRecord
+from models import AdSetInstance, AdInstance, CampaignInstance, AsyncTaskRecord, SyncAlert
 from services.job_service import JobService
 from tasks.meta_sync_tasks import sync_delivery_objects_task, update_delivery_object_task
 from celery_app import celery_app
 
 router = APIRouter(prefix="/api/v1", tags=["Meta 投放对象"])
+
+@router.get("/sync-alerts")
+def list_sync_alerts(limit: int = 50, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
+    limit = max(1, min(limit, 200))
+    return [row.to_dict() for row in db.query(SyncAlert).filter(SyncAlert.is_resolved.is_(False)).order_by(SyncAlert.created_at.desc()).limit(limit).all()]
+
+@router.post("/sync-alerts/{alert_id}/resolve")
+def resolve_sync_alert(alert_id: str, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
+    alert = db.query(SyncAlert).filter(SyncAlert.id == alert_id, SyncAlert.is_resolved.is_(False)).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="告警不存在或已处理")
+    alert.is_resolved = True
+    alert.resolved_at = datetime.utcnow()
+    db.commit()
+    return alert.to_dict()
 
 @router.get("/tasks")
 def list_async_task_records(limit: int = 50, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
@@ -58,12 +73,22 @@ class CampaignActionRequest(BaseModel):
 @router.get("/campaigns")
 def list_campaigns(
     ad_account_id: Optional[str] = None,
+    status: Optional[str] = None,
+    keyword: Optional[str] = None,
     db: Session = Depends(get_db),
     _=Depends(get_current_active_user),
 ):
     query = db.query(CampaignInstance)
     if ad_account_id:
         query = query.filter(CampaignInstance.ad_account_id == ad_account_id)
+    if status:
+        query = query.filter(CampaignInstance.status == status.upper())
+    if keyword and keyword.strip():
+        value = f"%{keyword.strip()}%"
+        query = query.filter(
+            (CampaignInstance.name.ilike(value))
+            | (CampaignInstance.meta_campaign_id.ilike(value))
+        )
     return [row.to_dict() for row in query.order_by(CampaignInstance.created_at.desc()).all()]
 
 @router.get("/campaigns/{campaign_id}/adsets")
@@ -72,6 +97,42 @@ def list_adsets(campaign_id: str, db: Session = Depends(get_db), _=Depends(get_c
     if not campaign:
         raise HTTPException(status_code=404, detail="广告系列不存在")
     return [row.to_dict() for row in campaign.adsets]
+
+@router.get("/campaigns/{campaign_id}/detail")
+def campaign_detail(campaign_id: str, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
+    """返回本地发布记录的完整层级与投放配置，供投放管理详情页查看。"""
+    campaign = db.query(CampaignInstance).filter(CampaignInstance.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="广告系列不存在")
+    template = campaign.template
+    job_item = None
+    if template:
+        for job in reversed(template.jobs or []):
+            item = next((row for row in job.items if row.ad_account_id == campaign.ad_account_id), None)
+            if item:
+                job_item = item.to_dict()
+                break
+    return {
+        "campaign": campaign.to_dict(),
+        "account": {
+            "id": campaign.ad_account.id,
+            "account_id": campaign.ad_account.account_id,
+            "account_name": campaign.ad_account.account_name,
+            "business_id": campaign.ad_account.business_id,
+            "system_status": campaign.ad_account.system_status,
+            "account_status": campaign.ad_account.account_status,
+        } if campaign.ad_account else None,
+        "template": template.to_dict() if template else None,
+        "creative_config": (template.creative_config_json if template else None),
+        "adsets": [
+            {
+                **adset.to_dict(),
+                "ads": [ad.to_dict() for ad in adset.ads],
+            }
+            for adset in campaign.adsets
+        ],
+        "job_item": job_item,
+    }
 
 @router.get("/adsets/{adset_id}/ads")
 def list_ads(adset_id: str, db: Session = Depends(get_db), _=Depends(get_current_active_user)):

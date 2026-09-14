@@ -19,12 +19,14 @@ from celery import shared_task
 from core.database import SessionLocal
 from core.logger import logger
 from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task, bypass_tenant
-from models import AdAccount, MetaAccount, CampaignInstance, AdSetInstance, AdInstance, Credential
+from models import AdAccount, MetaAccount, CampaignInstance, AdSetInstance, AdInstance, Credential, SyncAlert
+import uuid
 from services.ad_account_resolver import resolve_tenant_of_ad_account_ref
 from services.ads_manager import AdsManager
 from services.meta import MetaSyncService
 from services.meta.page_service import MetaPageSyncService
 from services.credential_service import CredentialService
+from services.notifications import NotificationService
 
 
 def _log_to_dict(log) -> Dict:
@@ -273,6 +275,18 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                             ad.status = remote_ad.get("effective_status") or remote_ad.get("status") or ad.status
                             updated += 1
         db.commit()
+        if sync_errors:
+            db.add(SyncAlert(id=uuid.uuid4().hex, tenant_id=account.tenant_id, ad_account_id=account.id,
+                             alert_type="DELIVERY_SYNC", title="Meta 投放状态同步异常",
+                             message=str(sync_errors[:20])))
+            db.commit()
+            try:
+                NotificationService().notify_all(
+                    "Meta 投放状态同步异常",
+                    f"广告账户 {account.account_id} 同步存在 {len(sync_errors)} 项异常：{sync_errors[0].get('error', '未知错误')}",
+                )
+            except Exception:
+                logger.exception("[meta_sync] 投放状态同步告警发送失败")
         return {
             "status": "partial_success" if sync_errors else "success",
             "account_id": account.id,
@@ -286,7 +300,37 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
         try:
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:
+            account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+            if account:
+                db.add(SyncAlert(id=uuid.uuid4().hex, tenant_id=account.tenant_id, ad_account_id=account.id,
+                                 alert_type="DELIVERY_SYNC_FAILED", title="Meta 投放状态同步失败", message=str(exc)))
+                db.commit()
+            try:
+                NotificationService().notify_all("Meta 投放状态同步失败", f"广告账户 {account_id} 同步失败：{exc}")
+            except Exception:
+                logger.exception("[meta_sync] 投放状态同步失败告警发送失败")
             return {"status": "failed", "error": str(exc)}
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, name="meta.sync_all_delivery_objects")
+@for_all_tenants
+def sync_all_delivery_objects_task(self) -> Dict:
+    """由 Celery Beat 定期同步所有已有本地投放记录的广告账户。"""
+    db = SessionLocal()
+    try:
+        with bypass_tenant():
+            account_ids = [row.ad_account_id for row in db.query(CampaignInstance.ad_account_id).distinct().all()]
+        task_ids = [sync_delivery_objects_task.delay(account_id).id for account_id in account_ids]
+        return {"status": "queued", "account_count": len(account_ids), "task_ids": task_ids}
+    except Exception as exc:
+        logger.exception(f"[meta_sync] 定时投放状态同步派发失败: {exc}")
+        try:
+            NotificationService().notify_all("Meta 投放状态同步告警", f"定时同步任务派发失败：{exc}")
+        except Exception:
+            logger.exception("[meta_sync] 同步告警发送失败")
+        return {"status": "failed", "error": str(exc)}
     finally:
         db.close()
 

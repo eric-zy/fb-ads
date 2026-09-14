@@ -84,6 +84,10 @@ celery_app.conf.beat_schedule = {
         "task": "meta.sync_all_pages",
         "schedule": crontab(minute=0),
     },
+    "meta-delivery-sync": {
+        "task": "meta.sync_all_delivery_objects",
+        "schedule": crontab(minute="*/15"),
+    },
 }
 
 # 自动发现任务
