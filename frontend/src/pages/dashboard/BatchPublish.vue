@@ -24,14 +24,14 @@
         <section v-if="activeStep === 0" class="step-panel">
           <h3>选择投放方式</h3>
           <p class="step-desc">可以复用已有模板，也可以直接填写一份投放配置；两种方式最终使用同一套发布链路。</p>
-          <el-form-item label="投放方式" required>
+          <el-form-item label="投放方式" required class="field-medium">
             <el-select v-model="form.publish_mode" style="width:100%" placeholder="请选择投放方式">
               <el-option label="使用投放模板" value="TEMPLATE" />
               <el-option label="直接配置投放" value="DIRECT" />
             </el-select>
           </el-form-item>
           <template v-if="form.publish_mode === 'TEMPLATE'">
-          <el-form-item label="投放模板" required>
+          <el-form-item label="投放模板" required class="field-wide">
           <el-select
             v-model="form.template_id"
             filterable
@@ -778,11 +778,18 @@ onUnmounted(stopPolling)
 .publish-steps { margin: 6px 0 28px; }
 .publish-form { max-width: 920px; }
 .publish-mode { margin-bottom: 18px; }
+.publish-form :deep(.el-form-item.field-medium .el-form-item__content) { max-width: 360px; }
+.publish-form :deep(.el-form-item.field-wide .el-form-item__content) { max-width: 640px; }
+.publish-form :deep(.el-form-item.field-medium .el-select),
+.publish-form :deep(.el-form-item.field-wide .el-select) { width: 100% !important; }
 .direct-adset { padding: 14px 16px 4px; margin: 12px 0; border: 1px solid #dcdfe6; border-radius: 8px; background: #fafcff; }
 .direct-creative { padding: 14px 16px 4px; margin: 12px 0; border: 1px solid #e4e7ed; border-radius: 8px; background: #fff; }
 .job-meta { color: #909399; font-size: 12px; margin-right: 6px; }
 .direct-adset-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; color: #243b53; }
-.step-panel { min-height: 270px; padding: 8px 4px; }
+.step-panel { min-height: 180px; padding: 8px 4px; }
+.step-panel > .el-form-item { max-width: 760px; }
+.step-panel > .el-alert { max-width: 760px; }
+.step-panel > .el-descriptions { max-width: 760px; }
 .step-panel h3 { margin: 0 0 8px; color: #1f2d3d; }
 .step-desc { margin: 0 0 24px; color: #909399; font-size: 13px; }
 .step-panel .el-alert { margin-top: 22px; }
