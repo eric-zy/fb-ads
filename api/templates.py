@@ -36,6 +36,14 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
     buying_type = str(values.get("buying_type") or "AUCTION").upper()
     if buying_type != "AUCTION":
         raise HTTPException(status_code=400, detail="当前系统只支持 AUCTION 购买类型")
+    bid_strategy = str(values.get("bid_strategy") or "").upper()
+    bidding = (values.get("creative_config_json") or {}).get("bidding") or {}
+    if bid_strategy not in {"", "LOWEST_COST_WITHOUT_CAP", "LOWEST_COST_WITH_BID_CAP", "COST_CAP", "LOWEST_COST_WITH_MIN_ROAS"}:
+        raise HTTPException(status_code=400, detail="请选择有效的 Meta 出价策略")
+    if bid_strategy in {"LOWEST_COST_WITH_BID_CAP", "COST_CAP"} and (bidding.get("bid_amount") is None or float(bidding["bid_amount"]) <= 0):
+        raise HTTPException(status_code=400, detail=f"出价策略 {bid_strategy} 必须配置 bid_amount")
+    if bid_strategy == "LOWEST_COST_WITH_MIN_ROAS" and not isinstance(bidding.get("bid_constraints"), dict):
+        raise HTTPException(status_code=400, detail="最低 ROAS 出价必须配置 bid_constraints")
 
     budget_type = str(values.get("budget_type") or "DAILY").upper()
     if budget_type not in {"DAILY", "LIFETIME"}:
@@ -79,6 +87,32 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
     for key in ("publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions"):
         if placements.get(key) is not None and not isinstance(placements.get(key), list):
             raise HTTPException(status_code=400, detail=f"版位字段 {key} 必须是数组")
+    # 多 AdSet 的每组配置必须在保存阶段完成校验，避免 Meta API 执行到一半才失败。
+    for index, adset in enumerate(config.get("adsets") or [], 1):
+        if not isinstance(adset, dict):
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 配置必须是对象")
+        if adset.get("budget") is not None and float(adset["budget"]) <= 0:
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 预算必须大于 0")
+        adset_targeting = adset.get("targeting") or {}
+        adset_geo = (adset_targeting.get("geo_locations") or {}).get("countries") or []
+        if not adset_geo:
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 至少配置一个国家/地区")
+        if adset_targeting.get("age_min") is not None and adset_targeting.get("age_max") is not None and int(adset_targeting["age_min"]) > int(adset_targeting["age_max"]):
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 年龄范围无效")
+        automation = adset_targeting.get("targeting_automation") or {"advantage_audience": adset.get("advantage_audience", 1)}
+        if automation.get("advantage_audience") not in (0, 1):
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 的 advantage_audience 必须是 0 或 1")
+        adset_strategy = str(adset.get("bid_strategy") or bid_strategy).upper()
+        adset_amount = adset.get("bid_amount")
+        if adset_strategy in {"LOWEST_COST_WITH_BID_CAP", "COST_CAP"} and (adset_amount is None or float(adset_amount) <= 0):
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 的 {adset_strategy} 必须配置 bid_amount")
+        adset_placements = adset.get("placement") or {}
+        for key in ("publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions"):
+            if adset_placements.get(key) is not None and not isinstance(adset_placements.get(key), list):
+                raise HTTPException(status_code=400, detail=f"广告组 {index} 的版位字段 {key} 必须是数组")
+        adset_goal = str(adset.get("optimization_goal") or optimization_goal).upper()
+        if adset_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"} and not (adset.get("promoted_object") or config.get("promoted_object")):
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 的转化目标必须配置 promoted_object")
     creatives = config.get("creatives") or []
     if not creatives:
         raise HTTPException(status_code=400, detail="至少配置一个广告创意")

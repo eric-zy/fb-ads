@@ -158,6 +158,12 @@ class AdSetBuilder:
         targeting = dict(self.adset_config.get("targeting") or self.template.targeting_json or {"geo_locations": {"countries": ["US"]}})
         # Meta 将 publisher_platforms/facebook_positions 等版位字段放在 targeting 中。
         targeting.update(self.adset_config.get("placement") or self.template.placement_json or {})
+        # Meta 新版 AdSet 要求明确声明 Advantage+ 受众开关；旧模板默认启用，显式 0 仍保留。
+        automation = targeting.get("targeting_automation")
+        if not isinstance(automation, dict):
+            targeting["targeting_automation"] = {"advantage_audience": 1}
+        elif automation.get("advantage_audience") not in (0, 1):
+            raise ValueError("targeting_automation.advantage_audience 必须是 0 或 1")
         params: Dict[str, Any] = {
             "name": self.adset_name or self.adset_config.get("name") or f"{self.template.name}{self.name_suffix} AdSet",
             "campaign_id": self.campaign_id,
@@ -182,7 +188,7 @@ class AdSetBuilder:
 
         optimization_goal = str(params["optimization_goal"]).upper()
         if optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"}:
-            config = self.template.creative_config_json or {}
+            config = {**(self.template.creative_config_json or {}), **self.adset_config}
             promoted_object = config.get("promoted_object")
             if not promoted_object:
                 dataset_id = config.get("dataset_id") or config.get("pixel_id")
@@ -195,10 +201,10 @@ class AdSetBuilder:
                 )
             params["promoted_object"] = promoted_object
 
-        if self.template.bid_strategy:
-            bid_strategy = self.template.bid_strategy.upper()
+        if self.adset_config.get("bid_strategy") or self.template.bid_strategy:
+            bid_strategy = (self.adset_config.get("bid_strategy") or self.template.bid_strategy).upper()
             params["bid_strategy"] = bid_strategy
-            bidding = (self.template.creative_config_json or {}).get("bidding") or {}
+            bidding = {**((self.template.creative_config_json or {}).get("bidding") or {}), **({"bid_amount": self.adset_config.get("bid_amount")} if self.adset_config.get("bid_amount") is not None else {})}
             if bid_strategy in {"LOWEST_COST_WITH_BID_CAP", "COST_CAP"}:
                 if not bidding.get("bid_amount"):
                     raise ValueError(f"出价策略 {bid_strategy} 必须配置 bidding.bid_amount")

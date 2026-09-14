@@ -149,7 +149,18 @@
           </el-select>
         </el-form-item>
         <el-form-item label="出价策略">
-          <el-input v-model="form.bid_strategy" placeholder="可留空，如 LOWEST_COST_WITHOUT_CAP" />
+          <el-select v-model="form.bid_strategy" style="width:100%" placeholder="选择出价策略">
+            <el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" />
+            <el-option label="最低成本 + 竞价上限" value="LOWEST_COST_WITH_BID_CAP" />
+            <el-option label="成本上限" value="COST_CAP" />
+            <el-option label="最低 ROAS" value="LOWEST_COST_WITH_MIN_ROAS" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="['LOWEST_COST_WITH_BID_CAP', 'COST_CAP'].includes(form.bid_strategy)" label="竞价金额（最小货币单位）" required>
+          <el-input-number v-model="form.bid_amount" :min="1" :step="100" style="width:100%" />
+        </el-form-item>
+        <el-form-item v-if="form.bid_strategy === 'LOWEST_COST_WITH_MIN_ROAS'" label="ROAS 约束 JSON" required>
+          <el-input v-model="form.bid_constraints_json" type="textarea" :rows="3" placeholder='例如 {"roas_average_floor": 1.5}' />
         </el-form-item>
         <template v-if="['OFFSITE_CONVERSIONS', 'VALUE'].includes(form.optimization_goal)">
           <el-form-item label="Pixel ID" required>
@@ -185,9 +196,12 @@
             <div v-for="(adset, index) in adsetForms" :key="index" class="adset-card">
               <div class="creative-head"><b>广告组 {{ index + 1 }}</b><el-button v-if="adsetForms.length > 1" link type="danger" @click="removeAdset(index)">删除</el-button></div>
               <el-form-item label="名称"><el-input v-model="adset.name" placeholder="例如 US 广告组" /></el-form-item>
-              <div class="inline-fields"><el-form-item label="预算"><el-input-number v-model="adset.budget" :min="1" :step="10" /></el-form-item><el-form-item label="国家"><el-input v-model="adset.countries" placeholder="US,CA" /></el-form-item></div>
+              <div class="inline-fields"><el-form-item label="预算 daily_budget"><el-input-number v-model="adset.budget" :min="1" :step="10" /></el-form-item><el-form-item label="国家 geo_locations"><el-input v-model="adset.countries" placeholder="US,CA" /></el-form-item></div>
               <div class="inline-fields"><el-form-item label="年龄"><el-input-number v-model="adset.age_min" :min="13" :max="65" /><span>至</span><el-input-number v-model="adset.age_max" :min="13" :max="65" /></el-form-item><el-form-item label="性别"><el-checkbox-group v-model="adset.genders"><el-checkbox :label="1">男</el-checkbox><el-checkbox :label="2">女</el-checkbox></el-checkbox-group></el-form-item></div>
               <el-form-item label="兴趣"><el-input v-model="adset.interests" placeholder="可选，多个兴趣用逗号分隔" /></el-form-item>
+              <div class="inline-fields"><el-form-item label="优化目标 optimization_goal"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" /></el-select></el-form-item><el-form-item label="计费事件 billing_event"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /></el-select></el-form-item></div>
+              <div class="inline-fields"><el-form-item label="出价策略 bid_strategy"><el-select v-model="adset.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本（含竞价上限）" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限 COST_CAP" value="COST_CAP" /></el-select></el-form-item><el-form-item v-if="['LOWEST_COST_WITH_BID_CAP','COST_CAP'].includes(adset.bid_strategy)" label="竞价上限 bid_amount"><el-input-number v-model="adset.bid_amount" :min="1" :step="100" /></el-form-item></div>
+              <el-form-item label="Advantage+ 受众"><el-switch v-model="adset.advantage_audience" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="关闭" /></el-form-item>
               <el-form-item label="版位"><el-select v-model="adset.placements" multiple collapse-tags style="width:100%" placeholder="默认自动版位"><el-option label="Facebook 信息流" value="facebook_feed" /><el-option label="Instagram 信息流" value="instagram_stream" /><el-option label="Facebook 快拍" value="facebook_story" /><el-option label="Instagram 快拍" value="instagram_story" /></el-select></el-form-item>
             </div>
             <el-button type="primary" plain @click="addAdset">+ 添加广告组</el-button>
@@ -290,6 +304,8 @@ const form = reactive({
   custom_event_type: 'PURCHASE',
   billing_event: 'IMPRESSIONS',
   bid_strategy: '',
+  bid_amount: 0,
+  bid_constraints_json: '',
   targeting_json: DEFAULT_TARGETING,
   creative_config_json: DEFAULT_CREATIVE,
   adsets_json: '[]',
@@ -302,8 +318,8 @@ const targetingForm = reactive({
   interests: '',
   placements: [] as string[],
 })
-type AdsetForm = { name: string; budget: number; countries: string; age_min: number; age_max: number; genders: number[]; interests: string; placements: string[] }
-const newAdset = (): AdsetForm => ({ name: '', budget: 50, countries: 'US', age_min: 18, age_max: 65, genders: [1, 2], interests: '', placements: [] })
+type AdsetForm = { name: string; budget: number; countries: string; age_min: number; age_max: number; genders: number[]; interests: string; placements: string[]; optimization_goal: string; billing_event: string; bid_strategy: string; bid_amount: number; advantage_audience: number }
+const newAdset = (): AdsetForm => ({ name: '', budget: 50, countries: 'US', age_min: 18, age_max: 65, genders: [1, 2], interests: '', placements: [], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 0, advantage_audience: 1 })
 const adsetForms = reactive<AdsetForm[]>([newAdset()])
 const addAdset = () => adsetForms.push(newAdset())
 const removeAdset = (index: number) => adsetForms.splice(index, 1)
@@ -342,9 +358,16 @@ const buildCreativeJson = () => {
     const instagram = adset.placements.filter(v => v.startsWith('instagram_')).map(v => v.replace('instagram_', ''))
     if (facebook.length) placement.facebook_positions = facebook
     if (instagram.length) placement.instagram_positions = instagram
-    return { name: adset.name, budget: adset.budget, targeting, placement }
+    targeting.targeting_automation = { advantage_audience: adset.advantage_audience }
+    return { name: adset.name, budget: adset.budget, optimization_goal: adset.optimization_goal, billing_event: adset.billing_event, bid_strategy: adset.bid_strategy, bid_amount: adset.bid_amount || undefined, targeting, placement }
   }).filter(adset => adset.name || adset.countries)
   if (adsets.length) config.adsets = adsets
+  if (form.bid_strategy) {
+    config.bidding = { bid_amount: form.bid_amount || undefined }
+    if (form.bid_strategy === 'LOWEST_COST_WITH_MIN_ROAS' && form.bid_constraints_json.trim()) {
+      try { config.bidding.bid_constraints = JSON.parse(form.bid_constraints_json) } catch { ElMessage.error('ROAS 约束必须是合法 JSON') }
+    }
+  }
   form.creative_config_json = JSON.stringify(config, null, 2)
 }
 const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
@@ -440,6 +463,8 @@ const resetForm = () => {
   form.custom_event_type = 'PURCHASE'
   form.billing_event = 'IMPRESSIONS'
   form.bid_strategy = ''
+  form.bid_amount = 0
+  form.bid_constraints_json = ''
   form.targeting_json = DEFAULT_TARGETING
   form.creative_config_json = DEFAULT_CREATIVE
   form.adsets_json = '[]'
@@ -471,6 +496,8 @@ const openEdit = (row: CampaignTemplate) => {
   form.optimization_goal = row.optimization_goal || 'LINK_CLICKS'
   form.billing_event = row.billing_event || 'IMPRESSIONS'
   form.bid_strategy = row.bid_strategy || ''
+  form.bid_amount = row.creative_config_json?.bidding?.bid_amount || 0
+  form.bid_constraints_json = row.creative_config_json?.bidding?.bid_constraints ? JSON.stringify(row.creative_config_json.bidding.bid_constraints, null, 2) : ''
   form.targeting_json = JSON.stringify(row.targeting_json ?? {}, null, 2)
   loadTargetingForm(row.targeting_json)
   form.creative_config_json = JSON.stringify(row.creative_config_json ?? {}, null, 2)
