@@ -148,6 +148,28 @@
         </el-descriptions>
       </el-card>
 
+      <!-- 授权凭据：账号问题统一在广告账号详情处理，不新增菜单层级 -->
+      <el-card shadow="never" class="section">
+        <template #header><span class="card-title">授权凭据</span></template>
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="凭据状态">
+            <el-tag :type="credentialStatusType(detail.credential_status)" size="small">
+              {{ credentialStatusLabel(detail.credential_status) }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="授权人">{{ detail.authorized_by_username || detail.authorized_by_user_id || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="过期时间">{{ formatTime(detail.credential_expires_at || null) }}</el-descriptions-item>
+          <el-descriptions-item label="最近校验">{{ formatTime(detail.credential_last_verified_at || null) }}</el-descriptions-item>
+          <el-descriptions-item label="缺少权限">{{ (detail.credential_missing_scopes || []).join(', ') || '无' }}</el-descriptions-item>
+          <el-descriptions-item label="最近错误"><span :class="{ 'text-danger': detail.last_sync_error || detail.credential_status === 'INVALID' }">{{ detail.last_sync_error || '-' }}</span></el-descriptions-item>
+        </el-descriptions>
+        <div class="credential-actions">
+          <el-button type="primary" plain @click="reauthorizeCredential">重新授权</el-button>
+          <el-button v-if="detail.credential_id && detail.credential_status !== 'DISABLED'" type="warning" plain @click="disableCredential">停用凭据</el-button>
+          <el-button v-if="detail.credential_id" type="danger" plain @click="deleteCredential">删除凭据</el-button>
+        </div>
+      </el-card>
+
       <!-- 支付配置：支付方式由 Meta 管理，本系统只展示同步状态，不保存卡号或支付凭据 -->
       <el-card shadow="never" class="section payment-card">
         <template #header>
@@ -250,7 +272,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Refresh } from '@element-plus/icons-vue'
-import { accountApi, type AdAccountItem } from '@/api/admin'
+import { accountApi, credentialApi, type AdAccountItem } from '@/api/admin'
 import { formatMoney } from '@/utils/money'
 
 const route = useRoute()
@@ -294,6 +316,17 @@ function errorOf(e: any): string {
   return e?.response?.data?.detail || e?.message || '操作失败'
 }
 
+function credentialStatusLabel(status?: string | null) {
+  return ({ ACTIVE: '正常', EXPIRED: '已过期', INVALID: '权限异常', DISABLED: '已停用', VERIFYING: '校验中' } as Record<string, string>)[status || ''] || (status ? status : '未绑定')
+}
+
+function credentialStatusType(status?: string | null): 'success' | 'warning' | 'danger' | 'info' {
+  if (status === 'ACTIVE') return 'success'
+  if (status === 'VERIFYING') return 'warning'
+  if (status === 'EXPIRED' || status === 'INVALID' || status === 'DISABLED') return 'danger'
+  return 'info'
+}
+
 async function load() {
   if (!accountId.value) return
   loading.value = true
@@ -324,6 +357,36 @@ async function handleSync() {
 }
 
 /** 切换「参与批量投放」：只改 system_status，不动 Meta 状态 */
+async function reauthorizeCredential() {
+  try {
+    const { data } = detail.value?.business_id
+      ? await credentialApi.oauthAuthorize(detail.value.business_id)
+      : await credentialApi.oauthAuthorizeFirst()
+    if (!data?.authorization_url) throw new Error('Meta 未返回授权地址')
+    window.location.assign(data.authorization_url)
+  } catch (e: any) { ElMessage.error(errorOf(e)) }
+}
+
+async function disableCredential() {
+  if (!detail.value?.credential_id) return
+  try {
+    await ElMessageBox.confirm('停用后该凭据不再参与广告账号同步和投放，是否继续？', '停用凭据', { type: 'warning' })
+    await credentialApi.disable(detail.value.credential_id)
+    ElMessage.success('凭据已停用')
+    await load()
+  } catch (e: any) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errorOf(e)) }
+}
+
+async function deleteCredential() {
+  if (!detail.value?.credential_id) return
+  try {
+    await ElMessageBox.confirm('删除后将解除该凭据与广告账号的关联，账号会被标记为不可投放。是否继续？', '删除凭据', { type: 'error', confirmButtonText: '确认删除' })
+    const { data } = await credentialApi.remove(detail.value.credential_id)
+    ElMessage.success(data?.mode === 'DISABLED' ? '凭据已解除关联并停用' : '凭据已删除')
+    await load()
+  } catch (e: any) { if (e !== 'cancel' && e !== 'close') ElMessage.error(errorOf(e)) }
+}
+
 async function onDeploySwitch(val: boolean) {
   if (!detail.value) return
   toggling.value = true
@@ -453,6 +516,11 @@ onMounted(load)
   margin-top: 12px;
 }
 .payment-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+.credential-actions {
   display: flex;
   gap: 8px;
   margin-top: 16px;
