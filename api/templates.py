@@ -190,7 +190,7 @@ def list_templates(
     _: object = Depends(get_current_active_user),
 ):
     """模板列表"""
-    query = db.query(CampaignTemplate)
+    query = db.query(CampaignTemplate).filter(CampaignTemplate.is_temporary.is_(False))
     if status:
         query = query.filter(CampaignTemplate.status == status)
     items = query.order_by(CampaignTemplate.created_at.desc()).all()
@@ -201,7 +201,7 @@ def list_templates(
 def create_template(
     req: TemplateCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    _: User = Depends(get_current_active_user),
 ):
     """创建投放模板"""
     if db.query(CampaignTemplate).filter(CampaignTemplate.name == req.name).first():

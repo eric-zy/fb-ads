@@ -37,16 +37,35 @@ def sync_meta_pages_task(self, credential_id: str) -> Dict:
     """按凭据同步该租户可管理的 Facebook Pages。"""
     db = SessionLocal()
     try:
+        credential = db.query(Credential).filter(Credential.id == credential_id).first()
         return {"status": "success", **MetaPageSyncService(db).sync_credential(credential_id)}
     except Exception as exc:
         db.rollback()
-        logger.error(f"[meta_pages] 凭据 {credential_id} 页面同步失败: {exc}")
+        credential = db.query(Credential).filter(Credential.id == credential_id).first()
+        logger.error(f"[meta_pages] {_credential_label(credential, credential_id)} 页面同步失败: {exc}")
         try:
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             return {"status": "failed", "credential_id": credential_id, "error": str(exc)}
     finally:
         db.close()
+
+
+def _credential_label(credential: Credential, credential_id: str) -> str:
+    """返回可安全写入日志的凭据归属信息，不包含 Access Token。"""
+    if not credential:
+        return f"凭据 {credential_id}"
+    bm = getattr(credential, "meta_account", None)
+    bm_name = getattr(bm, "name", None) if bm else None
+    bm_id = getattr(bm, "business_id", None) if bm else None
+    parts = [
+        f"凭据 {credential.id}",
+        f"账号名={credential.name or '未命名'}",
+        f"Meta用户ID={credential.meta_user_id or '未知'}",
+    ]
+    if bm_name or bm_id:
+        parts.append(f"BM={bm_name or '未命名'}({bm_id or bm.id})")
+    return " ".join(parts)
 
 
 @shared_task(bind=True, name="meta.sync_all_pages")

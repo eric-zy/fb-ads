@@ -6,6 +6,7 @@
                                                   （原则二：任务异步）
 """
 from datetime import datetime, timezone
+import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,7 +17,8 @@ from core.auth import get_current_active_user
 from core.database import get_db
 from core.enums import ActionType, InstanceStatus
 from core.logger import logger
-from models import CampaignInstance
+from models import CampaignInstance, CampaignTemplate
+from core.enums import TemplateStatus
 from services.job_service import JobService
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["Job Center"])
@@ -26,7 +28,11 @@ router = APIRouter(prefix="/api/v1/jobs", tags=["Job Center"])
 
 class CampaignCreateRequest(BaseModel):
     """设计文档第 38 节请求体"""
-    template_id: str = Field(..., description="投放模板 ID")
+    template_id: Optional[str] = Field(None, description="投放模板 ID；直接配置时可不传")
+    inline_config: Optional[dict] = Field(None, description="不使用模板时的完整投放配置")
+    save_as_template: bool = Field(False, description="是否将直接配置另存为投放模板")
+    template_name: Optional[str] = Field(None, description="另存模板名称")
+    source: Optional[str] = Field(None, description="投放来源：TEMPLATE / DIRECT")
     ad_account_ids: List[str] = Field(..., description="目标广告账户 id 列表")
     budget_override: Optional[float] = Field(None, description="覆盖模板预算（USD/天）")
     status: str = Field("PAUSED", description="创建后状态，默认 PAUSED，避免直接产生花费")
@@ -37,6 +43,79 @@ class CampaignCreateRequest(BaseModel):
 
 class CampaignPreflightRequest(CampaignCreateRequest):
     pass
+
+
+def _ensure_template(db: Session, req: CampaignCreateRequest) -> str:
+    """把模板请求和直接配置请求统一成现有发布器可消费的模板。"""
+    if req.template_id:
+        return req.template_id
+    config = req.inline_config or {}
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=400, detail="inline_config 必须是对象")
+    if not config:
+        raise HTTPException(status_code=400, detail="未选择模板时必须提供直接投放配置")
+    name = req.template_name or config.get("name") or f"直接投放-{datetime.utcnow():%Y%m%d%H%M%S}"
+    objective = str(config.get("objective") or "").upper()
+    if objective not in {"OUTCOME_AWARENESS", "OUTCOME_TRAFFIC", "OUTCOME_ENGAGEMENT", "OUTCOME_LEADS", "OUTCOME_SALES", "OUTCOME_APP_PROMOTION"}:
+        raise HTTPException(status_code=400, detail="推广目标无效，请选择 Meta 支持的 OUTCOME_* 目标")
+    daily_budget = config.get("daily_budget") or config.get("budget")
+    if daily_budget is None or float(daily_budget) <= 0:
+        raise HTTPException(status_code=400, detail="直接配置的日预算必须大于 0")
+    page_id = str(config.get("page_id") or "").strip()
+    if not page_id:
+        raise HTTPException(status_code=400, detail="直接配置必须选择 Facebook Page")
+    adsets = config.get("adsets")
+    if not isinstance(adsets, list) or not adsets:
+        raise HTTPException(status_code=400, detail="至少需要配置一个广告组")
+    for index, adset in enumerate(adsets, 1):
+        if not isinstance(adset, dict) or not str(adset.get("name") or "").strip():
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 缺少名称")
+        if float(adset.get("budget") or 0) <= 0:
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 预算必须大于 0")
+        strategy = str(adset.get("bid_strategy") or config.get("bid_strategy") or "LOWEST_COST_WITHOUT_CAP").upper()
+        if strategy in {"LOWEST_COST_WITH_BID_CAP", "COST_CAP"} and not adset.get("bid_amount"):
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 的出价策略需要填写出价金额")
+    creatives = config.get("creatives") or []
+    if not isinstance(creatives, list) or not creatives:
+        raise HTTPException(status_code=400, detail="至少需要配置一个广告创意")
+    for index, creative in enumerate(creatives, 1):
+        if not isinstance(creative, dict) or not creative.get("asset_id"):
+            raise HTTPException(status_code=400, detail=f"广告创意 {index} 缺少素材 ID")
+        if not str(creative.get("primary_text") or "").strip():
+            raise HTTPException(status_code=400, detail=f"广告创意 {index} 缺少主文案")
+        if not str(creative.get("landing_url") or "").startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail=f"广告创意 {index} 的落地页必须是 http/https 地址")
+    fields = {
+        "name": name,
+        "objective": objective,
+        "buying_type": config.get("buying_type", "AUCTION"),
+        "is_adset_budget_sharing_enabled": bool(config.get("is_adset_budget_sharing_enabled", False)),
+        "special_ad_categories": config.get("special_ad_categories", []),
+        "budget_type": config.get("budget_type", "DAILY"),
+        "daily_budget": daily_budget,
+        "lifetime_budget": config.get("lifetime_budget"),
+        "bid_strategy": config.get("bid_strategy"),
+        "optimization_goal": config.get("optimization_goal"),
+        "billing_event": config.get("billing_event"),
+        "targeting_json": config.get("targeting_json") or config.get("targeting"),
+        "placement_json": config.get("placement_json") or config.get("placement"),
+        "creative_config_json": config.get("creative_config_json") or {
+            "page_id": config.get("page_id"),
+            "creatives": config.get("creatives", []),
+            "adsets": config.get("adsets", []),
+        },
+    }
+    if not fields["name"]:
+        raise HTTPException(status_code=400, detail="直接配置必须提供投放名称")
+    template = CampaignTemplate(
+        id=uuid.uuid4().hex,
+        status=TemplateStatus.ACTIVE.value,
+        is_temporary=not req.save_as_template,
+        **fields,
+    )
+    db.add(template)
+    db.commit()
+    return template.id
 
 
 class BudgetUpdateRequest(BaseModel):
@@ -141,6 +220,8 @@ def _submit(
     return {
         "job_id": job.id,
         "status": job.status,
+        "template_id": job.template_id,
+        "source": (job.params or {}).get("source", "TEMPLATE"),
         "total_accounts": job.total_accounts,
         "scheduled_at": job.scheduled_at.isoformat() if job.scheduled_at else None,
         "rejected_accounts": (job.params or {}).get("rejected_accounts", []),
@@ -151,8 +232,12 @@ def _submit(
 
 @router.post("/campaign-preflight")
 def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
-    """发布前检查；只读，不创建任务、不调用 Meta 写接口。"""
-    return JobService(db).preflight_campaign(req.template_id, req.ad_account_ids, req.budget_override, req.status, created_by=current_user.id)
+    """发布前检查；不调用 Meta 写接口。直接配置会先标准化为内部配置。"""
+    template_id = _ensure_template(db, req)
+    result = JobService(db).preflight_campaign(template_id, req.ad_account_ids, req.budget_override, req.status, created_by=current_user.id)
+    result["source"] = req.source or ("TEMPLATE" if req.template_id else "DIRECT")
+    result["template_id"] = template_id
+    return result
 
 @router.post("/campaign-create")
 def create_campaign_batch(
@@ -161,9 +246,10 @@ def create_campaign_batch(
     current_user=Depends(get_current_active_user),
 ):
     """批量创建 Campaign / AdSet / Ad（异步）"""
+    template_id = _ensure_template(db, req)
     return _submit(
         db,
-        template_id=req.template_id,
+        template_id=template_id,
         ad_account_ids=req.ad_account_ids,
         action_type=ActionType.CREATE,
         params={
@@ -171,6 +257,8 @@ def create_campaign_batch(
             "status": req.status,
             "sinan_promotion_id": req.sinan_promotion_id,
             "access_business_ids": req.access_business_ids or {},
+            "source": req.source or ("TEMPLATE" if req.template_id else "DIRECT"),
+            "save_as_template": req.save_as_template,
         },
         created_by=current_user,
     )

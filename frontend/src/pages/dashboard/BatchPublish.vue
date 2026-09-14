@@ -6,7 +6,7 @@
           <div>
             <h2 class="page-title">{{ t('pages.batch') }}</h2>
             <p class="page-desc">
-              选择<b>投放模板</b>与目标广告账户，系统按「模板 → 账户」生成部署任务：
+              选择<b>投放模板或直接配置</b>与目标广告账户，系统按「配置 → 账户」生成部署任务：
               每个账户独立创建 Campaign / AdSet / Ad，全部进入队列异步执行，
               可实时查看进度、失败可单独重跑。
             </p>
@@ -15,15 +15,20 @@
       </template>
 
       <el-steps :active="activeStep" finish-status="success" simple class="publish-steps">
-        <el-step title="选择模板" />
+        <el-step title="选择投放方式" />
         <el-step title="广告系列与广告组" />
         <el-step title="广告账户与投放" />
         <el-step title="预览提交" />
       </el-steps>
       <el-form label-width="110px" :model="form" class="publish-form">
         <section v-if="activeStep === 0" class="step-panel">
-          <h3>选择投放模板</h3>
-          <p class="step-desc">模板包含 Campaign、AdSet、Ad 和素材文案配置，本次投放只覆盖需要变化的参数。</p>
+          <h3>选择投放方式</h3>
+          <p class="step-desc">可以复用已有模板，也可以直接填写一份投放配置；两种方式最终使用同一套发布链路。</p>
+          <el-radio-group v-model="form.publish_mode" class="publish-mode">
+            <el-radio-button value="TEMPLATE">使用投放模板</el-radio-button>
+            <el-radio-button value="DIRECT">直接配置投放</el-radio-button>
+          </el-radio-group>
+          <template v-if="form.publish_mode === 'TEMPLATE'">
           <el-form-item label="投放模板" required>
           <el-select
             v-model="form.template_id"
@@ -62,10 +67,50 @@
             <el-table-column prop="ad_account_id" label="广告账户" show-overflow-tooltip />
             <el-table-column prop="status" label="状态" width="110" />
           </el-table>
+          </template>
+          <template v-else>
+            <el-form-item label="广告系列名称" required><el-input v-model="directForm.name" placeholder="例如 US 流量测试" /></el-form-item>
+            <el-form-item label="推广目标" required><el-select v-model="directForm.objective" style="width:100%"><el-option label="流量 OUTCOME_TRAFFIC" value="OUTCOME_TRAFFIC" /><el-option label="销售 OUTCOME_SALES" value="OUTCOME_SALES" /><el-option label="互动 OUTCOME_ENGAGEMENT" value="OUTCOME_ENGAGEMENT" /><el-option label="潜在客户 OUTCOME_LEADS" value="OUTCOME_LEADS" /></el-select></el-form-item>
+            <el-form-item label="Facebook Page" required><el-select v-model="directForm.page_id" filterable style="width:100%" placeholder="选择已同步的 Facebook Page"><el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name || page.page_id} (${page.page_id})`" :value="page.page_id" /></el-select></el-form-item>
+            <el-form-item label="默认日预算" required><el-input-number v-model="directForm.daily_budget" :min="1" :step="1" /><span class="tip-inline">美元/天</span></el-form-item>
+            <el-form-item label="优化目标"><el-select v-model="directForm.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" /><el-option label="转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" /></el-select></el-form-item>
+            <el-form-item label="计费事件"><el-select v-model="directForm.billing_event" style="width:100%"><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /></el-select></el-form-item>
+            <el-form-item label="出价策略"><el-select v-model="directForm.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本 + 竞价上限" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select></el-form-item>
+            <el-form-item v-if="directForm.bid_strategy !== 'LOWEST_COST_WITHOUT_CAP'" label="出价金额"><el-input-number v-model="directForm.bid_amount" :min="1" :step="1" /><span class="tip-inline">Meta 账户货币最小单位</span></el-form-item>
+            <div v-for="(adset, index) in directForm.adsets" :key="adset.key" class="direct-adset">
+              <div class="direct-adset-head"><b>广告组 {{ index + 1 }}</b><el-button v-if="directForm.adsets.length > 1" link type="danger" @click="removeDirectAdset(index)">删除</el-button></div>
+              <el-form-item label="广告组名称" required><el-input v-model="adset.name" placeholder="例如 US 广告组" /></el-form-item>
+              <el-form-item label="预算" required><el-input-number v-model="adset.budget" :min="1" :step="1" /><span class="tip-inline">美元/天</span></el-form-item>
+              <el-form-item label="国家/地区" required><el-input v-model="adset.country" placeholder="例如 US；多个国家用逗号分隔" /></el-form-item>
+              <el-form-item label="年龄范围"><el-input-number v-model="adset.age_min" :min="13" :max="65" /> <span>至</span> <el-input-number v-model="adset.age_max" :min="13" :max="65" /></el-form-item>
+              <el-form-item label="版位"><el-select v-model="adset.publisher_platforms" multiple style="width:100%"><el-option label="Facebook" value="facebook" /><el-option label="Instagram" value="instagram" /><el-option label="Audience Network" value="audience_network" /><el-option label="Messenger" value="messenger" /></el-select></el-form-item>
+              <el-form-item label="优化目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" /><el-option label="转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" /></el-select></el-form-item>
+              <el-form-item label="计费事件"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /></el-select></el-form-item>
+              <el-form-item label="出价策略"><el-select v-model="adset.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本 + 竞价上限" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select></el-form-item>
+              <el-form-item v-if="adset.bid_strategy !== 'LOWEST_COST_WITHOUT_CAP'" label="出价金额"><el-input-number v-model="adset.bid_amount" :min="1" :step="1" /></el-form-item>
+            </div>
+            <el-button plain type="primary" @click="addDirectAdset">+ 添加广告组</el-button>
+            <el-divider content-position="left">广告创意</el-divider>
+            <div v-for="(creative, index) in directForm.creatives" :key="creative.key" class="direct-creative">
+              <div class="direct-adset-head"><b>创意 {{ index + 1 }}</b><el-button v-if="directForm.creatives.length > 1" link type="danger" @click="removeDirectCreative(index)">删除</el-button></div>
+              <el-form-item label="素材" required><el-select v-model="creative.asset_id" filterable style="width:100%" placeholder="选择已上传素材"><el-option v-for="asset in mediaAssets" :key="asset.id" :label="`${asset.name} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" /></el-select></el-form-item>
+              <el-form-item label="主文案" required><el-input v-model="creative.primary_text" type="textarea" :rows="3" /></el-form-item>
+              <el-form-item label="标题"><el-input v-model="creative.headline" /></el-form-item>
+              <el-form-item label="描述"><el-input v-model="creative.description" /></el-form-item>
+              <el-form-item label="行动按钮"><el-select v-model="creative.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /></el-select></el-form-item>
+              <el-form-item label="落地页" required><el-input v-model="creative.landing_url" placeholder="https://example.com/landing" /></el-form-item>
+            </div>
+            <el-button plain type="primary" @click="addDirectCreative">+ 添加创意</el-button>
+            <div class="tip">素材必须先在素材库上传；提交后系统会按目标广告账户分别同步素材。</div>
+            <el-form-item label="模板名称">
+              <el-input v-model="form.template_name" placeholder="可选；另存为模板时使用" />
+            </el-form-item>
+            <el-checkbox v-model="form.save_as_template">保存为投放模板</el-checkbox>
+          </template>
         </section>
         <section v-else-if="activeStep === 1" class="step-panel">
           <h3>广告系列与广告组</h3>
-          <p class="step-desc">以下配置来自模板，将为每个目标广告账户创建独立的 Campaign、AdSet 和 Ad。</p>
+          <p class="step-desc">以下配置将为每个目标广告账户创建独立的 Campaign、AdSet 和 Ad。</p>
           <el-descriptions v-if="selectedTemplate" :column="2" border>
             <el-descriptions-item label="广告系列目标">{{ selectedTemplate.objective || '-' }}</el-descriptions-item>
             <el-descriptions-item label="购买类型">{{ selectedTemplate.buying_type || 'AUCTION' }}</el-descriptions-item>
@@ -74,7 +119,10 @@
             <el-descriptions-item label="默认预算">{{ templateBudget }}</el-descriptions-item>
             <el-descriptions-item label="广告创意">{{ creativeCount(selectedTemplate) }} 个</el-descriptions-item>
           </el-descriptions>
-          <el-alert type="warning" :closable="false" show-icon title="模板配置">
+          <el-alert v-if="form.publish_mode === 'DIRECT'" type="info" :closable="false" show-icon title="直接配置">
+            配置将在提交前转换为内部投放配置；素材仍会按广告账户分别同步。
+          </el-alert>
+          <el-alert v-if="form.publish_mode === 'TEMPLATE'" type="warning" :closable="false" show-icon title="模板配置">
             如需修改 Campaign / AdSet / Ad 配置，请先在投放模板中编辑。本次投放可覆盖预算和状态，不会修改模板原始内容。
           </el-alert>
           <el-alert v-if="form.sinan_promotion_id" type="success" :closable="false" show-icon title="已关联司南推广链">{{ form.sinan_promotion_id }}</el-alert>
@@ -153,10 +201,11 @@
         <section v-else class="step-panel">
           <h3>预览并提交</h3>
           <el-descriptions :column="1" border>
-            <el-descriptions-item label="投放模板">{{ selectedTemplate?.name || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="投放方式">{{ form.publish_mode === 'DIRECT' ? '直接配置' : '使用模板' }}</el-descriptions-item>
+            <el-descriptions-item label="投放模板">{{ selectedTemplate?.name || form.template_name || '直接配置' }}</el-descriptions-item>
             <el-descriptions-item label="目标账户">{{ form.ad_account_ids.length }} 个</el-descriptions-item>
-            <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → {{ adsetCount(selectedTemplate) }} 个 AdSet → {{ creativeCount(selectedTemplate) * adsetCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
-            <el-descriptions-item label="预算">{{ form.budget_override ? form.budget_override + ' 美元/天（本次覆盖）' : templateBudget + '（沿用模板）' }}</el-descriptions-item>
+            <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → {{ form.publish_mode === 'DIRECT' ? directForm.adsets.length : adsetCount(selectedTemplate) }} 个 AdSet → {{ form.publish_mode === 'DIRECT' ? directForm.adsets.length : creativeCount(selectedTemplate) * adsetCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
+            <el-descriptions-item label="预算">{{ form.budget_override ? form.budget_override + ' 美元/天（本次覆盖）' : form.publish_mode === 'DIRECT' ? directForm.adsets.reduce((sum, item) => sum + Number(item.budget || 0), 0) + ' 美元/天' : templateBudget + '（沿用模板）' }}</el-descriptions-item>
             <el-descriptions-item label="初始状态">{{ form.status === 'ACTIVE' ? '立即启用' : '暂停' }}</el-descriptions-item>
           </el-descriptions>
           <el-table :data="selectedAccountRows" size="small" style="margin-top: 12px">
@@ -173,6 +222,18 @@
               </template>
             </el-table-column>
           </el-table>
+          <el-table v-if="form.publish_mode === 'DIRECT'" :data="directForm.adsets" size="small" style="margin-top: 12px" border>
+            <el-table-column type="index" label="#" width="55" />
+            <el-table-column prop="name" label="广告组" min-width="150" />
+            <el-table-column prop="budget" label="预算（美元/天）" width="130" />
+            <el-table-column prop="country" label="国家/地区" width="120" />
+            <el-table-column label="年龄" width="100"><template #default="{ row }">{{ row.age_min }}-{{ row.age_max }}</template></el-table-column>
+            <el-table-column label="版位" min-width="150"><template #default="{ row }">{{ row.publisher_platforms.join(', ') || '自动版位' }}</template></el-table-column>
+            <el-table-column prop="optimization_goal" label="优化目标" width="150" />
+          </el-table>
+          <el-alert v-if="form.publish_mode === 'DIRECT'" type="info" :closable="false" show-icon style="margin-top:12px">
+            本次将为每个广告组生成 {{ directForm.creatives.length }} 个广告，共 {{ directForm.adsets.length * directForm.creatives.length }} 个 Ad。
+          </el-alert>
           <el-alert type="warning" :closable="false" show-icon title="提交后将创建异步投放任务">
             系统会逐账户执行，失败账户不会影响已成功账户，可在任务中心重试失败项。
           </el-alert>
@@ -202,6 +263,8 @@
         <el-divider>任务进度</el-divider>
         <p class="job-line">
           任务 <b>{{ currentJob.id }}</b> ·
+          <el-tag size="small" type="info" style="margin-right:6px">{{ currentJob.params?.source === 'DIRECT' ? '直接配置' : '模板投放' }}</el-tag>
+          <span v-if="currentJob.template_id" class="job-meta">模板 {{ currentJob.template_id }}</span>
           <el-tag :type="statusTagType(currentJob.status)" size="small">
             {{ currentJob.status }}
           </el-tag>
@@ -283,6 +346,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { accountApi, type DeployableAccount } from '@/api/admin'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { mediaApi, type MetaAssetBinding } from '@/api/media'
+import { metaPagesApi, type MetaPage } from '@/api/metaPages'
 import { useLocale } from '@/stores/localeStore'
 const { t } = useLocale()
 import {
@@ -307,21 +371,56 @@ const preflighting = ref(false)
 const preflightResult = ref<any>(null)
 const rateLimitStatus = ref<{ count: number; limit: number; usage_ratio: number } | null>(null)
 const assetBindings = ref<MetaAssetBinding[]>([])
+const metaPages = ref<MetaPage[]>([])
+const mediaAssets = ref<any[]>([])
 const activeStep = ref(0)
 
 let pollTimer: number | null = null
 let assetPollTimer: number | null = null
 
 const form = reactive({
+  publish_mode: 'TEMPLATE' as 'TEMPLATE' | 'DIRECT',
   template_id: '',
+  template_name: '',
+  save_as_template: false,
   ad_account_ids: [] as string[],
   budget_override: 0,
   status: 'PAUSED',
   sinan_promotion_id: String(route.query.sinan_promotion_id || ''),
 })
 
+const directForm = reactive({
+  name: '直接投放测试', objective: 'OUTCOME_TRAFFIC', page_id: '', daily_budget: 10,
+  optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1,
+  adsets: [{ key: `${Date.now()}-1`, name: 'US 广告组', budget: 10, country: 'US', age_min: 18, age_max: 65, publisher_platforms: ['facebook'] as string[], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1 }],
+  creatives: [{ key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' }],
+})
+
+const addDirectAdset = () => {
+  directForm.adsets.push({ key: `${Date.now()}-${directForm.adsets.length + 1}`, name: `广告组 ${directForm.adsets.length + 1}`, budget: directForm.daily_budget, country: 'US', age_min: 18, age_max: 65, publisher_platforms: ['facebook'], optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy, bid_amount: 1 })
+}
+const removeDirectAdset = (index: number) => { if (directForm.adsets.length > 1) directForm.adsets.splice(index, 1) }
+const addDirectCreative = () => directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
+const removeDirectCreative = (index: number) => { if (directForm.creatives.length > 1) directForm.creatives.splice(index, 1) }
+
 const selectedTemplate = computed(() => templates.value.find(t => t.id === form.template_id) || null)
-const templateReady = computed(() => !!selectedTemplate.value?.creative_config_json?.page_id)
+const directConfig = computed<Record<string, any> | null>(() => {
+  if (form.publish_mode !== 'DIRECT') return null
+  const creatives = directForm.creatives.map(({ key, ...creative }) => creative)
+  return {
+    name: directForm.name, objective: directForm.objective, page_id: directForm.page_id, daily_budget: directForm.daily_budget,
+    optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy,
+    creatives,
+    adsets: directForm.adsets.map(adset => ({ name: adset.name, budget: adset.budget,
+      targeting: { geo_locations: { countries: adset.country.split(',').map(v => v.trim()).filter(Boolean) }, age_min: adset.age_min, age_max: adset.age_max },
+      placement: { publisher_platforms: adset.publisher_platforms }, optimization_goal: adset.optimization_goal,
+      billing_event: adset.billing_event, bid_strategy: adset.bid_strategy,
+      bid_amount: adset.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? undefined : adset.bid_amount, creatives })),
+  }
+})
+const templateReady = computed(() => form.publish_mode === 'DIRECT'
+  ? !!directConfig.value?.page_id
+  : !!selectedTemplate.value?.creative_config_json?.page_id)
 const canSubmit = computed(() => !!form.template_id && templateReady.value && form.ad_account_ids.length > 0 && !!preflightResult.value?.passed)
 const templateBudget = computed(() => {
   if (!selectedTemplate.value) return '-'
@@ -339,7 +438,9 @@ const adsetCount = (template: CampaignTemplate | null) => {
   return Array.isArray(adsets) && adsets.length ? adsets.length : 1
 }
 const canNext = computed(() => {
-  if (activeStep.value === 0) return !!form.template_id && templateReady.value
+  if (activeStep.value === 0) return form.publish_mode === 'DIRECT'
+    ? !!directConfig.value?.page_id && !!directConfig.value?.name && directForm.adsets.length > 0 && directForm.adsets.every(item => !!item.name && !!item.country && Number(item.budget) > 0 && item.age_min <= item.age_max) && directForm.creatives.length > 0 && directForm.creatives.every(item => !!item.asset_id && !!item.primary_text && /^https?:\/\//.test(item.landing_url))
+    : !!form.template_id && templateReady.value
   if (activeStep.value === 2) return form.ad_account_ids.length > 0
   return true
 })
@@ -444,6 +545,14 @@ const syncAccessBusinessDefaults = () => {
   }
 }
 
+const loadDirectResources = async () => {
+  try {
+    const [pages, assets] = await Promise.all([metaPagesApi.list('ACTIVE'), mediaApi.list()])
+    metaPages.value = pages.data || []
+    mediaAssets.value = (assets.data || []).filter((item: any) => ['READY', 'PENDING', 'PROCESSING'].includes(item.status))
+  } catch { metaPages.value = []; mediaAssets.value = [] }
+}
+
 const pollAssetBindings = (assetIds: string[]) => {
   if (assetPollTimer !== null) window.clearInterval(assetPollTimer)
   let rounds = 0
@@ -511,7 +620,7 @@ const submit = async () => {
     syncAccessBusinessDefaults()
     // 素材是按广告账户生成 Meta 映射的；先创建映射占位，再提交创建任务。
     // 真正的上传由后端异步投放任务处理，避免前端等待多个账户上传。
-    const creatives = selectedTemplate.value?.creative_config_json?.creatives
+    const creatives = selectedTemplate.value?.creative_config_json?.creatives || directConfig.value?.creatives
     const assetIds = Array.isArray(creatives)
       ? [...new Set(creatives.map((item: any) => item?.asset_id).filter(Boolean))]
       : []
@@ -521,7 +630,11 @@ const submit = async () => {
       pollAssetBindings(assetIds.map(String))
     }
     const { data } = await jobsApi.createCampaign({
-      template_id: form.template_id,
+      template_id: form.template_id || undefined,
+      inline_config: form.publish_mode === 'DIRECT' ? directConfig.value || undefined : undefined,
+      source: form.publish_mode,
+      save_as_template: form.save_as_template,
+      template_name: form.template_name || undefined,
       ad_account_ids: form.ad_account_ids,
       budget_override: form.budget_override || undefined,
       status: form.status,
@@ -531,7 +644,7 @@ const submit = async () => {
     if (data.rejected_accounts?.length) {
       ElMessage.warning(`有 ${data.rejected_accounts.length} 个账号未进入任务，请检查账号状态`)
     }
-    ElMessage.success(`任务已提交：${data.job_id}（共 ${data.total_accounts} 个账户）`)
+    ElMessage.success(`任务已提交：${data.job_id}（${data.source === 'DIRECT' ? '直接配置' : '模板'}，共 ${data.total_accounts} 个账户）`)
     const { data: job } = await jobsApi.get(data.job_id)
     currentJob.value = job
     startPolling(data.job_id)
@@ -544,11 +657,28 @@ const submit = async () => {
 }
 
 const runPreflight = async () => {
-  if (!form.template_id || !form.ad_account_ids.length) return
+  if (form.publish_mode === 'TEMPLATE' && !form.template_id || form.publish_mode === 'DIRECT' && !directConfig.value || !form.ad_account_ids.length) return
   preflighting.value = true
   try {
-  syncAccessBusinessDefaults()
-  const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined, access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined })
+    if (form.publish_mode === 'DIRECT' && form.save_as_template && !form.template_id && directConfig.value) {
+      const firstAdset = directConfig.value.adsets?.[0] || {}
+      const { data: saved } = await templatesApi.create({
+        name: form.template_name || directConfig.value.name,
+        objective: directConfig.value.objective,
+        daily_budget: directConfig.value.daily_budget,
+        bid_strategy: firstAdset.bid_strategy,
+        optimization_goal: firstAdset.optimization_goal,
+        billing_event: firstAdset.billing_event,
+        targeting_json: firstAdset.targeting,
+        placement_json: firstAdset.placement,
+        creative_config_json: { page_id: directConfig.value.page_id, creatives: directConfig.value.creatives, adsets: directConfig.value.adsets },
+      })
+      form.template_id = saved.id
+      ElMessage.success(`已保存投放模板：${saved.name}`)
+    }
+    syncAccessBusinessDefaults()
+  const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id || undefined, inline_config: form.publish_mode === 'DIRECT' ? directConfig.value || undefined : undefined, template_name: form.template_name || undefined, save_as_template: form.save_as_template, source: form.publish_mode, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined, access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined })
+    if (data.template_id && form.publish_mode === 'DIRECT') form.template_id = data.template_id
     preflightResult.value = data
     if (!data.passed) ElMessage.error('预检未通过，请处理阻断项')
   } finally { preflighting.value = false }
@@ -556,6 +686,11 @@ const runPreflight = async () => {
 
 // 账户选择变化后刷新限流水位；这是参考水位，不替代 Meta app-level 限流返回。
 watch(form, loadRateLimitStatus, { deep: true })
+watch(() => form.publish_mode, mode => {
+  form.template_id = ''
+  preflightResult.value = null
+  if (mode === 'TEMPLATE') form.save_as_template = false
+})
 
 const missingAssetAccounts = computed(() => (preflightResult.value?.warnings || []).filter((item: any) => item.code === 'ACCOUNTS_REJECTED' && item.items?.some((row: any) => row.reason === '素材尚未同步完成')))
 const preflightBlockedAccounts = computed(() => (preflightResult.value?.warnings || []).flatMap((item: any) => item.items || []))
@@ -610,6 +745,7 @@ const cancelJob = async (id: string) => {
 onMounted(() => {
   loadTemplates()
   loadAccounts()
+  loadDirectResources()
   loadJobs()
   const presetAccounts = String(route.query.account_ids || '').split(',').filter(Boolean)
   if (presetAccounts.length) form.ad_account_ids = presetAccounts
@@ -636,6 +772,11 @@ onUnmounted(stopPolling)
 .tip-inline { color: #909399; font-size: 12px; margin-left: 10px; }
 .publish-steps { margin: 6px 0 28px; }
 .publish-form { max-width: 920px; }
+.publish-mode { margin-bottom: 18px; }
+.direct-adset { padding: 14px 16px 4px; margin: 12px 0; border: 1px solid #dcdfe6; border-radius: 8px; background: #fafcff; }
+.direct-creative { padding: 14px 16px 4px; margin: 12px 0; border: 1px solid #e4e7ed; border-radius: 8px; background: #fff; }
+.job-meta { color: #909399; font-size: 12px; margin-right: 6px; }
+.direct-adset-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; color: #243b53; }
 .step-panel { min-height: 270px; padding: 8px 4px; }
 .step-panel h3 { margin: 0 0 8px; color: #1f2d3d; }
 .step-desc { margin: 0 0 24px; color: #909399; font-size: 13px; }

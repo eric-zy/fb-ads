@@ -40,10 +40,14 @@ export interface CampaignJob {
 export interface JobSubmitResult {
   job_id: string
   status: string
+  template_id?: string | null
+  source?: 'TEMPLATE' | 'DIRECT' | string
   total_accounts: number
 }
 export interface CampaignPreflightResult {
   passed: boolean
+  template_id?: string | null
+  source?: 'TEMPLATE' | 'DIRECT' | string
   template?: { id: string; name: string; objective?: string; creative_count: number }
   errors: Array<{ code: string; message: string }>
   warnings: Array<{ code: string; message: string; items?: any[] }>
@@ -52,7 +56,11 @@ export interface CampaignPreflightResult {
 }
 
 export interface CreateCampaignPayload {
-  template_id: string
+  template_id?: string
+  inline_config?: Record<string, any>
+  save_as_template?: boolean
+  template_name?: string
+  source?: 'TEMPLATE' | 'DIRECT'
   ad_account_ids: string[]
   budget_override?: number
   status?: string

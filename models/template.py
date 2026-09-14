@@ -47,6 +47,7 @@ class CampaignTemplate(TenantMixin, Base):
     creative_config_json = Column(JSON, comment="素材与文案配置（headline/primary_text/description/cta/landing_url）")
 
     status = Column(String(32), default=TemplateStatus.ACTIVE.value, comment="ACTIVE / DISABLED / ARCHIVED")
+    is_temporary = Column(Boolean, nullable=False, default=False, server_default="false", comment="直接投放内部配置，不展示在模板列表")
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -79,6 +80,7 @@ class CampaignTemplate(TenantMixin, Base):
             "placement_json": self.placement_json,
             "creative_config_json": self.creative_config_json,
             "status": self.status,
+            "is_temporary": self.is_temporary,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
