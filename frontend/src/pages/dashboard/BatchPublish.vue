@@ -25,7 +25,7 @@
           <h3>选择投放方式</h3>
           <p class="step-desc">可以复用已有模板，也可以直接填写一份投放配置；两种方式最终使用同一套发布链路。</p>
           <el-form-item label="投放方式" required class="field-medium">
-            <el-select v-model="form.publish_mode" style="width:100%" placeholder="请选择投放方式">
+            <el-select v-model="form.publish_mode" class="content-width-select" style="width:240px" title="请选择投放方式" placeholder="请选择投放方式">
               <el-option label="使用投放模板" value="TEMPLATE" />
               <el-option label="直接配置投放" value="DIRECT" />
             </el-select>
@@ -36,13 +36,14 @@
             v-model="form.template_id"
             filterable
             placeholder="选择投放模板"
-            style="width: 100%"
+            :style="{ width: templateSelectWidth }"
+            :title="selectedTemplateLabel"
             :loading="loadingTemplates"
           >
             <el-option
               v-for="t in templates"
               :key="t.id"
-              :label="`${t.name}（${t.objective || '-'} · $${t.daily_budget ?? '-'}/天）`"
+              :label="templateLabel(t)"
               :value="t.id"
             />
             <template #empty>
@@ -406,6 +407,12 @@ const addDirectCreative = () => directForm.creatives.push({ key: `${Date.now()}-
 const removeDirectCreative = (index: number) => { if (directForm.creatives.length > 1) directForm.creatives.splice(index, 1) }
 
 const selectedTemplate = computed(() => templates.value.find(t => t.id === form.template_id) || null)
+const templateLabel = (item: CampaignTemplate) => `${item.name}（${item.objective || '-'} · $${item.daily_budget ?? '-'}/天）`
+const selectedTemplateLabel = computed(() => selectedTemplate.value ? templateLabel(selectedTemplate.value) : '选择投放模板')
+const templateSelectWidth = computed(() => {
+  const longest = templates.value.reduce((max, item) => Math.max(max, templateLabel(item).length), 8)
+  return `${Math.min(640, Math.max(180, Math.ceil(longest * 14 * 1.05)))}px`
+})
 const directConfig = computed<Record<string, any> | null>(() => {
   if (form.publish_mode !== 'DIRECT') return null
   const creatives = directForm.creatives.map(({ key, ...creative }) => creative)
@@ -780,8 +787,9 @@ onUnmounted(stopPolling)
 .publish-mode { margin-bottom: 18px; }
 .publish-form :deep(.el-form-item.field-medium .el-form-item__content) { max-width: 360px; }
 .publish-form :deep(.el-form-item.field-wide .el-form-item__content) { max-width: 640px; }
-.publish-form :deep(.el-form-item.field-medium .el-select),
-.publish-form :deep(.el-form-item.field-wide .el-select) { width: 100% !important; }
+.publish-form :deep(.el-form-item.field-medium .el-select) { width: 240px !important; }
+.content-width-select :deep(.el-select__selected-item),
+.content-width-select :deep(.el-input__inner) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .direct-adset { padding: 14px 16px 4px; margin: 12px 0; border: 1px solid #dcdfe6; border-radius: 8px; background: #fafcff; }
 .direct-creative { padding: 14px 16px 4px; margin: 12px 0; border: 1px solid #e4e7ed; border-radius: 8px; background: #fff; }
 .job-meta { color: #909399; font-size: 12px; margin-right: 6px; }
