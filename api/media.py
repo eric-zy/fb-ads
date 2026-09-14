@@ -167,6 +167,7 @@ def prepare_asset_bindings(
     if not req.ad_account_ids:
         raise HTTPException(status_code=400, detail="至少选择一个广告账户")
     created = []
+    queued = []
     for account_id in set(req.ad_account_ids):
         account = _assert_account_access(db, account_id, user)
         binding = db.query(MetaAssetBinding).filter(
@@ -188,7 +189,18 @@ def prepare_asset_bindings(
             binding.updated_at = datetime.utcnow()
         created.append(binding)
     db.commit()
-    return {"asset_id": asset_id, "status": "PENDING", "bindings": [row.to_dict() for row in created]}
+    # 重新同步不仅建立占位记录，也必须为已有的 PENDING/失败记录重新派发上传任务。
+    # READY 的绑定无需重复上传；UPLOADING/PROCESSING 由原任务继续处理，避免重复任务。
+    for row in created:
+        if row.status in ("PENDING", "FAILED", "EXPIRED") and not row.meta_asset_id:
+            task = upload_asset_task.delay(row.id)
+            queued.append({"binding_id": row.id, "task_id": task.id})
+    return {
+        "asset_id": asset_id,
+        "status": "QUEUED" if queued else "READY",
+        "bindings": [row.to_dict() for row in created],
+        "queued_tasks": queued,
+    }
 
 
 @router.post("/{asset_id}/bindings/{binding_id}/retry")

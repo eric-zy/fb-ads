@@ -562,23 +562,30 @@ const loadDirectResources = async () => {
   } catch { metaPages.value = []; mediaAssets.value = [] }
 }
 
-const pollAssetBindings = (assetIds: string[]) => {
+const pollAssetBindings = (assetIds: string[]): Promise<void> => {
   if (assetPollTimer !== null) window.clearInterval(assetPollTimer)
   let rounds = 0
-  assetPollTimer = window.setInterval(async () => {
-    rounds += 1
-    try {
-      const results = await Promise.all(assetIds.map(id => mediaApi.bindings(String(id))))
-      assetBindings.value = results.flatMap(result => result.data)
-      const pending = assetBindings.value.some(row => ['PENDING', 'UPLOADING'].includes(row.status))
-      if (!pending || rounds >= 30) {
-        window.clearInterval(assetPollTimer as number)
-        assetPollTimer = null
+  return new Promise(resolve => {
+    assetPollTimer = window.setInterval(async () => {
+      rounds += 1
+      try {
+        const results = await Promise.all(assetIds.map(id => mediaApi.bindings(String(id))))
+        assetBindings.value = results.flatMap(result => result.data)
+        const pending = assetBindings.value.some(row => ['PENDING', 'UPLOADING', 'PROCESSING'].includes(row.status))
+        if (!pending || rounds >= 30) {
+          window.clearInterval(assetPollTimer as number)
+          assetPollTimer = null
+          resolve()
+        }
+      } catch {
+        if (rounds >= 30) {
+          window.clearInterval(assetPollTimer as number)
+          assetPollTimer = null
+          resolve()
+        }
       }
-    } catch {
-      if (rounds >= 30) window.clearInterval(assetPollTimer as number)
-    }
-  }, 2000)
+    }, 2000)
+  })
 }
 
 const startPolling = (jobId: string) => {
@@ -716,7 +723,8 @@ const syncMissingAssets = async () => {
   syncingAssets.value = true
   try {
     await Promise.all(assetIds.map(assetId => mediaApi.prepare(String(assetId), accountIds)))
-    ElMessage.success('已提交缺失素材同步任务，请稍后重新预检')
+    ElMessage.success('已提交缺失素材同步任务，正在等待素材同步完成')
+    await pollAssetBindings(assetIds)
     await runPreflight()
   } finally {
     syncingAssets.value = false
