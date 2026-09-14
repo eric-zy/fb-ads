@@ -196,11 +196,11 @@
             <div v-for="(adset, index) in adsetForms" :key="index" class="adset-card">
               <div class="creative-head"><b>广告组 {{ index + 1 }}</b><el-button v-if="adsetForms.length > 1" link type="danger" @click="removeAdset(index)">删除</el-button></div>
               <el-form-item label="名称"><el-input v-model="adset.name" placeholder="例如 US 广告组" /></el-form-item>
-              <div class="inline-fields"><el-form-item label="预算 daily_budget"><el-input-number v-model="adset.budget" :min="1" :step="10" /></el-form-item><el-form-item label="国家 geo_locations"><el-input v-model="adset.countries" placeholder="US,CA" /></el-form-item></div>
+              <div class="inline-fields"><el-form-item label="预算"><el-input-number v-model="adset.budget" :min="1" :step="10" /><span class="field-code">Meta: daily_budget</span></el-form-item><el-form-item label="国家/地区"><el-input v-model="adset.countries" placeholder="US,CA" /><span class="field-code">Meta: geo_locations</span></el-form-item></div>
               <div class="inline-fields"><el-form-item label="年龄"><el-input-number v-model="adset.age_min" :min="13" :max="65" /><span>至</span><el-input-number v-model="adset.age_max" :min="13" :max="65" /></el-form-item><el-form-item label="性别"><el-checkbox-group v-model="adset.genders"><el-checkbox :label="1">男</el-checkbox><el-checkbox :label="2">女</el-checkbox></el-checkbox-group></el-form-item></div>
               <el-form-item label="兴趣"><el-input v-model="adset.interests" placeholder="可选，多个兴趣用逗号分隔" /></el-form-item>
-              <div class="inline-fields"><el-form-item label="优化目标 optimization_goal"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" /></el-select></el-form-item><el-form-item label="计费事件 billing_event"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /></el-select></el-form-item></div>
-              <div class="inline-fields"><el-form-item label="出价策略 bid_strategy"><el-select v-model="adset.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本（含竞价上限）" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限 COST_CAP" value="COST_CAP" /></el-select></el-form-item><el-form-item v-if="['LOWEST_COST_WITH_BID_CAP','COST_CAP'].includes(adset.bid_strategy)" label="竞价上限 bid_amount"><el-input-number v-model="adset.bid_amount" :min="1" :step="100" /></el-form-item></div>
+              <div class="inline-fields"><el-form-item label="优化目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击" value="LINK_CLICKS" /><el-option label="展示次数" value="IMPRESSIONS" /><el-option label="落地页浏览量" value="LANDING_PAGE_VIEWS" /></el-select><span class="field-code">Meta: optimization_goal</span></el-form-item><el-form-item label="计费事件"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示次数" value="IMPRESSIONS" /><el-option label="链接点击" value="LINK_CLICKS" /></el-select><span class="field-code">Meta: billing_event</span></el-form-item></div>
+              <div class="inline-fields"><el-form-item label="出价策略"><el-select v-model="adset.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本（含竞价上限）" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select><span class="field-code">Meta: bid_strategy</span></el-form-item><el-form-item v-if="['LOWEST_COST_WITH_BID_CAP','COST_CAP'].includes(adset.bid_strategy)" label="竞价上限"><el-input-number v-model="adset.bid_amount" :min="1" :step="100" /><span class="field-code">Meta: bid_amount</span></el-form-item></div>
               <el-form-item label="Advantage+ 受众"><el-switch v-model="adset.advantage_audience" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="关闭" /></el-form-item>
               <el-form-item label="版位"><el-select v-model="adset.placements" multiple collapse-tags style="width:100%" placeholder="默认自动版位"><el-option label="Facebook 信息流" value="facebook_feed" /><el-option label="Instagram 信息流" value="instagram_stream" /><el-option label="Facebook 快拍" value="facebook_story" /><el-option label="Instagram 快拍" value="instagram_story" /></el-select></el-form-item>
             </div>
@@ -660,6 +660,14 @@ onMounted(loadTemplates)
 .adset-editor { width: 100%; }
 .adset-card { border: 1px solid #dcdfe6; border-radius: 6px; padding: 12px; margin-bottom: 10px; background: #fafcff; }
 .adset-card :deep(.el-form-item) { margin-bottom: 10px; }
+.adset-card :deep(.el-form-item__label) { width: 150px !important; white-space: nowrap; padding-right: 10px; }
+.adset-card :deep(.el-form-item__content) { min-width: 0; }
+.field-code { display: block; color: #909399; font-size: 11px; line-height: 1.3; margin-top: 4px; }
+.adset-card .inline-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) {
+  .adset-card .inline-fields { grid-template-columns: 1fr; gap: 0; }
+  .adset-card :deep(.el-form-item__label) { width: 145px !important; }
+}
 .header-bar {
   display: flex;
   justify-content: space-between;
