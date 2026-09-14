@@ -22,6 +22,7 @@ from models import (
     CampaignJob,
     CampaignJobItem,
     CampaignTemplate,
+    BusinessAssetAccess,
     MetaPage,
     MetaAssetBinding,
 )
@@ -99,7 +100,11 @@ class JobService:
             errors.append({"code": "CREATIVE_REQUIRED", "message": "模板至少需要一个有效素材"})
 
         ids = list(dict.fromkeys(ad_account_ids or []))
-        available, rejected = AdAccountService(self.db).filter_available_ids(ids, user_id=created_by)
+        available, rejected = AdAccountService(self.db).filter_available_ids(
+            ids,
+            user_id=created_by,
+            allow_paused_debug=status == InstanceStatus.PAUSED.value,
+        )
         asset_ids = [str(item.get("asset_id")) for item in creatives if item.get("asset_id")]
         if asset_ids and available:
             ready_bindings = self.db.query(MetaAssetBinding.ad_account_id, MetaAssetBinding.asset_id).filter(
@@ -204,7 +209,17 @@ class JobService:
         # 避免把已禁用、凭据失效或 Meta 侧异常的账户派发给 Meta。
         from services.meta import AdAccountService
 
-        ad_account_ids, rejected = AdAccountService(self.db).filter_available_ids(ad_account_ids, user_id=created_by)
+        params = params or {}
+        requested_status = params.get("status", InstanceStatus.PAUSED.value)
+        # PAUSED 仅允许创建调试对象；ACTIVE 仍必须通过完整支付校验。
+        ad_account_ids, rejected = AdAccountService(self.db).filter_available_ids(
+            ad_account_ids,
+            user_id=created_by,
+            allow_paused_debug=(
+                action_type == ActionType.CREATE
+                and requested_status == InstanceStatus.PAUSED.value
+            ),
+        )
         compatible_ids = []
         for account_pk in ad_account_ids:
             account = self.db.query(AdAccount).filter(AdAccount.id == account_pk).first()
@@ -226,7 +241,20 @@ class JobService:
         action_value = (
             action_type.value if isinstance(action_type, ActionType) else action_type
         )
-        params = params or {}
+        access_map = params.get("access_business_ids") or {}
+        if not isinstance(access_map, dict):
+            raise ValueError("access_business_ids 必须是对象")
+        for account_id, business_id in access_map.items():
+            if account_id not in ad_account_ids:
+                continue
+            allowed = self.db.query(BusinessAssetAccess.id).filter(
+                BusinessAssetAccess.business_id == business_id,
+                BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+                BusinessAssetAccess.asset_id == account_id,
+                BusinessAssetAccess.status == "ACTIVE",
+            ).first()
+            if not allowed:
+                raise ValueError(f"BM {business_id} 无权访问广告账户 {account_id}")
         # 保留被前置校验剔除的账户，供前端明确提示，不进入投放子任务。
         if rejected:
             params = dict(params)
@@ -250,11 +278,14 @@ class JobService:
         self.db.flush()
 
         for account_id in ad_account_ids:
+            access_map = params.get("access_business_ids") or {}
+            access_business_id = access_map.get(account_id)
             self.db.add(
                 CampaignJobItem(
                     id=_new_id(),
                     job_id=job.id,
                     ad_account_id=account_id,
+                    access_business_id=access_business_id,
                     status=JobItemStatus.PENDING.value,
                     request_hash=build_request_hash(
                         template_id, account_id, action_value, key_params

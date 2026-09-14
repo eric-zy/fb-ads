@@ -6,6 +6,7 @@ export interface CampaignJobItem {
   id: string
   job_id: string
   ad_account_id: string
+  access_business_id?: string | null
   status: string
   meta_campaign_id: string | null
   adset_ids: string[] | null
@@ -14,7 +15,7 @@ export interface CampaignJobItem {
   error_message: string | null
   error_category: string | null
   retry_count: number
-  response_payload?: { cleanup_failed?: boolean; cleanup_object_ids?: string[] } | null
+  response_payload?: { cleanup_failed?: boolean; cleanup_object_ids?: string[]; meta_status?: string; review_status?: string; effective_status?: string; error_code?: string; error_message?: string; [key: string]: any } | null
   created_at: string | null
   updated_at: string | null
 }
@@ -56,6 +57,7 @@ export interface CreateCampaignPayload {
   budget_override?: number
   status?: string
   sinan_promotion_id?: string
+  access_business_ids?: Record<string, string>
 }
 
 export interface TemplateActionPayload {
@@ -70,6 +72,7 @@ export interface ScheduleCampaignPayload {
   status?: string
   /** 计划执行时间，ISO 8601（如 2026-08-30T10:00:00Z 或 2026-08-30T18:00:00+08:00） */
   scheduled_at: string
+  access_business_ids?: Record<string, string>
 }
 
 export const jobsApi = {

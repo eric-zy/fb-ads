@@ -28,7 +28,7 @@ from core.enums import CredentialStatus
 from core.logger import logger
 from models import (
     AccountStatus,
-    AdAccount,
+    AdAccount, BusinessAssetAccess,
     BusinessStatus,
     Credential,
     MetaAccount,
@@ -167,7 +167,12 @@ def get_meta_account(
     meta = _get_meta_or_404(db, meta_id)
     data = _meta_to_dict(db, meta)
 
-    accounts = db.query(AdAccount).filter(AdAccount.business_id == meta_id).all()
+    accounts = (
+        db.query(AdAccount)
+        .join(BusinessAssetAccess, BusinessAssetAccess.asset_id == AdAccount.id)
+        .filter(BusinessAssetAccess.business_id == meta_id, BusinessAssetAccess.asset_type == "AD_ACCOUNT")
+        .all()
+    )
     data["accounts"] = [account_to_dict(a) for a in accounts]
     data["account_stats"] = {
         "total": len(accounts),
@@ -355,7 +360,11 @@ def delete_meta_account(
     同时清理该 BM 名下的凭据，避免留下无主凭据。
     """
     meta = _get_meta_or_404(db, meta_id)
-    linked = db.query(AdAccount).filter(AdAccount.business_id == meta_id).count()
+    linked = db.query(BusinessAssetAccess).filter(
+        BusinessAssetAccess.business_id == meta_id,
+        BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+        BusinessAssetAccess.status == "ACTIVE",
+    ).count()
     if linked > 0:
         raise HTTPException(
             status_code=400,
@@ -594,7 +603,12 @@ def list_ad_accounts_from_meta(
         raise HTTPException(status_code=400, detail=str(e))
 
     existing = {
-        a.account_id for a in db.query(AdAccount).filter(AdAccount.business_id == meta_id).all()
+        a.account_id for a in db.query(AdAccount).join(
+            BusinessAssetAccess, BusinessAssetAccess.asset_id == AdAccount.id
+        ).filter(
+            BusinessAssetAccess.business_id == meta_id,
+            BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+        ).all()
     }
     accounts = []
     for item in raw:
@@ -636,7 +650,12 @@ def list_pending_ad_accounts(
     for meta in metas:
         try:
             remote = MetaSyncService(db).fetch_ad_accounts_from_meta(meta.id)
-            local_ids = {a.account_id for a in db.query(AdAccount).filter(AdAccount.business_id == meta.id).all()}
+            local_ids = {a.account_id for a in db.query(AdAccount).join(
+                BusinessAssetAccess, BusinessAssetAccess.asset_id == AdAccount.id
+            ).filter(
+                BusinessAssetAccess.business_id == meta.id,
+                BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+            ).all()}
             for item in remote:
                 account_id = str(item.get("id", "")).strip()
                 normalized = account_id if account_id.startswith("act_") else f"act_{account_id}"

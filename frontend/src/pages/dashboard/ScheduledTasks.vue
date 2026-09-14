@@ -80,6 +80,16 @@
           </el-select>
         </el-form-item>
 
+        <el-form-item v-if="selectedAccountRows.length" label="发布 BM">
+          <div v-for="account in selectedAccountRows" :key="account.id" class="access-business-row">
+            <span class="account-label">{{ account.account_name || account.account_id }}</span>
+            <el-select v-model="accessBusinessIds[account.id]" filterable style="width: 260px" placeholder="选择访问 BM">
+              <el-option v-for="business in account.accessible_businesses || []" :key="business.business_id" :label="`${business.business_name || business.meta_business_id || business.business_id} · ${business.access_level}`" :value="business.business_id" />
+            </el-select>
+          </div>
+          <span class="tip-inline">不选择时使用广告账户原始归属 BM。</span>
+        </el-form-item>
+
         <el-form-item label="广告账户" required>
           <el-select
             v-model="form.ad_account_ids"
@@ -169,6 +179,18 @@ const form = reactive({
   /** el-date-picker 的 value-format="x" 返回毫秒时间戳字符串 */
   scheduledTime: '' as string,
 })
+const accessBusinessIds = reactive<Record<string, string>>({})
+const selectedAccountRows = computed(() => accounts.value.filter(account => form.ad_account_ids.includes(account.id)))
+
+const syncAccessBusinessDefaults = () => {
+  for (const account of selectedAccountRows.value) {
+    if (accessBusinessIds[account.id]) continue
+    const owner = account.accessible_businesses?.find(item => item.business_id === account.business?.id)
+    const first = owner || account.accessible_businesses?.find(item => item.status === 'ACTIVE')
+    if (first) accessBusinessIds[account.id] = first.business_id
+  }
+  for (const id of Object.keys(accessBusinessIds)) if (!form.ad_account_ids.includes(id)) delete accessBusinessIds[id]
+}
 
 const timezoneLabel = computed(() => {
   const offset = -new Date().getTimezoneOffset()
@@ -230,7 +252,7 @@ const loadAccounts = async () => {
   loadingAccounts.value = true
   try {
     const { data } = await accountApi.availableForDeployment()
-    accounts.value = data
+    accounts.value = data.accounts || data
   } finally {
     loadingAccounts.value = false
   }
@@ -245,6 +267,7 @@ const openCreate = () => {
   form.budget_override = 0
   form.status = 'PAUSED'
   form.scheduledTime = ''
+  for (const id of Object.keys(accessBusinessIds)) delete accessBusinessIds[id]
   dialogVisible.value = true
   if (!templates.value.length) loadTemplates()
   if (!accounts.value.length) loadAccounts()
@@ -286,12 +309,14 @@ const submit = async () => {
 
   submitting.value = true
   try {
+    syncAccessBusinessDefaults()
     const { data } = await jobsApi.scheduleCampaign({
       template_id: form.template_id,
       ad_account_ids: form.ad_account_ids,
       budget_override: form.budget_override || undefined,
       status: form.status,
       scheduled_at: toIsoWithOffset(when),
+      access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined,
     })
     ElMessage.success(`定时任务已创建：${data.job_id}`)
     dialogVisible.value = false

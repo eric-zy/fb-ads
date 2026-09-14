@@ -30,7 +30,7 @@ from core.database import get_db
 from core.auth import get_current_active_user, require_admin
 from core.logger import logger
 from models import (
-    AdAccount, User, UserAccount, MetaAccount, Credential, SystemStatus,
+    AdAccount, BusinessAssetAccess, User, UserAccount, MetaAccount, Credential, SystemStatus,
     RiskEvent, RiskLevel, CampaignJobItem, MetaSyncLog,
 )
 from services.credential_service import CredentialError, CredentialService
@@ -171,23 +171,23 @@ def _apply_meta_transfer(
     if not skip_verification:
         _verify_bm_ownership(db, meta, account.account_id)
 
-    # 同一 BM 内账户唯一；跨 BM 允许同一 act_xxx
-    dup = (
-        db.query(AdAccount)
-        .filter(
-            AdAccount.business_id == target_business_id,
-            AdAccount.account_id == account.account_id,
-            AdAccount.id != account.id,
-        )
-        .first()
-    )
-    if dup:
-        raise HTTPException(
-            status_code=400,
-            detail=f"该 BM 下已存在账户 {account.account_id}，不允许重复",
-        )
-
-    account.business_id = target_business_id
+    access = db.query(BusinessAssetAccess).filter(
+        BusinessAssetAccess.business_id == target_business_id,
+        BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+        BusinessAssetAccess.asset_id == account.id,
+    ).first()
+    if access:
+        return
+    db.add(BusinessAssetAccess(
+        id=uuid.uuid4().hex,
+        tenant_id=account.tenant_id,
+        business_id=target_business_id,
+        asset_type="AD_ACCOUNT",
+        access_level="MANAGE",
+        access_source="PARTNER",
+        asset_id=account.id,
+        status="ACTIVE",
+    ))
 
 
 def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
@@ -226,6 +226,18 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
         "business_id": a.business_id,
         "meta_business_id": a.meta_business_id,
         "business_name": a.business.name if a.business else None,
+        "accessible_businesses": [
+            {
+                "business_id": rel.business_id,
+                "meta_business_id": rel.business.business_id if rel.business else None,
+                "business_name": rel.business.name if rel.business else None,
+                "access_level": rel.access_level,
+                "access_source": rel.access_source,
+                "status": rel.status,
+                "credential_id": rel.credential_id,
+            }
+            for rel in (a.access_relations if db else [])
+        ],
         "owner_type": a.owner_type,
         "asset_type": a.asset_type or "OWNED",
         "credential_id": a.credential_id,
@@ -306,7 +318,11 @@ def list_accounts(
     if account_status:
         q = q.filter(AdAccount.account_status == account_status)
     if business_id:
-        q = q.filter(AdAccount.business_id == business_id)
+        q = q.join(BusinessAssetAccess, BusinessAssetAccess.asset_id == AdAccount.id).filter(
+            BusinessAssetAccess.business_id == business_id,
+            BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+            BusinessAssetAccess.status == "ACTIVE",
+        )
     if asset_type:
         if asset_type not in ("OWNED", "CLIENT"):
             raise HTTPException(status_code=400, detail="asset_type 只能是 OWNED / CLIENT")
@@ -326,6 +342,7 @@ def list_accounts(
 @router.get("/available-for-deployment", response_model=dict)
 def list_available_for_deployment(
     business_id: Optional[str] = Query(None, description="按归属 BM 过滤"),
+    allow_paused_debug: bool = Query(False, description="仅允许返回可用于 PAUSED 调试的账户"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -337,7 +354,12 @@ def list_available_for_deployment(
     返回结果自带 BM 与凭据上下文（脱敏），投放模块可直接用于创建批量任务。
     """
     user_id = None if current_user.is_admin() else current_user.id
-    items = AdAccountService(db).list_available(business_id=business_id, user_id=user_id)
+    items = AdAccountService(db).list_available(
+        business_id=business_id,
+        user_id=user_id,
+        allow_paused_debug=allow_paused_debug,
+        include_reason=allow_paused_debug,
+    )
     return {"total": len(items), "accounts": items}
 
 
@@ -501,7 +523,7 @@ def create_account(
     归属 BM（business_id）必填，且默认先调用 Meta 校验该账户确实在此 BM 下，
     校验不通过不落库。校验用的 Token 由 CredentialService 按 BM 解析。
 
-    唯一键为 (business_id, account_id)，因此同一 act_xxx 可以挂到不同 BM。
+    同一租户内 account_id 唯一；不同 BM 通过访问关系复用同一账户主实体。
     """
     data.business_id = (data.business_id or "").strip()
     if not data.business_id:
@@ -511,19 +533,34 @@ def create_account(
     if not meta:
         raise HTTPException(status_code=400, detail="指定的主账号不存在")
 
-    # 同一 BM 内不允许重复
+    # 同一 Meta 账户只保留一条主实体；当前 BM 已存在访问关系时拒绝重复绑定。
     dup = (
         db.query(AdAccount)
-        .filter(
-            AdAccount.business_id == data.business_id,
-            AdAccount.account_id == data.account_id,
-        )
+        .filter(AdAccount.account_id == data.account_id)
         .first()
     )
     if dup:
-        raise HTTPException(
-            status_code=400, detail=f"该 BM 下已存在账户 {data.account_id}"
+        access = db.query(BusinessAssetAccess).filter(
+            BusinessAssetAccess.business_id == meta.id,
+            BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+            BusinessAssetAccess.asset_id == dup.id,
+        ).first()
+        if access:
+            raise HTTPException(status_code=400, detail=f"该 BM 已接入账户 {data.account_id}")
+        access = BusinessAssetAccess(
+            id=uuid.uuid4().hex,
+            tenant_id=meta.tenant_id,
+            business_id=meta.id,
+            asset_type="AD_ACCOUNT",
+            asset_id=dup.id,
+            access_level="MANAGE",
+            access_source="PARTNER",
+            status="ACTIVE",
         )
+        db.add(access)
+        db.commit()
+        db.refresh(dup)
+        return account_to_dict(dup, db)
 
     account_name = data.account_name
     if not data.skip_verification:

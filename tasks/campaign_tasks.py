@@ -358,7 +358,10 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
 
         # 每个账户解析自己的 token（多 BM / 多账户架构的关键）
         try:
-            service = CredentialService(db).build_service(item.ad_account_id)
+            service = CredentialService(db).build_service(
+                item.ad_account_id,
+                access_business_id=item.access_business_id,
+            )
         except CredentialError as e:
             item.mark_failed("NO_CREDENTIAL", str(e), ErrorCategory.AUTH)
             db.commit()
@@ -470,7 +473,10 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
         action = job.action_type
         params = job.params or {}
 
-        service = CredentialService(db).build_service(item.ad_account_id)
+        service = CredentialService(db).build_service(
+            item.ad_account_id,
+            access_business_id=item.access_business_id,
+        )
 
         # 优先用子项记录的实例，其次按 模板+账户 反查
         instance = item.campaign_instance

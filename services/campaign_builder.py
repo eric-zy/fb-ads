@@ -128,6 +128,7 @@ class AdSetBuilder:
         status: str = InstanceStatus.PAUSED.value,
         name_suffix: str = "",
         adset_name: Optional[str] = None,
+        adset_config: Optional[Dict[str, Any]] = None,
     ):
         self.service = service
         self.template = template
@@ -137,11 +138,14 @@ class AdSetBuilder:
         self.status = status
         self.name_suffix = name_suffix
         self.adset_name = adset_name
+        self.adset_config = adset_config or {}
 
     def _resolve_budget_cents(self) -> Optional[int]:
         """预算优先级：Job 覆盖值 > 模板日预算 > 模板总预算"""
         if self.budget_override is not None:
             return _usd_to_cents(self.budget_override)
+        if self.adset_config.get("budget") is not None:
+            return _usd_to_cents(self.adset_config["budget"])
         if self.template.budget_type == "LIFETIME":
             return _usd_to_cents(self.template.lifetime_budget)
         return _usd_to_cents(self.template.daily_budget)
@@ -151,15 +155,15 @@ class AdSetBuilder:
         if not budget_cents or budget_cents <= 0:
             raise ValueError("广告组预算必须大于 0")
 
-        targeting = dict(self.template.targeting_json or {"geo_locations": {"countries": ["US"]}})
+        targeting = dict(self.adset_config.get("targeting") or self.template.targeting_json or {"geo_locations": {"countries": ["US"]}})
         # Meta 将 publisher_platforms/facebook_positions 等版位字段放在 targeting 中。
-        targeting.update(self.template.placement_json or {})
+        targeting.update(self.adset_config.get("placement") or self.template.placement_json or {})
         params: Dict[str, Any] = {
-            "name": self.adset_name or f"{self.template.name}{self.name_suffix} AdSet",
+            "name": self.adset_name or self.adset_config.get("name") or f"{self.template.name}{self.name_suffix} AdSet",
             "campaign_id": self.campaign_id,
             "status": self.status,
-            "billing_event": self.template.billing_event or "IMPRESSIONS",
-            "optimization_goal": self.template.optimization_goal or "LINK_CLICKS",
+            "billing_event": self.adset_config.get("billing_event") or self.template.billing_event or "IMPRESSIONS",
+            "optimization_goal": self.adset_config.get("optimization_goal") or self.template.optimization_goal or "LINK_CLICKS",
             # 定向来自模板 JSONB，避免硬编码（原实现硬编码 US + reach）
             "targeting": targeting,
         }
@@ -177,8 +181,14 @@ class AdSetBuilder:
             params["daily_budget"] = budget_cents
 
         optimization_goal = str(params["optimization_goal"]).upper()
-        if optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE"}:
-            promoted_object = (self.template.creative_config_json or {}).get("promoted_object")
+        if optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"}:
+            config = self.template.creative_config_json or {}
+            promoted_object = config.get("promoted_object")
+            if not promoted_object:
+                dataset_id = config.get("dataset_id") or config.get("pixel_id")
+                event = config.get("conversion_event") or config.get("custom_event_type")
+                if dataset_id and event:
+                    promoted_object = {"pixel_id": dataset_id, "custom_event_type": event}
             if not promoted_object:
                 raise ValueError(
                     f"优化目标 {optimization_goal} 必须配置 creative_config_json.promoted_object"
@@ -236,11 +246,18 @@ class CreativeBuilder:
                 "title": cfg.get("headline", ""),
                 "message": cfg.get("primary_text", ""),
             }
+            if cfg.get("description"):
+                media_data["link_description"] = cfg["description"]
             if cfg.get("landing_url"):
                 media_data["call_to_action"] = {
                     "type": cfg.get("cta", "LEARN_MORE"),
-                    "value": {"link": cfg["landing_url"]},
+                    "value": {
+                        "link": cfg["landing_url"],
+                        **({"link_caption": cfg["display_link"]} if cfg.get("display_link") else {}),
+                    },
                 }
+            if cfg.get("url_tags"):
+                media_data["url_tags"] = cfg["url_tags"]
             story_key = "video_data"
         else:
             if not cfg.get("image_hash"):
@@ -261,6 +278,10 @@ class CreativeBuilder:
                     "type": cfg["cta"],
                     "value": {"link": cfg.get("landing_url", "")},
                 }
+            if cfg.get("display_link"):
+                media_data["caption"] = cfg["display_link"]
+            if cfg.get("url_tags"):
+                media_data["url_tags"] = cfg["url_tags"]
             # 带落地页、标题和 CTA 的图片广告属于 link_data；photo_data
             # 不接受 message/name/description/call_to_action 这些字段。
             story_key = "link_data"
@@ -269,6 +290,8 @@ class CreativeBuilder:
             "page_id": self.page_id,
             story_key: media_data,
         }
+        if self.creative_config.get("instagram_actor_id"):
+            object_story_spec["instagram_actor_id"] = self.creative_config["instagram_actor_id"]
 
         return {
             "name": f"{self.name} Creative",
@@ -416,66 +439,36 @@ class CampaignDeploymentBuilder:
         self.db.add(campaign_instance)
         self.db.flush()
 
-        # ---- 2. AdSet ----
-        adset = AdSetBuilder(
-            self.service,
-            self.template,
-            meta_account_id,
-            campaign["id"],
-            budget_override=self.budget_override,
-            status=self.status,
-            adset_name=self.adset_name,
-        ).build()
-        self.created_meta_ids.append(adset["id"])
-        adset_instance = AdSetInstance(
-            id=_new_id(),
-            campaign_instance_id=campaign_instance.id,
-            meta_adset_id=adset["id"],
-            name=f"{self.template.name} AdSet",
-            status=self.status,
-        )
-        self.db.add(adset_instance)
-        self.db.flush()
-
-        # ---- 3. Creative + Ad（每个创意配置生成一个 Ad） ----
         creative_config = self.template.creative_config_json or {}
-        creatives = creative_config.get("creatives")
-        if not creatives:
-            # 兼容：模板未拆分多创意时，整体作为一个创意配置
-            creatives = [creative_config] if creative_config else [{}]
-
+        adset_configs = creative_config.get("adsets") or [{}]
+        all_adset_ids: List[str] = []
         ad_ids: List[str] = []
-        for idx, cfg in enumerate(creatives, 1):
-            creative = CreativeBuilder(
+        for adset_idx, adset_config in enumerate(adset_configs, 1):
+            adset = AdSetBuilder(
                 self.service,
+                self.template,
                 meta_account_id,
-                cfg,
-                page_id=creative_config.get("page_id"),
-                name=f"{self.template.name} C{idx}",
-            ).build()
-            self.created_meta_ids.append(creative["id"])
-
-            ad = AdBuilder(
-                self.service,
-                meta_account_id,
-                adset["id"],
-                creative["id"],
-                name=f"{self.template.name} A{idx}",
+                campaign["id"],
+                budget_override=self.budget_override,
                 status=self.status,
+                adset_name=self.adset_name,
+                adset_config=adset_config,
             ).build()
-            self.created_meta_ids.append(ad["id"])
-
-            self.db.add(
-                AdInstance(
-                    id=_new_id(),
-                    adset_instance_id=adset_instance.id,
-                    creative_id=cfg.get("asset_id"),
-                    meta_ad_id=ad["id"],
-                    name=f"{self.template.name} A{idx}",
-                    status=self.status,
-                )
-            )
-            ad_ids.append(ad["id"])
+            self.created_meta_ids.append(adset["id"])
+            all_adset_ids.append(adset["id"])
+            adset_instance = AdSetInstance(id=_new_id(), campaign_instance_id=campaign_instance.id, meta_adset_id=adset["id"], name=adset_config.get("name") or f"{self.template.name} AdSet {adset_idx}", status=self.status)
+            self.db.add(adset_instance)
+            self.db.flush()
+            creatives = adset_config.get("creatives") or creative_config.get("creatives")
+            if not creatives:
+                creatives = [creative_config] if creative_config else [{}]
+            for idx, cfg in enumerate(creatives, 1):
+                creative = CreativeBuilder(self.service, meta_account_id, cfg, page_id=adset_config.get("page_id") or creative_config.get("page_id"), name=f"{self.template.name} G{adset_idx} C{idx}").build()
+                self.created_meta_ids.append(creative["id"])
+                ad = AdBuilder(self.service, meta_account_id, adset["id"], creative["id"], name=f"{self.template.name} G{adset_idx} A{idx}", status=self.status).build()
+                self.created_meta_ids.append(ad["id"])
+                self.db.add(AdInstance(id=_new_id(), adset_instance_id=adset_instance.id, creative_id=cfg.get("asset_id"), meta_ad_id=ad["id"], name=f"{self.template.name} G{adset_idx} A{idx}", status=self.status))
+                ad_ids.append(ad["id"])
 
         self.db.commit()
 
@@ -483,6 +476,6 @@ class CampaignDeploymentBuilder:
             "skipped": False,
             "campaign_instance_id": campaign_instance.id,
             "meta_campaign_id": campaign["id"],
-            "adset_ids": [adset["id"]],
+            "adset_ids": all_adset_ids,
             "ad_ids": ad_ids,
         }

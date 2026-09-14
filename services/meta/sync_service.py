@@ -5,7 +5,7 @@
     Business → Credential → Meta API → Normalize → Validate → Upsert → Update Sync Status
 
 Upsert 规则（文档 §24）：
-    - 唯一键：(business_id, account_id)，同一 BM 内不重复；跨 BM 允许同一 act_xxx
+    - 唯一键：(tenant_id, account_id)；BM 访问关系另存 BusinessAssetAccess
     - 已存在则 UPDATE，不存在则 INSERT
     - **禁止同步覆盖 system_status**：管理员禁用过的账户，即使 Meta 侧正常也不自动恢复
 
@@ -24,6 +24,7 @@ from config.settings import settings
 from core.logger import logger
 from models import (
     AdAccount,
+    BusinessAssetAccess,
     Credential,
     MetaAccount,
     MetaSyncLog,
@@ -274,7 +275,7 @@ class MetaSyncService:
     def _upsert_ad_account(self, business: Optional[MetaAccount], raw: Dict[str, Any], existing: Optional[AdAccount] = None) -> AdAccount:
         """Upsert 单个广告账户（文档 §24）
 
-        唯一键 (business_id, account_id)；**system_status 不在覆盖范围内**。
+        主实体按 (tenant_id, account_id)；**system_status 不在覆盖范围内**。
         """
         account_id = str(raw.get("id", "")).strip()
         if not account_id:
@@ -285,12 +286,8 @@ class MetaSyncService:
         raw_business_id = str((raw.get("business") or {}).get("id") or "").strip()
 
         account = existing
-        if account is None and business is not None:
-            account = (
-                self.db.query(AdAccount)
-                .filter(AdAccount.business_id == business.id, AdAccount.account_id == account_id)
-                .first()
-            )
+        if account is None:
+            account = self.db.query(AdAccount).filter(AdAccount.account_id == account_id).first()
 
         if account is None:
             account = AdAccount(
@@ -303,6 +300,32 @@ class MetaSyncService:
                 monthly_spend_limit=0,
             )
             self.db.add(account)
+            self.db.flush()
+
+        if business:
+            access = self.db.query(BusinessAssetAccess).filter(
+                BusinessAssetAccess.business_id == business.id,
+                BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+                BusinessAssetAccess.asset_id == account.id,
+            ).first()
+            if access is None:
+                access = BusinessAssetAccess(
+                    id=__import__("uuid").uuid4().hex,
+                    tenant_id=business.tenant_id,
+                    business_id=business.id,
+                    asset_type="AD_ACCOUNT",
+                    asset_id=account.id,
+                    access_level="MANAGE",
+                    access_source="PARTNER" if raw_business_id and raw_business_id != business.business_id else "OWNED",
+                    status="ACTIVE",
+                )
+                self.db.add(access)
+            access.last_verified_at = datetime.utcnow()
+            access.last_error = None
+            # 兼容旧代码：business_id 保留为真实 owner（首次接入时为当前 BM），
+            # 后续通过其他 BM 接入不能覆盖主实体关系。
+            if not account.business_id:
+                account.business_id = business.id
 
         if business and business.connection_id:
             account.connection_id = business.connection_id

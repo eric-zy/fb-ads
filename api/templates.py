@@ -55,15 +55,34 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
     if budget_type == "LIFETIME" and not (config.get("schedule") or {}).get("end_time"):
         raise HTTPException(status_code=400, detail="总预算模板必须配置 schedule.end_time")
     optimization_goal = str(values.get("optimization_goal") or "LINK_CLICKS").upper()
-    if optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE"} and not config.get("promoted_object"):
+    conversion_goal = optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"}
+    has_conversion_config = bool(
+        config.get("promoted_object")
+        or ((config.get("dataset_id") or config.get("pixel_id")) and config.get("conversion_event"))
+    )
+    if conversion_goal and not has_conversion_config:
         raise HTTPException(
             status_code=400,
-            detail=f"优化目标 {optimization_goal} 必须配置 promoted_object",
+            detail=f"优化目标 {optimization_goal} 必须配置 Dataset/Pixel + conversion_event",
         )
+    if config.get("dataset_id") and not config.get("conversion_event") and not config.get("promoted_object"):
+        raise HTTPException(status_code=400, detail="配置 dataset_id/pixel_id 后必须配置 conversion_event")
+
+    audience_keys = {
+        "custom_audiences", "excluded_custom_audiences",
+        "lookalike_audiences", "excluded_audiences",
+    }
+    for key in audience_keys:
+        if targeting.get(key) is not None and not isinstance(targeting.get(key), list):
+            raise HTTPException(status_code=400, detail=f"定向字段 {key} 必须是数组")
+    placements = values.get("placement_json") or {}
+    for key in ("publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions"):
+        if placements.get(key) is not None and not isinstance(placements.get(key), list):
+            raise HTTPException(status_code=400, detail=f"版位字段 {key} 必须是数组")
     creatives = config.get("creatives") or []
     if not creatives:
         raise HTTPException(status_code=400, detail="至少配置一个广告创意")
-    allowed_cta = {"LEARN_MORE", "SHOP_NOW", "SIGN_UP", "BOOK_NOW", "DOWNLOAD", "GET_OFFER", "CONTACT_US", "SUBSCRIBE"}
+    allowed_cta = {"LEARN_MORE", "SHOP_NOW", "SIGN_UP", "BOOK_NOW", "DOWNLOAD", "GET_OFFER", "CONTACT_US", "SUBSCRIBE", "APPLY_NOW", "WATCH_MORE", "MESSAGE_PAGE", "ORDER_NOW", "GET_QUOTE"}
     for index, creative in enumerate(creatives, 1):
         asset_type = str(creative.get("asset_type") or "image").lower()
         if asset_type == "image" and not creative.get("image_hash"):
@@ -72,6 +91,10 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
             raise HTTPException(status_code=400, detail=f"创意 {index} 缺少已同步的视频素材")
         if not str(creative.get("primary_text") or "").strip():
             raise HTTPException(status_code=400, detail=f"创意 {index} 的主文案不能为空")
+        if creative.get("instagram_actor_id") and not str(creative["instagram_actor_id"]).strip():
+            raise HTTPException(status_code=400, detail=f"创意 {index} 的 Instagram 身份无效")
+        if creative.get("url_tags") and not isinstance(creative["url_tags"], str):
+            raise HTTPException(status_code=400, detail=f"创意 {index} 的 URL 参数必须是字符串")
         landing_url = str(creative.get("landing_url") or "")
         parsed = urlparse(landing_url)
         if not parsed.scheme in {"http", "https"} or not parsed.netloc:

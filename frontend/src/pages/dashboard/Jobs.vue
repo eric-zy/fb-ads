@@ -120,12 +120,22 @@
           </template>
         </el-table-column>
         <el-table-column prop="retry_count" label="重试" width="70" />
+        <el-table-column label="Meta 状态" width="160" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.response_payload?.effective_status || row.response_payload?.meta_status || '-' }}
+          </template>
+        </el-table-column>
           <el-table-column label="错误" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="row.error_category" class="err-cat">[{{ row.error_category }}]</span>
             {{ row.error_message }}
           </template>
           </el-table-column>
+        <el-table-column label="审核/错误详情" min-width="240" show-overflow-tooltip>
+          <template #default="{ row }">
+            {{ row.response_payload?.review_status || row.response_payload?.error_message || row.error_message || '-' }}
+          </template>
+        </el-table-column>
           <el-table-column label="待清理 Meta 对象" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">
               {{ row.response_payload?.cleanup_object_ids?.join(', ') || '-' }}

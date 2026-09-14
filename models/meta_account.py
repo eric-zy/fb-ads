@@ -128,6 +128,7 @@ class MetaAccount(TenantMixin, Base):
 
     # ---------- 关联 ----------
     ad_accounts = relationship("AdAccount", back_populates="business", cascade="save-update")
+    asset_accesses = relationship("BusinessAssetAccess", back_populates="business", cascade="all, delete-orphan")
 
     @property
     def is_active(self) -> bool:

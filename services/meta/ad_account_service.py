@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from core.enums import CredentialStatus
-from models import AdAccount, MetaAccount, Credential, BusinessStatus, SystemStatus
+from models import AdAccount, BusinessAssetAccess, MetaAccount, Credential, BusinessStatus, SystemStatus
 
 
 def _credential_service(db):
@@ -50,7 +50,7 @@ class AdAccountService:
     # ------------------------------------------------------------------
     # 可用性判定
     # ------------------------------------------------------------------
-    def check_available(self, account: AdAccount) -> Tuple[bool, str]:
+    def check_available(self, account: AdAccount, *, allow_paused_debug: bool = False) -> Tuple[bool, str]:
         """判断单个账户是否可参与批量投放
 
         Returns:
@@ -90,10 +90,24 @@ class AdAccountService:
         if meta_status not in {"1", "ACTIVE"}:
             return False, f"Meta 侧状态未知或不可投放：{account.account_status}"
 
+        # 发布安全门：PAUSED 只表示创建后不投放，不能用来绕过 Meta
+        # 的账单/付款资格检查。只有同步确认 AVAILABLE 才允许进入可投放池。
+        # UNKNOWN 也必须阻断，避免支付状态尚未同步时误创建广告对象。
         payment_status = (account.payment_status or "UNKNOWN").upper()
-        if payment_status in {"MISSING", "PAST_DUE", "RESTRICTED"}:
-            return False, account.payment_error_message or "广告账户付款配置不可用，请检查 BM 账单与付款"
+        if payment_status != "AVAILABLE" and not allow_paused_debug:
+            payment_messages = {
+                "UNKNOWN": "尚未确认广告账户付款状态，请先同步账户",
+                "MISSING": "广告账户未配置付款方式，请检查 BM 账单与付款",
+                "PAST_DUE": "广告账户存在欠费，请先处理 BM 账单",
+                "RESTRICTED": "广告账户付款受限，请检查 BM 账单与账户风控",
+            }
+            return False, account.payment_error_message or payment_messages.get(
+                payment_status,
+                f"广告账户付款状态不可用：{account.payment_status}",
+            )
 
+        if payment_status != "AVAILABLE":
+            return True, "PAUSED 调试发布：未校验付款状态"
         return True, "ok"
 
     # ------------------------------------------------------------------
@@ -105,11 +119,16 @@ class AdAccountService:
         business_id: Optional[str] = None,
         include_reason: bool = False,
         user_id: Optional[str] = None,
+        allow_paused_debug: bool = False,
     ) -> List[Dict]:
         """列出可参与批量投放的账户（含 BM / 凭据上下文，供投放模块直接使用）"""
         q = self.db.query(AdAccount)
         if business_id:
-            q = q.filter(AdAccount.business_id == business_id)
+            q = q.join(BusinessAssetAccess, BusinessAssetAccess.asset_id == AdAccount.id).filter(
+                BusinessAssetAccess.business_id == business_id,
+                BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+                BusinessAssetAccess.status == "ACTIVE",
+            )
         if user_id:
             from models import User, UserAccount
             user = self.db.query(User).filter(User.id == user_id).first()
@@ -123,7 +142,7 @@ class AdAccountService:
 
         result: List[Dict] = []
         for account in q.order_by(AdAccount.created_at.desc()).all():
-            available, reason = self.check_available(account)
+            available, reason = self.check_available(account, allow_paused_debug=allow_paused_debug)
             if not available:
                 continue
 
@@ -153,6 +172,10 @@ class AdAccountService:
                     # 脱敏，绝不明文返回
                     "masked": (cred.to_dict().get("access_token_masked") if cred else None),
                 },
+                "payment_status": account.payment_status,
+                "payment_source": account.payment_source,
+                "payment_error_message": account.payment_error_message,
+                "payment_checked_at": account.payment_checked_at.isoformat() if account.payment_checked_at else None,
             }
             if include_reason:
                 item["available_reason"] = reason
@@ -160,7 +183,7 @@ class AdAccountService:
 
         return result
 
-    def filter_available_ids(self, ad_account_ids: List[str], user_id: Optional[str] = None) -> Tuple[List[str], List[Dict]]:
+    def filter_available_ids(self, ad_account_ids: List[str], user_id: Optional[str] = None, *, allow_paused_debug: bool = False) -> Tuple[List[str], List[Dict]]:
         """从给定账户 ID 中筛出可投放的，返回 (可用 ID 列表, 被剔除的原因列表)
 
         供 JobService 在创建批量任务前做前置校验。
@@ -187,7 +210,7 @@ class AdAccountService:
                     if not assigned and not grouped:
                         rejected.append({"account_id": account.account_id, "reason": "账户未分配给当前用户"})
                         continue
-            ok, reason = self.check_available(account)
+            ok, reason = self.check_available(account, allow_paused_debug=allow_paused_debug)
             if ok:
                 available_ids.append(pk)
             else:

@@ -94,7 +94,7 @@
             <el-option
               v-for="a in accounts"
               :key="a.id"
-              :label="`${a.account_name || a.account_id} (${a.account_id})`"
+              :label="`${a.account_name || a.account_id} (${a.account_id}) · 支付 ${a.payment_status || 'UNKNOWN'}`"
               :value="a.id"
             />
           </el-select>
@@ -111,6 +111,38 @@
             <el-radio value="ACTIVE">立即启用</el-radio>
           </el-radio-group>
         </el-form-item>
+        <el-alert v-if="form.status === 'PAUSED'" type="info" :closable="false" show-icon>
+          暂停（调试）允许选择未配置支付方式的账户，但不会开始投放；切换为立即启用后，系统只接受支付状态为 AVAILABLE 的账户。
+        </el-alert>
+        <el-table v-if="selectedAccountRows.length" :data="selectedAccountRows" size="small" style="margin-bottom: 12px">
+          <el-table-column prop="account_name" label="账户" show-overflow-tooltip />
+          <el-table-column prop="account_id" label="Account ID" show-overflow-tooltip />
+          <el-table-column label="支付状态" width="140">
+            <template #default="{ row }">
+              <el-tag :type="row.payment_status === 'AVAILABLE' ? 'success' : form.status === 'PAUSED' ? 'warning' : 'danger'" size="small">
+                {{ row.payment_status || 'UNKNOWN' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="payment_source" label="支付来源" width="140" />
+        </el-table>
+
+        <el-form-item v-if="selectedAccountRows.length" label="发布 BM">
+          <div class="access-business-list">
+            <div v-for="account in selectedAccountRows" :key="account.id" class="access-business-row">
+              <span class="account-label">{{ account.account_name || account.account_id }}</span>
+              <el-select v-model="accessBusinessIds[account.id]" filterable style="width: 260px" placeholder="选择访问 BM">
+                <el-option
+                  v-for="business in account.accessible_businesses || []"
+                  :key="business.business_id"
+                  :label="`${business.business_name || business.meta_business_id || business.business_id} · ${business.access_level}`"
+                  :value="business.business_id"
+                />
+              </el-select>
+            </div>
+          </div>
+          <span class="tip-inline">不选择时使用广告账户原始归属 BM；共享账户发布时请明确选择有权限的 BM。</span>
+        </el-form-item>
         <el-alert v-if="!loadingAccounts && !accounts.length" type="warning" :closable="false" show-icon>
           当前没有可投放广告账户，请先完成 Meta OAuth 授权或恢复有效凭据。
         </el-alert>
@@ -123,10 +155,16 @@
           <el-descriptions :column="1" border>
             <el-descriptions-item label="投放模板">{{ selectedTemplate?.name || '-' }}</el-descriptions-item>
             <el-descriptions-item label="目标账户">{{ form.ad_account_ids.length }} 个</el-descriptions-item>
-            <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → 1 个 AdSet → {{ creativeCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
+            <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → {{ adsetCount(selectedTemplate) }} 个 AdSet → {{ creativeCount(selectedTemplate) * adsetCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
             <el-descriptions-item label="预算">{{ form.budget_override ? form.budget_override + ' 美元/天（本次覆盖）' : templateBudget + '（沿用模板）' }}</el-descriptions-item>
             <el-descriptions-item label="初始状态">{{ form.status === 'ACTIVE' ? '立即启用' : '暂停' }}</el-descriptions-item>
           </el-descriptions>
+          <el-table :data="selectedAccountRows" size="small" style="margin-top: 12px">
+            <el-table-column prop="account_name" label="账户" show-overflow-tooltip />
+            <el-table-column prop="account_id" label="Account ID" show-overflow-tooltip />
+            <el-table-column prop="payment_status" label="支付状态" width="140" />
+            <el-table-column prop="business.name" label="归属 BM" show-overflow-tooltip />
+          </el-table>
           <el-alert type="warning" :closable="false" show-icon title="提交后将创建异步投放任务">
             系统会逐账户执行，失败账户不会影响已成功账户，可在任务中心重试失败项。
           </el-alert>
@@ -226,9 +264,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { accountApi, type DeployableAccount } from '@/api/admin'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { mediaApi, type MetaAssetBinding } from '@/api/media'
@@ -254,6 +292,7 @@ const submitting = ref(false)
 const syncingAssets = ref(false)
 const preflighting = ref(false)
 const preflightResult = ref<any>(null)
+const rateLimitStatus = ref<{ count: number; limit: number; usage_ratio: number } | null>(null)
 const assetBindings = ref<MetaAssetBinding[]>([])
 const activeStep = ref(0)
 
@@ -276,9 +315,15 @@ const templateBudget = computed(() => {
   if (selectedTemplate.value.budget_type === 'LIFETIME') return '$' + (selectedTemplate.value.lifetime_budget ?? '-') + ' 总预算'
   return '$' + (selectedTemplate.value.daily_budget ?? '-') + ' / 天'
 })
+const accessBusinessIds = reactive<Record<string, string>>({})
+const selectedAccountRows = computed(() => accounts.value.filter(account => form.ad_account_ids.includes(account.id)))
 const creativeCount = (template: CampaignTemplate | null) => {
   const creatives = template?.creative_config_json?.creatives
   return Array.isArray(creatives) && creatives.length ? creatives.length : template?.creative_config_json ? 1 : 0
+}
+const adsetCount = (template: CampaignTemplate | null) => {
+  const adsets = template?.creative_config_json?.adsets
+  return Array.isArray(adsets) && adsets.length ? adsets.length : 1
 }
 const canNext = computed(() => {
   if (activeStep.value === 0) return !!form.template_id && templateReady.value
@@ -339,7 +384,7 @@ const loadTemplates = async () => {
 const loadAccounts = async () => {
   loadingAccounts.value = true
   try {
-    const { data } = await accountApi.availableForDeployment()
+    const { data } = await accountApi.availableForDeployment({ allow_paused_debug: true })
     // 接口返回 { total, accounts }，不能把整个响应对象当成账户数组。
     accounts.value = data.accounts || []
   } finally {
@@ -362,6 +407,27 @@ const stopPolling = () => {
   if (pollTimer !== null) {
     window.clearInterval(pollTimer)
     pollTimer = null
+  }
+}
+
+const loadRateLimitStatus = async () => {
+  const first = selectedAccountRows.value[0]
+  if (!first) { rateLimitStatus.value = null; return }
+  try {
+    const { data } = await accountApi.rateLimitStatus(first.id)
+    rateLimitStatus.value = data.rate_limits?.hour || null
+  } catch { rateLimitStatus.value = null }
+}
+
+const syncAccessBusinessDefaults = () => {
+  for (const account of selectedAccountRows.value) {
+    if (accessBusinessIds[account.id]) continue
+    const owner = account.accessible_businesses?.find(item => item.business_id === account.business?.id)
+    const first = owner || account.accessible_businesses?.find(item => item.status === 'ACTIVE')
+    if (first) accessBusinessIds[account.id] = first.business_id
+  }
+  for (const id of Object.keys(accessBusinessIds)) {
+    if (!form.ad_account_ids.includes(id)) delete accessBusinessIds[id]
   }
 }
 
@@ -405,8 +471,31 @@ const submit = async () => {
     ElMessage.warning(!templateReady.value ? '模板尚未选择有效 Facebook 页面' : '请选择至少一个可投放广告账户')
     return
   }
+  // 二次确认前不准备素材、不创建 Job；用户取消时不会产生任何外部副作用。
+  try {
+    await ElMessageBox.confirm(
+      `即将为 ${form.ad_account_ids.length} 个账户创建 ${form.status === 'PAUSED' ? '暂停（调试）' : '立即启用'}广告对象。${form.status === 'PAUSED' ? '暂停状态不会开始投放，但仍可能受 Meta 账户资格限制。' : '立即启用可能产生实际广告费用。'}确认继续吗？`,
+      '确认提交广告发布',
+      {
+        type: form.status === 'ACTIVE' ? 'warning' : 'info',
+        confirmButtonText: '确认提交',
+        cancelButtonText: '取消',
+      },
+    )
+  } catch {
+    return
+  }
+
+  // 预览页停留期间账户状态可能已变化，提交前重新执行只读预检。
+  await runPreflight()
+  if (!preflightResult.value?.passed) {
+    ElMessage.error('提交前预检未通过，请处理阻断项')
+    return
+  }
+
   submitting.value = true
   try {
+    syncAccessBusinessDefaults()
     // 素材是按广告账户生成 Meta 映射的；先创建映射占位，再提交创建任务。
     // 真正的上传由后端异步投放任务处理，避免前端等待多个账户上传。
     const creatives = selectedTemplate.value?.creative_config_json?.creatives
@@ -424,6 +513,7 @@ const submit = async () => {
       budget_override: form.budget_override || undefined,
       status: form.status,
       sinan_promotion_id: form.sinan_promotion_id || undefined,
+      access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined,
     })
     if (data.rejected_accounts?.length) {
       ElMessage.warning(`有 ${data.rejected_accounts.length} 个账号未进入任务，请检查账号状态`)
@@ -444,11 +534,15 @@ const runPreflight = async () => {
   if (!form.template_id || !form.ad_account_ids.length) return
   preflighting.value = true
   try {
-  const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined })
+  syncAccessBusinessDefaults()
+  const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined, access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined })
     preflightResult.value = data
     if (!data.passed) ElMessage.error('预检未通过，请处理阻断项')
   } finally { preflighting.value = false }
 }
+
+// 账户选择变化后刷新限流水位；这是参考水位，不替代 Meta app-level 限流返回。
+watch(form, loadRateLimitStatus, { deep: true })
 
 const missingAssetAccounts = computed(() => (preflightResult.value?.warnings || []).filter((item: any) => item.code === 'ACCOUNTS_REJECTED' && item.items?.some((row: any) => row.reason === '素材尚未同步完成')))
 

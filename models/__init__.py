@@ -4,6 +4,7 @@
 from models.tenant import Tenant, TenantStatus, TenantPlan, UserRole
 
 from models.ad_account import AdAccount, AccountStatus, SystemStatus
+from models.business_asset_access import BusinessAssetAccess
 from models.meta_account import MetaAccount, BusinessStatus, SyncStatus
 from models.creative_asset import CreativeAsset
 from models.creative_asset_group import CreativeAssetGroup, creative_asset_group_members
@@ -44,6 +45,7 @@ __all__ = [
     'TenantPlan',
     'UserRole',
     'AdAccount',
+    'BusinessAssetAccess',
     'AccountStatus',   # 遗留枚举，已被 SystemStatus 取代，仅为兼容保留
     'SystemStatus',
     'MetaAccount',

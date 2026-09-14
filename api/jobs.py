@@ -31,6 +31,9 @@ class CampaignCreateRequest(BaseModel):
     budget_override: Optional[float] = Field(None, description="覆盖模板预算（USD/天）")
     status: str = Field("PAUSED", description="创建后状态，默认 PAUSED，避免直接产生花费")
     sinan_promotion_id: Optional[str] = None
+    access_business_ids: Optional[dict[str, str]] = Field(
+        None, description="按本地广告账户 ID 指定本次发布使用的 BM"
+    )
 
 class CampaignPreflightRequest(CampaignCreateRequest):
     pass
@@ -61,6 +64,9 @@ class ScheduleCampaignRequest(BaseModel):
     scheduled_at: str = Field(
         ...,
         description="计划执行时间，ISO 8601（如 2026-08-30T10:00:00Z 或 2026-08-30T18:00:00+08:00），必须晚于当前时间",
+    )
+    access_business_ids: Optional[dict[str, str]] = Field(
+        None, description="按本地广告账户 ID 指定本次发布使用的 BM"
     )
 
 
@@ -164,6 +170,7 @@ def create_campaign_batch(
             "budget_override": req.budget_override,
             "status": req.status,
             "sinan_promotion_id": req.sinan_promotion_id,
+            "access_business_ids": req.access_business_ids or {},
         },
         created_by=current_user,
     )
@@ -192,6 +199,7 @@ def schedule_campaign_batch(
         params={
             "budget_override": req.budget_override,
             "status": req.status,
+            "access_business_ids": req.access_business_ids or {},
         },
         created_by=current_user,
         scheduled_at=scheduled_at,

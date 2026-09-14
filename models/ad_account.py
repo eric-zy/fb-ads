@@ -89,6 +89,7 @@ class AdAccount(TenantMixin, Base):
     asset_type = Column(String(20), nullable=False, default="OWNED",
                         comment="OWNED / CLIENT；Meta 侧 BM 资产关系分类")
     business = relationship("MetaAccount", back_populates="ad_accounts")
+    access_relations = relationship("BusinessAssetAccess", back_populates="asset", cascade="all, delete-orphan")
 
     # ---------- Meta 侧基础信息 ----------
     account_id = Column(String(64), nullable=False, comment="Meta 广告账户 ID（act_xxx）")
@@ -152,7 +153,7 @@ class AdAccount(TenantMixin, Base):
 
     __table_args__ = (
         # 文档 §24：同一 BM 内账户不重复；跨 BM 允许同一 act_xxx
-        UniqueConstraint("business_id", "account_id", name="uq_business_account"),
+        UniqueConstraint("tenant_id", "account_id", name="uq_tenant_ad_account"),
         Index("ix_ad_accounts_account_id", "account_id"),
         # ---- 租户隔离复合索引：行级隔离下索引必须以 tenant_id 打头 ----
         Index("ix_ad_accounts_tenant_business", "tenant_id", "business_id"),

@@ -180,6 +180,20 @@
             <el-option label="Instagram 快拍" value="instagram_story" />
           </el-select>
         </el-form-item>
+        <el-form-item label="多个广告组">
+          <div class="adset-editor">
+            <div v-for="(adset, index) in adsetForms" :key="index" class="adset-card">
+              <div class="creative-head"><b>广告组 {{ index + 1 }}</b><el-button v-if="adsetForms.length > 1" link type="danger" @click="removeAdset(index)">删除</el-button></div>
+              <el-form-item label="名称"><el-input v-model="adset.name" placeholder="例如 US 广告组" /></el-form-item>
+              <div class="inline-fields"><el-form-item label="预算"><el-input-number v-model="adset.budget" :min="1" :step="10" /></el-form-item><el-form-item label="国家"><el-input v-model="adset.countries" placeholder="US,CA" /></el-form-item></div>
+              <div class="inline-fields"><el-form-item label="年龄"><el-input-number v-model="adset.age_min" :min="13" :max="65" /><span>至</span><el-input-number v-model="adset.age_max" :min="13" :max="65" /></el-form-item><el-form-item label="性别"><el-checkbox-group v-model="adset.genders"><el-checkbox :label="1">男</el-checkbox><el-checkbox :label="2">女</el-checkbox></el-checkbox-group></el-form-item></div>
+              <el-form-item label="兴趣"><el-input v-model="adset.interests" placeholder="可选，多个兴趣用逗号分隔" /></el-form-item>
+              <el-form-item label="版位"><el-select v-model="adset.placements" multiple collapse-tags style="width:100%" placeholder="默认自动版位"><el-option label="Facebook 信息流" value="facebook_feed" /><el-option label="Instagram 信息流" value="instagram_stream" /><el-option label="Facebook 快拍" value="facebook_story" /><el-option label="Instagram 快拍" value="instagram_story" /></el-select></el-form-item>
+            </div>
+            <el-button type="primary" plain @click="addAdset">+ 添加广告组</el-button>
+          </div>
+          <div class="tip">每个广告组独立保存预算、受众和版位；广告创意默认沿用下方创意配置。</div>
+        </el-form-item>
 
         </section>
         <section v-if="templateStep === 3">
@@ -278,6 +292,7 @@ const form = reactive({
   bid_strategy: '',
   targeting_json: DEFAULT_TARGETING,
   creative_config_json: DEFAULT_CREATIVE,
+  adsets_json: '[]',
 })
 const targetingForm = reactive({
   countries: 'US',
@@ -287,6 +302,11 @@ const targetingForm = reactive({
   interests: '',
   placements: [] as string[],
 })
+type AdsetForm = { name: string; budget: number; countries: string; age_min: number; age_max: number; genders: number[]; interests: string; placements: string[] }
+const newAdset = (): AdsetForm => ({ name: '', budget: 50, countries: 'US', age_min: 18, age_max: 65, genders: [1, 2], interests: '', placements: [] })
+const adsetForms = reactive<AdsetForm[]>([newAdset()])
+const addAdset = () => adsetForms.push(newAdset())
+const removeAdset = (index: number) => adsetForms.splice(index, 1)
 type CreativeForm = { asset_type: 'image' | 'video'; image_hash: string; video_id: string; headline: string; primary_text: string; description: string; cta: string; landing_url: string; asset_id: string }
 const newCreative = (): CreativeForm => ({ asset_type: 'image', image_hash: '', video_id: '', headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '', asset_id: '' })
 const creativeForm = reactive<{ page_id: string; creatives: CreativeForm[] }>({ page_id: '', creatives: [newCreative()] })
@@ -314,6 +334,17 @@ const buildCreativeJson = () => {
       custom_event_type: form.custom_event_type,
     }
   }
+  const adsets = adsetForms.map(adset => {
+    const targeting: Record<string, any> = { geo_locations: { countries: adset.countries.split(',').map(v => v.trim()).filter(Boolean) }, age_min: adset.age_min, age_max: adset.age_max, genders: adset.genders }
+    if (adset.interests.trim()) targeting.flexible_spec = [{ interests: adset.interests.split(',').map(v => ({ name: v.trim() })).filter(v => v.name) }]
+    const placement: Record<string, any> = { publisher_platforms: [...new Set(adset.placements.map(v => v.split('_')[0]))] }
+    const facebook = adset.placements.filter(v => v.startsWith('facebook_')).map(v => v.replace('facebook_', ''))
+    const instagram = adset.placements.filter(v => v.startsWith('instagram_')).map(v => v.replace('instagram_', ''))
+    if (facebook.length) placement.facebook_positions = facebook
+    if (instagram.length) placement.instagram_positions = instagram
+    return { name: adset.name, budget: adset.budget, targeting, placement }
+  }).filter(adset => adset.name || adset.countries)
+  if (adsets.length) config.adsets = adsets
   form.creative_config_json = JSON.stringify(config, null, 2)
 }
 const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
@@ -411,6 +442,8 @@ const resetForm = () => {
   form.bid_strategy = ''
   form.targeting_json = DEFAULT_TARGETING
   form.creative_config_json = DEFAULT_CREATIVE
+  form.adsets_json = '[]'
+  adsetForms.splice(0, adsetForms.length, newAdset())
   loadCreativeForm(JSON.parse(DEFAULT_CREATIVE))
   loadTargetingForm(JSON.parse(DEFAULT_TARGETING))
 }
@@ -441,6 +474,9 @@ const openEdit = (row: CampaignTemplate) => {
   form.targeting_json = JSON.stringify(row.targeting_json ?? {}, null, 2)
   loadTargetingForm(row.targeting_json)
   form.creative_config_json = JSON.stringify(row.creative_config_json ?? {}, null, 2)
+  form.adsets_json = JSON.stringify(row.creative_config_json?.adsets ?? [], null, 2)
+  const savedAdsets = row.creative_config_json?.adsets
+  adsetForms.splice(0, adsetForms.length, ...(Array.isArray(savedAdsets) && savedAdsets.length ? savedAdsets.map((item: any) => ({ ...newAdset(), name: item.name || '', budget: item.budget || 50, countries: item.targeting?.geo_locations?.countries?.join(',') || 'US', age_min: item.targeting?.age_min || 18, age_max: item.targeting?.age_max || 65, genders: item.targeting?.genders || [1, 2], interests: (item.targeting?.flexible_spec?.[0]?.interests || []).map((v: any) => v.name || '').join(','), placements: [...(item.placement?.facebook_positions || []).map((v: string) => `facebook_${v}`), ...(item.placement?.instagram_positions || []).map((v: string) => `instagram_${v}`)] })) : [newAdset()]))
   loadCreativeForm(row.creative_config_json)
   loadMediaAssets()
   loadMetaPages()
@@ -594,6 +630,9 @@ onMounted(loadTemplates)
 </script>
 
 <style scoped lang="scss">
+.adset-editor { width: 100%; }
+.adset-card { border: 1px solid #dcdfe6; border-radius: 6px; padding: 12px; margin-bottom: 10px; background: #fafcff; }
+.adset-card :deep(.el-form-item) { margin-bottom: 10px; }
 .header-bar {
   display: flex;
   justify-content: space-between;

@@ -13,8 +13,9 @@ export const userApi = {
 }
 
 export type SystemStatus = 'ACTIVE' | 'DISABLED'
+export interface AccessibleBusiness { business_id: string; meta_business_id?: string | null; business_name?: string | null; access_level: string; access_source: string; status: string; credential_id?: string | null }
 export interface AdAccountItem { id: string; account_id: string; account_name: string; currency: string; timezone: string | null; business_id: string | null; meta_business_id: string | null; business_name: string | null; owner_type: 'PERSONAL' | 'BUSINESS' | string; credential_id: string | null; credential_status?: string | null; credential_expires_at?: string | null; credential_last_verified_at?: string | null; authorized_by_user_id?: string | null; authorized_by_username?: string | null; credential_missing_scopes?: string[]; is_deployable?: boolean; availability_reason?: string | null; payment_status?: string; payment_source?: string | null; payment_error_code?: string | null; payment_error_message?: string | null; payment_checked_at?: string | null; account_status: string | null; effective_status: string | null; disable_reason: string | null; system_status: SystemStatus; system_status_reason: string | null; system_status_at: string | null; capabilities: Record<string, unknown> | null; spend_cap: number; amount_spent: number; balance: number; daily_spend_limit: number; monthly_spend_limit: number; risk_score: number; last_risk_check: string | null; last_synced_at: string | null; last_sync_error: string | null; created_at: string | null; updated_at: string | null }
-export interface DeployableAccount { id: string; account_id: string; account_name: string; currency: string; system_status: SystemStatus; account_status: string | null; business: { id: string | null; name: string | null; business_id: string | null }; credential: { id: string | null; status: string | null; is_expired: boolean | null; masked: string | null } }
+export interface DeployableAccount { id: string; account_id: string; account_name: string; currency: string; system_status: SystemStatus; account_status: string | null; payment_status?: string | null; payment_source?: string | null; payment_error_message?: string | null; payment_checked_at?: string | null; availability_reason?: string | null; business: { id: string | null; name: string | null; business_id: string | null }; credential: { id: string | null; status: string | null; is_expired: boolean | null; masked: string | null }; accessible_businesses?: AccessibleBusiness[] }
 export interface AccountUser { user_id: string; username: string; email: string; role: string }
 export const accountApi = {
   list: (params?: { search?: string; system_status?: string; account_status?: string; business_id?: string; page?: number; page_size?: number }) => request.get('/api/v1/accounts', { params }),
@@ -25,7 +26,8 @@ export const accountApi = {
   unfreeze: (id: string) => request.post('/api/v1/accounts/' + id + '/unfreeze'),
   transfer: (id: string, data: { business_id: string | null; skip_verification?: boolean }) => request.post('/api/v1/accounts/' + id + '/transfer', data),
   bulk: (data: { action: 'freeze' | 'unfreeze' | 'delete' | 'transfer'; account_ids: string[]; reason?: string; business_id?: string; skip_verification?: boolean }) => request.post('/api/v1/accounts/bulk', data),
-  availableForDeployment: (params?: { business_id?: string }) => request.get('/api/v1/accounts/available-for-deployment', { params }),
+  availableForDeployment: (params?: { business_id?: string; allow_paused_debug?: boolean }) => request.get('/api/v1/accounts/available-for-deployment', { params }),
+  rateLimitStatus: (id: string) => request.get('/api/v1/accounts/' + id + '/rate-limit-status'),
   assign: (id: string, user_ids: string[]) => request.post('/api/v1/accounts/' + id + '/assign', { user_ids }),
   unassign: (id: string, user_ids: string[]) => request.post('/api/v1/accounts/' + id + '/unassign', { user_ids }),
   users: (id: string) => request.get('/api/v1/accounts/' + id + '/users'),

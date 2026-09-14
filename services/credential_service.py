@@ -17,7 +17,7 @@ from config.settings import settings
 from core.enums import CredentialSource, CredentialStatus
 from core.logger import logger
 from core.security import mask_token
-from models import AdAccount, Credential, MetaAccount
+from models import AdAccount, BusinessAssetAccess, Credential, MetaAccount
 from services.meta import MetaAdsService, MetaClient
 from services.meta.errors import MetaApiError
 
@@ -154,7 +154,9 @@ class CredentialService:
 
         raise CredentialError(f"BM {meta_account_id} 无可用凭据")
 
-    def resolve_account_token(self, ad_account_id: str) -> Tuple[str, Credential]:
+    def resolve_account_token(
+        self, ad_account_id: str, access_business_id: Optional[str] = None
+    ) -> Tuple[str, Credential]:
         """严格解析广告账户凭证。
 
         投放、洞察、素材和状态操作都必须使用广告账户实际绑定的
@@ -164,6 +166,27 @@ class CredentialService:
         account = self.db.query(AdAccount).filter(AdAccount.id == ad_account_id).first()
         if not account:
             raise CredentialError(f"广告账户不存在: {ad_account_id}")
+
+        if access_business_id:
+            access = self.db.query(BusinessAssetAccess).filter(
+                BusinessAssetAccess.business_id == access_business_id,
+                BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+                BusinessAssetAccess.asset_id == account.id,
+                BusinessAssetAccess.status == "ACTIVE",
+            ).first()
+            if not access:
+                raise CredentialError(f"BM {access_business_id} 无权访问广告账户 {ad_account_id}")
+            if access.credential_id:
+                cred = self.db.query(Credential).filter(
+                    Credential.id == access.credential_id,
+                    Credential.status == CredentialStatus.ACTIVE.value,
+                ).first()
+                if cred and not cred.is_expired():
+                    token = cred.get_access_token()
+                    if token:
+                        return token, cred
+            token, cred = self.resolve_token_for_meta(access_business_id)
+            return token, cred
 
         if account.credential_id:
             cred = self.db.query(Credential).filter(
@@ -188,9 +211,11 @@ class CredentialService:
             f"广告账户 {ad_account_id} 未绑定可用凭据，请重新授权或绑定凭据"
         )
 
-    def build_service(self, ad_account_id: str, **service_kwargs) -> MetaAdsService:
+    def build_service(
+        self, ad_account_id: str, *, access_business_id: Optional[str] = None, **service_kwargs
+    ) -> MetaAdsService:
         """构建账户专属 MetaAdsService，生产链路不使用全局 Token。"""
-        token, _ = self.resolve_account_token(ad_account_id)
+        token, _ = self.resolve_account_token(ad_account_id, access_business_id)
         client = MetaClient(access_token=token)
         return MetaAdsService(client, **service_kwargs)
 
