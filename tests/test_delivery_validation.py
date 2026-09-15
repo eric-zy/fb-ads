@@ -31,8 +31,9 @@ def _values(**creative_overrides):
 
 
 def test_sales_rejects_link_clicks():
-    with pytest.raises(HTTPException, match="OUTCOME_SALES"):
+    with pytest.raises(HTTPException) as exc:
         _validate_delivery_config(_values(objective="OUTCOME_SALES"))
+    assert "OUTCOME_SALES" in exc.value.detail
 
 
 def test_adset_split_is_allowed():
@@ -44,8 +45,9 @@ def test_adset_split_is_allowed():
 def test_campaign_split_is_rejected_until_supported():
     values = _values()
     values["creative_config_json"]["delivery"]["split_level"] = "CAMPAIGN"
-    with pytest.raises(HTTPException, match="CAMPAIGN"):
+    with pytest.raises(HTTPException) as exc:
         _validate_delivery_config(values)
+    assert "CAMPAIGN" in exc.value.detail
 
 
 def test_carousel_requires_ad_split():
@@ -58,12 +60,14 @@ def test_carousel_requires_ad_split():
         ],
     })
     values["creative_config_json"]["delivery"]["split_level"] = "ADSET"
-    with pytest.raises(HTTPException, match="轮播广告"):
+    with pytest.raises(HTTPException) as exc:
         _validate_delivery_config(values)
+    assert "轮播广告" in exc.value.detail
 
 
 def test_unknown_combination_mode_is_rejected():
     values = _values()
     values["creative_config_json"]["delivery"]["combination_mode"] = "ACCOUNT_X_CREATIVE"
-    with pytest.raises(HTTPException, match="组合方式"):
+    with pytest.raises(HTTPException) as exc:
         _validate_delivery_config(values)
+    assert "组合方式" in exc.value.detail
