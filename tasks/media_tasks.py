@@ -6,6 +6,7 @@ from core.database import SessionLocal
 from core.tenant import resolve_tenant_of, tenant_task
 from models import CreativeAsset, MetaAssetBinding, AdAccount
 from services.credential_service import CredentialService
+from services.meta import MetaApiError
 
 @shared_task(bind=True, name="meta.upload_asset", max_retries=3, default_retry_delay=30)
 @tenant_task(lambda self, binding_id: resolve_tenant_of(MetaAssetBinding, binding_id))
@@ -53,8 +54,19 @@ def upload_asset_task(self, binding_id: str):
             if binding:
                 binding.status = "FAILED"
                 binding.error_message = str(exc)[:1000]
-                binding.error_code = type(exc).__name__
+                binding.error_code = (
+                    f"META_{exc.category.value}" if isinstance(exc, MetaApiError)
+                    else type(exc).__name__
+                )
                 db.commit()
+        # Meta 权限、对象不存在和参数校验错误不会因重试恢复，避免持续消耗队列/API 配额。
+        if isinstance(exc, MetaApiError) and not exc.retryable:
+            return {
+                "status": "failed",
+                "binding_id": binding_id,
+                "error_code": f"META_{exc.category.value}",
+                "error": str(exc),
+            }
         raise self.retry(exc=exc)
     finally:
         db.close()

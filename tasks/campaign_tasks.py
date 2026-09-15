@@ -74,7 +74,12 @@ def retry_asset_binding_task(self, binding_id: str) -> Dict[str, Any]:
         if binding:
             binding.status = "FAILED"
             binding.error_message = str(exc)
+            if isinstance(exc, MetaApiError):
+                binding.error_code = f"META_{exc.category.value}"
             db.commit()
+        # 权限/对象不存在/校验错误需要重新授权或修正资产，不应自动重复上传。
+        if isinstance(exc, MetaApiError) and not exc.retryable:
+            return {"status": "failed", "binding_id": binding_id, "error": str(exc)}
         try:
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:
@@ -143,6 +148,20 @@ def _prepare_template_assets(db: Session, service: Any, template: Any, ad_accoun
                 raise
         meta_id = binding.meta_asset_id
         creative["video_id" if asset.asset_type == "video" else "image_hash"] = meta_id
+    if config.get("creative_format") == "CAROUSEL":
+        for index, card in enumerate(config.get("carousel_cards") or [], 1):
+            asset_id = card.get("asset_id")
+            asset = db.query(CreativeAsset).filter(CreativeAsset.id == asset_id).first() if asset_id else None
+            if not asset or asset.asset_type != "image":
+                raise RuntimeError(f"轮播第 {index} 张卡片图片素材不存在或类型错误")
+            binding = db.query(MetaAssetBinding).filter(
+                MetaAssetBinding.asset_id == asset_id,
+                MetaAssetBinding.ad_account_id == ad_account_id,
+            ).first()
+            if not binding or binding.status != "READY" or not binding.meta_asset_id:
+                raise RuntimeError(f"轮播第 {index} 张卡片素材尚未同步完成")
+            card["image_hash"] = binding.meta_asset_id
+            card["asset_type"] = "image"
     config["creatives"] = creatives
     return config
 

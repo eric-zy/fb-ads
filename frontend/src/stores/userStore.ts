@@ -14,6 +14,8 @@ export interface User {
   role: 'admin' | 'platform_admin' | 'tenant_admin' | 'manager' | 'user'
   company_id: string
   tenant_id?: string | null
+  tenant_name?: string | null
+  company_name?: string | null
   is_platform_admin?: boolean
   permissions: string[]
   settings: Record<string, any>

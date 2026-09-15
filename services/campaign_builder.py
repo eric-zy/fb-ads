@@ -243,8 +243,35 @@ class CreativeBuilder:
         cfg = self.creative_config
         asset_type = cfg.get("asset_type", "image")
 
+        if cfg.get("creative_format") == "CAROUSEL":
+            cards = cfg.get("carousel_cards") or []
+            if not 2 <= len(cards) <= 10:
+                raise ValueError("轮播广告需要 2-10 张图片卡片")
+            child_attachments = []
+            for index, card in enumerate(cards, 1):
+                if card.get("asset_type", "image") != "image" or not card.get("image_hash"):
+                    raise ValueError(f"轮播第 {index} 张卡片缺少已上传图片")
+                if not card.get("landing_url"):
+                    raise ValueError(f"轮播第 {index} 张卡片缺少 landing_url")
+                child = {"image_hash": card["image_hash"], "link": card["landing_url"]}
+                if card.get("headline"): child["name"] = card["headline"]
+                if card.get("description"): child["description"] = card["description"]
+                child_attachments.append(child)
+            media_data = {
+                "message": cfg.get("primary_text", ""),
+                "link": cards[0]["landing_url"],
+                "child_attachments": child_attachments,
+            }
+            if cfg.get("cta"):
+                media_data["call_to_action"] = {"type": cfg["cta"], "value": {"link": cards[0]["landing_url"]}}
+            story_key = "link_data"
+        else:
+            story_key = None
+
         # 按素材类型组装 object_story_spec（原实现将 page_id 硬编码为空串，导致创建必失败）
-        if asset_type == "video":
+        if story_key == "link_data":
+            pass
+        elif asset_type == "video":
             if not cfg.get("video_id"):
                 raise ValueError("视频创意缺少已上传到目标广告账户的 video_id")
             media_data: Dict[str, Any] = {
@@ -468,6 +495,8 @@ class CampaignDeploymentBuilder:
             self.db.add(adset_instance)
             self.db.flush()
             creatives = adset_config.get("creatives") or creative_config.get("creatives")
+            if creative_config.get("creative_format") == "CAROUSEL":
+                creatives = [creative_config]
             if not creatives:
                 creatives = [creative_config] if creative_config else [{}]
             for idx, cfg in enumerate(creatives, 1):

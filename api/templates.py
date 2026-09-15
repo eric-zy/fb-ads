@@ -113,14 +113,26 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         adset_goal = str(adset.get("optimization_goal") or optimization_goal).upper()
         if adset_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"} and not (adset.get("promoted_object") or config.get("promoted_object")):
             raise HTTPException(status_code=400, detail=f"广告组 {index} 的转化目标必须配置 promoted_object")
-    creatives = config.get("creatives") or []
+    creative_format = str(config.get("creative_format") or "MULTI_AD").upper()
+    if creative_format == "CAROUSEL":
+        creatives = config.get("carousel_cards") or []
+        if not 2 <= len(creatives) <= 10:
+            raise HTTPException(status_code=400, detail="轮播广告必须配置 2-10 张图片卡片")
+    else:
+        creatives = config.get("creatives") or []
     if not creatives:
         raise HTTPException(status_code=400, detail="至少配置一个广告创意")
     allowed_cta = {"LEARN_MORE", "SHOP_NOW", "SIGN_UP", "BOOK_NOW", "DOWNLOAD", "GET_OFFER", "CONTACT_US", "SUBSCRIBE", "APPLY_NOW", "WATCH_MORE", "MESSAGE_PAGE", "ORDER_NOW", "GET_QUOTE"}
     for index, creative in enumerate(creatives, 1):
         asset_type = str(creative.get("asset_type") or "image").lower()
-        if asset_type == "image" and not creative.get("image_hash"):
-            raise HTTPException(status_code=400, detail=f"创意 {index} 缺少已同步的图片素材")
+        if creative_format == "CAROUSEL" and asset_type != "image":
+            raise HTTPException(status_code=400, detail=f"轮播卡片 {index} 必须使用图片素材")
+        if asset_type == "image" and creative_format != "CAROUSEL" and not (
+            creative.get("image_hash") or creative.get("asset_id")
+        ):
+            raise HTTPException(status_code=400, detail=f"创意 {index} 缺少图片素材")
+        if creative_format == "CAROUSEL" and not creative.get("asset_id") and not creative.get("image_hash"):
+            raise HTTPException(status_code=400, detail=f"轮播卡片 {index} 缺少素材")
         if asset_type == "video" and not creative.get("video_id"):
             raise HTTPException(status_code=400, detail=f"创意 {index} 缺少已同步的视频素材")
         if not str(creative.get("primary_text") or "").strip():

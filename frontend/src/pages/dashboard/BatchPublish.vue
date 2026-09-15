@@ -94,14 +94,44 @@
             </div>
             <el-button plain type="primary" @click="addDirectAdset">+ 添加广告组</el-button>
             <el-divider content-position="left">广告创意</el-divider>
+            <el-form-item label="素材形式">
+              <el-radio-group v-model="creativeFormat">
+                <el-radio value="MULTI_AD">多素材多个广告</el-radio>
+                <el-radio value="CAROUSEL">多图片轮播广告</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <el-alert type="info" :closable="false" show-icon :title="creativeFormat === 'CAROUSEL' ? '轮播广告' : '多素材投放'">
+              {{ creativeFormat === 'CAROUSEL' ? '2-10 张图片组成 1 个轮播广告；所有图片同步完成后才允许发布。' : `每个创意素材会生成一个独立 Ad，共 ${directForm.creatives.length} 个广告。` }}
+            </el-alert>
+            <el-form-item label="批量选素材">
+              <el-select v-model="batchAssetIds" multiple filterable collapse-tags placeholder="选择多张素材后批量加入" style="width:100%">
+                <el-option v-for="asset in mediaAssets" :key="asset.id" :label="`${asset.name} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" />
+              </el-select>
+              <el-button plain type="primary" style="margin-top:8px" :disabled="!batchAssetIds.length" @click="addBatchCreatives">加入为独立广告</el-button>
+            </el-form-item>
+            <el-form-item label="文案模式">
+              <el-radio-group v-model="creativeCopyMode">
+                <el-radio value="SHARED">统一文案</el-radio>
+                <el-radio value="INDIVIDUAL">每个素材独立文案</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <template v-if="creativeCopyMode === 'SHARED'">
+              <el-form-item label="主文案" required><el-input v-model="sharedCreative.primary_text" type="textarea" :rows="3" /></el-form-item>
+              <el-form-item label="标题"><el-input v-model="sharedCreative.headline" /></el-form-item>
+              <el-form-item label="描述"><el-input v-model="sharedCreative.description" /></el-form-item>
+              <el-form-item label="行动按钮"><el-select v-model="sharedCreative.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /></el-select></el-form-item>
+              <el-form-item label="落地页" required><el-input v-model="sharedCreative.landing_url" placeholder="https://example.com/landing" /></el-form-item>
+            </template>
             <div v-for="(creative, index) in directForm.creatives" :key="creative.key" class="direct-creative">
               <div class="direct-adset-head"><b>创意 {{ index + 1 }}</b><el-button v-if="directForm.creatives.length > 1" link type="danger" @click="removeDirectCreative(index)">删除</el-button></div>
               <el-form-item label="素材" required><el-select v-model="creative.asset_id" filterable style="width:100%" placeholder="选择已上传素材"><el-option v-for="asset in mediaAssets" :key="asset.id" :label="`${asset.name} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" /></el-select></el-form-item>
-              <el-form-item label="主文案" required><el-input v-model="creative.primary_text" type="textarea" :rows="3" /></el-form-item>
-              <el-form-item label="标题"><el-input v-model="creative.headline" /></el-form-item>
-              <el-form-item label="描述"><el-input v-model="creative.description" /></el-form-item>
-              <el-form-item label="行动按钮"><el-select v-model="creative.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /></el-select></el-form-item>
-              <el-form-item label="落地页" required><el-input v-model="creative.landing_url" placeholder="https://example.com/landing" /></el-form-item>
+              <template v-if="creativeCopyMode === 'INDIVIDUAL'">
+                <el-form-item label="主文案" required><el-input v-model="creative.primary_text" type="textarea" :rows="3" /></el-form-item>
+                <el-form-item label="标题"><el-input v-model="creative.headline" /></el-form-item>
+                <el-form-item label="描述"><el-input v-model="creative.description" /></el-form-item>
+                <el-form-item label="行动按钮"><el-select v-model="creative.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /></el-select></el-form-item>
+                <el-form-item label="落地页" required><el-input v-model="creative.landing_url" placeholder="https://example.com/landing" /></el-form-item>
+              </template>
             </div>
             <el-button plain type="primary" @click="addDirectCreative">+ 添加创意</el-button>
             <div class="tip">素材必须先在素材库上传；提交后系统会按目标广告账户分别同步素材。</div>
@@ -207,7 +237,7 @@
             <el-descriptions-item label="投放方式">{{ form.publish_mode === 'DIRECT' ? '直接配置' : '使用模板' }}</el-descriptions-item>
             <el-descriptions-item label="投放模板">{{ selectedTemplate?.name || form.template_name || '直接配置' }}</el-descriptions-item>
             <el-descriptions-item label="目标账户">{{ form.ad_account_ids.length }} 个</el-descriptions-item>
-            <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → {{ form.publish_mode === 'DIRECT' ? directForm.adsets.length : adsetCount(selectedTemplate) }} 个 AdSet → {{ form.publish_mode === 'DIRECT' ? directForm.adsets.length : creativeCount(selectedTemplate) * adsetCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
+            <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → {{ form.publish_mode === 'DIRECT' ? directForm.adsets.length : adsetCount(selectedTemplate) }} 个 AdSet → {{ form.publish_mode === 'DIRECT' ? directForm.adsets.length * (creativeFormat === 'CAROUSEL' ? 1 : directForm.creatives.length) : creativeCount(selectedTemplate) * adsetCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
             <el-descriptions-item label="预算">{{ form.budget_override ? form.budget_override + ' 美元/天（本次覆盖）' : form.publish_mode === 'DIRECT' ? directForm.adsets.reduce((sum, item) => sum + Number(item.budget || 0), 0) + ' 美元/天' : templateBudget + '（沿用模板）' }}</el-descriptions-item>
             <el-descriptions-item label="初始状态">{{ form.status === 'ACTIVE' ? '立即启用' : '暂停' }}</el-descriptions-item>
           </el-descriptions>
@@ -235,7 +265,7 @@
             <el-table-column prop="optimization_goal" label="优化目标" width="150" />
           </el-table>
           <el-alert v-if="form.publish_mode === 'DIRECT'" type="info" :closable="false" show-icon style="margin-top:12px">
-            本次将为每个广告组生成 {{ directForm.creatives.length }} 个广告，共 {{ directForm.adsets.length * directForm.creatives.length }} 个 Ad。
+            本次将为每个广告组生成 {{ creativeFormat === 'CAROUSEL' ? 1 : directForm.creatives.length }} 个广告，共 {{ directForm.adsets.length * (creativeFormat === 'CAROUSEL' ? 1 : directForm.creatives.length) }} 个 Ad。
           </el-alert>
           <el-alert type="warning" :closable="false" show-icon title="提交后将创建异步投放任务">
             系统会逐账户执行，失败账户不会影响已成功账户，可在任务中心重试失败项。
@@ -395,9 +425,14 @@ const form = reactive({
 const directForm = reactive({
   name: '直接投放测试', objective: 'OUTCOME_TRAFFIC', page_id: '', daily_budget: 10,
   optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1,
+  creative_format: 'MULTI_AD' as 'SINGLE_IMAGE' | 'MULTI_AD',
   adsets: [{ key: `${Date.now()}-1`, name: 'US 广告组', budget: 10, country: 'US', age_min: 18, age_max: 65, publisher_platforms: ['facebook'] as string[], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1 }],
   creatives: [{ key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' }],
 })
+const batchAssetIds = ref<string[]>([])
+const creativeCopyMode = ref<'SHARED' | 'INDIVIDUAL'>('SHARED')
+const creativeFormat = ref<'MULTI_AD' | 'CAROUSEL'>('MULTI_AD')
+const sharedCreative = reactive({ primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
 
 const addDirectAdset = () => {
   directForm.adsets.push({ key: `${Date.now()}-${directForm.adsets.length + 1}`, name: `广告组 ${directForm.adsets.length + 1}`, budget: directForm.daily_budget, country: 'US', age_min: 18, age_max: 65, publisher_platforms: ['facebook'], optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy, bid_amount: 1 })
@@ -405,6 +440,16 @@ const addDirectAdset = () => {
 const removeDirectAdset = (index: number) => { if (directForm.adsets.length > 1) directForm.adsets.splice(index, 1) }
 const addDirectCreative = () => directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
 const removeDirectCreative = (index: number) => { if (directForm.creatives.length > 1) directForm.creatives.splice(index, 1) }
+const addBatchCreatives = () => {
+  const existing = new Set(directForm.creatives.map(item => item.asset_id).filter(Boolean))
+  const added = batchAssetIds.value.filter(id => !existing.has(id))
+  if (!added.length) { ElMessage.warning('所选素材已存在于创意列表中'); return }
+  const blank = directForm.creatives.length === 1 && !directForm.creatives[0].asset_id
+  if (blank) directForm.creatives.splice(0, 1)
+  for (const asset_id of added) directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}-${asset_id}`, asset_id, primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
+  batchAssetIds.value = []
+  ElMessage.success(`已加入 ${added.length} 个素材创意`)
+}
 
 const selectedTemplate = computed(() => templates.value.find(t => t.id === form.template_id) || null)
 const templateLabel = (item: CampaignTemplate) => `${item.name}（${item.objective || '-'} · $${item.daily_budget ?? '-'}/天）`
@@ -415,9 +460,13 @@ const templateSelectWidth = computed(() => {
 })
 const directConfig = computed<Record<string, any> | null>(() => {
   if (form.publish_mode !== 'DIRECT') return null
-  const creatives = directForm.creatives.map(({ key, ...creative }) => creative)
+  const creatives = directForm.creatives.map(({ key, ...creative }) => creativeCopyMode.value === 'SHARED'
+    ? { ...creative, ...sharedCreative }
+    : creative)
   return {
     name: directForm.name, objective: directForm.objective, page_id: directForm.page_id, daily_budget: directForm.daily_budget,
+    creative_format: creativeFormat.value,
+    ...(creativeFormat.value === 'CAROUSEL' ? { carousel_cards: creatives } : {}),
     optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy,
     creatives,
     adsets: directForm.adsets.map(adset => ({ name: adset.name, budget: adset.budget,
@@ -430,7 +479,7 @@ const directConfig = computed<Record<string, any> | null>(() => {
 const templateReady = computed(() => form.publish_mode === 'DIRECT'
   ? !!directConfig.value?.page_id
   : !!selectedTemplate.value?.creative_config_json?.page_id)
-const canSubmit = computed(() => !!form.template_id && templateReady.value && form.ad_account_ids.length > 0 && !!preflightResult.value?.passed)
+const canSubmit = computed(() => (form.publish_mode === 'DIRECT' ? !!directConfig.value : !!form.template_id) && templateReady.value && form.ad_account_ids.length > 0 && !!preflightResult.value?.passed)
 const templateBudget = computed(() => {
   if (!selectedTemplate.value) return '-'
   if (selectedTemplate.value.budget_type === 'LIFETIME') return '$' + (selectedTemplate.value.lifetime_budget ?? '-') + ' 总预算'
@@ -439,6 +488,7 @@ const templateBudget = computed(() => {
 const accessBusinessIds = reactive<Record<string, string>>({})
 const selectedAccountRows = computed(() => accounts.value.filter(account => form.ad_account_ids.includes(account.id)))
 const creativeCount = (template: CampaignTemplate | null) => {
+  if (template?.creative_config_json?.creative_format === 'CAROUSEL') return 1
   const creatives = template?.creative_config_json?.creatives
   return Array.isArray(creatives) && creatives.length ? creatives.length : template?.creative_config_json ? 1 : 0
 }
@@ -446,9 +496,15 @@ const adsetCount = (template: CampaignTemplate | null) => {
   const adsets = template?.creative_config_json?.adsets
   return Array.isArray(adsets) && adsets.length ? adsets.length : 1
 }
+const directCreativesReady = computed(() => {
+  const creatives = directConfig.value?.creatives as any[] | undefined
+  const countReady = creativeFormat.value === 'CAROUSEL' ? !!creatives && creatives.length >= 2 && creatives.length <= 10 : !!creatives?.length
+  const typeReady = creativeFormat.value !== 'CAROUSEL' || creatives?.every(item => mediaAssets.value.find(asset => asset.id === item.asset_id)?.asset_type === 'image')
+  return countReady && !!typeReady && !!creatives?.length && creatives.every(item => !!item.asset_id && !!item.primary_text && /^https?:\/\//.test(item.landing_url))
+})
 const canNext = computed(() => {
   if (activeStep.value === 0) return form.publish_mode === 'DIRECT'
-    ? !!directConfig.value?.page_id && !!directConfig.value?.name && (!form.save_as_template || !!form.template_name.trim()) && directForm.adsets.length > 0 && directForm.adsets.every(item => !!item.name && !!item.country && Number(item.budget) > 0 && item.age_min <= item.age_max) && directForm.creatives.length > 0 && directForm.creatives.every(item => !!item.asset_id && !!item.primary_text && /^https?:\/\//.test(item.landing_url))
+    ? !!directConfig.value?.page_id && !!directConfig.value?.name && (!form.save_as_template || !!form.template_name.trim()) && directForm.adsets.length > 0 && directForm.adsets.every(item => !!item.name && !!item.country && Number(item.budget) > 0 && item.age_min <= item.age_max) && directCreativesReady.value
     : !!form.template_id && templateReady.value
   if (activeStep.value === 2) return form.ad_account_ids.length > 0
   return true
@@ -687,7 +743,12 @@ const runPreflight = async () => {
         billing_event: firstAdset.billing_event,
         targeting_json: firstAdset.targeting,
         placement_json: firstAdset.placement,
-        creative_config_json: { page_id: directConfig.value.page_id, creatives: directConfig.value.creatives, adsets: directConfig.value.adsets },
+        creative_config_json: {
+          ...directConfig.value,
+          page_id: directConfig.value.page_id,
+          creatives: directConfig.value.creatives,
+          adsets: directConfig.value.adsets,
+        },
       })
       form.template_id = saved.id
       ElMessage.success(`已保存投放模板：${saved.name}`)

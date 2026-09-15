@@ -29,7 +29,6 @@ export interface TemplatePayload {
   buying_type?: string
   special_ad_categories?: string[]
   is_adset_budget_sharing_enabled?: boolean
-  special_ad_categories?: string[]
   budget_type?: string
   daily_budget?: number
   lifetime_budget?: number

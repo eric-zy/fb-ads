@@ -11,11 +11,11 @@
             :auto-upload="false"
             :show-file-list="false"
             :on-change="onSelect"
-            :disabled="!filterAccount || uploading"
+            :disabled="uploading"
             accept="image/*,video/*"
           >
-            <el-button type="primary" :icon="UploadFilled" :loading="uploading" :disabled="!filterAccount">
-              {{ filterAccount ? '上传素材' : '请先选择广告账户' }}
+            <el-button type="primary" :icon="UploadFilled" :loading="uploading">
+              上传素材
             </el-button>
           </el-upload>
           <el-button text type="primary" @click="createGroupVisible = true">新建分组</el-button>
@@ -327,7 +327,9 @@ const syncAllAccounts = async (item: MediaItem) => {
     await mediaApi.syncToAccounts(item.id, accounts.value.map(account => account.id))
     ElMessage.success('已提交全部可见广告账户同步任务')
     await openBindings(item)
-  } catch { /* 全局拦截器提示错误 */ }
+  } catch (e: any) {
+    ElMessage.error(String(e?.response?.data?.detail || e?.message || '同步账户失败'))
+  }
 }
 
 const refreshMetadata = async (item: MediaItem) => {
@@ -349,8 +351,23 @@ const remove = async (item: MediaItem) => {
 }
 
 const refreshBindings = async () => { if (!bindingAssetId.value) return; const { data } = await mediaApi.bindings(bindingAssetId.value); bindings.value = data }
-const openBindings = async (item: MediaItem) => { bindingAssetId.value = item.id; bindingVisible.value = true; bindingLoading.value = true; try { await refreshBindings(); if (bindingTimer !== null) window.clearInterval(bindingTimer); bindingTimer = window.setInterval(refreshBindings, 2000) } finally { bindingLoading.value = false } }
-const retryBinding = async (row: any) => { try { await mediaApi.retryBinding(bindingAssetId.value, row.id); row.status = 'PENDING'; row.error_message = null; ElMessage.success('已提交素材重试任务') } catch { /* 全局拦截器提示错误 */ } }
+const openBindings = async (item: MediaItem) => {
+  bindingAssetId.value = item.id
+  bindings.value = []
+  bindingVisible.value = true
+  bindingLoading.value = true
+  try {
+    await refreshBindings()
+    if (bindingTimer !== null) window.clearInterval(bindingTimer)
+    bindingTimer = window.setInterval(refreshBindings, 2000)
+  } catch (e: any) {
+    ElMessage.error(String(e?.response?.data?.detail || e?.message || '读取素材映射失败'))
+  } finally { bindingLoading.value = false }
+}
+const retryBinding = async (row: any) => {
+  try { await mediaApi.retryBinding(bindingAssetId.value, row.id); row.status = 'PENDING'; row.error_message = null; ElMessage.success('已提交素材重试任务') }
+  catch (e: any) { ElMessage.error(String(e?.response?.data?.detail || e?.message || '提交重试失败')) }
+}
 const stopBindingPolling = () => { if (bindingTimer !== null) { window.clearInterval(bindingTimer); bindingTimer = null } }
 const openFailure = (item: MediaItem) => { failureAsset.value = item; failureVisible.value = true }
 onBeforeUnmount(() => { if (bindingTimer !== null) window.clearInterval(bindingTimer) })
@@ -371,8 +388,9 @@ onMounted(async () => {
   try {
     const { data } = await accountApi.list({ page: 1, page_size: 100 })
     accounts.value = data || []
-  } catch {
+  } catch (e: any) {
     accounts.value = []
+    ElMessage.error(String(e?.response?.data?.detail || e?.message || '广告账户加载失败，请先检查账户授权'))
   }
   try {
     const { data } = await mediaApi.groups.list()
