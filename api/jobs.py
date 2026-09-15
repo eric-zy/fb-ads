@@ -17,7 +17,15 @@ from core.auth import get_current_active_user
 from core.database import get_db
 from core.enums import ActionType, InstanceStatus
 from core.logger import logger
-from models import CampaignInstance, CampaignTemplate
+from models import CampaignInstance, CampaignTemplate, CampaignJob, User
+
+def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
+    if not user_id:
+        return None
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return {"id": user_id, "username": "已删除用户", "email": None}
+    return {"id": user.id, "username": user.username, "email": user.email}
 from core.enums import TemplateStatus
 from services.job_service import JobService
 
@@ -45,10 +53,13 @@ class CampaignPreflightRequest(CampaignCreateRequest):
     pass
 
 
-def _ensure_template(db: Session, req: CampaignCreateRequest) -> str:
+def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optional[str] = None) -> str:
     """把模板请求和直接配置请求统一成现有发布器可消费的模板。"""
     if req.template_id:
-        return req.template_id
+        template = db.query(CampaignTemplate).filter(CampaignTemplate.id == req.template_id).first()
+        if not template or (tenant_id and template.tenant_id != tenant_id):
+            raise HTTPException(status_code=404, detail="投放模板不存在或无权访问")
+        return template.id
     if req.save_as_template and not str(req.template_name or "").strip():
         raise HTTPException(status_code=400, detail="已勾选保存为投放模板，请填写模板名称")
     config = req.inline_config or {}
@@ -111,6 +122,7 @@ def _ensure_template(db: Session, req: CampaignCreateRequest) -> str:
         raise HTTPException(status_code=400, detail="直接配置必须提供投放名称")
     template = CampaignTemplate(
         id=uuid.uuid4().hex,
+        tenant_id=tenant_id,
         status=TemplateStatus.ACTIVE.value,
         is_temporary=not req.save_as_template,
         **fields,
@@ -235,7 +247,7 @@ def _submit(
 @router.post("/campaign-preflight")
 def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     """发布前检查；不调用 Meta 写接口。直接配置会先标准化为内部配置。"""
-    template_id = _ensure_template(db, req)
+    template_id = _ensure_template(db, req, current_user.tenant_id)
     result = JobService(db).preflight_campaign(template_id, req.ad_account_ids, req.budget_override, req.status, created_by=current_user.id)
     result["source"] = req.source or ("TEMPLATE" if req.template_id else "DIRECT")
     result["template_id"] = template_id
@@ -248,7 +260,7 @@ def create_campaign_batch(
     current_user=Depends(get_current_active_user),
 ):
     """批量创建 Campaign / AdSet / Ad（异步）"""
-    template_id = _ensure_template(db, req)
+    template_id = _ensure_template(db, req, current_user.tenant_id)
     return _submit(
         db,
         template_id=template_id,
@@ -300,20 +312,28 @@ def schedule_campaign_batch(
 def list_scheduled_jobs(
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    _=Depends(get_current_active_user),
+    current_user=Depends(get_current_active_user),
 ):
     """待执行的定时任务列表（按计划执行时间升序）"""
     jobs = JobService(db).list_scheduled_jobs(limit=limit)
-    return [j.to_dict() for j in jobs]
+    result = []
+    for job in jobs:
+        payload = job.to_dict()
+        payload["publisher"] = _publisher_info(db, job.created_by)
+        result.append(payload)
+    return result
 
 
 @router.post("/{job_id}/dispatch-now")
 def dispatch_job_now(
     job_id: str,
     db: Session = Depends(get_db),
-    _=Depends(get_current_active_user),
+    current_user=Depends(get_current_active_user),
 ):
     """把定时任务提前为立即执行（会撤销原定的延迟投递）"""
+    owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == current_user.tenant_id).first()
+    if not owned:
+        raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     job = JobService(db).dispatch_now(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
@@ -392,7 +412,7 @@ def list_jobs(
     status: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    _=Depends(get_current_active_user),
+    current_user=Depends(get_current_active_user),
 ):
     """任务列表"""
     jobs = JobService(db).list_jobs(limit=limit, status=status)
@@ -403,12 +423,16 @@ def list_jobs(
 def get_job(
     job_id: str,
     db: Session = Depends(get_db),
-    _=Depends(get_current_active_user),
+    current_user=Depends(get_current_active_user),
 ):
     """任务详情（前端轮询进度：成功 / 失败 / 执行中各多少）"""
+    owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == current_user.tenant_id).first()
+    if not owned:
+        raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     detail = JobService(db).get_job_detail(job_id)
     if not detail:
         raise HTTPException(status_code=404, detail="任务不存在")
+    detail["publisher"] = _publisher_info(db, owned.created_by)
     return detail
 
 

@@ -60,6 +60,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="created_at" label="创建时间" width="180" show-overflow-tooltip />
+        <el-table-column label="发布人" width="150" show-overflow-tooltip><template #default="{ row }">{{ row.publisher?.username || row.publisher?.email || row.created_by || '-' }}</template></el-table-column>
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="viewDetail(row.id)">详情</el-button>
@@ -93,6 +94,7 @@
         <el-descriptions-item label="成功">{{ currentJob?.success_count }}</el-descriptions-item>
         <el-descriptions-item label="失败">{{ currentJob?.failed_count }}</el-descriptions-item>
         <el-descriptions-item label="创建">{{ currentJob?.created_at }}</el-descriptions-item>
+        <el-descriptions-item label="发布人">{{ currentJob?.publisher?.username || currentJob?.publisher?.email || currentJob?.created_by || '-' }}</el-descriptions-item>
         <el-descriptions-item label="开始">{{ currentJob?.started_at || '-' }}</el-descriptions-item>
         <el-descriptions-item label="结束">{{ currentJob?.finished_at || '-' }}</el-descriptions-item>
       </el-descriptions>

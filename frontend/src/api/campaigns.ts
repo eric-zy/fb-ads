@@ -1,5 +1,5 @@
 import request from '@/utils/request'
-export interface MetaCampaign { id: string; ad_account_id: string; account_name?: string; meta_campaign_id: string; name: string; status: string; meta_status?: string; objective?: string; template_name?: string; updated_at?: string }
+export interface MetaCampaign { id: string; ad_account_id: string; account_name?: string; meta_campaign_id: string; name: string; status: string; meta_status?: string; objective?: string; template_name?: string; updated_at?: string; publisher?: { id: string; username: string; email?: string | null } | null }
 export interface MetaAdSet { id: string; campaign_id: string; meta_adset_id: string; name: string; status: string; optimization_goal?: string; daily_budget?: number }
 export interface MetaAd { id: string; adset_id: string; meta_ad_id: string; name: string; status: string; effective_status?: string }
 export interface AsyncActionResult { job_id?: string; task_ids?: string[]; account_ids?: string[]; status: string }

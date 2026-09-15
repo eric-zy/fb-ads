@@ -70,9 +70,6 @@
         <el-form-item label="用户名">
           <el-input v-model="form.username" placeholder="用户名" />
         </el-form-item>
-        <el-form-item label="邮箱">
-          <el-input v-model="form.email" placeholder="邮箱" type="email" />
-        </el-form-item>
         <el-form-item v-if="!form.id" label="初始密码">
           <el-input v-model="form.password" placeholder="初始密码" />
         </el-form-item>
@@ -139,7 +136,7 @@ const activeFilter = ref('')
 const showForm = ref(false)
 const saving = ref(false)
 const form = ref<Partial<AdminUser> & { password?: string }>({
-  username: '', email: '', password: '123456', role: 'user', is_active: true,
+  username: '', password: '123456', role: 'user', is_active: true,
 })
 
 const showPwd = ref(false)
@@ -179,7 +176,7 @@ async function loadUsers() {
 async function loadRoles() { try { roles.value = (await roleApi.list()).data } catch { roles.value = [] } }
 
 function openCreate() {
-  form.value = { username: '', email: '', password: '123456', role: 'user', is_active: true, permissions: [...permissionDefaults] }
+  form.value = { username: '', password: '123456', role: 'user', is_active: true, permissions: [...permissionDefaults] }
   showForm.value = true
 }
 function openEdit(u: AdminUser) {

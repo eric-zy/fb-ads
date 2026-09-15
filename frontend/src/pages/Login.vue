@@ -14,14 +14,14 @@
         @submit.prevent="handleLogin"
         @keyup.enter="handleLogin"
       >
-        <el-form-item prop="email">
+        <el-form-item prop="username">
           <el-input
-            v-model="loginForm.email"
-            placeholder="请输入邮箱"
-            prefix-icon="Message"
+            v-model="loginForm.username"
+            placeholder="请输入用户名"
+            prefix-icon="User"
             clearable
-            name="email"
-            id="email"
+            name="username"
+            id="username"
             autocomplete="username"
           />
         </el-form-item>
@@ -116,15 +116,15 @@ const userStore = useUserStore()
 const formRef = ref<FormInstance>()
 
 const loginForm = reactive({
-  email: 'demo@example.com',
+  username: 'demo',
   password: 'password123',
   rememberMe: true,
 })
 
 const rules = {
-  email: [
-    { required: true, message: '请输入邮箱地址', trigger: 'blur' },
-    { type: 'email', message: '请输入正确的邮箱地址', trigger: 'blur' },
+  username: [
+    { required: true, message: '请输入用户名', trigger: 'blur' },
+    { min: 3, max: 64, message: '用户名长度为 3-64 个字符', trigger: 'blur' },
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
@@ -138,7 +138,7 @@ const handleLogin = async () => {
   try {
     await formRef.value.validate()
     
-    const success = await userStore.login(loginForm.email, loginForm.password)
+    const success = await userStore.login(loginForm.username, loginForm.password)
     if (success) {
       ElMessage.success('登录成功')
       // 根据角色跳转

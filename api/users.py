@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Any, Dict, List, Optional
 import hashlib
 import uuid
@@ -145,8 +145,8 @@ async def get_user(
 # ==================== 用户管理 CRUD（管理员） ====================
 
 class UserCreate(BaseModel):
-    email: EmailStr
-    username: str
+    username: str = Field(..., min_length=3, max_length=64)
+    email: Optional[EmailStr] = None
     password: str = "123456"
     role: str = "user"
     company_id: Optional[str] = None
@@ -224,8 +224,6 @@ def create_user(
         - 租户管理员创建的用户 → 自动归属当前租户
         - 平台管理员可通过 `tenant_id` 指定租户；不指定则创建为平台账号
     """
-    if db.query(User).filter(User.email == data.email).first():
-        raise HTTPException(status_code=400, detail="该邮箱已注册")
     if db.query(User).filter(User.username == data.username).first():
         raise HTTPException(status_code=400, detail="该用户名已存在")
     if data.role_id:
@@ -250,9 +248,12 @@ def create_user(
                 status_code=403, detail=f"租户成员数已达上限（{tenant.max_users}）"
             )
 
+    internal_email = str(data.email or f"{data.username}@local.invalid").lower()
+    if db.query(User).filter(User.email == internal_email).first():
+        raise HTTPException(status_code=400, detail="该用户名对应的内部账号已存在")
     u = User(
         id=str(uuid.uuid4()),
-        email=data.email,
+        email=internal_email,
         username=data.username,
         hashed_password=_hash_password(data.password),
         role=UserRole.normalize(data.role),

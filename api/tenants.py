@@ -39,8 +39,8 @@ class TenantCreate(BaseModel):
     contact_email: Optional[EmailStr] = None
 
     # 初始管理员账号
-    admin_email: EmailStr
-    admin_username: Optional[str] = None
+    admin_username: str = Field(..., min_length=3, max_length=64)
+    admin_email: Optional[EmailStr] = None
     admin_password: str = "123456"
 
     max_users: Optional[int] = None
@@ -140,8 +140,9 @@ def create_tenant(
     normalized_slug = req.slug.strip().lower()
     if db.query(Tenant).filter(Tenant.slug == normalized_slug).first():
         raise HTTPException(status_code=400, detail=f"租户标识已存在: {normalized_slug}")
-    if db.query(User).filter(User.email == req.admin_email).first():
-        raise HTTPException(status_code=400, detail=f"管理员邮箱已注册: {req.admin_email}")
+    internal_admin_email = str(req.admin_email or f"{req.admin_username}@local.invalid").lower()
+    if db.query(User).filter(User.username == req.admin_username).first():
+        raise HTTPException(status_code=400, detail=f"管理员用户名已注册: {req.admin_username}")
 
     tenant = Tenant(
         id=uuid.uuid4().hex,
@@ -163,8 +164,8 @@ def create_tenant(
 
     admin = User(
         id=uuid.uuid4().hex,
-        email=req.admin_email,
-        username=req.admin_username or req.admin_email.split("@")[0],
+        email=internal_admin_email,
+        username=req.admin_username,
         hashed_password=_sha256(req.admin_password),
         tenant_id=tenant.id,  # 显式指定：当前上下文是平台而非该租户
         role=UserRole.TENANT_ADMIN.value,

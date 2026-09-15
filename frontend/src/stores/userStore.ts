@@ -70,11 +70,11 @@ export const useUserStore = defineStore('user', () => {
   }
 
   // 登录
-  const login = async (email: string, password: string) => {
+  const login = async (username: string, password: string) => {
     isLoading.value = true
     try {
       const response = await request.post('/api/v1/auth/login', {
-        email,
+        username,
         password,
       }, {
         // 登录失败由 Login.vue 页面层弹框提示，避免拦截器全局弹框在此场景不可靠

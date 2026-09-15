@@ -217,7 +217,7 @@ def _create_access_token(user_id: str, email: str, role: str, tenant_id: str = N
     return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
 
 class LoginRequest(BaseModel):
-    email: str
+    username: str
     password: str
 
 @app.post("/api/v1/auth/login")
@@ -225,9 +225,9 @@ async def auth_login(request: LoginRequest, db: Session = Depends(get_db)):
     """用户登录"""
     try:
         from models import User, Role
-        user = db.query(User).filter(User.email == request.email).first()
+        user = db.query(User).filter(User.username == request.username.strip()).first()
         if not user or user.hashed_password != _hash_password(request.password):
-            raise HTTPException(status_code=401, detail="邮箱或密码错误")
+            raise HTTPException(status_code=401, detail="用户名或密码错误")
         if not user.is_active:
             raise HTTPException(status_code=403, detail="账户已被禁用")
 

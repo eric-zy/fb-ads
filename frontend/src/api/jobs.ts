@@ -30,6 +30,7 @@ export interface CampaignJob {
   failed_count: number
   params: Record<string, any> | null
   created_by: string | null
+  publisher?: { id: string; username: string; email?: string | null } | null
   error_message: string | null
   created_at: string | null
   started_at: string | null

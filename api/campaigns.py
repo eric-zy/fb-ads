@@ -10,21 +10,37 @@ from sqlalchemy.orm import Session
 from core.auth import get_current_active_user
 from core.database import get_db
 from core.enums import ActionType
-from models import AdSetInstance, AdInstance, CampaignInstance, AsyncTaskRecord, SyncAlert
+from models import AdSetInstance, AdInstance, CampaignInstance, AsyncTaskRecord, SyncAlert, User
 from services.job_service import JobService
 from tasks.meta_sync_tasks import sync_delivery_objects_task, update_delivery_object_task
 from celery_app import celery_app
 
 router = APIRouter(prefix="/api/v1", tags=["Meta 投放对象"])
 
+def _scope(query, model, user):
+    """租户用户只能访问本租户对象；平台管理员可跨租户审计。"""
+    if getattr(user, "is_platform_admin", lambda: False)() and not getattr(user, "tenant_id", None):
+        return query
+    tenant_id = getattr(user, "tenant_id", None)
+    if not tenant_id:
+        raise HTTPException(status_code=403, detail="当前账号未绑定租户")
+    return query.filter(model.tenant_id == tenant_id)
+
+def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
+    if not user_id:
+        return None
+    user = db.query(User).filter(User.id == user_id).first()
+    return {"id": user_id, "username": user.username, "email": user.email} if user else {"id": user_id, "username": "已删除用户", "email": None}
+
 @router.get("/sync-alerts")
-def list_sync_alerts(limit: int = 50, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
+def list_sync_alerts(limit: int = 50, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     limit = max(1, min(limit, 200))
-    return [row.to_dict() for row in db.query(SyncAlert).filter(SyncAlert.is_resolved.is_(False)).order_by(SyncAlert.created_at.desc()).limit(limit).all()]
+    query = _scope(db.query(SyncAlert), SyncAlert, current_user).filter(SyncAlert.is_resolved.is_(False))
+    return [row.to_dict() for row in query.order_by(SyncAlert.created_at.desc()).limit(limit).all()]
 
 @router.post("/sync-alerts/{alert_id}/resolve")
-def resolve_sync_alert(alert_id: str, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
-    alert = db.query(SyncAlert).filter(SyncAlert.id == alert_id, SyncAlert.is_resolved.is_(False)).first()
+def resolve_sync_alert(alert_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+    alert = _scope(db.query(SyncAlert), SyncAlert, current_user).filter(SyncAlert.id == alert_id, SyncAlert.is_resolved.is_(False)).first()
     if not alert:
         raise HTTPException(status_code=404, detail="告警不存在或已处理")
     alert.is_resolved = True
@@ -33,16 +49,17 @@ def resolve_sync_alert(alert_id: str, db: Session = Depends(get_db), _=Depends(g
     return alert.to_dict()
 
 @router.get("/tasks")
-def list_async_task_records(limit: int = 50, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
+def list_async_task_records(limit: int = 50, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     limit = max(1, min(limit, 200))
-    return [row.to_dict() for row in db.query(AsyncTaskRecord).order_by(AsyncTaskRecord.created_at.desc()).limit(limit).all()]
+    query = _scope(db.query(AsyncTaskRecord), AsyncTaskRecord, current_user)
+    return [row.to_dict() for row in query.order_by(AsyncTaskRecord.created_at.desc()).limit(limit).all()]
 
 @router.get("/tasks/{task_id}")
-def get_async_task_status(task_id: str, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
+def get_async_task_status(task_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     """查询 Meta 同步/启停 Celery 任务状态。"""
     if len(task_id) > 100 or any(ch not in "0123456789abcdefABCDEF-" for ch in task_id):
         raise HTTPException(status_code=400, detail="任务 ID 格式错误")
-    record = db.query(AsyncTaskRecord).filter(AsyncTaskRecord.task_id == task_id).first()
+    record = _scope(db.query(AsyncTaskRecord), AsyncTaskRecord, current_user).filter(AsyncTaskRecord.task_id == task_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     result = celery_app.AsyncResult(task_id)
@@ -76,9 +93,9 @@ def list_campaigns(
     status: Optional[str] = None,
     keyword: Optional[str] = None,
     db: Session = Depends(get_db),
-    _=Depends(get_current_active_user),
+    current_user=Depends(get_current_active_user),
 ):
-    query = db.query(CampaignInstance)
+    query = _scope(db.query(CampaignInstance), CampaignInstance, current_user)
     if ad_account_id:
         query = query.filter(CampaignInstance.ad_account_id == ad_account_id)
     if status:
@@ -89,19 +106,31 @@ def list_campaigns(
             (CampaignInstance.name.ilike(value))
             | (CampaignInstance.meta_campaign_id.ilike(value))
         )
-    return [row.to_dict() for row in query.order_by(CampaignInstance.created_at.desc()).all()]
+    rows = query.order_by(CampaignInstance.created_at.desc()).all()
+    result = []
+    for row in rows:
+        payload = row.to_dict()
+        publisher = None
+        for job in reversed(row.template.jobs if row.template else []):
+            item = next((item for item in job.items if item.campaign_instance_id == row.id), None)
+            if item:
+                publisher = _publisher_info(db, job.created_by)
+                break
+        payload["publisher"] = publisher
+        result.append(payload)
+    return result
 
 @router.get("/campaigns/{campaign_id}/adsets")
-def list_adsets(campaign_id: str, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
-    campaign = db.query(CampaignInstance).filter(CampaignInstance.id == campaign_id).first()
+def list_adsets(campaign_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+    campaign = _scope(db.query(CampaignInstance), CampaignInstance, current_user).filter(CampaignInstance.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="广告系列不存在")
     return [row.to_dict() for row in campaign.adsets]
 
 @router.get("/campaigns/{campaign_id}/detail")
-def campaign_detail(campaign_id: str, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
+def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     """返回本地发布记录的完整层级与投放配置，供投放管理详情页查看。"""
-    campaign = db.query(CampaignInstance).filter(CampaignInstance.id == campaign_id).first()
+    campaign = _scope(db.query(CampaignInstance), CampaignInstance, current_user).filter(CampaignInstance.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="广告系列不存在")
     template = campaign.template
@@ -111,6 +140,7 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), _=Depends(g
             item = next((row for row in job.items if row.ad_account_id == campaign.ad_account_id), None)
             if item:
                 job_item = item.to_dict()
+                job_item["publisher"] = _publisher_info(db, job.created_by)
                 break
     return {
         "campaign": campaign.to_dict(),
@@ -132,11 +162,12 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), _=Depends(g
             for adset in campaign.adsets
         ],
         "job_item": job_item,
+        "publisher": job_item.get("publisher") if job_item else None,
     }
 
 @router.get("/adsets/{adset_id}/ads")
-def list_ads(adset_id: str, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
-    adset = db.query(AdSetInstance).filter(AdSetInstance.id == adset_id).first()
+def list_ads(adset_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+    adset = _scope(db.query(AdSetInstance), AdSetInstance, current_user).filter(AdSetInstance.id == adset_id).first()
     if not adset:
         raise HTTPException(status_code=404, detail="广告组不存在")
     return [row.to_dict() for row in adset.ads]
@@ -149,7 +180,7 @@ def campaign_action(
 ):
     action_map = {"PAUSE": ActionType.PAUSE, "ENABLE": ActionType.ENABLE, "UPDATE_BUDGET": ActionType.UPDATE_BUDGET}
     if req.action == "SYNC":
-        instances = db.query(CampaignInstance).filter(CampaignInstance.id.in_(req.ids)).all()
+        instances = _scope(db.query(CampaignInstance), CampaignInstance, current_user).filter(CampaignInstance.id.in_(req.ids)).all()
         if not instances:
             raise HTTPException(status_code=404, detail="未找到可同步的广告系列")
         account_ids = sorted({row.ad_account_id for row in instances})
@@ -162,10 +193,10 @@ def campaign_action(
     if not action:
         raise HTTPException(status_code=400, detail="不支持的操作")
 
-    instances = db.query(CampaignInstance).filter(CampaignInstance.id.in_(req.ids)).all()
+    instances = _scope(db.query(CampaignInstance), CampaignInstance, current_user).filter(CampaignInstance.id.in_(req.ids)).all()
     if not instances and req.action in ("PAUSE", "ENABLE"):
-        adsets = db.query(AdSetInstance).filter(AdSetInstance.id.in_(req.ids)).all()
-        ads = db.query(AdInstance).filter(AdInstance.id.in_(req.ids)).all()
+        adsets = _scope(db.query(AdSetInstance), AdSetInstance, current_user).filter(AdSetInstance.id.in_(req.ids)).all()
+        ads = _scope(db.query(AdInstance), AdInstance, current_user).filter(AdInstance.id.in_(req.ids)).all()
         targets = [{"type": "ADSET", "id": row.id, "account_id": row.campaign_instance.ad_account_id} for row in adsets]
         targets += [{"type": "AD", "id": row.id, "account_id": row.adset_instance.campaign_instance.ad_account_id} for row in ads]
         if targets:

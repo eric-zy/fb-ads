@@ -5,7 +5,7 @@ import request from '@/utils/request'
 export interface AdminUser { id: string; email: string; username: string; role: string; role_id?: string | null; company_id: string | null; is_active: boolean; is_verified: boolean; permissions: string[]; created_at: string | null; last_login: string | null }
 export const userApi = {
   list: (params?: { search?: string; role?: string; is_active?: boolean; page?: number; page_size?: number }) => request.get('/api/v1/users', { params }),
-  create: (data: { email: string; username: string; password?: string; role?: string; company_id?: string; is_active?: boolean }) => request.post('/api/v1/users', data),
+  create: (data: { username: string; password?: string; role?: string; company_id?: string; is_active?: boolean }) => request.post('/api/v1/users', data),
   update: (id: string, data: Partial<{ email: string; username: string; role: string; role_id: string | null; company_id: string; is_active: boolean; permissions: string[] }>) => request.put('/api/v1/users/' + id, data),
   resetPassword: (id: string, password: string) => request.post('/api/v1/users/' + id + '/reset-password', { password }),
   toggleActive: (id: string) => request.post('/api/v1/users/' + id + '/toggle-active'),
