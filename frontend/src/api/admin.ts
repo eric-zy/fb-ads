@@ -5,7 +5,7 @@ import request from '@/utils/request'
 export interface AdminUser { id: string; username: string; tenant_id?: string | null; role: string; role_id?: string | null; company_id: string | null; is_active: boolean; is_verified: boolean; permissions: string[]; created_at: string | null; last_login: string | null }
 export const userApi = {
   list: (params?: { search?: string; role?: string; is_active?: boolean; page?: number; page_size?: number }) => request.get('/api/v1/users', { params }),
-  create: (data: { username: string; password?: string; role?: string; company_id?: string; is_active?: boolean }) => request.post('/api/v1/users', data),
+  create: (data: { username: string; password?: string; role?: string; role_id?: string | null; tenant_id?: string | null; permissions?: string[]; company_id?: string; is_active?: boolean }) => request.post('/api/v1/users', data),
   update: (id: string, data: Partial<{ email: string; username: string; role: string; role_id: string | null; company_id: string; is_active: boolean; permissions: string[] }>) => request.put('/api/v1/users/' + id, data),
   resetPassword: (id: string, password: string) => request.post('/api/v1/users/' + id + '/reset-password', { password }),
   toggleActive: (id: string) => request.post('/api/v1/users/' + id + '/toggle-active'),
@@ -74,6 +74,11 @@ export const credentialApi = {
   oauthSdkLogin: (access_token: string) => request.post('/api/v1/meta-auth/sdk-login', { access_token }),
   oauthBusinesses: (credentialId: string) => request.get('/api/v1/meta-auth/businesses', { params: { credential_id: credentialId } }),
   oauthComplete: (data: { credential_id: string; business_id: string }) => request.post('/api/v1/meta-auth/complete', data), oauthAdAccounts: (credentialId: string) => request.get('/api/v1/meta-auth/ad-accounts', { params: { credential_id: credentialId } }), oauthCompleteAccounts: (data: { credential_id: string; account_ids: string[] }) => request.post('/api/v1/meta-auth/complete-accounts', data),
+}
+
+export interface TenantItem { id: string; name: string; slug: string; status: string; member_count?: number }
+export const tenantApi = {
+  list: (params?: { keyword?: string; status?: string; page?: number; page_size?: number }) => request.get('/api/v1/tenants', { params }),
 }
 
 export const operationsApi = {

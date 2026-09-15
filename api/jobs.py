@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from core.auth import get_current_active_user
+from core.auth import get_current_active_user, require_permission
 from core.database import get_db
 from core.enums import ActionType, InstanceStatus
 from core.logger import logger
@@ -245,7 +245,7 @@ def _submit(
 # ==================== 批量投放 ====================
 
 @router.post("/campaign-preflight")
-def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("job:create"))):
     """发布前检查；不调用 Meta 写接口。直接配置会先标准化为内部配置。"""
     template_id = _ensure_template(db, req, current_user.tenant_id)
     result = JobService(db).preflight_campaign(template_id, req.ad_account_ids, req.budget_override, req.status, created_by=current_user.id)
@@ -312,7 +312,7 @@ def schedule_campaign_batch(
 def list_scheduled_jobs(
     limit: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_active_user),
+    current_user=Depends(require_permission("job:create")),
 ):
     """待执行的定时任务列表（按计划执行时间升序）"""
     jobs = JobService(db).list_scheduled_jobs(limit=limit)
@@ -328,7 +328,7 @@ def list_scheduled_jobs(
 def dispatch_job_now(
     job_id: str,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_active_user),
+    current_user=Depends(require_permission("job:create")),
 ):
     """把定时任务提前为立即执行（会撤销原定的延迟投递）"""
     owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == current_user.tenant_id).first()

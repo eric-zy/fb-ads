@@ -807,10 +807,17 @@ def assign_users(
     a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
-    existing = {u.id for u in db.query(User).filter(User.id.in_(payload.user_ids)).all()}
+    users = db.query(User).filter(User.id.in_(payload.user_ids)).all()
+    existing = {u.id for u in users}
     missing = set(payload.user_ids) - existing
     if missing:
         raise HTTPException(status_code=400, detail=f"以下用户不存在: {', '.join(missing)}")
+    cross_tenant = [u.username for u in users if u.tenant_id != a.tenant_id]
+    if cross_tenant:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不能将广告账户分配给其他租户用户: {', '.join(cross_tenant)}",
+        )
     for uid in payload.user_ids:
         if not db.query(UserAccount).filter(
             UserAccount.user_id == uid, UserAccount.account_id == a.id

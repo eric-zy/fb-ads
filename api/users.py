@@ -241,6 +241,16 @@ def create_user(
     tenant = None
     if target_tenant_id is None:
         target_tenant_id = getattr(current_user, "tenant_id", None)
+    requested_role = UserRole.normalize(data.role)
+    if (
+        UserRole.is_platform_admin(current_user.role)
+        and requested_role != UserRole.PLATFORM_ADMIN.value
+        and target_tenant_id is None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="平台管理员创建普通用户时必须指定 tenant_id",
+        )
     if target_tenant_id:
         tenant = db.query(Tenant).filter(Tenant.id == target_tenant_id).first()
         if not tenant:
@@ -259,7 +269,7 @@ def create_user(
         email=internal_email,
         username=username,
         hashed_password=_hash_password(data.password),
-        role=UserRole.normalize(data.role),
+        role=requested_role,
         tenant_id=target_tenant_id,  # 显式指定，不依赖上下文自动填充
         company_id=data.company_id,
         is_active=data.is_active,

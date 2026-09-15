@@ -76,6 +76,11 @@
         <el-form-item v-if="!form.id" label="初始密码">
           <el-input v-model="form.password" placeholder="至少 6 个字符" show-password />
         </el-form-item>
+        <el-form-item v-if="isPlatformAdmin" label="所属租户" required>
+          <el-select v-model="form.tenant_id" clearable placeholder="请选择租户" style="width: 100%">
+            <el-option v-for="tenant in tenants" :key="tenant.id" :label="`${tenant.name} (${tenant.slug})`" :value="tenant.id" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="角色">
           <el-select v-model="form.role" style="width: 100%">
             <el-option label="租户管理员" value="tenant_admin" />
@@ -124,11 +129,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
-import { userApi, type AdminUser } from '../../api/admin'
+import { userApi, tenantApi, type AdminUser, type TenantItem } from '../../api/admin'
 import { roleApi } from '../../api/admin'
+import { useUserStore } from '../../stores/userStore'
 
 const users = ref<AdminUser[]>([])
 const loading = ref(false)
@@ -146,6 +152,9 @@ const showPwd = ref(false)
 const pwdUser = ref<AdminUser | null>(null)
 const pwdValue = ref('')
 const roles = ref<any[]>([])
+const tenants = ref<TenantItem[]>([])
+const userStore = useUserStore()
+const isPlatformAdmin = computed(() => userStore.isPlatformAdmin)
 const permissionDefaults = [] as string[]
 
 let timer: number | undefined
@@ -177,9 +186,13 @@ async function loadUsers() {
   }
 }
 async function loadRoles() { try { roles.value = (await roleApi.list()).data } catch { roles.value = [] } }
+async function loadTenants() {
+  try { tenants.value = (await tenantApi.list({ status: 'ACTIVE', page: 1, page_size: 100 })).data }
+  catch { tenants.value = [] }
+}
 
 function openCreate() {
-  form.value = { username: '', password: '123456', role: 'user', is_active: true, permissions: [...permissionDefaults] }
+  form.value = { username: '', password: '123456', role: 'user', tenant_id: null, is_active: true, permissions: [...permissionDefaults] }
   showForm.value = true
 }
 function openEdit(u: AdminUser) {
@@ -193,6 +206,10 @@ async function save() {
       const { id, ...rest } = form.value as any
       await userApi.update(id, rest)
     } else {
+      if (isPlatformAdmin.value && !form.value.tenant_id) {
+        ElMessage.warning('平台管理员创建普通用户时必须选择所属租户')
+        return
+      }
       const res = await userApi.create(form.value as any)
       if (res.data.temp_password) ElMessage.success(`创建成功，初始密码：${res.data.temp_password}`)
     }
@@ -249,7 +266,9 @@ async function remove(u: AdminUser) {
   }
 }
 
-onMounted(async () => { await Promise.all([loadUsers(), loadRoles()]) })
+onMounted(async () => {
+  await Promise.all([loadUsers(), loadRoles(), isPlatformAdmin.value ? loadTenants() : Promise.resolve()])
+})
 </script>
 
 <style scoped>
