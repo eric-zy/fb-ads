@@ -41,7 +41,7 @@ class TenantCreate(BaseModel):
     # 初始管理员账号
     admin_username: str = Field(..., min_length=3, max_length=64)
     admin_email: Optional[EmailStr] = None
-    admin_password: str = "123456"
+    admin_password: str = Field("123456", min_length=6, max_length=128)
 
     max_users: Optional[int] = None
     max_meta_accounts: Optional[int] = None
@@ -140,9 +140,12 @@ def create_tenant(
     normalized_slug = req.slug.strip().lower()
     if db.query(Tenant).filter(Tenant.slug == normalized_slug).first():
         raise HTTPException(status_code=400, detail=f"租户标识已存在: {normalized_slug}")
-    internal_admin_email = str(req.admin_email or f"{req.admin_username}@local.invalid").lower()
-    if db.query(User).filter(User.username == req.admin_username).first():
-        raise HTTPException(status_code=400, detail=f"管理员用户名已注册: {req.admin_username}")
+    admin_username = req.admin_username.strip()
+    if len(admin_username) < 3 or any(ch.isspace() for ch in admin_username):
+        raise HTTPException(status_code=400, detail="管理员用户名长度至少 3 个字符且不能包含空格")
+    internal_admin_email = str(req.admin_email or f"{admin_username}@local.invalid").lower()
+    if db.query(User).filter(User.username == admin_username).first():
+        raise HTTPException(status_code=400, detail=f"管理员用户名已注册: {admin_username}")
 
     tenant = Tenant(
         id=uuid.uuid4().hex,
@@ -165,7 +168,7 @@ def create_tenant(
     admin = User(
         id=uuid.uuid4().hex,
         email=internal_admin_email,
-        username=req.admin_username,
+        username=admin_username,
         hashed_password=_sha256(req.admin_password),
         tenant_id=tenant.id,  # 显式指定：当前上下文是平台而非该租户
         role=UserRole.TENANT_ADMIN.value,

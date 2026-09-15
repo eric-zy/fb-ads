@@ -147,7 +147,7 @@ async def get_user(
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
     email: Optional[EmailStr] = None
-    password: str = "123456"
+    password: str = Field("123456", min_length=6, max_length=128)
     role: str = "user"
     company_id: Optional[str] = None
     is_active: bool = True
@@ -168,7 +168,7 @@ class UserUpdate(BaseModel):
 
 
 class PasswordReset(BaseModel):
-    password: str
+    password: str = Field(..., min_length=6, max_length=128)
 
 
 def _user_to_dict(u: User) -> dict:
@@ -224,7 +224,10 @@ def create_user(
         - 租户管理员创建的用户 → 自动归属当前租户
         - 平台管理员可通过 `tenant_id` 指定租户；不指定则创建为平台账号
     """
-    if db.query(User).filter(User.username == data.username).first():
+    username = data.username.strip()
+    if len(username) < 3 or any(ch.isspace() for ch in username):
+        raise HTTPException(status_code=400, detail="用户名长度至少 3 个字符且不能包含空格")
+    if db.query(User).filter(User.username == username).first():
         raise HTTPException(status_code=400, detail="该用户名已存在")
     if data.role_id:
         role = db.query(Role).filter(Role.id == data.role_id).first()
@@ -248,13 +251,13 @@ def create_user(
                 status_code=403, detail=f"租户成员数已达上限（{tenant.max_users}）"
             )
 
-    internal_email = str(data.email or f"{data.username}@local.invalid").lower()
+    internal_email = str(data.email or f"{username}@local.invalid").lower()
     if db.query(User).filter(User.email == internal_email).first():
         raise HTTPException(status_code=400, detail="该用户名对应的内部账号已存在")
     u = User(
         id=str(uuid.uuid4()),
         email=internal_email,
-        username=data.username,
+        username=username,
         hashed_password=_hash_password(data.password),
         role=UserRole.normalize(data.role),
         tenant_id=target_tenant_id,  # 显式指定，不依赖上下文自动填充

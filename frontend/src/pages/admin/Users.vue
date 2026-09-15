@@ -12,7 +12,7 @@
       <div class="toolbar">
         <el-input
           v-model="search"
-          placeholder="搜索邮箱 / 用户名"
+          placeholder="搜索用户名"
           clearable
           style="width: 240px"
           :prefix-icon="Search"
@@ -31,7 +31,7 @@
 
       <el-table :data="users" v-loading="loading" stripe style="width: 100%">
         <el-table-column prop="username" label="用户名" min-width="120" />
-        <el-table-column prop="email" label="邮箱" min-width="200" />
+        <el-table-column prop="tenant_id" label="租户 ID" min-width="150" show-overflow-tooltip />
         <el-table-column label="角色" width="120">
           <template #default="{ row }">
             <el-tag :type="roleType(row.role)" effect="light" round>{{ roleLabel(row.role) }}</el-tag>
@@ -45,7 +45,10 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="注册时间" min-width="130">
+        <el-table-column label="最后登录" min-width="150">
+          <template #default="{ row }">{{ row.last_login ? row.last_login.slice(0, 19).replace('T', ' ') : '从未登录' }}</template>
+        </el-table-column>
+        <el-table-column label="创建时间" min-width="130">
           <template #default="{ row }">{{ row.created_at ? row.created_at.slice(0, 10) : '-' }}</template>
         </el-table-column>
         <el-table-column label="操作" width="260" fixed="right">
@@ -68,14 +71,14 @@
     <el-dialog v-model="showForm" :title="form.id ? '编辑用户' : '新建用户'" width="440px" destroy-on-close>
       <el-form :model="form" label-width="80px">
         <el-form-item label="用户名">
-          <el-input v-model="form.username" placeholder="用户名" />
+          <el-input v-model="form.username" placeholder="3-64 个字符，不含空格" />
         </el-form-item>
         <el-form-item v-if="!form.id" label="初始密码">
-          <el-input v-model="form.password" placeholder="初始密码" />
+          <el-input v-model="form.password" placeholder="至少 6 个字符" show-password />
         </el-form-item>
         <el-form-item label="角色">
           <el-select v-model="form.role" style="width: 100%">
-            <el-option label="管理员" value="admin" />
+            <el-option label="租户管理员" value="tenant_admin" />
             <el-option label="经理" value="manager" />
             <el-option label="普通用户" value="user" />
           </el-select>
@@ -109,7 +112,7 @@
     <el-dialog v-model="showPwd" :title="`重置密码 - ${pwdUser?.username}`" width="420px" destroy-on-close>
       <el-form label-width="80px">
         <el-form-item label="新密码">
-          <el-input v-model="pwdValue" placeholder="新密码" />
+          <el-input v-model="pwdValue" placeholder="至少 6 个字符" show-password />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -152,10 +155,10 @@ function debouncedLoad() {
 }
 
 function roleLabel(r: string) {
-  return { admin: '管理员', manager: '经理', user: '普通用户' }[r] || r
+  return { admin: '管理员', tenant_admin: '租户管理员', platform_admin: '平台管理员', manager: '经理', user: '普通用户' }[r] || r
 }
 function roleType(r: string): 'danger' | 'warning' | 'info' {
-  return { admin: 'danger', manager: 'warning', user: 'info' }[r] || 'info'
+  return { admin: 'danger', tenant_admin: 'danger', platform_admin: 'danger', manager: 'warning', user: 'info' }[r] || 'info'
 }
 
 async function loadUsers() {

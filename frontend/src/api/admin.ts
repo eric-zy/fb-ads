@@ -2,7 +2,7 @@
 import request from '@/utils/request'
 
 // ============ 用户管理 ============
-export interface AdminUser { id: string; email: string; username: string; role: string; role_id?: string | null; company_id: string | null; is_active: boolean; is_verified: boolean; permissions: string[]; created_at: string | null; last_login: string | null }
+export interface AdminUser { id: string; username: string; tenant_id?: string | null; role: string; role_id?: string | null; company_id: string | null; is_active: boolean; is_verified: boolean; permissions: string[]; created_at: string | null; last_login: string | null }
 export const userApi = {
   list: (params?: { search?: string; role?: string; is_active?: boolean; page?: number; page_size?: number }) => request.get('/api/v1/users', { params }),
   create: (data: { username: string; password?: string; role?: string; company_id?: string; is_active?: boolean }) => request.post('/api/v1/users', data),
