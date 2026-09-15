@@ -23,6 +23,21 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  build: {
+    cssCodeSplit: true,
+    sourcemap: false,
+    chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-vue': ['vue', 'vue-router', 'pinia'],
+          'vendor-element': ['element-plus', '@element-plus/icons-vue'],
+          'vendor-charts': ['echarts'],
+          'vendor-utils': ['axios', 'dayjs', 'js-cookie'],
+        },
+      },
+    },
+  },
   server: {
     host: true,
     port: 5173,
