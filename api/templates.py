@@ -139,11 +139,11 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
             raise HTTPException(status_code=400, detail=f"创意 {index} 的 Instagram 身份无效")
         if creative.get("url_tags") and not isinstance(creative["url_tags"], str):
             raise HTTPException(status_code=400, detail=f"创意 {index} 的 URL 参数必须是字符串")
-          landing_url = str(creative.get("landing_url") or "")
-          if asset_type != "video" or landing_url:
-              parsed = urlparse(landing_url)
-              if not parsed.scheme in {"http", "https"} or not parsed.netloc:
-                  raise HTTPException(status_code=400, detail=f"创意 {index} 的落地页必须是有效的 http/https URL")
+        landing_url = str(creative.get("landing_url") or "")
+        if asset_type != "video" or landing_url:
+            parsed = urlparse(landing_url)
+            if not parsed.scheme in {"http", "https"} or not parsed.netloc:
+                raise HTTPException(status_code=400, detail=f"创意 {index} 的落地页必须是有效的 http/https URL")
         if creative.get("cta") and str(creative["cta"]).upper() not in allowed_cta:
             raise HTTPException(status_code=400, detail=f"创意 {index} 的行动按钮不受 Meta 支持")
 
