@@ -63,6 +63,9 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
     if budget_type == "LIFETIME" and not (config.get("schedule") or {}).get("end_time"):
         raise HTTPException(status_code=400, detail="总预算模板必须配置 schedule.end_time")
     optimization_goal = str(values.get("optimization_goal") or "LINK_CLICKS").upper()
+    objective = str(values.get("objective") or "OUTCOME_TRAFFIC").upper()
+    if objective == "OUTCOME_SALES" and optimization_goal in {"LINK_CLICKS", "LANDING_PAGE_VIEWS"}:
+        raise HTTPException(status_code=400, detail="OUTCOME_SALES 不支持 LINK_CLICKS/LANDING_PAGE_VIEWS；请改用 OUTCOME_TRAFFIC，或配置 OFFSITE_CONVERSIONS 及 promoted_object")
     conversion_goal = optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"}
     has_conversion_config = bool(
         config.get("promoted_object")
@@ -114,6 +117,15 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         if adset_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"} and not (adset.get("promoted_object") or config.get("promoted_object")):
             raise HTTPException(status_code=400, detail=f"广告组 {index} 的转化目标必须配置 promoted_object")
     creative_format = str(config.get("creative_format") or "MULTI_AD").upper()
+    delivery = config.get("delivery") or {}
+    split_level = str(delivery.get("split_level") or "AD").upper()
+    combination_mode = str(delivery.get("combination_mode") or "ACCOUNT_X_ADSET_X_CREATIVE").upper()
+    if split_level not in {"AD", "ADSET"}:
+        raise HTTPException(status_code=400, detail="当前支持按 AD 或 ADSET 拆分；按 CAMPAIGN 拆分将在后续版本开放")
+    if combination_mode != "ACCOUNT_X_ADSET_X_CREATIVE":
+        raise HTTPException(status_code=400, detail="当前仅支持账户 × 广告组 × 素材组合方式")
+    if creative_format == "CAROUSEL" and split_level != "AD":
+        raise HTTPException(status_code=400, detail="轮播广告只能按 AD 生成，一个轮播组合对应一个广告")
     if creative_format == "CAROUSEL":
         creatives = config.get("carousel_cards") or []
         if not 2 <= len(creatives) <= 10:

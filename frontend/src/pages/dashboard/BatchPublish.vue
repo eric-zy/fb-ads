@@ -76,7 +76,8 @@
             <el-form-item label="推广目标" required><el-select v-model="directForm.objective" style="width:100%"><el-option label="流量 OUTCOME_TRAFFIC" value="OUTCOME_TRAFFIC" /><el-option label="销售 OUTCOME_SALES" value="OUTCOME_SALES" /><el-option label="互动 OUTCOME_ENGAGEMENT" value="OUTCOME_ENGAGEMENT" /><el-option label="潜在客户 OUTCOME_LEADS" value="OUTCOME_LEADS" /></el-select></el-form-item>
             <el-form-item label="Facebook Page" required><el-select v-model="directForm.page_id" filterable style="width:100%" placeholder="选择已同步的 Facebook Page"><el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name || page.page_id} (${page.page_id})`" :value="page.page_id" /></el-select></el-form-item>
             <el-form-item label="默认日预算" required><el-input-number v-model="directForm.daily_budget" :min="1" :step="1" /><span class="tip-inline">美元/天</span></el-form-item>
-            <el-form-item label="优化目标"><el-select v-model="directForm.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" /><el-option label="转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" /></el-select></el-form-item>
+            <el-form-item label="优化目标"><el-select v-model="directForm.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" :disabled="directForm.objective === 'OUTCOME_SALES'" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" :disabled="directForm.objective === 'OUTCOME_SALES'" /><el-option label="转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" /></el-select></el-form-item>
+            <el-alert v-if="!directObjectiveValid" type="warning" :closable="false" show-icon title="当前目标与优化目标不兼容，请改用转化优化或切换为流量目标" />
             <el-form-item label="计费事件"><el-select v-model="directForm.billing_event" style="width:100%"><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /></el-select></el-form-item>
             <el-form-item label="出价策略"><el-select v-model="directForm.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本 + 竞价上限" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select></el-form-item>
             <el-form-item v-if="directForm.bid_strategy !== 'LOWEST_COST_WITHOUT_CAP'" label="出价金额"><el-input-number v-model="directForm.bid_amount" :min="1" :step="1" /><span class="tip-inline">Meta 账户货币最小单位</span></el-form-item>
@@ -98,6 +99,13 @@
               <el-radio-group v-model="creativeFormat">
                 <el-radio value="MULTI_AD">多素材多个广告</el-radio>
                 <el-radio value="CAROUSEL">多图片轮播广告</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item label="拆分方式">
+              <el-radio-group v-model="delivery.split_level">
+                <el-radio value="AD">每个素材生成一个广告</el-radio>
+                <el-radio value="ADSET">按广告组拆分</el-radio>
+                <el-radio value="CAMPAIGN" disabled>按广告系列拆分（后续开放）</el-radio>
               </el-radio-group>
             </el-form-item>
             <el-alert type="info" :closable="false" show-icon :title="creativeFormat === 'CAROUSEL' ? '轮播广告' : '多素材投放'">
@@ -236,7 +244,7 @@
             <el-descriptions-item label="投放方式">{{ form.publish_mode === 'DIRECT' ? '直接配置' : '使用模板' }}</el-descriptions-item>
             <el-descriptions-item label="投放模板">{{ selectedTemplate?.name || form.template_name || '直接配置' }}</el-descriptions-item>
             <el-descriptions-item label="目标账户">{{ form.ad_account_ids.length }} 个</el-descriptions-item>
-            <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → {{ form.publish_mode === 'DIRECT' ? directForm.adsets.length : adsetCount(selectedTemplate) }} 个 AdSet → {{ form.publish_mode === 'DIRECT' ? directForm.adsets.length * (creativeFormat === 'CAROUSEL' ? 1 : directForm.creatives.length) : creativeCount(selectedTemplate) * adsetCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
+            <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → {{ form.publish_mode === 'DIRECT' ? previewAdsetCount : adsetCount(selectedTemplate) }} 个 AdSet → {{ form.publish_mode === 'DIRECT' ? previewAdCount : creativeCount(selectedTemplate) * adsetCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
             <el-descriptions-item label="预算">{{ form.budget_override ? form.budget_override + ' 美元/天（本次覆盖）' : form.publish_mode === 'DIRECT' ? directForm.adsets.reduce((sum, item) => sum + Number(item.budget || 0), 0) + ' 美元/天' : templateBudget + '（沿用模板）' }}</el-descriptions-item>
             <el-descriptions-item label="初始状态">{{ form.status === 'ACTIVE' ? '立即启用' : '暂停' }}</el-descriptions-item>
           </el-descriptions>
@@ -264,7 +272,7 @@
             <el-table-column prop="optimization_goal" label="优化目标" width="150" />
           </el-table>
           <el-alert v-if="form.publish_mode === 'DIRECT'" type="info" :closable="false" show-icon style="margin-top:12px">
-            本次将为每个广告组生成 {{ creativeFormat === 'CAROUSEL' ? 1 : directForm.creatives.length }} 个广告，共 {{ directForm.adsets.length * (creativeFormat === 'CAROUSEL' ? 1 : directForm.creatives.length) }} 个 Ad。
+            本次将生成 {{ previewAdsetCount }} 个 AdSet、{{ previewAdCount }} 个 Ad（按账户计算）。
           </el-alert>
           <el-alert type="warning" :closable="false" show-icon title="提交后将创建异步投放任务">
             系统会逐账户执行，失败账户不会影响已成功账户，可在任务中心重试失败项。
@@ -431,6 +439,12 @@ const directForm = reactive({
 const batchAssetIds = ref<string[]>([])
 const creativeCopyMode = ref<'SHARED' | 'INDIVIDUAL'>('SHARED')
 const creativeFormat = ref<'MULTI_AD' | 'CAROUSEL'>('MULTI_AD')
+const delivery = reactive({ split_level: 'AD' as 'AD' | 'ADSET' | 'CAMPAIGN', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' })
+const previewAdsetCount = computed(() => delivery.split_level === 'ADSET' && creativeFormat.value !== 'CAROUSEL'
+  ? directForm.adsets.length * directForm.creatives.length
+  : directForm.adsets.length)
+const previewAdCount = computed(() => directForm.adsets.length * (creativeFormat.value === 'CAROUSEL' ? 1 : directForm.creatives.length))
+const directObjectiveValid = computed(() => !(directForm.objective === 'OUTCOME_SALES' && ['LINK_CLICKS', 'LANDING_PAGE_VIEWS'].includes(directForm.optimization_goal)))
 const sharedCreative = reactive({ primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
 
 const addDirectAdset = () => {
@@ -469,6 +483,7 @@ const directConfig = computed<Record<string, any> | null>(() => {
   return {
     name: directForm.name, objective: directForm.objective, page_id: directForm.page_id, daily_budget: directForm.daily_budget,
     creative_format: creativeFormat.value,
+    delivery: { ...delivery },
     ...(creativeFormat.value === 'CAROUSEL' ? { carousel_cards: creatives } : {}),
     optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy,
     creatives,
@@ -509,7 +524,7 @@ const directCreativesReady = computed(() => {
 })
 const canNext = computed(() => {
   if (activeStep.value === 0) return form.publish_mode === 'DIRECT'
-    ? !!directConfig.value?.page_id && !!directConfig.value?.name && (!form.save_as_template || !!form.template_name.trim()) && directForm.adsets.length > 0 && directForm.adsets.every(item => !!item.name && !!item.country && Number(item.budget) > 0 && item.age_min <= item.age_max) && directCreativesReady.value
+    ? directObjectiveValid.value && !!directConfig.value?.page_id && !!directConfig.value?.name && (!form.save_as_template || !!form.template_name.trim()) && directForm.adsets.length > 0 && directForm.adsets.every(item => !!item.name && !!item.country && Number(item.budget) > 0 && item.age_min <= item.age_max) && directCreativesReady.value
     : !!form.template_id && templateReady.value
   if (activeStep.value === 2) return form.ad_account_ids.length > 0
   return true

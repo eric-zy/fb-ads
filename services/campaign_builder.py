@@ -187,6 +187,9 @@ class AdSetBuilder:
             params["daily_budget"] = budget_cents
 
         optimization_goal = str(params["optimization_goal"]).upper()
+        objective = str(self.template.objective or "OUTCOME_TRAFFIC").upper()
+        if objective == "OUTCOME_SALES" and optimization_goal in {"LINK_CLICKS", "LANDING_PAGE_VIEWS"}:
+            raise ValueError("OUTCOME_SALES 不支持 LINK_CLICKS/LANDING_PAGE_VIEWS；请改用 OUTCOME_TRAFFIC，或配置 OFFSITE_CONVERSIONS 及 promoted_object")
         if optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"}:
             config = {**(self.template.creative_config_json or {}), **self.adset_config}
             promoted_object = config.get("promoted_object")
@@ -475,10 +478,30 @@ class CampaignDeploymentBuilder:
         self.db.flush()
 
         creative_config = self.template.creative_config_json or {}
+        delivery = creative_config.get("delivery") or {}
+        split_level = str(delivery.get("split_level") or "AD").upper()
+        combination_mode = str(delivery.get("combination_mode") or "ACCOUNT_X_ADSET_X_CREATIVE").upper()
+        if combination_mode != "ACCOUNT_X_ADSET_X_CREATIVE":
+            raise ValueError("当前仅支持账户 × 广告组 × 素材组合方式")
+        if split_level not in {"AD", "ADSET"}:
+            raise ValueError("当前支持按 AD 或 ADSET 拆分；按 CAMPAIGN 拆分将在后续版本开放")
         adset_configs = creative_config.get("adsets") or [{}]
         all_adset_ids: List[str] = []
         ad_ids: List[str] = []
-        for adset_idx, adset_config in enumerate(adset_configs, 1):
+        logical_adsets = []
+        for adset_config in adset_configs:
+            creatives = adset_config.get("creatives") or creative_config.get("creatives")
+            if creative_config.get("creative_format") == "CAROUSEL":
+                creatives = [creative_config]
+            if not creatives:
+                creatives = [creative_config] if creative_config else [{}]
+            if split_level == "ADSET" and creative_config.get("creative_format") != "CAROUSEL":
+                for creative in creatives:
+                    logical_adsets.append((adset_config, [creative]))
+            else:
+                logical_adsets.append((adset_config, creatives))
+
+        for adset_idx, (adset_config, creatives) in enumerate(logical_adsets, 1):
             adset = AdSetBuilder(
                 self.service,
                 self.template,
@@ -494,11 +517,6 @@ class CampaignDeploymentBuilder:
             adset_instance = AdSetInstance(id=_new_id(), campaign_instance_id=campaign_instance.id, meta_adset_id=adset["id"], name=adset_config.get("name") or f"{self.template.name} AdSet {adset_idx}", status=self.status)
             self.db.add(adset_instance)
             self.db.flush()
-            creatives = adset_config.get("creatives") or creative_config.get("creatives")
-            if creative_config.get("creative_format") == "CAROUSEL":
-                creatives = [creative_config]
-            if not creatives:
-                creatives = [creative_config] if creative_config else [{}]
             for idx, cfg in enumerate(creatives, 1):
                 creative = CreativeBuilder(self.service, meta_account_id, cfg, page_id=adset_config.get("page_id") or creative_config.get("page_id"), name=f"{self.template.name} G{adset_idx} C{idx}").build()
                 self.created_meta_ids.append(creative["id"])

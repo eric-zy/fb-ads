@@ -15,7 +15,7 @@ export interface CampaignJobItem {
   error_message: string | null
   error_category: string | null
   retry_count: number
-  response_payload?: { cleanup_failed?: boolean; cleanup_object_ids?: string[]; meta_status?: string; review_status?: string; effective_status?: string; error_code?: string; error_message?: string; [key: string]: any } | null
+  response_payload?: { cleanup_failed?: boolean; cleanup_object_ids?: string[]; meta_status?: string; review_status?: string; effective_status?: string; error_code?: string; error_message?: string; failure?: { category?: string; code?: string | null; message?: string }; [key: string]: any } | null
   created_at: string | null
   updated_at: string | null
 }

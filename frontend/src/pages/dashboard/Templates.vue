@@ -142,11 +142,11 @@
         <el-divider content-position="left">广告组优化与定向</el-divider>
         <el-form-item label="优化目标">
           <el-select v-model="form.optimization_goal" filterable allow-create style="width: 100%">
-            <el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" />
+            <el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" :disabled="form.objective === 'OUTCOME_SALES'" />
             <el-option label="站外转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" />
             <el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" />
             <el-option label="覆盖 REACH" value="REACH" />
-            <el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" />
+            <el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" :disabled="form.objective === 'OUTCOME_SALES'" />
           </el-select>
         </el-form-item>
         <el-form-item label="计费事件">
@@ -163,6 +163,7 @@
             <el-option label="最低 ROAS" value="LOWEST_COST_WITH_MIN_ROAS" />
           </el-select>
         </el-form-item>
+        <el-alert v-if="form.objective === 'OUTCOME_SALES' && ['LINK_CLICKS', 'LANDING_PAGE_VIEWS'].includes(form.optimization_goal)" type="warning" :closable="false" show-icon title="销售目标不能使用链接点击或落地页浏览，请改用站外转化并配置转化事件" />
         <el-form-item v-if="['LOWEST_COST_WITH_BID_CAP', 'COST_CAP'].includes(form.bid_strategy)" label="竞价金额（最小货币单位）" required>
           <el-input-number v-model="form.bid_amount" :min="1" :step="100" style="width:100%" />
         </el-form-item>
@@ -229,6 +230,13 @@
           <el-radio-group v-model="creativeForm.creative_format">
             <el-radio value="MULTI_AD">多素材多个广告</el-radio>
             <el-radio value="CAROUSEL">多图片轮播广告</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="拆分方式">
+          <el-radio-group v-model="creativeForm.delivery.split_level">
+            <el-radio value="AD">每个素材生成一个广告</el-radio>
+            <el-radio value="ADSET">按广告组拆分</el-radio>
+          <el-radio value="CAMPAIGN" disabled>按广告系列拆分（后续开放）</el-radio>
           </el-radio-group>
         </el-form-item>
         <div class="tip">公共配置应用到全部创意；单个创意留空时继承公共配置。轮播广告需要 2-10 张图片。</div>
@@ -310,7 +318,7 @@ const DEFAULT_CREATIVE = JSON.stringify(
 
 const form = reactive({
   name: '',
-  objective: 'OUTCOME_SALES',
+  objective: 'OUTCOME_TRAFFIC',
   buying_type: 'AUCTION',
   special_ad_categories: [] as string[],
   is_adset_budget_sharing_enabled: false,
@@ -346,7 +354,7 @@ const addAdset = () => adsetForms.push(newAdset())
 const removeAdset = (index: number) => adsetForms.splice(index, 1)
 type CreativeForm = { asset_type: 'image' | 'video'; image_hash: string; video_id: string; headline: string; primary_text: string; description: string; cta: string; landing_url: string; asset_id: string }
 const newCreative = (): CreativeForm => ({ asset_type: 'image', image_hash: '', video_id: '', headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '', asset_id: '' })
-const creativeForm = reactive<{ page_id: string; creative_format: 'MULTI_AD' | 'CAROUSEL'; shared: Omit<CreativeForm, 'asset_type' | 'asset_id' | 'image_hash' | 'video_id'>; creatives: CreativeForm[] }>({ page_id: '', creative_format: 'MULTI_AD', shared: { headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '' }, creatives: [newCreative()] })
+const creativeForm = reactive<{ page_id: string; creative_format: 'MULTI_AD' | 'CAROUSEL'; delivery: { split_level: 'AD' | 'ADSET' | 'CAMPAIGN'; combination_mode: string }; shared: Omit<CreativeForm, 'asset_type' | 'asset_id' | 'image_hash' | 'video_id'>; creatives: CreativeForm[] }>({ page_id: '', creative_format: 'MULTI_AD', delivery: { split_level: 'AD', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' }, shared: { headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '' }, creatives: [newCreative()] })
 // 异步素材流程使用大写 READY；兼容历史数据中的小写 ready。
 const availableAssets = (type: string) => mediaAssets.value.filter(
   asset => asset.asset_type === type && String(asset.status).toUpperCase() === 'READY',
@@ -365,6 +373,7 @@ const buildCreativeJson = () => {
       return { ...merged, image_hash: asset?.fb_hash || item.image_hash, video_id: asset?.fb_video_id || item.video_id }
     }),
     creative_format: creativeForm.creative_format,
+    delivery: { ...creativeForm.delivery },
   }
   if (creativeForm.creative_format === 'CAROUSEL') config.carousel_cards = config.creatives
   if (form.budget_type === 'LIFETIME') {
@@ -400,6 +409,8 @@ const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
   const cfg = value || {}
   creativeForm.page_id = cfg.page_id || ''
   creativeForm.creative_format = cfg.creative_format === 'CAROUSEL' ? 'CAROUSEL' : 'MULTI_AD'
+  creativeForm.delivery.split_level = ['AD', 'ADSET', 'CAMPAIGN'].includes(cfg.delivery?.split_level) ? cfg.delivery.split_level : 'AD'
+  creativeForm.delivery.combination_mode = cfg.delivery?.combination_mode || 'ACCOUNT_X_ADSET_X_CREATIVE'
   const first = Array.isArray(cfg.creatives) && cfg.creatives.length ? cfg.creatives[0] : {}
   creativeForm.shared = { headline: cfg.shared_creative?.headline || first.headline || '', primary_text: cfg.shared_creative?.primary_text || first.primary_text || '', description: cfg.shared_creative?.description || first.description || '', cta: cfg.shared_creative?.cta || first.cta || 'LEARN_MORE', landing_url: cfg.shared_creative?.landing_url || first.landing_url || '' }
   form.schedule_start = cfg.schedule?.start_time || ''
@@ -554,6 +565,11 @@ const parseJsonField = (text: string, label: string) => {
 const submit = async () => {
   if (!form.name.trim()) {
     ElMessage.warning('请填写模板名称')
+    return
+  }
+  if (form.objective === 'OUTCOME_SALES' && ['LINK_CLICKS', 'LANDING_PAGE_VIEWS'].includes(form.optimization_goal)) {
+    ElMessage.warning('销售目标不能使用链接点击/落地页浏览，请改用流量目标或配置转化优化')
+    templateStep.value = 1
     return
   }
   if (form.budget_type === 'LIFETIME' && !form.schedule_end) {

@@ -258,6 +258,16 @@ def _mark_item_failed(
         message=message,
         category=category,
     )
+    # 保留结构化失败摘要，供任务页展示；不写入 access token 或完整请求体。
+    payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+    payload.update({
+        "failure": {
+            "category": category.value if isinstance(category, ErrorCategory) else str(category),
+            "code": str(code) if code is not None else None,
+            "message": message,
+        }
+    })
+    item.response_payload = payload
     # 只有 Token 本身失效才禁用凭据。对象级权限不足不代表该 Token 对
     # 其它 BM/账户也无效，不能因此切断整条 OAuth 授权连接。
     if category == ErrorCategory.AUTH:
