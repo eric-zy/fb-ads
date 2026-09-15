@@ -91,9 +91,26 @@ def retry_asset_binding_task(self, binding_id: str) -> Dict[str, Any]:
 def _prepare_template_assets(db: Session, service: Any, template: Any, ad_account_id: str, meta_ad_account_id: str) -> Any:
     """在账户子任务内按需上传素材，并解析为当前账户专属的 Meta ID。"""
     config = copy.deepcopy(template.creative_config_json or {})
+    # 兼容新模板的公共文案配置，以及旧模板的创意级配置。
+    # 仅在本次账户部署副本中合并，不回写公共模板，避免不同账户之间互相污染。
+    shared = config.get("shared_creative") or {}
+    if not isinstance(shared, dict):
+        shared = {}
     creatives = config.get("creatives")
     if not isinstance(creatives, list):
         creatives = [config] if config else []
+    for creative in creatives:
+        if isinstance(creative, dict):
+            for field in ("primary_text", "headline", "description", "cta", "landing_url"):
+                if (creative.get(field) is None or creative.get(field) == "") and shared.get(field) not in (None, ""):
+                    creative[field] = shared[field]
+    carousel_cards = config.get("carousel_cards")
+    if isinstance(carousel_cards, list):
+        for card in carousel_cards:
+            if isinstance(card, dict):
+                for field in ("primary_text", "headline", "description", "cta", "landing_url"):
+                    if (card.get(field) is None or card.get(field) == "") and shared.get(field) not in (None, ""):
+                        card[field] = shared[field]
     # 直接投放时创意可能挂在 adsets[].creatives，而不是顶层 creatives。
     # 两种结构都要注入当前广告账户对应的 image_hash/video_id。
     creative_groups = [creatives]
@@ -405,6 +422,9 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             creatives = patched_config.get("creatives") if isinstance(patched_config.get("creatives"), list) else [patched_config]
             for creative in creatives: creative["landing_url"] = sinan["landing_url"]
             patched_config["creatives"] = creatives
+            if isinstance(patched_config.get("carousel_cards"), list):
+                for card in patched_config["carousel_cards"]:
+                    if isinstance(card, dict): card["landing_url"] = sinan["landing_url"]
             template.creative_config_json = patched_config
         template.creative_config_json = _prepare_template_assets(
             db, service, template, item.ad_account_id, account.account_id

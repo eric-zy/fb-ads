@@ -26,6 +26,13 @@
           </template>
         </el-table-column>
         <el-table-column prop="optimization_goal" :label="t('pages.optimize')" width="160" show-overflow-tooltip />
+        <el-table-column label="投放形式" width="150">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.creative_config_json?.creative_format === 'CAROUSEL' ? 'warning' : 'success'">
+              {{ row.creative_config_json?.creative_format === 'CAROUSEL' ? '多图片轮播' : '多素材多个广告' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('pages.targeting')" width="120">
           <template #default="{ row }">
             <span>{{ geoSummary(row.targeting_json) }}</span>
@@ -218,6 +225,18 @@
           </el-select>
           <div v-if="!metaPages.length" class="tip">暂无已同步页面，请先完成 Meta OAuth 授权后刷新页面。</div>
         </el-form-item>
+        <el-form-item label="素材形式">
+          <el-radio-group v-model="creativeForm.creative_format">
+            <el-radio value="MULTI_AD">多素材多个广告</el-radio>
+            <el-radio value="CAROUSEL">多图片轮播广告</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <div class="tip">公共配置应用到全部创意；单个创意留空时继承公共配置。轮播广告需要 2-10 张图片。</div>
+        <el-form-item label="公共主文案"><el-input v-model="creativeForm.shared.primary_text" type="textarea" :rows="2" placeholder="可不填" /></el-form-item>
+        <el-form-item label="默认落地页"><el-input v-model="creativeForm.shared.landing_url" placeholder="https://example.com/landing" /></el-form-item>
+        <el-form-item label="公共标题"><el-input v-model="creativeForm.shared.headline" /></el-form-item>
+        <el-form-item label="公共描述"><el-input v-model="creativeForm.shared.description" /></el-form-item>
+        <el-form-item label="公共行动按钮"><el-select v-model="creativeForm.shared.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /><el-option label="联系我们" value="CONTACT_US" /></el-select></el-form-item>
         <div v-for="(creative, index) in creativeForm.creatives" :key="index" class="creative-block">
           <div class="creative-head"><b>创意 {{ index + 1 }}</b><el-button v-if="creativeForm.creatives.length > 1" link type="danger" @click="removeCreative(index)">删除</el-button></div>
           <el-form-item label="素材类型">
@@ -232,11 +251,13 @@
             <div v-if="selectedAsset(creative.asset_id)" class="asset-selected">已选择：{{ selectedAsset(creative.asset_id)?.name }}</div>
             <div v-else class="tip">请先在“内容管理 → 素材库”上传并完成 Meta 同步。</div>
           </el-form-item>
-          <el-form-item label="主文案" required><el-input v-model="creative.primary_text" type="textarea" :rows="3" maxlength="500" show-word-limit /></el-form-item>
-          <el-form-item label="标题"><el-input v-model="creative.headline" maxlength="100" show-word-limit /></el-form-item>
-          <el-form-item label="描述"><el-input v-model="creative.description" maxlength="200" show-word-limit /></el-form-item>
-          <el-form-item label="行动按钮"><el-select v-model="creative.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /><el-option label="联系我们" value="CONTACT_US" /></el-select></el-form-item>
-          <el-form-item label="落地页" required><el-input v-model="creative.landing_url" placeholder="https://example.com/landing" /></el-form-item>
+          <template v-if="creativeForm.creative_format === 'MULTI_AD'">
+            <el-form-item label="主文案覆盖"><el-input v-model="creative.primary_text" type="textarea" :rows="2" placeholder="可留空，使用公共主文案" /></el-form-item>
+            <el-form-item label="标题覆盖"><el-input v-model="creative.headline" /></el-form-item>
+            <el-form-item label="描述覆盖"><el-input v-model="creative.description" /></el-form-item>
+            <el-form-item label="行动按钮覆盖"><el-select v-model="creative.cta" clearable style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /><el-option label="联系我们" value="CONTACT_US" /></el-select></el-form-item>
+            <el-form-item label="落地页覆盖"><el-input v-model="creative.landing_url" placeholder="可留空，使用公共默认落地页" /></el-form-item>
+          </template>
         </div>
         <el-button class="add-creative" plain type="primary" @click="addCreative">+ 添加创意</el-button>
         </section>
@@ -325,7 +346,7 @@ const addAdset = () => adsetForms.push(newAdset())
 const removeAdset = (index: number) => adsetForms.splice(index, 1)
 type CreativeForm = { asset_type: 'image' | 'video'; image_hash: string; video_id: string; headline: string; primary_text: string; description: string; cta: string; landing_url: string; asset_id: string }
 const newCreative = (): CreativeForm => ({ asset_type: 'image', image_hash: '', video_id: '', headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '', asset_id: '' })
-const creativeForm = reactive<{ page_id: string; creatives: CreativeForm[] }>({ page_id: '', creatives: [newCreative()] })
+const creativeForm = reactive<{ page_id: string; creative_format: 'MULTI_AD' | 'CAROUSEL'; shared: Omit<CreativeForm, 'asset_type' | 'asset_id' | 'image_hash' | 'video_id'>; creatives: CreativeForm[] }>({ page_id: '', creative_format: 'MULTI_AD', shared: { headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '' }, creatives: [newCreative()] })
 // 异步素材流程使用大写 READY；兼容历史数据中的小写 ready。
 const availableAssets = (type: string) => mediaAssets.value.filter(
   asset => asset.asset_type === type && String(asset.status).toUpperCase() === 'READY',
@@ -336,11 +357,16 @@ const removeCreative = (index: number) => creativeForm.creatives.splice(index, 1
 const buildCreativeJson = () => {
   const config: Record<string, any> = {
     page_id: creativeForm.page_id,
+    shared_creative: { ...creativeForm.shared },
     creatives: creativeForm.creatives.map(item => {
       const asset = selectedAsset(item.asset_id)
-      return { ...item, image_hash: asset?.fb_hash || item.image_hash, video_id: asset?.fb_video_id || item.video_id }
+      const merged = { ...creativeForm.shared, ...item }
+      for (const field of ['headline', 'primary_text', 'description', 'cta', 'landing_url']) if (item[field] === '' || item[field] == null) merged[field] = creativeForm.shared[field]
+      return { ...merged, image_hash: asset?.fb_hash || item.image_hash, video_id: asset?.fb_video_id || item.video_id }
     }),
+    creative_format: creativeForm.creative_format,
   }
+  if (creativeForm.creative_format === 'CAROUSEL') config.carousel_cards = config.creatives
   if (form.budget_type === 'LIFETIME') {
     config.schedule = { start_time: form.schedule_start || undefined, end_time: form.schedule_end }
   }
@@ -373,11 +399,15 @@ const buildCreativeJson = () => {
 const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
   const cfg = value || {}
   creativeForm.page_id = cfg.page_id || ''
+  creativeForm.creative_format = cfg.creative_format === 'CAROUSEL' ? 'CAROUSEL' : 'MULTI_AD'
+  const first = Array.isArray(cfg.creatives) && cfg.creatives.length ? cfg.creatives[0] : {}
+  creativeForm.shared = { headline: cfg.shared_creative?.headline || first.headline || '', primary_text: cfg.shared_creative?.primary_text || first.primary_text || '', description: cfg.shared_creative?.description || first.description || '', cta: cfg.shared_creative?.cta || first.cta || 'LEARN_MORE', landing_url: cfg.shared_creative?.landing_url || first.landing_url || '' }
   form.schedule_start = cfg.schedule?.start_time || ''
   form.schedule_end = cfg.schedule?.end_time || ''
   form.pixel_id = cfg.promoted_object?.pixel_id || ''
   form.custom_event_type = cfg.promoted_object?.custom_event_type || 'PURCHASE'
-  creativeForm.creatives.splice(0, creativeForm.creatives.length, ...(Array.isArray(cfg.creatives) && cfg.creatives.length ? cfg.creatives.map((item: any) => ({ ...newCreative(), ...item })) : [newCreative()]))
+  const source = creativeForm.creative_format === 'CAROUSEL' ? cfg.carousel_cards : cfg.creatives
+  creativeForm.creatives.splice(0, creativeForm.creatives.length, ...(Array.isArray(source) && source.length ? source.map((item: any) => ({ ...newCreative(), ...item })) : [newCreative()]))
 }
 const buildTargetingJson = () => {
   const targeting: Record<string, any> = {
@@ -544,19 +574,27 @@ const submit = async () => {
       templateStep.value = 3
       return
     }
-    if (!creative.primary_text.trim()) {
-      ElMessage.warning(`请填写创意 ${i + 1} 的主文案`)
+    if (creativeForm.creative_format === 'CAROUSEL' && asset.asset_type !== 'image') {
+      ElMessage.warning(`轮播卡片 ${i + 1} 必须使用图片素材`)
       templateStep.value = 3
       return
     }
-    try {
-      const url = new URL(creative.landing_url)
-      if (!['http:', 'https:'].includes(url.protocol)) throw new Error('invalid')
-    } catch {
-      ElMessage.warning(`创意 ${i + 1} 的落地页必须是有效的 http/https URL`)
-      templateStep.value = 3
-      return
+    const landingUrl = creative.landing_url || creativeForm.shared.landing_url
+    if (asset.asset_type !== 'video' || landingUrl) {
+      try {
+        const url = new URL(landingUrl)
+        if (!['http:', 'https:'].includes(url.protocol)) throw new Error('invalid')
+      } catch {
+        ElMessage.warning(`创意 ${i + 1} 的落地页必须是有效的 http/https URL`)
+        templateStep.value = 3
+        return
+      }
     }
+  }
+  if (creativeForm.creative_format === 'CAROUSEL' && (creativeForm.creatives.length < 2 || creativeForm.creatives.length > 10)) {
+    ElMessage.warning('轮播广告需要 2-10 张图片')
+    templateStep.value = 3
+    return
   }
   if (['OFFSITE_CONVERSIONS', 'VALUE'].includes(form.optimization_goal) && (!form.pixel_id.trim() || !form.custom_event_type.trim())) {
     ElMessage.warning('转化优化必须填写 Pixel ID 和转化事件')
@@ -649,6 +687,7 @@ const geoSummary = (targeting: any) => {
 }
 
 const creativeCount = (cfg: any) => {
+  if (cfg?.creative_format === 'CAROUSEL') return Array.isArray(cfg.carousel_cards) ? cfg.carousel_cards.length : 0
   if (Array.isArray(cfg?.creatives)) return cfg.creatives.length
   return cfg && Object.keys(cfg).length ? 1 : 0
 }

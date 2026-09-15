@@ -115,22 +115,21 @@
                 <el-radio value="INDIVIDUAL">每个素材独立文案</el-radio>
               </el-radio-group>
             </el-form-item>
-            <template v-if="creativeCopyMode === 'SHARED'">
-              <el-form-item label="主文案" required><el-input v-model="sharedCreative.primary_text" type="textarea" :rows="3" /></el-form-item>
-              <el-form-item label="标题"><el-input v-model="sharedCreative.headline" /></el-form-item>
-              <el-form-item label="描述"><el-input v-model="sharedCreative.description" /></el-form-item>
-              <el-form-item label="行动按钮"><el-select v-model="sharedCreative.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /></el-select></el-form-item>
-              <el-form-item label="落地页" required><el-input v-model="sharedCreative.landing_url" placeholder="https://example.com/landing" /></el-form-item>
-            </template>
+            <div class="tip">公共配置会应用到全部素材；单个创意中的覆盖值为空时自动使用公共配置。</div>
+            <el-form-item label="公共主文案"><el-input v-model="sharedCreative.primary_text" type="textarea" :rows="3" placeholder="可不填" /></el-form-item>
+            <el-form-item label="默认落地页"><el-input v-model="sharedCreative.landing_url" placeholder="https://example.com/landing（图片广告最终必须有有效链接）" /></el-form-item>
+            <el-form-item label="公共标题"><el-input v-model="sharedCreative.headline" /></el-form-item>
+            <el-form-item label="公共描述"><el-input v-model="sharedCreative.description" /></el-form-item>
+            <el-form-item label="公共行动按钮"><el-select v-model="sharedCreative.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /></el-select></el-form-item>
             <div v-for="(creative, index) in directForm.creatives" :key="creative.key" class="direct-creative">
               <div class="direct-adset-head"><b>创意 {{ index + 1 }}</b><el-button v-if="directForm.creatives.length > 1" link type="danger" @click="removeDirectCreative(index)">删除</el-button></div>
               <el-form-item label="素材" required><el-select v-model="creative.asset_id" filterable style="width:100%" placeholder="选择已上传素材"><el-option v-for="asset in mediaAssets" :key="asset.id" :label="`${asset.name} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" /></el-select></el-form-item>
               <template v-if="creativeCopyMode === 'INDIVIDUAL'">
-                <el-form-item label="主文案" required><el-input v-model="creative.primary_text" type="textarea" :rows="3" /></el-form-item>
-                <el-form-item label="标题"><el-input v-model="creative.headline" /></el-form-item>
-                <el-form-item label="描述"><el-input v-model="creative.description" /></el-form-item>
-                <el-form-item label="行动按钮"><el-select v-model="creative.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /></el-select></el-form-item>
-                <el-form-item label="落地页" required><el-input v-model="creative.landing_url" placeholder="https://example.com/landing" /></el-form-item>
+                <el-form-item label="主文案覆盖"><el-input v-model="creative.primary_text" type="textarea" :rows="3" placeholder="可留空，使用公共主文案" /></el-form-item>
+                <el-form-item label="标题覆盖"><el-input v-model="creative.headline" placeholder="可留空，使用公共标题" /></el-form-item>
+                <el-form-item label="描述覆盖"><el-input v-model="creative.description" placeholder="可留空，使用公共描述" /></el-form-item>
+                <el-form-item label="行动按钮覆盖"><el-select v-model="creative.cta" clearable style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /></el-select></el-form-item>
+                <el-form-item label="落地页覆盖"><el-input v-model="creative.landing_url" placeholder="可留空，使用公共默认落地页" /></el-form-item>
               </template>
             </div>
             <el-button plain type="primary" @click="addDirectCreative">+ 添加创意</el-button>
@@ -460,9 +459,13 @@ const templateSelectWidth = computed(() => {
 })
 const directConfig = computed<Record<string, any> | null>(() => {
   if (form.publish_mode !== 'DIRECT') return null
-  const creatives = directForm.creatives.map(({ key, ...creative }) => creativeCopyMode.value === 'SHARED'
-    ? { ...creative, ...sharedCreative }
-    : creative)
+  const creatives = directForm.creatives.map(({ key, ...creative }) => {
+    const merged = { ...creative, ...sharedCreative }
+    for (const field of ['primary_text', 'headline', 'description', 'cta', 'landing_url']) {
+      if (creative[field] === '' || creative[field] == null) merged[field] = sharedCreative[field]
+    }
+    return merged
+  })
   return {
     name: directForm.name, objective: directForm.objective, page_id: directForm.page_id, daily_budget: directForm.daily_budget,
     creative_format: creativeFormat.value,
@@ -500,7 +503,9 @@ const directCreativesReady = computed(() => {
   const creatives = directConfig.value?.creatives as any[] | undefined
   const countReady = creativeFormat.value === 'CAROUSEL' ? !!creatives && creatives.length >= 2 && creatives.length <= 10 : !!creatives?.length
   const typeReady = creativeFormat.value !== 'CAROUSEL' || creatives?.every(item => mediaAssets.value.find(asset => asset.id === item.asset_id)?.asset_type === 'image')
-  return countReady && !!typeReady && !!creatives?.length && creatives.every(item => !!item.asset_id && !!item.primary_text && /^https?:\/\//.test(item.landing_url))
+  return countReady && !!typeReady && !!creatives?.length && creatives.every(item => !!item.asset_id && (
+    (mediaAssets.value.find(asset => asset.id === item.asset_id)?.asset_type === 'video' && !item.landing_url) || /^https?:\/\//.test(item.landing_url)
+  ))
 })
 const canNext = computed(() => {
   if (activeStep.value === 0) return form.publish_mode === 'DIRECT'
