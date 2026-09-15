@@ -238,7 +238,7 @@ class MetaAdsService:
                 "level": params.get("level", "account"),
                 "fields": params.get(
                     "fields",
-                    "date_start,date_stop,spend,impressions,clicks,actions,"
+                    "date_start,date_stop,spend,impressions,clicks,actions,action_values,"
                     "cost_per_action_type,ctr,cpc,cpm,frequency,reach,"
                     "account_id,campaign_id,adset_id,ad_id",
                 ),

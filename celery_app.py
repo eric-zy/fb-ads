@@ -88,6 +88,10 @@ celery_app.conf.beat_schedule = {
         "task": "meta.sync_all_delivery_objects",
         "schedule": crontab(minute="*/15"),
     },
+    "account-assignment-expiry": {
+        "task": "account.release_expired_assignments",
+        "schedule": crontab(minute="*/10"),
+    },
 }
 
 # 自动发现任务
@@ -120,6 +124,7 @@ for _task_module in (
     "tasks.meta_sync_tasks",  # Meta 账号管理 V1：BM / 广告账户同步
     "tasks.credential_tasks",  # 凭据到期巡检
     "tasks.media_tasks",  # 异步 Meta 素材上传与视频处理
+    "tasks.assignment_tasks",  # 广告账户分配关系维护
 ):
     try:
         __import__(_task_module)

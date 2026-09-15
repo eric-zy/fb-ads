@@ -103,7 +103,7 @@ class FacebookClient:
             
             fields = [
                 'date_start', 'date_stop', 'spend', 'impressions', 'clicks',
-                'actions', 'cost_per_action_type', 'ctr', 'cpc', 'cpm',
+                'actions', 'action_values', 'cost_per_action_type', 'ctr', 'cpc', 'cpm',
                 'frequency', 'reach', 'account_id', 'campaign_id', 'adset_id', 'ad_id'
             ]
             

@@ -7,7 +7,7 @@
     - `company_id` 保留但已废弃，仅为兼容老前端，新代码一律用 `tenant_id`
 """
 
-from sqlalchemy import Column, String, DateTime, Boolean, JSON, Index
+from sqlalchemy import Column, String, DateTime, Boolean, JSON, Index, UniqueConstraint
 from datetime import datetime
 
 from core.database import Base
@@ -75,6 +75,10 @@ class UserAccount(TenantMixin, Base):
 
     # 权限
     role = Column(String(50), default="viewer")  # owner, editor, viewer
+    assignment_type = Column(String(20), default="MANUAL", nullable=False)
+    assignment_status = Column(String(20), default="ACTIVE", nullable=False)
+    assigned_by = Column(String(50), nullable=True)
+    expires_at = Column(DateTime, nullable=True)
 
     # 时间戳
     assigned_at = Column(DateTime, default=datetime.utcnow)
@@ -82,6 +86,7 @@ class UserAccount(TenantMixin, Base):
     __table_args__ = (
         Index('ix_user_account', 'user_id', 'account_id'),
         Index('ix_user_accounts_tenant_user', 'tenant_id', 'user_id'),
+        UniqueConstraint('tenant_id', 'user_id', 'account_id', name='uq_user_account_assignment'),
     )
 
     def __repr__(self):

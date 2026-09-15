@@ -39,6 +39,10 @@
             <el-icon><Postcard /></el-icon>
             <span>账户组</span>
           </el-menu-item>
+          <el-menu-item index="/admin/account-dispatch">
+            <el-icon><DataLine /></el-icon>
+            <span>账户调度</span>
+          </el-menu-item>
           <el-divider />
           <el-menu-item index="/dashboard/overview">
             <el-icon><Back /></el-icon>
@@ -89,6 +93,7 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/admin/meta-connections')) return '/admin/meta-connections'
   if (route.path.startsWith('/admin/meta-accounts') || route.path.startsWith('/admin/businesses')) return '/admin/meta-accounts'
   if (route.path.startsWith('/admin/users')) return '/admin/users'
+  if (route.path.startsWith('/admin/account-dispatch')) return '/admin/account-dispatch'
   return '/admin/dashboard'
 })
 

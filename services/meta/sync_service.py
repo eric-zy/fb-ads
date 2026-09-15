@@ -173,14 +173,33 @@ class MetaSyncService:
         success, failed = 0, 0
         errors: List[Dict] = []
 
+        seen_account_ids = set()
         for raw in raw_accounts:
             try:
+                raw_id = str(raw.get("id", "")).strip()
+                if raw_id and not raw_id.startswith("act_"):
+                    raw_id = f"act_{raw_id}"
+                if raw_id:
+                    seen_account_ids.add(raw_id)
                 self._upsert_ad_account(business, raw)
                 success += 1
             except Exception as e:  # 单条失败不影响其余（文档 §29）
                 failed += 1
                 errors.append({"account_id": raw.get("id"), "error": str(e)})
                 logger.error(f"[MetaSync] Upsert 账户失败 {raw.get('id')}: {e}")
+
+        # 本次完整拉取未再返回的关系视为已撤销，保留历史记录便于审计。
+        # 不删除 AdAccount 主实体，避免破坏历史投放数据。
+        active_accesses = self.db.query(BusinessAssetAccess).filter(
+            BusinessAssetAccess.business_id == business.id,
+            BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+            BusinessAssetAccess.status == "ACTIVE",
+        ).all()
+        for access in active_accesses:
+            account = self.db.query(AdAccount).filter(AdAccount.id == access.asset_id).first()
+            if account and account.account_id not in seen_account_ids:
+                access.status = "REVOKED"
+                access.last_error = "本次 Meta 同步未返回，访问关系可能已撤销"
 
         business.last_synced_at = datetime.utcnow()
         business.sync_status = (
@@ -320,6 +339,12 @@ class MetaSyncService:
                     status="ACTIVE",
                 )
                 self.db.add(access)
+            credential = self.db.query(Credential).filter(
+                Credential.meta_account_id == business.id,
+                Credential.status == "ACTIVE",
+            ).order_by(Credential.updated_at.desc()).first()
+            if credential:
+                access.credential_id = credential.id
             access.last_verified_at = datetime.utcnow()
             access.last_error = None
             # 兼容旧代码：business_id 保留为真实 owner（首次接入时为当前 BM），

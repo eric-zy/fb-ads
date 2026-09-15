@@ -19,7 +19,16 @@ class AccountInsight(TenantMixin, Base):
     impressions = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
     conversions = Column(Integer, default=0)
-    
+    link_clicks = Column(Integer, default=0)
+    landing_page_views = Column(Integer, default=0)
+    leads = Column(Integer, default=0)
+    purchases = Column(Integer, default=0)
+    complete_registrations = Column(Integer, default=0)
+    conversion_value = Column(BigInteger, nullable=True)
+    actions = Column(JSON)
+    action_values = Column(JSON)
+    synced_at = Column(DateTime, default=datetime.utcnow)
+
     # 计算指标
     ctr = Column(Float, default=0.0)  # 点击率
     cpc = Column(Float, default=0.0)  # 每次点击成本
@@ -63,7 +72,16 @@ class CampaignInsight(TenantMixin, Base):
     impressions = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
     conversions = Column(Integer, default=0)
-    
+    link_clicks = Column(Integer, default=0)
+    landing_page_views = Column(Integer, default=0)
+    leads = Column(Integer, default=0)
+    purchases = Column(Integer, default=0)
+    complete_registrations = Column(Integer, default=0)
+    conversion_value = Column(BigInteger, nullable=True)
+    actions = Column(JSON)
+    action_values = Column(JSON)
+    synced_at = Column(DateTime, default=datetime.utcnow)
+
     # 计算指标
     ctr = Column(Float, default=0.0)
     cpc = Column(Float, default=0.0)
@@ -99,7 +117,16 @@ class AdInsight(TenantMixin, Base):
     impressions = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
     conversions = Column(Integer, default=0)
-    
+    link_clicks = Column(Integer, default=0)
+    landing_page_views = Column(Integer, default=0)
+    leads = Column(Integer, default=0)
+    purchases = Column(Integer, default=0)
+    complete_registrations = Column(Integer, default=0)
+    conversion_value = Column(BigInteger, nullable=True)
+    actions = Column(JSON)
+    action_values = Column(JSON)
+    synced_at = Column(DateTime, default=datetime.utcnow)
+
     # 计算指标
     ctr = Column(Float, default=0.0)
     cpc = Column(Float, default=0.0)
@@ -127,6 +154,15 @@ class AdSetInsight(TenantMixin, Base):
     impressions = Column(Integer, default=0)
     clicks = Column(Integer, default=0)
     conversions = Column(Integer, default=0)
+    link_clicks = Column(Integer, default=0)
+    landing_page_views = Column(Integer, default=0)
+    leads = Column(Integer, default=0)
+    purchases = Column(Integer, default=0)
+    complete_registrations = Column(Integer, default=0)
+    conversion_value = Column(BigInteger, nullable=True)
+    actions = Column(JSON)
+    action_values = Column(JSON)
+    synced_at = Column(DateTime, default=datetime.utcnow)
     ctr = Column(Float, default=0.0)
     cpc = Column(Float, default=0.0)
     cpm = Column(Float, default=0.0)

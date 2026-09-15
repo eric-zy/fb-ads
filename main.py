@@ -174,6 +174,10 @@ from api import roles as roles_api
 app.include_router(roles_api.router)
 from api import account_groups as account_groups_api
 app.include_router(account_groups_api.router)
+from api import account_pool as account_pool_api
+app.include_router(account_pool_api.router)
+from api import account_dispatch as account_dispatch_api
+app.include_router(account_dispatch_api.router)
 
 # 注册素材库路由
 app.include_router(media_api.router)

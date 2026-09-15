@@ -5,6 +5,7 @@ from models.tenant import Tenant, TenantStatus, TenantPlan, UserRole
 
 from models.ad_account import AdAccount, AccountStatus, SystemStatus
 from models.business_asset_access import BusinessAssetAccess
+from models.account_assignment import AccountAssignmentRule, AccountAssignmentLog
 from models.meta_account import MetaAccount, BusinessStatus, SyncStatus
 from models.creative_asset import CreativeAsset
 from models.creative_asset_group import CreativeAssetGroup, creative_asset_group_members

@@ -55,11 +55,11 @@ def sync_connection(
     connection = db.query(MetaConnection).filter(MetaConnection.id == connection_id).first()
     if not connection:
         raise HTTPException(status_code=404, detail="Meta 授权连接不存在")
-    credential = db.query(Credential).filter(
+    credentials = db.query(Credential).filter(
         Credential.connection_id == connection_id,
         Credential.status == "ACTIVE",
-    ).order_by(Credential.updated_at.desc()).first()
-    if not credential:
+    ).order_by(Credential.updated_at.desc()).all()
+    if not credentials:
         raise HTTPException(status_code=400, detail="该授权连接没有有效凭据，请重新授权")
-    task = sync_meta_authorization_task.delay(credential.id)
-    return {"status": "QUEUED", "task_id": task.id, "connection_id": connection_id}
+    task_ids = [sync_meta_authorization_task.delay(row.id).id for row in credentials]
+    return {"status": "QUEUED", "task_ids": task_ids, "credential_count": len(task_ids), "connection_id": connection_id}

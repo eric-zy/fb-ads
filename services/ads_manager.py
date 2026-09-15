@@ -256,7 +256,7 @@ class AdsManager:
             spend = to_minor(float(row.get('spend', 0) or 0))
             impressions = int(row.get('impressions', 0) or 0)
             clicks = int(row.get('clicks', 0) or 0)
-            conversions = self._parse_conversions(row.get('actions'))
+            action_metrics = self._parse_action_metrics(row.get('actions'), row.get('action_values'))
 
             existing = (
                 self.db.query(AccountInsight)
@@ -279,7 +279,16 @@ class AdsManager:
             target.spend = spend
             target.impressions = impressions
             target.clicks = clicks
-            target.conversions = conversions
+            target.conversions = action_metrics["conversions"]
+            target.link_clicks = action_metrics["link_clicks"]
+            target.landing_page_views = action_metrics["landing_page_views"]
+            target.leads = action_metrics["leads"]
+            target.purchases = action_metrics["purchases"]
+            target.complete_registrations = action_metrics["complete_registrations"]
+            target.conversion_value = to_minor(action_metrics["conversion_value"])
+            target.actions = row.get("actions") or []
+            target.action_values = row.get("action_values") or []
+            target.synced_at = datetime.utcnow()
             target.ctr = (clicks / impressions) if impressions else 0.0
             target.cpc = (to_major(spend) / clicks) if clicks else 0.0
             target.cpm = (to_major(spend) / impressions * 1000) if impressions else 0.0
@@ -317,7 +326,7 @@ class AdsManager:
                 existing = self.db.query(model).filter(filter_column == entity.id, model.date == insight_date).first()
                 target = existing or model(id=f"ins_{dimension}_{entity.id}_{insight_date}", **{parent: entity.id}, date=insight_date)
                 if not existing: self.db.add(target)
-                target.spend = to_minor(float(row.get("spend", 0) or 0)); target.impressions = int(row.get("impressions", 0) or 0); target.clicks = int(row.get("clicks", 0) or 0); target.conversions = self._parse_conversions(row.get("actions")); target.ctr = (target.clicks / target.impressions) if target.impressions else 0.0; target.cpc = to_major(target.spend) / target.clicks if target.clicks else 0.0; target.cpm = to_major(target.spend) / target.impressions * 1000 if target.impressions else 0.0; result[dimension] += 1
+                action_metrics = self._parse_action_metrics(row.get("actions"), row.get("action_values")); target.spend = to_minor(float(row.get("spend", 0) or 0)); target.impressions = int(row.get("impressions", 0) or 0); target.clicks = int(row.get("clicks", 0) or 0); target.conversions = action_metrics["conversions"]; target.link_clicks = action_metrics["link_clicks"]; target.landing_page_views = action_metrics["landing_page_views"]; target.leads = action_metrics["leads"]; target.purchases = action_metrics["purchases"]; target.complete_registrations = action_metrics["complete_registrations"]; target.conversion_value = to_minor(action_metrics["conversion_value"]); target.actions = row.get("actions") or []; target.action_values = row.get("action_values") or []; target.synced_at = datetime.utcnow(); target.ctr = (target.clicks / target.impressions) if target.impressions else 0.0; target.cpc = to_major(target.spend) / target.clicks if target.clicks else 0.0; target.cpm = to_major(target.spend) / target.impressions * 1000 if target.impressions else 0.0; result[dimension] += 1
         self.db.commit()
         return result
 
@@ -352,6 +361,45 @@ class AdsManager:
                 except (TypeError, ValueError):
                     continue
         return total
+
+    @staticmethod
+    def _parse_action_metrics(actions, action_values=None) -> Dict[str, float]:
+        """按 Meta action_type 拆分动作；conversion 保持兼容的汇总口径。"""
+        result = {"link_clicks": 0, "landing_page_views": 0, "leads": 0,
+                  "purchases": 0, "complete_registrations": 0,
+                  "conversions": 0, "conversion_value": 0.0}
+        conversion_types = {"purchase", "omni_purchase", "lead", "omni_lead",
+                            "complete_registration", "offsite_conversion"}
+        for item in actions or []:
+            if not isinstance(item, dict):
+                continue
+            action_type = str(item.get("action_type") or "")
+            try:
+                value = float(item.get("value", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            count = int(value)
+            if action_type in {"link_click", "inline_link_click", "outbound_click"}:
+                result["link_clicks"] += count
+            if action_type in {"landing_page_view", "landing_page_views"}:
+                result["landing_page_views"] += count
+            if action_type in {"lead", "omni_lead"}:
+                result["leads"] += count
+            if action_type in {"purchase", "omni_purchase"}:
+                result["purchases"] += count
+            if action_type == "complete_registration":
+                result["complete_registrations"] += count
+            if action_type in conversion_types:
+                result["conversions"] += count
+        for item in action_values or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("action_type") or "") in {"purchase", "omni_purchase", "offsite_conversion"}:
+                try:
+                    result["conversion_value"] += float(item.get("value", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+        return result
 
     def publish_batch(
         self,

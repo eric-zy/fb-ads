@@ -47,6 +47,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'operations', name: 'AdminOperations', component: () => import('@/pages/admin/Operations.vue'), meta: { title: '运维中心' } },
       { path: 'roles', name: 'AdminRoles', component: () => import('@/pages/admin/Roles.vue'), meta: { title: '角色权限' } },
       { path: 'account-groups', name: 'AdminAccountGroups', component: () => import('@/pages/admin/AccountGroups.vue'), meta: { title: '账户组' } },
+      { path: 'account-dispatch', name: 'AdminAccountDispatch', component: () => import('@/pages/admin/AccountDispatch.vue'), meta: { title: '账户调度' } },
       { path: 'overview', redirect: '/dashboard/overview' },
     ],
   },
