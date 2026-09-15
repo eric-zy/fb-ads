@@ -109,6 +109,14 @@ export const useUserStore = defineStore('user', () => {
     }
   }
 
+  const switchTenant = async (tenantId: string, tenant: any) => {
+    const response = await request.post('/api/v1/tenants/switch', { tenant_id: tenantId })
+    token.value = response.data.access_token
+    if (user.value) user.value = { ...user.value, tenant_id: tenantId, tenant_name: tenant.name, company_name: tenant.name }
+    Cookies.set(TOKEN_KEY, token.value, { expires: 1 })
+    localStorage.setItem(USER_KEY, JSON.stringify(user.value))
+  }
+
   // 更新用户设置
   const updateSettings = async (settings: Record<string, any>) => {
     if (!user.value) return
@@ -144,6 +152,7 @@ export const useUserStore = defineStore('user', () => {
     refreshProfile,
     login,
     logout,
+    switchTenant,
     updateSettings,
     hasPermission,
   }

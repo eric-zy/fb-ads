@@ -134,7 +134,7 @@ def _prepare_template_assets(db: Session, service: Any, template: Any, ad_accoun
         ).first()
         if not binding:
             import uuid
-            binding = MetaAssetBinding(id=uuid.uuid4().hex, asset_id=asset_id,
+            binding = MetaAssetBinding(id=uuid.uuid4().hex, tenant_id=account.tenant_id, asset_id=asset_id,
                                        ad_account_id=ad_account_id,
                                        meta_asset_type=asset.asset_type, status="PENDING")
             db.add(binding)

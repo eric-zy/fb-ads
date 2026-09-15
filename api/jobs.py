@@ -17,6 +17,7 @@ from core.auth import get_current_active_user, require_permission
 from core.database import get_db
 from core.enums import ActionType, InstanceStatus
 from core.logger import logger
+from core.tenant import effective_tenant_id
 from models import CampaignInstance, CampaignTemplate, CampaignJob, User
 
 def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
@@ -247,7 +248,7 @@ def _submit(
 @router.post("/campaign-preflight")
 def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("job:create"))):
     """发布前检查；不调用 Meta 写接口。直接配置会先标准化为内部配置。"""
-    template_id = _ensure_template(db, req, current_user.tenant_id)
+    template_id = _ensure_template(db, req, effective_tenant_id(current_user))
     result = JobService(db).preflight_campaign(template_id, req.ad_account_ids, req.budget_override, req.status, created_by=current_user.id)
     result["source"] = req.source or ("TEMPLATE" if req.template_id else "DIRECT")
     result["template_id"] = template_id
@@ -257,10 +258,10 @@ def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_
 def create_campaign_batch(
     req: CampaignCreateRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_active_user),
+    current_user=Depends(require_permission("job:create")),
 ):
     """批量创建 Campaign / AdSet / Ad（异步）"""
-    template_id = _ensure_template(db, req, current_user.tenant_id)
+    template_id = _ensure_template(db, req, effective_tenant_id(current_user))
     return _submit(
         db,
         template_id=template_id,
@@ -284,7 +285,7 @@ def create_campaign_batch(
 def schedule_campaign_batch(
     req: ScheduleCampaignRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_active_user),
+    current_user=Depends(require_permission("job:create")),
 ):
     """创建定时投放任务
 
@@ -331,7 +332,7 @@ def dispatch_job_now(
     current_user=Depends(require_permission("job:create")),
 ):
     """把定时任务提前为立即执行（会撤销原定的延迟投递）"""
-    owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == current_user.tenant_id).first()
+    owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == effective_tenant_id(current_user)).first()
     if not owned:
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     job = JobService(db).dispatch_now(job_id)
@@ -426,7 +427,7 @@ def get_job(
     current_user=Depends(get_current_active_user),
 ):
     """任务详情（前端轮询进度：成功 / 失败 / 执行中各多少）"""
-    owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == current_user.tenant_id).first()
+    owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == effective_tenant_id(current_user)).first()
     if not owned:
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     detail = JobService(db).get_job_detail(job_id)

@@ -16,7 +16,7 @@ import hashlib
 from config.settings import settings
 from core.logger import logger
 from core.database import get_db
-from core.tenant import set_current_tenant_id
+from core.tenant import set_current_tenant_id, bypass_tenant
 
 # HTTP Bearer认证
 security = HTTPBearer()
@@ -150,7 +150,10 @@ async def get_current_active_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="无效的令牌",
         )
-    user = db.query(User).filter(User.id == user_id).first()
+    # 平台管理员切换租户后，Token 的 tid 不是 users.tenant_id；
+    # 必须先绕过租户过滤读取签发者，再校验目标租户。
+    with bypass_tenant():
+        user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -169,8 +172,17 @@ async def get_current_active_user(
         if role:
             user.permissions = sorted(set((user.permissions or []) + (role.permissions or [])))
 
-    # 建立租户上下文：优先用库里的实时值（避免令牌中的 tid 过期）
+    token_tenant_id = payload.get("tid") or payload.get("tenant_id")
     tenant_id = getattr(user, "tenant_id", None)
+    if user.is_platform_admin() and token_tenant_id:
+        from models import Tenant
+        with bypass_tenant():
+            target = db.query(Tenant).filter(Tenant.id == token_tenant_id).first()
+        if not target or not target.is_active():
+            raise HTTPException(status_code=403, detail="目标租户不存在或已停用")
+        tenant_id = token_tenant_id
+    elif not user.is_platform_admin() and token_tenant_id and token_tenant_id != tenant_id:
+        raise HTTPException(status_code=401, detail="租户上下文与账号不匹配")
     set_current_tenant_id(tenant_id)
     return user
 

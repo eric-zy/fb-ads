@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from core.auth import get_current_active_user, require_meta_asset_admin as require_admin
 from core.database import get_db
 from core.enums import CredentialStatus
-from core.tenant import bypass_tenant
+from core.tenant import bypass_tenant, effective_tenant_id
 from models import Credential, MetaPage, User
 from tasks.meta_sync_tasks import sync_meta_pages_task
 
@@ -49,7 +49,7 @@ def sync_pages(
     credential = db.query(Credential).filter(Credential.id == credential_id).first()
     if not credential:
         raise HTTPException(status_code=404, detail="凭据不存在")
-    if not current_user.is_platform_admin() and credential.tenant_id != current_user.tenant_id:
+    if credential.tenant_id != effective_tenant_id(current_user):
         raise HTTPException(status_code=404, detail="凭据不存在")
     if credential.status != CredentialStatus.ACTIVE.value or credential.is_expired():
         raise HTTPException(status_code=400, detail="凭据已失效，请重新授权")

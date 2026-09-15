@@ -79,6 +79,7 @@ export const credentialApi = {
 export interface TenantItem { id: string; name: string; slug: string; status: string; member_count?: number }
 export const tenantApi = {
   list: (params?: { keyword?: string; status?: string; page?: number; page_size?: number }) => request.get('/api/v1/tenants', { params }),
+  switch: (tenant_id: string) => request.post('/api/v1/tenants/switch', { tenant_id }),
 }
 
 export const operationsApi = {

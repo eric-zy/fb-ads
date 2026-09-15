@@ -179,6 +179,11 @@ def get_current_tenant_id() -> Optional[str]:
     return _current_tenant_id.get()
 
 
+def effective_tenant_id(user=None) -> Optional[str]:
+    """返回请求当前生效的租户；支持平台管理员切换租户 Token。"""
+    return get_current_tenant_id() or getattr(user, "tenant_id", None)
+
+
 def set_current_tenant_id(tenant_id: Optional[str]) -> Optional[Token]:
     """设置当前租户 ID，返回可用于还原的 Token"""
     return _current_tenant_id.set(tenant_id)

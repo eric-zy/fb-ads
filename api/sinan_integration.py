@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from core.auth import require_admin
+from core.tenant import effective_tenant_id
 from core.database import get_db
 from models import SinanCredential, User
 from services.integrations.sinan_client import SinanClient
@@ -17,7 +18,7 @@ class ConfigRequest(BaseModel):
     password: str
 
 def _row(db, user):
-    return db.query(SinanCredential).filter(SinanCredential.tenant_id == user.tenant_id).first()
+    return db.query(SinanCredential).filter(SinanCredential.tenant_id == effective_tenant_id(user)).first()
 
 async def _login(row):
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
@@ -112,7 +113,7 @@ async def save_config(payload: ConfigRequest, db: Session = Depends(get_db), use
     row = _row(db, user) or SinanCredential(id=uuid.uuid4().hex)
     row.base_url, row.app_id = payload.base_url, payload.app_id
     row.set_account(payload.account); row.set_password(payload.password); row.status = 'VERIFYING'
-    if not row.tenant_id: row.tenant_id = user.tenant_id
+    if not row.tenant_id: row.tenant_id = effective_tenant_id(user)
     db.add(row)
     try: await _login(row)
     except Exception as exc: row.status='INVALID'; row.last_error=str(exc); db.commit(); raise HTTPException(400, '司南账号验证失败')

@@ -30,6 +30,7 @@ from core.audit import record_audit
 from core.database import get_db
 from core.auth import get_current_active_user, require_admin
 from core.tenant import bypass_tenant
+from core.tenant import effective_tenant_id
 from core.logger import logger
 from models import (
     AdAccount, BusinessAssetAccess, User, UserAccount, MetaAccount, Credential, SystemStatus,
@@ -806,7 +807,7 @@ def assign_users(
     db: Session = Depends(get_db),
 ):
     """分配账户给多个用户（管理员，写入 user_accounts 关联表）"""
-    tenant_ctx = nullcontext() if current_user.tenant_id else bypass_tenant()
+    tenant_ctx = nullcontext() if effective_tenant_id(current_user) else bypass_tenant()
     with tenant_ctx:
         a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
         if not a:
@@ -821,7 +822,13 @@ def assign_users(
             raise HTTPException(status_code=400, detail=f"不能将广告账户分配给其他租户用户: {', '.join(cross_tenant)}")
         for uid in payload.user_ids:
             if not db.query(UserAccount).filter(UserAccount.user_id == uid, UserAccount.account_id == a.id).first():
-                db.add(UserAccount(id=str(uuid.uuid4()), user_id=uid, account_id=a.id, role="publisher"))
+                db.add(UserAccount(
+                    id=str(uuid.uuid4()),
+                    tenant_id=a.tenant_id,
+                    user_id=uid,
+                    account_id=a.id,
+                    role="publisher",
+                ))
         db.commit()
         count = db.query(UserAccount).filter(UserAccount.account_id == a.id).count()
         return {"success": True, "assigned_count": count}

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from core.auth import require_admin
+from core.tenant import effective_tenant_id
 from core.database import get_db
 from models import AccountGroup, AdAccount, User
 from core.audit import record_audit
@@ -26,6 +27,8 @@ def list_groups(db: Session = Depends(get_db), _: User = Depends(require_admin))
 
 @router.post("", status_code=201)
 def create_group(payload: GroupPayload, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    if not effective_tenant_id(current_user):
+        raise HTTPException(status_code=400, detail="平台账号请先切换到具体租户后再创建账户组")
     if db.query(AccountGroup).filter(AccountGroup.name == payload.name).first(): raise HTTPException(status_code=400, detail="账户组名称已存在")
     group = AccountGroup(id=str(uuid.uuid4()), name=payload.name, description=payload.description)
     group.accounts = db.query(AdAccount).filter(AdAccount.id.in_(payload.account_ids)).all() if payload.account_ids else []
@@ -36,6 +39,8 @@ def create_group(payload: GroupPayload, request: Request, db: Session = Depends(
 
 @router.put("/{group_id}")
 def update_group(group_id: str, payload: GroupPayload, request: Request, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    if not effective_tenant_id(current_user):
+        raise HTTPException(status_code=400, detail="平台账号请先切换到具体租户后再修改账户组")
     group = _get(db, group_id); group.name = payload.name; group.description = payload.description
     group.accounts = db.query(AdAccount).filter(AdAccount.id.in_(payload.account_ids)).all() if payload.account_ids else []
     group.users = db.query(User).filter(User.id.in_(payload.user_ids)).all() if payload.user_ids else []

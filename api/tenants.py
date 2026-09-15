@@ -20,7 +20,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from core.auth import get_current_active_user, get_current_tenant, require_platform_admin
+from core.auth import AuthManager, get_current_active_user, get_current_tenant, require_platform_admin
 from core.database import get_db
 from core.tenant import bypass_tenant
 from models import AdAccount, CampaignTemplate, MetaAccount, Tenant, User
@@ -60,6 +60,10 @@ class TenantUpdate(BaseModel):
 class TenantStatusUpdate(BaseModel):
     status: str = Field(..., description="ACTIVE / SUSPENDED / ARCHIVED")
     reason: Optional[str] = None
+
+
+class TenantSwitchRequest(BaseModel):
+    tenant_id: str = Field(..., min_length=1)
 
 
 # ==================== 租户侧：当前租户 ====================
@@ -124,6 +128,27 @@ def list_tenants(
     items = q.order_by(Tenant.created_at.desc()) \
              .offset((page - 1) * page_size).limit(page_size).all()
     return [t.to_dict() for t in items]
+
+
+@router.post("/switch", response_model=dict)
+def switch_tenant(
+    req: TenantSwitchRequest,
+    current_user: User = Depends(require_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """平台管理员切换到指定租户，签发带租户上下文的短期 Token。"""
+    tenant = db.query(Tenant).filter(Tenant.id == req.tenant_id.strip()).first()
+    if not tenant or not tenant.is_active():
+        raise HTTPException(status_code=404, detail="目标租户不存在或已停用")
+    token = AuthManager.create_access_token({
+        "sub": current_user.id,
+        "email": current_user.email,
+        "role": current_user.role,
+        "tenant_id": tenant.id,
+        "tid": tenant.id,
+        "tenant_switch": True,
+    })
+    return {"access_token": token, "token_type": "bearer", "tenant": tenant.to_dict()}
 
 
 @router.post("", response_model=dict, status_code=status.HTTP_201_CREATED)

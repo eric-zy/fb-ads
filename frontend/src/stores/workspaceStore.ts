@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { useUserStore } from '@/stores/userStore'
+import request from '@/utils/request'
 
 export interface WorkspaceOption {
   id: string
@@ -13,6 +14,7 @@ const WORKSPACE_STORAGE_KEY = 'active_workspace_id'
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const activeWorkspaceId = ref('')
+  const tenantOptions = ref<WorkspaceOption[]>([])
 
   const workspaceOptions = computed<WorkspaceOption[]>(() => {
     const userStore = useUserStore()
@@ -20,6 +22,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
     if (!user) return []
 
+    if (tenantOptions.value.length) return tenantOptions.value
     return [
       {
         id: user.tenant_id || user.company_id || 'default-workspace',
@@ -29,6 +32,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       },
     ]
   })
+
+  const loadPlatformTenants = async () => {
+    const userStore = useUserStore()
+    if (!userStore.isPlatformAdmin) return
+    const response = await request.get('/api/v1/tenants', { params: { status: 'ACTIVE', page: 1, page_size: 100 } })
+    tenantOptions.value = response.data.map((tenant: any) => ({ id: tenant.id, name: tenant.name, code: tenant.slug, roleLabel: '租户' }))
+  }
 
   const activeWorkspace = computed(() => {
     return workspaceOptions.value.find((item) => item.id === activeWorkspaceId.value) || workspaceOptions.value[0] || null
@@ -53,5 +63,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     activeWorkspace,
     initWorkspace,
     setWorkspace,
+    loadPlatformTenants,
   }
 })

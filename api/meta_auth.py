@@ -18,7 +18,7 @@ from core.auth import require_meta_asset_admin as require_admin
 from core.database import get_db
 from core.enums import CredentialSource, CredentialStatus
 from core.logger import logger
-from core.tenant import tenant_scope
+from core.tenant import tenant_scope, effective_tenant_id
 from models import AdAccount, Credential, MetaAccount, MetaConnection, User
 from models.ad_account import SystemStatus
 from models.tenant import UserRole
@@ -49,7 +49,7 @@ def sdk_config(_: User = Depends(require_admin)):
 @router.post("/sdk-login")
 def sdk_login(payload: SDKLoginRequest, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
     """接收 FB.login 返回的短期 Token，在服务端验证并创建临时凭据。"""
-    tenant_id = getattr(current_user, "tenant_id", None)
+    tenant_id = effective_tenant_id(current_user)
     if not tenant_id:
         raise HTTPException(status_code=400, detail="平台账号不属于任何租户，无法接入 Meta 广告账号")
     try:
@@ -87,14 +87,14 @@ def _upsert_oauth_credential(
     connection = None
     if meta_user_id:
         connection = db.query(MetaConnection).filter(
-            MetaConnection.tenant_id == user.tenant_id,
+            MetaConnection.tenant_id == effective_tenant_id(user),
             MetaConnection.meta_user_id == str(meta_user_id),
             MetaConnection.app_id == settings.FB_APP_ID,
         ).first()
         if not connection:
             connection = MetaConnection(
                 id=uuid.uuid4().hex,
-                tenant_id=user.tenant_id,
+                tenant_id=effective_tenant_id(user),
                 meta_user_id=str(meta_user_id),
                 app_id=settings.FB_APP_ID,
             )
@@ -106,7 +106,7 @@ def _upsert_oauth_credential(
         connection.last_error = None
         db.flush()
     query = db.query(Credential).filter(
-        Credential.tenant_id == user.tenant_id,
+        Credential.tenant_id == effective_tenant_id(user),
         Credential.meta_account_id == meta_account_id,
         Credential.source == CredentialSource.OAUTH.value,
         Credential.status == CredentialStatus.ACTIVE.value,
@@ -143,7 +143,7 @@ def _upsert_oauth_credential(
 @router.get("/authorize-first")
 @router.get("/authorize")
 def authorize_meta(meta_account_id: str | None = Query(None, description="已有 BM 主键；为空表示 OAuth-first"), db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
-    tenant_id = getattr(current_user, "tenant_id", None)
+    tenant_id = effective_tenant_id(current_user)
     if not tenant_id: raise HTTPException(status_code=400, detail="平台账号不属于任何租户，无法发起 Meta 授权")
     if meta_account_id and not db.query(MetaAccount).filter(MetaAccount.id == meta_account_id).first():
         raise HTTPException(status_code=404, detail="BM 不存在")
@@ -178,7 +178,7 @@ def meta_oauth_callback(state: str = Query(...), code: str | None = Query(None),
                 except Exception as exc: logger.warning(f"[meta-auth] 自动同步任务投递失败: {exc}")
                 return _frontend_redirect(meta_auth="success", meta_account_id=target_meta.id)
 
-            existing_pending_cred = db.query(Credential).filter(Credential.tenant_id == user.tenant_id, Credential.source == CredentialSource.OAUTH.value, Credential.status == CredentialStatus.ACTIVE.value, Credential.meta_user_id == str(token.get("meta_user_id"))).order_by(Credential.updated_at.desc()).first() if token.get("meta_user_id") else None
+            existing_pending_cred = db.query(Credential).filter(Credential.tenant_id == effective_tenant_id(user), Credential.source == CredentialSource.OAUTH.value, Credential.status == CredentialStatus.ACTIVE.value, Credential.meta_user_id == str(token.get("meta_user_id"))).order_by(Credential.updated_at.desc()).first() if token.get("meta_user_id") else None
             pending = db.query(MetaAccount).filter(MetaAccount.id == existing_pending_cred.meta_account_id).first() if existing_pending_cred else None
             if not pending or not (pending.business_id or "").startswith("__oauth_pending__"):
                 pending_id=str(uuid.uuid4()); pending=MetaAccount(id=pending_id,name="Meta OAuth 待绑定",business_id=f"__oauth_pending__{pending_id}",app_id=settings.FB_APP_ID,status="ARCHIVED",sync_status="PENDING",description="OAuth-first 临时授权容器，完成 BM 选择后自动转换")

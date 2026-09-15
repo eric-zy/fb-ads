@@ -10,6 +10,7 @@ import uuid
 
 from core.database import get_db
 from core.logger import logger
+from core.tenant import effective_tenant_id
 from core.auth import get_current_active_user, require_admin
 from models import AdAccount, Tenant, User, Role
 from models.tenant import UserRole
@@ -42,10 +43,13 @@ class UserAccountsResponse(BaseModel):
 @router.get("/{user_id}/accounts", response_model=UserAccountsResponse)
 async def get_user_accounts(
     user_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """获取用户的广告账户列表"""
     try:
+        if current_user.id != user_id and not current_user.is_admin():
+            raise HTTPException(status_code=403, detail="无权查看其他用户的广告账户")
         from models import UserAccount
         from models.account_group import account_group_accounts, account_group_users
         
@@ -231,7 +235,7 @@ def create_user(
         raise HTTPException(status_code=400, detail="该用户名已存在")
     if data.role_id:
         role = db.query(Role).filter(Role.id == data.role_id).first()
-        if not role or (current_user.tenant_id and role.tenant_id != current_user.tenant_id):
+        if not role or (effective_tenant_id(current_user) and role.tenant_id != effective_tenant_id(current_user)):
             raise HTTPException(status_code=400, detail="角色不存在或不属于当前租户")
 
     target_tenant_id = data.tenant_id
@@ -240,7 +244,7 @@ def create_user(
 
     tenant = None
     if target_tenant_id is None:
-        target_tenant_id = getattr(current_user, "tenant_id", None)
+        target_tenant_id = effective_tenant_id(current_user)
     requested_role = UserRole.normalize(data.role)
     if (
         UserRole.is_platform_admin(current_user.role)
@@ -320,7 +324,7 @@ def update_user(
         u.role = new_role
     if data.role_id is not None:
         role = db.query(Role).filter(Role.id == data.role_id).first()
-        if not role or (current_user.tenant_id and role.tenant_id != current_user.tenant_id):
+        if not role or (effective_tenant_id(current_user) and role.tenant_id != effective_tenant_id(current_user)):
             raise HTTPException(status_code=400, detail="角色不存在或不属于当前租户")
         u.role_id = data.role_id
     db.commit()

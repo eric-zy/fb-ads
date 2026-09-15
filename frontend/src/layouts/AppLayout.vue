@@ -56,7 +56,7 @@
             v-model="workspaceStore.activeWorkspaceId"
             class="workspace-switcher"
             placeholder="选择工作空间"
-            @change="workspaceStore.setWorkspace"
+            @change="handleWorkspaceChange"
           >
             <el-option
               v-for="space in workspaceStore.workspaceOptions"
@@ -226,6 +226,19 @@ function handleAccountChange(accountId: string) {
   accountStore.selectAccount(accountId)
 }
 
+async function handleWorkspaceChange(tenantId: string) {
+  const tenant = workspaceStore.workspaceOptions.find(item => item.id === tenantId)
+  if (!tenant || tenantId === userStore.user?.tenant_id) return
+  try {
+    await userStore.switchTenant(tenantId, tenant)
+    workspaceStore.setWorkspace(tenantId)
+    ElMessage.success(`已切换到 ${tenant.name}`)
+    window.location.reload()
+  } catch {
+    ElMessage.error('切换租户失败，请稍后重试')
+  }
+}
+
 async function showNotifications() {
   try {
     const { data } = await campaignsApi.alerts()
@@ -252,6 +265,7 @@ async function handleLogout() {
 }
 
 onMounted(async () => {
+  await workspaceStore.loadPlatformTenants()
   workspaceStore.initWorkspace()
   if (userStore.user && !accountStore.accounts.length) {
     await accountStore.fetchAccounts(userStore.user.id)

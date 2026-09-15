@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 from core.database import get_db
+from core.tenant import effective_tenant_id
 from core.auth import get_current_active_user
 from core.logger import logger
 from models import CreativeAsset, MetaAccount, AdAccount, MetaAssetBinding, User, UserAccount, CreativeAssetGroup
@@ -88,7 +89,7 @@ def _asset_query(db: Session, user: User):
     if account_ids is not None:
         q = q.filter(
             (CreativeAsset.created_by == user.id)
-            | ((CreativeAsset.visibility == "TENANT") & (CreativeAsset.tenant_id == user.tenant_id))
+            | ((CreativeAsset.visibility == "TENANT") & (CreativeAsset.tenant_id == effective_tenant_id(user)))
             | CreativeAsset.account_id.in_(account_ids or {"__no_accounts__"})
         )
     return q
@@ -140,7 +141,7 @@ def list_asset_bindings(
         account = db.query(AdAccount).filter(AdAccount.id == asset.account_id).first()
         if account:
             binding = MetaAssetBinding(
-                id=uuid.uuid4().hex, asset_id=asset.id, ad_account_id=account.id,
+                id=uuid.uuid4().hex, tenant_id=account.tenant_id, asset_id=asset.id, ad_account_id=account.id,
                 meta_asset_id=asset.fb_video_id or asset.fb_hash,
                 meta_asset_type=asset.asset_type, status="READY",
                 processing_status="READY", uploaded_at=asset.created_at,
@@ -177,6 +178,7 @@ def prepare_asset_bindings(
         if not binding:
             binding = MetaAssetBinding(
                 id=uuid.uuid4().hex,
+                tenant_id=account.tenant_id,
                 asset_id=asset_id,
                 ad_account_id=account.id,
                 meta_asset_type=asset.asset_type,
@@ -395,7 +397,7 @@ async def upload_media(
             MetaAssetBinding.asset_id == existing.id, MetaAssetBinding.ad_account_id == account.id
         ).first()
         if not binding:
-            binding = MetaAssetBinding(id=uuid.uuid4().hex, asset_id=existing.id, ad_account_id=account.id,
+            binding = MetaAssetBinding(id=uuid.uuid4().hex, tenant_id=account.tenant_id, asset_id=existing.id, ad_account_id=account.id,
                                        meta_asset_type=asset_type, status="PENDING")
             db.add(binding); db.commit()
         if binding.status != "READY":
@@ -427,7 +429,7 @@ async def upload_media(
     db.add(asset)
     db.commit()
     db.refresh(asset)
-    binding = MetaAssetBinding(id=uuid.uuid4().hex, asset_id=asset.id, ad_account_id=account.id,
+    binding = MetaAssetBinding(id=uuid.uuid4().hex, tenant_id=account.tenant_id, asset_id=asset.id, ad_account_id=account.id,
                                meta_asset_type=asset_type, status="PENDING")
     db.add(binding); db.commit()
     task = upload_asset_task.delay(binding.id)
