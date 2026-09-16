@@ -26,6 +26,8 @@ from services.ads_manager import AdsManager
 from services.meta import MetaSyncService
 from services.meta.page_service import MetaPageSyncService
 from services.credential_service import CredentialService
+from services.credential_resolver import CredentialResolver
+from services.fb_connector_client import FBConnectorClient
 from services.notifications import NotificationService
 
 
@@ -224,12 +226,14 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
         ).first()
         if not account:
             return {"status": "failed", "error": "广告账户不存在"}
-        service = CredentialService(db).build_service(account.id)
+        ref = CredentialResolver(db).for_account(account.id)
+        service = None if ref.mode == "connector" else CredentialService(db).build_service(account.id)
         campaigns = db.query(CampaignInstance).filter(CampaignInstance.ad_account_id == account.id).all()
         # 每个账户只拉取一次，避免按 Campaign / AdSet 重复请求 Meta API。
         sync_errors = []
         try:
-            remote_campaigns = service.list_campaigns(account.account_id)
+            remote_campaigns = (FBConnectorClient().list_campaigns(account.account_id, ref.credential_id).get("campaigns", [])
+                                if ref.mode == "connector" else service.list_campaigns(account.account_id))
         except Exception as exc:
             logger.warning(f"[meta_sync] 账户 {account.id} Campaign 拉取失败: {exc}")
             remote_campaigns = []
@@ -249,7 +253,8 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                     campaign_key = str(campaign.meta_campaign_id)
                     if campaign_key not in remote_adsets_by_campaign:
                         try:
-                            remote_adsets_by_campaign[campaign_key] = service.list_adsets(campaign.meta_campaign_id)
+                            remote_adsets_by_campaign[campaign_key] = (FBConnectorClient().list_adsets(campaign.meta_campaign_id, ref.credential_id).get("adsets", [])
+                                                                       if ref.mode == "connector" else service.list_adsets(campaign.meta_campaign_id))
                         except Exception as exc:
                             logger.warning(f"[meta_sync] Campaign {campaign_key} AdSet 拉取失败: {exc}")
                             remote_adsets_by_campaign[campaign_key] = []
@@ -264,7 +269,8 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                         adset_key = str(adset.meta_adset_id)
                         if adset_key not in remote_ads_by_adset:
                             try:
-                                remote_ads_by_adset[adset_key] = service.list_ads(adset.meta_adset_id)
+                                remote_ads_by_adset[adset_key] = (FBConnectorClient().list_ads(adset.meta_adset_id, ref.credential_id).get("ads", [])
+                                                                 if ref.mode == "connector" else service.list_ads(adset.meta_adset_id))
                             except Exception as exc:
                                 logger.warning(f"[meta_sync] AdSet {adset_key} Ad 拉取失败: {exc}")
                                 remote_ads_by_adset[adset_key] = []
@@ -344,19 +350,26 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
         account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
         if not account:
             return {"status": "failed", "error": "广告账户不存在"}
-        service = CredentialService(db).build_service(account.id)
+        ref = CredentialResolver(db).for_account(account.id)
+        service = None if ref.mode == "connector" else CredentialService(db).build_service(account.id)
         remote_status = "PAUSED" if action == "PAUSE" else "ACTIVE"
         if object_type == "ADSET":
             obj = db.query(AdSetInstance).filter(AdSetInstance.id == object_id).first()
             if not obj or not obj.meta_adset_id:
                 raise RuntimeError("广告组 Meta ID 不存在")
-            service.update_adset(obj.meta_adset_id, {"status": remote_status})
+            if ref.mode == "connector":
+                FBConnectorClient().update_object("ADSET", obj.meta_adset_id, ref.credential_id, remote_status)
+            else:
+                service.update_adset(obj.meta_adset_id, {"status": remote_status})
             obj.status = remote_status
         elif object_type == "AD":
             obj = db.query(AdInstance).filter(AdInstance.id == object_id).first()
             if not obj or not obj.meta_ad_id:
                 raise RuntimeError("广告 Meta ID 不存在")
-            service.update_ad(obj.meta_ad_id, {"status": remote_status})
+            if ref.mode == "connector":
+                FBConnectorClient().update_object("AD", obj.meta_ad_id, ref.credential_id, remote_status)
+            else:
+                service.update_ad(obj.meta_ad_id, {"status": remote_status})
             obj.status = remote_status
         else:
             raise RuntimeError("不支持的投放对象类型")

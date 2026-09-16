@@ -76,6 +76,21 @@ class FBConnectorClient:
     def authorize(self, state: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/internal/meta/oauth/authorize", {"state": state}, request_id=request_id)
 
+    def sdk_config(self, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("GET", "/internal/meta/oauth/sdk-config", {}, request_id=request_id)
+
+    def sdk_login(self, access_token: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/oauth/sdk-login", {"access_token": access_token}, request_id=request_id)
+
+    def oauth_businesses(self, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/oauth/businesses", {"credential_id": credential_id}, request_id=request_id)
+
+    def oauth_ad_accounts(self, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/oauth/ad-accounts", {"credential_id": credential_id}, request_id=request_id)
+
+    def oauth_complete(self, credential_id: str, business_id: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/oauth/complete", {"credential_id": credential_id, "business_id": business_id}, request_id=request_id)
+
     def verify_business(self, business_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/internal/meta/business/verify", {"business_id": business_id, "credential_id": credential_id}, request_id=request_id)
 
@@ -98,5 +113,36 @@ class FBConnectorClient:
             raise FBConnectorError("投放创建必须提供幂等键")
         return self._request("POST", "/internal/meta/campaigns/create", {"task_id": task_id, "credential_id": credential_id, "account_id": account_id, "payload": payload, "idempotency_key": idempotency_key}, request_id=request_id, idempotency_key=idempotency_key)
 
-    def get_insights(self, account_id: str, days: int = 30, *, request_id: str | None = None) -> dict[str, Any]:
-        return self._request("POST", "/internal/meta/reports/insights", {"account_id": account_id, "days": days}, request_id=request_id)
+    def deploy_campaign(self, payload: dict[str, Any], *, request_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+        if not idempotency_key:
+            raise FBConnectorError("完整投放创建必须提供幂等键")
+        return self._request("POST", "/internal/meta/campaigns/deploy", payload, request_id=request_id, idempotency_key=idempotency_key)
+
+    def deploy_status(self, connector_task_id: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("GET", f"/internal/meta/campaigns/create/{connector_task_id}", {}, request_id=request_id)
+
+    def list_campaigns(self, account_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/campaigns/list", {"account_id": account_id, "credential_id": credential_id}, request_id=request_id)
+
+    def pause_campaign(self, campaign_id: str, credential_id: str, *, request_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+        if not idempotency_key:
+            raise FBConnectorError("暂停广告必须提供幂等键")
+        return self._request("POST", "/internal/meta/campaigns/pause", {"campaign_id": campaign_id, "credential_id": credential_id, "idempotency_key": idempotency_key}, request_id=request_id, idempotency_key=idempotency_key)
+
+    def list_adsets(self, campaign_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/campaigns/adsets", {"campaign_id": campaign_id, "credential_id": credential_id}, request_id=request_id)
+
+    def list_ads(self, adset_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/campaigns/ads", {"adset_id": adset_id, "credential_id": credential_id}, request_id=request_id)
+
+    def update_object(self, object_type: str, object_id: str, credential_id: str, status: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/campaigns/update-object", {"object_type": object_type, "object_id": object_id, "credential_id": credential_id, "status": status}, request_id=request_id)
+
+    def cleanup_deployment(self, connector_task_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/campaigns/cleanup", {"connector_task_id": connector_task_id, "credential_id": credential_id}, request_id=request_id)
+
+    def get_insights(self, account_id: str, days: int = 30, *, level: str = "account", since: str | None = None, until: str | None = None, request_id: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"account_id": account_id, "days": days, "level": level}
+        if since and until:
+            payload.update({"since": since, "until": until})
+        return self._request("POST", "/internal/meta/reports/insights", payload, request_id=request_id)

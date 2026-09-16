@@ -122,6 +122,8 @@ class MetaAccount(TenantMixin, Base):
     default_credential = relationship(
         "Credential", foreign_keys=[default_credential_id]
     )
+    connector_credential_id = Column(String(50), nullable=True, index=True,
+                                     comment="海外 FB Connector 凭据 ID，不保存 Token")
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

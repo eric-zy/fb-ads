@@ -82,6 +82,8 @@ class AdAccount(TenantMixin, Base):
                               comment="Meta 原始 BM ID；个人广告账户为空")
     credential_id = Column(String(50), ForeignKey("credentials.id"), nullable=True, index=True,
                            comment="直接授权个人号时使用的 OAuth 凭据")
+    connector_credential_id = Column(String(50), nullable=True, index=True,
+                                     comment="海外 FB Connector 凭据 ID，不保存 Token")
     connection_id = Column(String(50), ForeignKey("meta_connections.id"), nullable=True, index=True,
                             comment="所属 Meta OAuth 授权连接")
     owner_type = Column(String(20), nullable=False, default="BUSINESS",

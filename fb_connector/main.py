@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import uuid
+import hmac
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -37,7 +38,10 @@ async def service_auth_middleware(request: Request, call_next):
     if request.url.path.startswith("/internal/") and request.url.path not in {"/internal/health", "/internal/ready"}:
         body = await request.body()
         service_name = request.headers.get("X-Service-Name")
-        if service_name != "saas" or not verify_request(
+        expected_token = os.getenv("CONNECTOR_SERVICE_TOKEN", "")
+        authorization = request.headers.get("Authorization", "")
+        token_ok = bool(expected_token) and hmac.compare_digest(authorization, f"Bearer {expected_token}")
+        if service_name != "saas" or not token_ok or not verify_request(
             _service_secret(), request.headers, request.method, request.url.path, body
         ):
             return JSONResponse(status_code=401, content={"detail": "invalid service signature"})

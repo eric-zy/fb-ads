@@ -22,7 +22,9 @@ class MetaPage(TenantMixin, Base):
         String(50), ForeignKey("meta_connections.id"), nullable=True, index=True,
         comment="所属 Meta OAuth 授权连接",
     )
-    page_access_token_encrypted = Column(Text, nullable=False)
+    page_access_token_encrypted = Column(Text, nullable=True)
+    connector_credential_id = Column(String(50), nullable=True, index=True,
+                                     comment="海外 Connector 凭据 ID，不保存 Page Token")
     status = Column(String(32), default=CredentialStatus.ACTIVE.value, nullable=False)
     last_error = Column(Text)
     last_synced_at = Column(DateTime)
@@ -39,6 +41,8 @@ class MetaPage(TenantMixin, Base):
         self.page_access_token_encrypted = encrypt_token(token)
 
     def get_page_access_token(self) -> str:
+        if not self.page_access_token_encrypted:
+            raise ValueError("Page Token 由海外 Connector 托管")
         return decrypt_token(self.page_access_token_encrypted)
 
     def to_dict(self) -> dict:
@@ -56,5 +60,5 @@ class MetaPage(TenantMixin, Base):
             "last_synced_at": self.last_synced_at.isoformat() if self.last_synced_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            "page_access_token_masked": mask_token(self.get_page_access_token()),
+            "page_access_token_masked": mask_token(self.get_page_access_token()) if self.page_access_token_encrypted else None,
         }

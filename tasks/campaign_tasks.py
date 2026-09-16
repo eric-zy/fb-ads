@@ -23,9 +23,12 @@ from core.enums import (
 )
 from core.logger import logger
 from core.tenant import resolve_tenant_of, tenant_task
-from models import CampaignInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, AdAccount, MetaPage, SinanCredential
+from models import CampaignInstance, AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, AdAccount, MetaPage, SinanCredential
 from services.campaign_builder import CampaignDeploymentBuilder
 from services.credential_service import CredentialError, CredentialService
+from services.credential_resolver import CredentialResolver
+from services.connector_campaign_builder import build_connector_payload
+from services.fb_connector_client import FBConnectorClient
 from services.meta import MetaApiError
 from services.meta.page_access import page_account_access_error
 from services.integrations.sinan_client import SinanClient
@@ -36,6 +39,70 @@ import os
 
 # 未到达终态的子项状态
 _ACTIVE_ITEM_STATUSES = [JobItemStatus.PENDING.value, JobItemStatus.RUNNING.value]
+
+@shared_task(bind=True, name="campaign.poll_connector_deployment", max_retries=20, default_retry_delay=15)
+@tenant_task(lambda self, job_item_id: resolve_tenant_of(CampaignJobItem, job_item_id))
+def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
+    """轮询海外部署结果，并将最终 Meta ID 回写国内任务项。"""
+    db = SessionLocal()
+    try:
+        item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
+        if not item:
+            return {"status": "failed", "error": "任务项不存在"}
+        if item.status == JobItemStatus.SUCCESS.value:
+            return {"status": "success", "job_item_id": job_item_id, "meta_campaign_id": item.meta_campaign_id, "skipped": True}
+        connector = (item.response_payload or {}).get("connector") or {}
+        remote_id = connector.get("connector_task_id")
+        if not remote_id:
+            raise RuntimeError("缺少海外任务 ID")
+        result = FBConnectorClient().deploy_status(remote_id)
+        status = result.get("status")
+        item.response_payload = {**(item.response_payload or {}), "connector_status": result}
+        if status in {"QUEUED", "RUNNING", "CAMPAIGN_CREATED", "ADSETS_CREATED", "CREATIVES_CREATED"}:
+            db.commit()
+            raise self.retry()
+        if status == "FAILED":
+            cleanup = None
+            try:
+                credential_id = ((item.response_payload or {}).get("protocol") or {}).get("credential_id")
+                if credential_id:
+                    cleanup = FBConnectorClient().cleanup_deployment(remote_id, credential_id)
+            except Exception as exc:
+                cleanup = {"status": "FAILED", "error": str(exc)}
+            item.mark_failed(result.get("error_code") or "CONNECTOR_DEPLOY_FAILED", result.get("error_message") or "海外投放创建失败", ErrorCategory.UNKNOWN)
+            item.response_payload = {**(item.response_payload or {}), "cleanup": cleanup}
+            db.commit()
+            _finalize_job_if_done(db, item.job_id)
+            db.commit()
+            return {"status": "failed", "job_item_id": job_item_id}
+        item.status = JobItemStatus.SUCCESS.value
+        item.meta_campaign_id = result.get("campaign_id")
+        objects = result.get("objects") or {}
+        item.adset_ids = [x.get("id") for x in objects.get("adsets", []) if x.get("id")]
+        item.ad_ids = [x.get("id") for x in objects.get("ads", []) if x.get("id")]
+        template_id = item.job.template_id
+        instance = db.query(CampaignInstance).filter(CampaignInstance.template_id == template_id, CampaignInstance.ad_account_id == item.ad_account_id).first()
+        if not instance:
+            instance = CampaignInstance(id=uuid.uuid4().hex, template_id=template_id, ad_account_id=item.ad_account_id, meta_campaign_id=item.meta_campaign_id, status="PAUSED")
+            db.add(instance)
+        else:
+            instance.meta_campaign_id = item.meta_campaign_id
+        item.campaign_instance_id = instance.id
+        adsets_by_key = {}
+        for pos, remote in enumerate(objects.get("adsets", []), 1):
+            row = AdSetInstance(id=uuid.uuid4().hex, campaign_instance_id=instance.id, meta_adset_id=remote.get("id"), name=remote.get("client_key") or f"AdSet {pos}", status="PAUSED")
+            db.add(row); adsets_by_key[remote.get("client_key")] = row
+        for pos, remote in enumerate(objects.get("ads", []), 1):
+            # 当前协议返回的 Ad client_key 为 ad-{adset}-{creative}，按顺序兜底挂到对应 AdSet。
+            adset = list(adsets_by_key.values())[min(pos - 1, len(adsets_by_key) - 1)] if adsets_by_key else None
+            if adset:
+                db.add(AdInstance(id=uuid.uuid4().hex, adset_instance_id=adset.id, meta_ad_id=remote.get("id"), name=remote.get("client_key") or f"Ad {pos}", status="PAUSED"))
+        db.commit()
+        _finalize_job_if_done(db, item.job_id)
+        db.commit()
+        return {"status": "success", "job_item_id": job_item_id, "meta_campaign_id": item.meta_campaign_id}
+    finally:
+        db.close()
 
 
 @shared_task(bind=True, name="meta.retry_asset_binding", max_retries=2, default_retry_delay=30)
@@ -413,7 +480,28 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             if not sinan.get("landing_url"):
                 raise ValueError("司南推广链未返回有效推广链接")
 
-        # 每个账户解析自己的 token（多 BM / 多账户架构的关键）
+        # Connector 模式只在国内生成协议并投递海外任务，国内不读取 FB Token。
+        ref = CredentialResolver(db).for_account(item.ad_account_id)
+        if ref.mode == "connector":
+            protocol_payload = build_connector_payload(
+                template, account.account_id, budget_override=budget_override,
+                status=status, campaign_name=sinan.get("campaign_name"),
+                adset_name=sinan.get("adset_name"),
+            )
+            protocol_payload.update({
+                "task_id": job_item_id,
+                "credential_id": ref.credential_id,
+                "account_id": account.account_id,
+                "idempotency_key": f"deploy:{job_item_id}:v1",
+            })
+            result = FBConnectorClient().deploy_campaign(protocol_payload, idempotency_key=protocol_payload["idempotency_key"])
+            item.status = JobItemStatus.RUNNING.value
+            item.response_payload = {"connector": result, "protocol": protocol_payload}
+            db.commit()
+            poll_connector_deployment_task.apply_async(args=[job_item_id], countdown=5)
+            return {"status": "QUEUED", "job_item_id": job_item_id, **result}
+
+        # direct 模式每个账户解析自己的 token（多 BM / 多账户架构的关键）
         try:
             service = CredentialService(db).build_service(
                 item.ad_account_id,

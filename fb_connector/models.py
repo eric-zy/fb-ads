@@ -39,6 +39,7 @@ class ConnectorDeliveryTask(ConnectorBase):
     status = Column(String(32), nullable=False, default="QUEUED")
     step = Column(String(32), nullable=False, default="QUEUED")
     campaign_id = Column(String(128)); error_message = Column(Text)
+    objects = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

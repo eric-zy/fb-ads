@@ -16,6 +16,8 @@ from models import (
 )
 from services.ad_account_resolver import resolve_ad_account
 from services.credential_service import CredentialError, CredentialService
+from services.credential_resolver import CredentialResolver
+from services.fb_connector_client import FBConnectorClient, FBConnectorError
 from config.settings import settings
 from core.logger import logger
 from core.money import to_major, to_minor
@@ -42,6 +44,9 @@ class AdsManager:
 
     def _account_insights(self, account: AdAccount, start_date: str, end_date: str, level: str):
         """使用账户绑定凭据访问 Meta，禁止回退到全局单例客户端。"""
+        ref = CredentialResolver(self.db).for_account(account.id)
+        if ref.mode == "connector":
+            return FBConnectorClient().get_insights(account.account_id, level=level, since=start_date, until=end_date).get("items", [])
         service = CredentialService(self.db).build_service(account.id)
         return service.get_insights(account.account_id, {
             "date_preset": "custom",
@@ -67,7 +72,11 @@ class AdsManager:
             return 0, 0
 
         try:
-            campaigns = CredentialService(self.db).build_service(account.id).list_campaigns(account.account_id)
+            ref = CredentialResolver(self.db).for_account(account.id)
+            if ref.mode == "connector":
+                campaigns = FBConnectorClient().list_campaigns(account.account_id, ref.credential_id).get("campaigns", [])
+            else:
+                campaigns = CredentialService(self.db).build_service(account.id).list_campaigns(account.account_id)
             created_count = 0
             updated_count = 0
             
@@ -180,7 +189,15 @@ class AdsManager:
                     if (ctr < ctr_threshold and ctr > 0) or (cpc > cpc_threshold and cpc > 0):
                         account = resolve_ad_account(self.db, campaign.ad_account_id)
                         if account:
-                            CredentialService(self.db).build_service(account.id).pause_campaign(campaign.campaign_id)
+                            ref = CredentialResolver(self.db).for_account(account.id)
+                            if ref.mode == "connector":
+                                FBConnectorClient().pause_campaign(
+                                    campaign.campaign_id,
+                                    ref.credential_id,
+                                    idempotency_key=f"pause:{campaign.campaign_id}:{yesterday}",
+                                )
+                            else:
+                                CredentialService(self.db).build_service(account.id).pause_campaign(campaign.campaign_id)
                             campaign.status = CampaignStatus.PAUSED
                             paused_count += 1
             

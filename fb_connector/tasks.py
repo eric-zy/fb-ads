@@ -1,5 +1,6 @@
 import os
 import tempfile
+import os
 from celery import shared_task
 import requests
 import uuid
@@ -38,16 +39,32 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
         campaign_id = campaign["id"]; created.append(campaign_id)
         row.campaign_id = campaign_id; row.step = "ADSET"; session.commit()
         adset_ids = []
+        object_map = {"adsets": [], "creatives": [], "ads": []}
+        ad_specs = []
         for item in payload.get("adsets") or []:
+            creatives = item.pop("creatives", []) or []
             result = service.create_adset(account_id, {**item, "campaign_id": campaign_id})
             adset_ids.append(result["id"]); created.append(result["id"])
+            object_map["adsets"].append({"client_key": item.get("client_key"), "id": result["id"]})
+            for creative in creatives:
+                ads = creative.pop("ads", []) or []
+                creative_key = creative.pop("client_key", None)
+                creative_result = service.create_creative(account_id, creative)
+                created.append(creative_result["id"])
+                object_map["creatives"].append({"client_key": creative_key, "id": creative_result["id"]})
+                for ad in ads:
+                    ad_specs.append({**ad, "adset_id": result["id"], "_adset_client_key": item.get("client_key"), "creative": {"creative_id": creative_result["id"]}})
         ad_ids = []
         row.step = "AD"; session.commit()
-        for item in payload.get("ads") or []:
+        for item in ad_specs + (payload.get("ads") or []):
+            adset_client_key = item.pop("_adset_client_key", None)
+            item.pop("client_key", None)
             result = service.create_ad(account_id, {**item, "adset_id": item.get("adset_id") or (adset_ids[0] if adset_ids else None)})
             ad_ids.append(result["id"]); created.append(result["id"])
+            object_map["ads"].append({"client_key": item.get("client_key"), "id": result["id"], "adset_id": adset_client_key or item.get("adset_id")})
+        row.objects = object_map
         row.status = "SUCCESS"; row.step = "DONE"; session.commit()
-        return {"status": "SUCCESS", "connector_task_id": connector_task_id, "campaign_id": campaign_id, "adset_ids": adset_ids, "ad_ids": ad_ids, "idempotency_key": idempotency_key}
+        return {"status": "SUCCESS", "connector_task_id": connector_task_id, "campaign_id": campaign_id, "objects": object_map, "adset_ids": adset_ids, "ad_ids": ad_ids, "idempotency_key": idempotency_key}
     except Exception as exc:
         # 保留已创建对象 ID，补偿删除由后续审计/人工策略执行，避免误删用户资产。
         if row:
