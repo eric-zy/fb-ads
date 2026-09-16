@@ -43,6 +43,8 @@ from api import jobs as jobs_api
 from api import campaigns as campaigns_api
 from api import reports as reports_api
 from api import sinan_integration as sinan_api
+from api import connector_callbacks as connector_callbacks_api
+from api import connector_callbacks_insights as connector_callbacks_insights_api
 from core.auth import get_current_active_user, require_admin
 from core.middleware import (
     AuthEnforcementMiddleware,
@@ -124,7 +126,8 @@ async def startup():
     注意：定时任务已由 Celery Beat 独立进程负责（celery_app.conf.beat_schedule），
     API 进程不再内嵌 APScheduler，避免多副本部署时任务重复执行。
     """
-    logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
+    settings.validate_runtime_config()
+    logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION} role={settings.APP_ROLE}")
     logger.info(
         f"[startup] CELERY_BROKER_URL={settings.CELERY_BROKER_URL!r} "
         f"REDIS_HOST={settings.REDIS_HOST!r} REDIS_PORT={settings.REDIS_PORT}"
@@ -192,6 +195,8 @@ app.include_router(jobs_api.router)
 app.include_router(campaigns_api.router)
 app.include_router(reports_api.router)
 app.include_router(sinan_api.router)
+app.include_router(connector_callbacks_api.router)
+app.include_router(connector_callbacks_insights_api.router)
 
 # 静态文件：上传的素材可直接访问
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)

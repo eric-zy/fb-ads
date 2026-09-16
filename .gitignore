@@ -50,6 +50,7 @@ coverage.xml
 .env
 .env.*
 !.env.example
+deploy/fb-connector.env
 *.local
 # 注意：如需提交示例配置，应保留 .env.example
 

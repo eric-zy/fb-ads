@@ -1,0 +1,27 @@
+services:
+  fb-connector:
+    build:
+      context: ..
+      dockerfile: fb_connector/Dockerfile
+    image: fbads-connector:latest
+    restart: unless-stopped
+    env_file:
+      - fb-connector.env
+    ports:
+      - "8100:8100"
+    networks: [fbnet]
+
+  fb-connector-worker:
+    build:
+      context: ..
+      dockerfile: fb_connector/Dockerfile
+    image: fbads-connector:latest
+    restart: unless-stopped
+    command: celery -A fb_connector.celery_app worker --loglevel=info --concurrency=2
+    env_file:
+      - fb-connector.env
+    networks: [fbnet]
+
+networks:
+  fbnet:
+    driver: bridge

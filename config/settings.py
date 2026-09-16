@@ -7,6 +7,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 class Settings(BaseSettings):
     """应用配置管理"""
+
+    # ========== 服务角色与跨服务配置 ==========
+    # saas：国内业务服务；fb_connector：海外 Meta 接入服务。
+    APP_ROLE: str = os.getenv("APP_ROLE", "saas")
+    FB_ACCESS_MODE: str = os.getenv("FB_ACCESS_MODE", "direct")
+    FB_CONNECTOR_ENABLED: bool = os.getenv("FB_CONNECTOR_ENABLED", "false").lower() == "true"
+    FB_CONNECTOR_BASE_URL: str = os.getenv("FB_CONNECTOR_BASE_URL", "")
+    FB_CONNECTOR_TIMEOUT: int = int(os.getenv("FB_CONNECTOR_TIMEOUT", "30"))
+    FB_CONNECTOR_SIGNING_KEY: str = os.getenv("FB_CONNECTOR_SIGNING_KEY", "")
+    CONNECTOR_SERVICE_TOKEN: str = os.getenv("CONNECTOR_SERVICE_TOKEN", "")
+    SAAS_CALLBACK_BASE_URL: str = os.getenv("SAAS_CALLBACK_BASE_URL", "")
+    SAAS_INTERNAL_SIGNING_KEY: str = os.getenv("SAAS_INTERNAL_SIGNING_KEY", "")
     
     # ========== 基础配置 ==========
     APP_NAME: str = "Facebook Ads Automation"
@@ -136,5 +148,24 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+
+    def validate_runtime_config(self) -> None:
+        """校验当前部署角色所需配置，避免 Secret 放错服务器。"""
+        role = self.APP_ROLE.strip().lower()
+        if role not in {"saas", "fb_connector"}:
+            raise ValueError("APP_ROLE 必须是 saas 或 fb_connector")
+        if self.ENVIRONMENT.lower() == "production" and self.SECRET_KEY in {"", "your-secret-key", "change-me"}:
+            raise ValueError("生产环境必须设置非默认 SECRET_KEY")
+        if role == "fb_connector":
+            required = {
+                "FB_APP_ID": self.FB_APP_ID,
+                "FB_APP_SECRET": self.FB_APP_SECRET,
+                "FB_OAUTH_REDIRECT_URI": self.FB_OAUTH_REDIRECT_URI,
+            }
+            missing = [key for key, value in required.items() if not value]
+            if missing:
+                raise ValueError(f"FB Connector 缺少配置: {', '.join(missing)}")
+        if role == "saas" and self.FB_ACCESS_MODE == "connector" and not self.FB_CONNECTOR_BASE_URL:
+            raise ValueError("FB_ACCESS_MODE=connector 时必须设置 FB_CONNECTOR_BASE_URL")
 
 settings = Settings()

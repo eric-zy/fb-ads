@@ -39,6 +39,7 @@ from models import (
 from services.credential_service import CredentialError, CredentialService
 from api.accounts import account_to_dict
 from services.meta import BusinessService, MetaAdsService, MetaClient, MetaSyncService
+from services.fb_connector_client import FBConnectorClient, FBConnectorError
 from services.meta.ad_account_service import UNDEPLOYABLE_META_STATUS
 from services.meta.errors import MetaApiError
 from tasks.meta_sync_tasks import sync_ad_accounts_task, sync_business_task
@@ -400,6 +401,15 @@ def verify_account(
     """
     meta = _get_meta_or_404(db, payload.meta_account_id)
     token = _resolve_token(db, meta)
+
+    if settings.FB_ACCESS_MODE == "connector":
+        credential = db.query(Credential).filter(Credential.meta_account_id == meta.id, Credential.status == CredentialStatus.ACTIVE.value).order_by(Credential.updated_at.desc()).first()
+        if not credential:
+            raise HTTPException(status_code=400, detail="没有可用的 Meta 凭据")
+        try:
+            return FBConnectorClient().verify_account(meta.business_id, payload.account_id, credential.id)
+        except FBConnectorError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     try:
         return MetaAdsService(MetaClient(access_token=token)).verify_account_under_bm(

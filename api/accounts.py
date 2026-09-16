@@ -38,6 +38,8 @@ from models import (
 )
 from services.credential_service import CredentialError, CredentialService
 from services.meta import AdAccountService, MetaAdsService, MetaApiError, MetaClient
+from services.fb_connector_client import FBConnectorClient, FBConnectorError
+from config.settings import settings
 from tasks.meta_sync_tasks import sync_ad_account_task
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["账户管理"])
@@ -128,6 +130,21 @@ def _verify_bm_ownership(
 
     验证不通过直接抛 400；调用 Meta 失败同样视为不通过（安全默认值）。
     """
+    if settings.FB_ACCESS_MODE == "connector":
+        credential = db.query(Credential).filter(
+            Credential.meta_account_id == meta.id,
+            Credential.status == "ACTIVE",
+        ).order_by(Credential.updated_at.desc()).first()
+        if not credential:
+            raise HTTPException(status_code=400, detail="没有可用的 Meta 凭据")
+        try:
+            result = FBConnectorClient().verify_account(meta.business_id, account_id, credential.id)
+        except FBConnectorError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail="验证未通过，广告账户未归属该主账号（BM）")
+        return (result.get("account") or {}).get("name")
+
     token = _resolve_bm_token(db, meta)
     try:
         result = MetaAdsService(MetaClient(access_token=token)).verify_account_under_bm(

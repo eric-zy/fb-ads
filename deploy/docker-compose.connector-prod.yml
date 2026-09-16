@@ -1,0 +1,79 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - connector_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [connector_net]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: sh -c '[ -n "$$REDIS_PASSWORD" ] && redis-server --requirepass "$$REDIS_PASSWORD" || redis-server'
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - connector_redisdata:/data
+    networks: [connector_net]
+
+  fb-connector:
+    build:
+      context: ..
+      dockerfile: fb_connector/Dockerfile
+    image: fbads-connector:latest
+    restart: unless-stopped
+    env_file: ${CONNECTOR_ENV_FILE:-fb-connector.env}
+    command: sh -c 'alembic -c fb_connector/alembic.ini upgrade head && uvicorn fb_connector.main:app --host 0.0.0.0 --port 8100'
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "8100:8100"
+    networks: [connector_net]
+
+  fb-connector-worker:
+    build:
+      context: ..
+      dockerfile: fb_connector/Dockerfile
+    image: fbads-connector:latest
+    restart: unless-stopped
+    env_file: ${CONNECTOR_ENV_FILE:-fb-connector.env}
+    command: celery -A fb_connector.celery_app worker --loglevel=info --concurrency=2
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks: [connector_net]
+
+  fb-connector-beat:
+    build:
+      context: ..
+      dockerfile: fb_connector/Dockerfile
+    image: fbads-connector:latest
+    restart: unless-stopped
+    env_file: ${CONNECTOR_ENV_FILE:-fb-connector.env}
+    command: celery -A fb_connector.celery_app beat --loglevel=info
+    depends_on:
+      redis:
+        condition: service_started
+    networks: [connector_net]
+
+volumes:
+  connector_pgdata:
+  connector_redisdata:
+
+networks:
+  connector_net:
+    driver: bridge
