@@ -47,11 +47,21 @@ async def verify_account(payload: AccountVerifyRequest):
 
 @router.post("/pages/sync")
 async def sync_pages(payload: CredentialRequest):
-    # PageService 的同步需要国内 MetaAccount/数据库上下文；此接口先提供
-    # Connector 侧的 Token 边界，具体 Page 结果格式在 T08 统一。
+    # PageService 的同步需要国内 MetaAccount/数据库上下文；Connector 只负责
+    # 使用托管的 User Token 拉取 Page 元数据，不返回 Page Access Token。
     try:
         client = _client(payload.credential_id)
-        # 永远不请求/返回 Page Access Token；后续投放如需使用由 Connector 内部按 credential_id 获取。
-        return {"credential_id": payload.credential_id, "pages": client._get("me/accounts", {"fields": "id,name,tasks", "limit": 100}).get("data", [])}
+        params = {"fields": "id,name,category,tasks", "limit": 100}
+        pages = []
+        for _ in range(20):
+            # 永远不请求/返回 Page Access Token；后续投放由 Connector
+            # 内部按 credential_id 获取对应授权。
+            result = client._get("me/accounts", params)
+            pages.extend(result.get("data", []))
+            after = (result.get("paging") or {}).get("cursors", {}).get("after")
+            if not after:
+                break
+            params["after"] = after
+        return {"credential_id": payload.credential_id, "pages": pages}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

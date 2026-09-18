@@ -493,11 +493,13 @@ const syncMetaPages = async () => {
   try {
     const { data } = await metaPagesApi.syncAll()
     await loadMetaPages()
-    if (data?.status === 'FAILED') ElMessage.error('Facebook 页面同步失败')
+    const failed = data?.results?.find((item: any) => item.status === 'FAILED')
+    if (data?.status === 'FAILED') ElMessage.error(failed?.error || 'Facebook 页面同步失败，请重新授权')
+    else if (data?.status === 'PARTIAL_SUCCESS') ElMessage.warning(failed?.error || '部分 Facebook 页面同步失败，请检查授权状态')
     else if (!metaPages.value.length) ElMessage.warning('当前授权未返回可用的 Facebook 页面')
     else ElMessage.success(`已同步 ${metaPages.value.length} 个 Facebook 页面`)
-  } catch {
-    ElMessage.error('Facebook 页面同步失败，请检查 Meta 授权状态')
+  } catch (e: any) {
+    ElMessage.error(String(e?.response?.data?.detail || e?.message || 'Facebook 页面同步失败，请检查 Meta 授权状态'))
   } finally { pagesSyncing.value = false }
 }
 

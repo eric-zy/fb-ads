@@ -51,24 +51,33 @@ def sync_all_pages(
     """Refresh Pages for every Connector credential visible to this tenant."""
     bm_query = db.query(MetaAccount).filter(MetaAccount.connector_credential_id.isnot(None))
     account_query = db.query(AdAccount).filter(AdAccount.connector_credential_id.isnot(None))
+    page_query = db.query(MetaPage).filter(MetaPage.connector_credential_id.isnot(None))
     if current_user.is_platform_admin():
         with bypass_tenant():
             businesses = bm_query.all()
             ad_accounts = account_query.all()
+            pages = page_query.all()
         targets = {
             (item.tenant_id, item.connector_credential_id)
-            for item in [*businesses, *ad_accounts]
+            for item in [*businesses, *ad_accounts, *pages]
             if item.tenant_id and item.connector_credential_id
         }
     else:
         tenant_id = effective_tenant_id(current_user)
         businesses = bm_query.all()
         ad_accounts = account_query.all()
+        pages = page_query.all()
         targets = {
             (tenant_id, item.connector_credential_id)
-            for item in [*businesses, *ad_accounts]
+            for item in [*businesses, *ad_accounts, *pages]
             if item.connector_credential_id
         }
+
+    if not targets:
+        raise HTTPException(
+            status_code=400,
+            detail="当前租户没有可用的海外 Connector 凭据，请先完成 Meta OAuth 并接入广告账户",
+        )
 
     results = []
     for tenant_id, credential_id in sorted(targets):
@@ -81,8 +90,10 @@ def sync_all_pages(
             db.rollback()
             results.append({"status": "FAILED", "tenant_id": tenant_id, "credential_id": credential_id, "error": str(exc)})
 
+    has_success = any(item["status"] == "SUCCESS" and item.get("count", 0) > 0 for item in results)
+    has_failure = any(item["status"] == "FAILED" for item in results)
     return {
-        "status": "SUCCESS" if all(item["status"] == "SUCCESS" for item in results) else "PARTIAL_SUCCESS",
+        "status": "FAILED" if has_failure and not has_success else ("PARTIAL_SUCCESS" if has_failure else "SUCCESS"),
         "count": sum(item.get("count", 0) for item in results),
         "results": results,
     }
