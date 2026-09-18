@@ -152,7 +152,9 @@ def upload_asset_task(self, binding_id: str):
         binding.status = "PROCESSING"
         binding.processing_status = "UPLOADING"
         binding.uploaded_at = datetime.utcnow()
-        asset.status = "PROCESSING"
+        # 素材主表的 status 表示 OSS/本地处理状态；账户级 Meta 上传状态
+        # 只写入 MetaAssetBinding，不能让一个账户的同步进度把共享素材
+        # 从素材库 READY 状态变成 PROCESSING。
         db.commit()
         if not binding.connector_task_id:
             raise RuntimeError("Connector 未返回素材任务 ID")

@@ -145,8 +145,11 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
             raise HTTPException(status_code=400, detail=f"创意 {index} 缺少图片素材")
         if creative_format == "CAROUSEL" and not creative.get("asset_id") and not creative.get("image_hash"):
             raise HTTPException(status_code=400, detail=f"轮播卡片 {index} 缺少素材")
-        if asset_type == "video" and not creative.get("video_id"):
-            raise HTTPException(status_code=400, detail=f"创意 {index} 缺少已同步的视频素材")
+        # 模板只保存素材库的 asset_id；素材上传到具体 Meta 广告账户属于投放前置步骤，
+        # 不应要求创建模板时已经存在 account-scoped video_id。发布前的
+        # JobService.preflight_campaign 会继续校验目标账户是否有 READY 绑定。
+        if asset_type == "video" and not (creative.get("video_id") or creative.get("asset_id")):
+            raise HTTPException(status_code=400, detail=f"创意 {index} 缺少视频素材或素材 ID")
         if creative.get("instagram_actor_id") and not str(creative["instagram_actor_id"]).strip():
             raise HTTPException(status_code=400, detail=f"创意 {index} 的 Instagram 身份无效")
         if creative.get("url_tags") and not isinstance(creative["url_tags"], str):

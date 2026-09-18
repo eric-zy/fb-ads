@@ -261,8 +261,11 @@
                 <span>{{ asset.name }}</span><small class="asset-option-meta">{{ asset.asset_type === 'image' ? '图片' : '视频' }} · {{ asset.fb_hash || asset.fb_video_id || '待同步' }}</small>
               </el-option>
             </el-select>
-            <div v-if="selectedAsset(creative.asset_id)" class="asset-selected">已选择：{{ selectedAsset(creative.asset_id)?.name }}</div>
-            <div v-else class="tip">请先在“内容管理 → 素材库”上传并完成 Meta 同步。</div>
+            <div v-if="selectedAsset(creative.asset_id)" class="asset-selected">
+              已选择：{{ selectedAsset(creative.asset_id)?.name }}
+              <span v-if="!selectedAsset(creative.asset_id)?.fb_hash && !selectedAsset(creative.asset_id)?.fb_video_id" class="asset-sync-hint">模板可先保存，投放前需在素材库完成账户同步</span>
+            </div>
+            <div v-else class="tip">请先在“内容管理 → 素材库”上传素材；素材同步到广告账户可在投放前完成。</div>
           </el-form-item>
           <template v-if="creativeForm.creative_format === 'MULTI_AD'">
             <el-form-item label="主文案覆盖"><el-input v-model="creative.primary_text" type="textarea" :rows="2" placeholder="可留空，使用公共主文案" /></el-form-item>
@@ -376,7 +379,12 @@ const buildCreativeJson = () => {
       const asset = selectedAsset(item.asset_id)
       const merged = { ...creativeForm.shared, ...item }
       for (const field of ['headline', 'primary_text', 'description', 'cta', 'landing_url']) if (item[field] === '' || item[field] == null) merged[field] = creativeForm.shared[field]
-      return { ...merged, image_hash: asset?.fb_hash || item.image_hash, video_id: asset?.fb_video_id || item.video_id }
+      const result = { ...merged } as Record<string, any>
+      if (asset?.fb_hash || item.image_hash) result.image_hash = asset?.fb_hash || item.image_hash
+      else delete result.image_hash
+      if (asset?.fb_video_id || item.video_id) result.video_id = asset?.fb_video_id || item.video_id
+      else delete result.video_id
+      return result
     }),
     creative_format: creativeForm.creative_format,
     delivery: { ...creativeForm.delivery },

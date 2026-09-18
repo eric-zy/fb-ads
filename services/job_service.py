@@ -106,6 +106,7 @@ class JobService:
             allow_paused_debug=status == InstanceStatus.PAUSED.value,
         )
         asset_ids = [str(item.get("asset_id")) for item in creatives if item.get("asset_id")]
+        waiting_by_account = {}
         if asset_ids and available:
             ready_bindings = self.db.query(MetaAssetBinding.ad_account_id, MetaAssetBinding.asset_id).filter(
                 MetaAssetBinding.ad_account_id.in_(available),
@@ -120,10 +121,14 @@ class JobService:
             for account_id in list(available):
                 missing = sorted(set(asset_ids) - ready_by_account.get(account_id, set()))
                 if missing:
-                    missing_accounts.append({"account_id": account_id, "reason": "素材尚未同步完成", "asset_ids": missing})
+                    waiting_by_account[account_id] = missing
+                    missing_accounts.append({"account_id": account_id, "reason": "素材将于投放前自动同步", "asset_ids": missing})
             if missing_accounts:
-                rejected.extend(missing_accounts)
-                available = [account_id for account_id in available if account_id not in {item["account_id"] for item in missing_accounts}]
+                warnings.append({
+                    "code": "ASSET_SYNC_PENDING",
+                    "message": f"{len(missing_accounts)} 个账户的素材将在投放前自动同步",
+                    "items": missing_accounts,
+                })
         page = self.db.query(MetaPage).filter(
             MetaPage.page_id == page_id, MetaPage.status == "ACTIVE"
         ).first() if page_id else None
@@ -138,7 +143,14 @@ class JobService:
                     compatible.append(account_pk)
             available = compatible
 
-        account_results = [{"account_id": x, "status": "READY"} for x in available]
+        account_results = [
+            {
+                "account_id": x,
+                "status": "WAITING_ASSET_SYNC" if x in waiting_by_account else "READY",
+                **({"asset_ids": waiting_by_account[x]} if x in waiting_by_account else {}),
+            }
+            for x in available
+        ]
         account_results += [{"account_id": x.get("account_id"), "status": "BLOCKED", "reason": x.get("reason")} for x in rejected]
         if rejected:
             warnings.append({"code": "ACCOUNTS_REJECTED", "message": f"{len(rejected)} 个账户不可投放，将被剔除", "items": rejected})

@@ -26,6 +26,7 @@ from tasks.campaign_tasks import retry_asset_binding_task
 from tasks.media_tasks import upload_asset_task, process_oss_asset_task, delete_oss_asset_task
 from services.storage import AliyunOSSStorage, StorageError
 from services.account_access import accessible_account_ids
+from services.media_binding_service import ensure_asset_bindings, queue_pending_asset_bindings
 
 router = APIRouter(prefix="/api/v1/media", tags=["素材库"])
 
@@ -336,36 +337,14 @@ def prepare_asset_bindings(
         raise HTTPException(status_code=409, detail="素材尚未完成 OSS 处理，请等待素材状态变为 READY")
     if not req.ad_account_ids:
         raise HTTPException(status_code=400, detail="至少选择一个广告账户")
-    created = []
-    queued = []
+    account_ids = []
     for account_id in set(req.ad_account_ids):
-        account = _assert_account_access(db, account_id, user)
-        binding = db.query(MetaAssetBinding).filter(
-            MetaAssetBinding.asset_id == asset_id,
-            MetaAssetBinding.ad_account_id == account.id,
-        ).first()
-        if not binding:
-            binding = MetaAssetBinding(
-                id=uuid.uuid4().hex,
-                tenant_id=account.tenant_id,
-                asset_id=asset_id,
-                ad_account_id=account.id,
-                meta_asset_type=asset.asset_type,
-                status="PENDING",
-            )
-            db.add(binding)
-        elif binding.status in ("FAILED", "EXPIRED"):
-            binding.status = "PENDING"
-            binding.error_message = None
-            binding.updated_at = datetime.utcnow()
-        created.append(binding)
+        account_ids.append(_assert_account_access(db, account_id, user).id)
+    created = ensure_asset_bindings(db, [asset_id], account_ids)
     db.commit()
     # 重新同步不仅建立占位记录，也必须为已有的 PENDING/失败记录重新派发上传任务。
     # READY 的绑定无需重复上传；UPLOADING/PROCESSING 由原任务继续处理，避免重复任务。
-    for row in created:
-        if row.status in ("PENDING", "FAILED", "EXPIRED") and not row.meta_asset_id:
-            task = upload_asset_task.delay(row.id)
-            queued.append({"binding_id": row.id, "task_id": task.id})
+    queued = queue_pending_asset_bindings(created)
     return {
         "asset_id": asset_id,
         "status": "QUEUED" if queued else "READY",

@@ -30,6 +30,7 @@ from services.credential_resolver import CredentialResolver
 from services.connector_campaign_builder import build_connector_payload
 from services.fb_connector_client import FBConnectorClient
 from services.media_usage import extract_asset_ids, record_template_usage
+from services.media_binding_service import ensure_asset_bindings, queue_pending_asset_bindings
 from services.meta import MetaApiError
 from services.meta.page_access import page_account_access_error
 from services.integrations.sinan_client import SinanClient
@@ -402,6 +403,45 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
         # Connector 模式只在国内生成协议并投递海外任务，国内不读取 FB Token。
         ref = CredentialResolver(db).for_account(item.ad_account_id)
         if ref.mode == "connector":
+            # XMP 式按需同步：模板只引用共享素材 asset_id，第一次投放到
+            # 当前账户时才建立账户级绑定并异步上传。
+            bindings = ensure_asset_bindings(db, usage_asset_ids, [item.ad_account_id])
+            db.commit()
+            queued_bindings = queue_pending_asset_bindings(bindings)
+            ready_bindings = [
+                row for row in bindings
+                if row.status == "READY" and row.meta_asset_id
+            ]
+            asset_bindings = {row.asset_id: row.meta_asset_id for row in ready_bindings}
+            missing_assets = sorted(set(usage_asset_ids) - set(asset_bindings))
+            if missing_assets:
+                payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+                sync_state = dict(payload.get("asset_sync") or {})
+                attempts = int(sync_state.get("attempts") or 0) + 1
+                if attempts > 120:
+                    _mark_item_failed(
+                        db,
+                        job_item_id,
+                        "MATERIAL_SYNC_TIMEOUT",
+                        f"素材同步超时，请检查账户映射: {', '.join(missing_assets)}",
+                        ErrorCategory.TEMPORARY,
+                    )
+                    return {"error": "material sync timeout", "asset_ids": missing_assets}
+                item.status = JobItemStatus.PENDING.value
+                item.response_payload = {
+                    **payload,
+                    "asset_sync": {
+                        "status": "WAITING",
+                        "asset_ids": missing_assets,
+                        "attempts": attempts,
+                        "queued_bindings": queued_bindings,
+                    },
+                }
+                db.commit()
+                # 不占用 worker 等待；绑定完成后重新进入同一子项，
+                # 最多等待约 30 分钟，期间不会创建重复 Campaign。
+                create_campaign_for_account.apply_async(args=[job_item_id], countdown=15)
+                return {"status": "WAITING_ASSET_SYNC", "job_item_id": job_item_id, "asset_ids": missing_assets}
             record_template_usage(
                 db,
                 tenant_id=item.tenant_id,
@@ -416,6 +456,7 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 template, account.account_id, budget_override=budget_override,
                 status=status, campaign_name=sinan.get("campaign_name"),
                 adset_name=sinan.get("adset_name"),
+                asset_bindings=asset_bindings,
             )
             protocol_payload.update({
                 "task_id": job_item_id,
