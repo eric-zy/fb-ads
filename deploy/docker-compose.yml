@@ -34,6 +34,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     image: fbads-api:latest
     restart: unless-stopped
     env_file: .env
@@ -87,9 +89,12 @@ services:
       dockerfile: deploy/Dockerfile.frontend
     image: fbads-nginx:latest
     restart: unless-stopped
+    # CentOS 7 默认 seccomp 会阻断 Nginx 写入 PID 文件所需的 pwrite。
+    security_opt:
+      - seccomp=unconfined
     ports:
-      # 主机 80 端口由 Caddy 占用；由 Caddy 反代到本项目 Nginx。
-      - "127.0.0.1:8094:80"
+      # 未备案期间通过公网 IP:8094 访问；备案后可改回 127.0.0.1:8094 并由 Caddy 反代。
+      - "8094:80"
     depends_on:
       - api
     networks: [fbnet]

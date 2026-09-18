@@ -61,6 +61,7 @@ export interface CredentialItem { id: string; meta_account_id: string | null; me
 export interface VerifyCredentialResult { credential_id: string; valid: boolean; dev_mode: boolean; error: string | null; token_info: { id: string; name: string } | null; status: string; last_verified_at: string | null; last_error: string | null }
 export interface OAuthBusiness { id: string; name?: string | null; verification_status?: string | null }
 export interface OAuthAdAccount { id: string; name?: string | null; account_status?: number | string | null; effective_status?: number | string | null; currency?: string | null; timezone_name?: string | null; business?: { id?: string | null; name?: string | null } | null }
+const oauthReturnTo = () => window.location.origin
 export const credentialApi = {
   list: (params?: { meta_account_id?: string; status?: string; page?: number; page_size?: number }) => request.get('/api/v1/credentials', { params }), detail: (id: string) => request.get('/api/v1/credentials/' + id),
   create: (data: { meta_account_id: string; access_token: string; name?: string; app_id?: string; token_type?: string; expires_at?: string | null; replace_active?: boolean }) => request.post('/api/v1/credentials', data),
@@ -68,8 +69,8 @@ export const credentialApi = {
   rotate: (id: string, data: { access_token: string; name?: string; token_type?: string; expires_at?: string | null; keep_old?: boolean }) => request.post('/api/v1/credentials/' + id + '/rotate', data),
   verify: (id: string) => request.post('/api/v1/credentials/' + id + '/verify'), disable: (id: string) => request.post('/api/v1/credentials/' + id + '/disable'), enable: (id: string) => request.post('/api/v1/credentials/' + id + '/enable'),
   reveal: (id: string) => request.post('/api/v1/credentials/' + id + '/reveal', { confirm: true }), remove: (id: string) => request.delete('/api/v1/credentials/' + id),
-  oauthAuthorize: (metaAccountId?: string) => request.get('/api/v1/meta-auth/authorize', { params: metaAccountId ? { meta_account_id: metaAccountId } : {} }),
-  oauthAuthorizeFirst: () => request.get('/api/v1/meta-auth/authorize-first'),
+  oauthAuthorize: (metaAccountId?: string) => request.get('/api/v1/meta-auth/authorize', { params: { ...(metaAccountId ? { meta_account_id: metaAccountId } : {}), return_to: oauthReturnTo() } }),
+  oauthAuthorizeFirst: () => request.get('/api/v1/meta-auth/authorize-first', { params: { return_to: oauthReturnTo() } }),
   oauthSdkConfig: () => request.get('/api/v1/meta-auth/sdk-config'),
   oauthSdkLogin: (access_token: string) => request.post('/api/v1/meta-auth/sdk-login', { access_token }),
   oauthBusinesses: (credentialId: string) => request.get('/api/v1/meta-auth/businesses', { params: { credential_id: credentialId } }),

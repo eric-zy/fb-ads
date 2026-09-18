@@ -49,3 +49,8 @@ docker-compose*.yml
 
 # Documentation
 *.md
+
+# Static production frontend build is required by Dockerfile.frontend-dist.
+!frontend/
+!frontend/dist/
+!frontend/dist/**

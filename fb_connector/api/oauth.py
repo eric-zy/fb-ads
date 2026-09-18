@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import os
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
@@ -12,6 +13,18 @@ from fb_connector.credential_store import DatabaseCredentialVault
 
 
 router = APIRouter(prefix="/internal/meta/oauth", tags=["Meta OAuth"])
+
+
+def _safe_return_base(state: str, fallback: str) -> str:
+    """Only allow the two known SaaS entrypoints as OAuth return targets."""
+    import base64
+    import json
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(state.split(".")[1] + "=="))
+        candidate = str(payload.get("return_to", "")).rstrip("/")
+    except Exception:
+        candidate = ""
+    return candidate if candidate in {"https://iornix.com", "http://49.232.238.163:8094"} else fallback
 
 
 class AuthorizeRequest(BaseModel):
@@ -107,11 +120,14 @@ async def oauth_complete(payload: CompleteRequest):
 async def callback(state: str = Query(...), code: str | None = Query(None), error: str | None = Query(None), error_description: str | None = Query(None)):
     """Meta 回调入口：海外交换并落库，浏览器只得到 opaque credential_id。"""
     redirect_base = __import__("os").getenv("SAAS_CALLBACK_BASE_URL", "").rstrip("/")
+    redirect_base = _safe_return_base(state, redirect_base)
     if error or not code:
-        return RedirectResponse(f"{redirect_base}/dashboard/meta?{urlencode({'meta_auth': 'error', 'message': error_description or error or '授权失败'})}", status_code=302)
+        return RedirectResponse(f"{redirect_base}/dashboard/accounts?{urlencode({'meta_auth': 'error', 'message': error_description or error or '授权失败'})}", status_code=302)
     try:
         result = await exchange(ExchangeRequest(code=code))
-        params = {"meta_auth": "success", "credential_id": result["credential_id"], "state": state}
-        return RedirectResponse(f"{redirect_base}/dashboard/meta?{urlencode(params)}", status_code=302)
+        # OAuth-first requires a second step: the domestic frontend must load
+        # the Connector-visible ad accounts before the user confirms them.
+        params = {"meta_auth": "businesses", "credential_id": result["credential_id"], "state": state}
+        return RedirectResponse(f"{redirect_base}/dashboard/accounts?{urlencode(params)}", status_code=302)
     except HTTPException as exc:
-        return RedirectResponse(f"{redirect_base}/dashboard/meta?{urlencode({'meta_auth': 'error', 'message': str(exc.detail)[:200]})}", status_code=302)
+        return RedirectResponse(f"{redirect_base}/dashboard/accounts?{urlencode({'meta_auth': 'error', 'message': str(exc.detail)[:200]})}", status_code=302)

@@ -31,8 +31,9 @@ compose=(docker compose --project-name "$PROJECT_NAME" --env-file "$ENV_FILE" -f
 echo "[connector] validating compose configuration..."
 "${compose[@]}" config --quiet
 
-echo "[connector] stopping legacy deployments only..."
-docker compose -f "$SCRIPT_DIR/docker-compose.yml" down --remove-orphans 2>/dev/null || true
+echo "[connector] preserving existing web/frontend deployment..."
+# Do not run docker-compose.yml down here: that stack owns the public Nginx/Caddy
+# entrypoint and its /, /privacy-policy and /terms pages.
 docker compose -f "$SCRIPT_DIR/docker-compose.connector.yml" down --remove-orphans 2>/dev/null || true
 
 echo "[connector] cleaning safe deployment fragments..."
@@ -55,6 +56,19 @@ echo "[connector] starting connector API, worker and beat..."
 echo "[connector] checking service status..."
 "${compose[@]}" ps
 echo "[connector] health check..."
-curl --fail --silent --show-error http://127.0.0.1:8100/internal/health
-echo
+health_ok=false
+for attempt in $(seq 1 30); do
+  if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8100/internal/health; then
+    health_ok=true
+    echo
+    break
+  fi
+  echo "[connector] health check not ready ($attempt/30), waiting 2s..."
+  sleep 2
+done
+if [[ "$health_ok" != true ]]; then
+  echo "[connector] health check failed; recent API logs:" >&2
+  "${compose[@]}" logs --tail=100 fb-connector >&2 || true
+  exit 1
+fi
 echo "[connector] deployment complete; volumes were preserved."

@@ -7,11 +7,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 
 WORKDIR /build
 
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
 # 先装依赖（利用 docker 层缓存）
 COPY requirements.txt .
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+    && /opt/venv/bin/pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r requirements.txt
 
 FROM python:3.12-slim
 

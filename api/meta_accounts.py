@@ -99,7 +99,20 @@ def _credential_health(db: Session, meta_id: str) -> Dict[str, Any]:
         .first()
     )
     if not cred:
-        # V1 起 BM 主表不再存明文 Token，因此没有凭据记录就等于没有凭据
+        # Connector 模式下凭据保存在海外，国内只保存 opaque credential ID。
+        # 因此不能仅通过本地 credentials 表判断 BM 是否已授权。
+        if meta := db.query(MetaAccount).filter(MetaAccount.id == meta_id).first():
+            if meta.connector_credential_id:
+                return {
+                    "credential_id": meta.connector_credential_id,
+                    "credential_status": CredentialStatus.ACTIVE.value,
+                    "credential_masked": None,
+                    "credential_expires_at": None,
+                    "credential_is_expired": False,
+                    "has_credential": True,
+                    "credential_source": "CONNECTOR",
+                }
+        # 没有本地凭据，也没有海外凭据引用，才表示未授权。
         return {
             "credential_id": None,
             "credential_status": "NONE",

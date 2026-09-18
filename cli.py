@@ -16,9 +16,10 @@ def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 @cli.command()
-@click.option('--email', default='admin@fbads.com', help='管理员邮箱')
-@click.option('--password', default='admin123456', help='管理员密码')
-@click.option('--username', default='admin', help='管理员用户名')
+@click.option('--email', required=True, help='管理员邮箱')
+@click.option('--password', prompt=True, hide_input=True, confirmation_prompt=True,
+              help='管理员密码（不传参数时交互式输入）')
+@click.option('--username', required=True, help='登录用户名（网页登录使用此字段）')
 @click.option('--tenant-slug', default=None,
               help='归属租户 slug，默认使用/创建 default 租户')
 @click.option('--platform', is_flag=True, default=False,
@@ -51,8 +52,15 @@ def create_admin(email, password, username, tenant_slug, platform):
 
         role = UserRole.PLATFORM_ADMIN.value if platform else UserRole.TENANT_ADMIN.value
 
-        user = db.query(User).filter(User.email == email).first()
+        # 登录接口按 username 查询；同时兼容按 email 找回并更新历史账号。
+        user = (
+            db.query(User)
+            .filter((User.username == username.strip()) | (User.email == email.strip()))
+            .first()
+        )
         if user:
+            user.username = username.strip()
+            user.email = email.strip()
             user.hashed_password = _hash_password(password)
             user.is_active = True
             user.role = role

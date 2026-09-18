@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 import uuid
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -82,9 +82,23 @@ def _frontend_redirect(path: str = "/dashboard/accounts", **params: str) -> Redi
     base = settings.FRONTEND_BASE_URL.rstrip("/") + path
     return RedirectResponse(f"{base}?{urlencode(params)}", status_code=302)
 
-def _new_oauth_state(user: User, tenant_id: str, meta_account_id: str | None = None) -> str:
+def _oauth_return_to(request: Request, requested: str | None = None) -> str:
+    """Choose a fixed, trusted frontend return URL for the OAuth flow."""
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+    host = request.headers.get("x-forwarded-host", request.headers.get("host", "")).split(",")[0].strip()
+    allowed = {
+        "https://iornix.com",
+        "http://49.232.238.163:8094",
+    }
+    candidate = (requested or f"{forwarded_proto}://{host}").rstrip("/")
+    return candidate if candidate in allowed else settings.FRONTEND_BASE_URL.rstrip("/")
+
+
+def _new_oauth_state(user: User, tenant_id: str, meta_account_id: str | None = None, return_to: str | None = None) -> str:
     now = datetime.utcnow()
     payload = {"purpose":"meta_oauth","sub":user.id,"tid":tenant_id,"jti":uuid.uuid4().hex,"iat":now,"exp":now+timedelta(minutes=10)}
+    if return_to:
+        payload["return_to"] = return_to
     if meta_account_id: payload["meta_account_id"] = meta_account_id
     return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
 
@@ -153,12 +167,12 @@ def _upsert_oauth_credential(
 # 两个入口共用同一套安全逻辑：/authorize-first 明确用于“添加广告用户”，不带 BM 参数。
 @router.get("/authorize-first")
 @router.get("/authorize")
-def authorize_meta(meta_account_id: str | None = Query(None, description="已有 BM 主键；为空表示 OAuth-first"), db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+def authorize_meta(request: Request, meta_account_id: str | None = Query(None, description="已有 BM 主键；为空表示 OAuth-first"), return_to: str | None = Query(None), db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
     tenant_id = effective_tenant_id(current_user)
     if not tenant_id: raise HTTPException(status_code=400, detail="平台账号不属于任何租户，无法发起 Meta 授权")
     if meta_account_id and not db.query(MetaAccount).filter(MetaAccount.id == meta_account_id).first():
         raise HTTPException(status_code=404, detail="BM 不存在")
-    state = _new_oauth_state(current_user, tenant_id, meta_account_id)
+    state = _new_oauth_state(current_user, tenant_id, meta_account_id, _oauth_return_to(request, return_to))
     try:
         if settings.FB_ACCESS_MODE == "connector":
             result = FBConnectorClient().authorize(state)

@@ -35,8 +35,21 @@ def _service_secret() -> str:
 @app.middleware("http")
 async def service_auth_middleware(request: Request, call_next):
     """保护 /internal 路由；健康检查允许负载均衡探针访问。"""
-    if request.url.path.startswith("/internal/") and request.url.path not in {"/internal/health", "/internal/ready"}:
+    # Meta 浏览器回调不会携带内部服务签名；安全性由 OAuth state
+    # 校验和授权码交换保证，因此必须允许该公开回调进入路由。
+    public_internal_paths = {
+        "/internal/health",
+        "/internal/ready",
+        "/internal/meta/oauth/callback",
+    }
+    if request.url.path.startswith("/internal/") and request.url.path not in public_internal_paths:
         body = await request.body()
+        # Reading the body in middleware consumes the ASGI receive stream.
+        # Replay it for FastAPI route handlers, otherwise valid signed POSTs
+        # can hang until the caller's HTTP timeout expires.
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+        request._receive = receive
         service_name = request.headers.get("X-Service-Name")
         expected_token = os.getenv("CONNECTOR_SERVICE_TOKEN", "")
         authorization = request.headers.get("Authorization", "")
