@@ -50,7 +50,7 @@ def sync_pages(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
-    credential = db.query(Credential).filter(Credential.id == credential_id).first()
+    credential = None if settings.FB_ACCESS_MODE == "connector" else db.query(Credential).filter(Credential.id == credential_id).first()
     if settings.FB_ACCESS_MODE != "connector":
         if not credential:
             raise HTTPException(status_code=404, detail="凭据不存在")
@@ -58,9 +58,9 @@ def sync_pages(
             raise HTTPException(status_code=404, detail="凭据不存在")
         if credential.status != CredentialStatus.ACTIVE.value or credential.is_expired():
             raise HTTPException(status_code=400, detail="凭据已失效，请重新授权")
-    elif not credential and not credential_id:
-        raise HTTPException(status_code=400, detail="Connector 凭据 ID 不能为空")
     if settings.FB_ACCESS_MODE == "connector":
+        if not credential_id:
+            raise HTTPException(status_code=400, detail="Connector 凭据 ID 不能为空")
         try:
             result = FBConnectorClient().sync_pages(credential_id)
             rows = result.get("pages", [])

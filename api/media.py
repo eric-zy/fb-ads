@@ -1,21 +1,16 @@
 """
 素材库接口：图片 / 视频上传、列表、删除。
-OSS 模式使用浏览器直传 + 服务端校验 + 异步媒体处理；本地模式保留旧上传兼容。
+素材统一使用 OSS 浏览器直传 + 服务端校验 + 异步媒体处理。
 素材就绪后按广告账户建立独立 Meta/Connector 映射。
 权限：登录用户即可（普通用户上传归自己账户；管理员可指定主账号）。
 """
 import os
 import uuid
 import mimetypes
-import hashlib
-import struct
-import json
-import shutil
-import subprocess
-from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from datetime import date, datetime, timedelta
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func, case, or_
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
@@ -23,16 +18,14 @@ from core.database import get_db
 from core.tenant import effective_tenant_id
 from core.auth import get_current_active_user
 from core.logger import logger
-from models import CreativeAsset, MetaAccount, AdAccount, MetaAssetBinding, User, UserAccount, CreativeAssetGroup, MediaUploadSession
-from models.account_group import account_group_accounts, account_group_users
+from models import CreativeAsset, AdAccount, MetaAssetBinding, CreativeAssetUsageEvent, CreativeAssetUsageDailyStat, CreativeAssetUsageAccountDailyStat, User, CreativeAssetGroup, MediaUploadSession
+from models.creative_asset_group import creative_asset_group_members
 from models.creative_asset_tag import creative_asset_tag_links
-from services.credential_service import CredentialError, CredentialService
-from services.meta import MetaAdsService, MetaClient
-from services.meta.errors import MetaApiError
 from config.settings import settings
 from tasks.campaign_tasks import retry_asset_binding_task
 from tasks.media_tasks import upload_asset_task, process_oss_asset_task, delete_oss_asset_task
 from services.storage import AliyunOSSStorage, StorageError
+from services.account_access import accessible_account_ids
 
 router = APIRouter(prefix="/api/v1/media", tags=["素材库"])
 
@@ -45,7 +38,7 @@ class MediaItem(BaseModel):
     id: str
     name: str
     created_by: Optional[str] = None
-    visibility: str = "ACCOUNT"
+    visibility: str = "TENANT"
     group_id: Optional[str] = None
     tag_ids: Optional[List[str]] = None
     asset_type: str
@@ -77,16 +70,26 @@ class MediaItem(BaseModel):
     cover_key: Optional[str] = None
     md5: Optional[str] = None
     sha256: Optional[str] = None
+    uploader_name: Optional[str] = None
+    uploader_email: Optional[str] = None
+    uploaded_at: Optional[str] = None
+    can_edit: bool = False
+    binding_count: int = 0
+    ready_binding_count: int = 0
+    failed_binding_count: int = 0
+    publish_count: int = 0
+    successful_publish_count: int = 0
+    last_published_at: Optional[str] = None
+    usage_count: int = 0
+    successful_usage_count: int = 0
+    failed_usage_count: int = 0
+    last_used_at: Optional[str] = None
 
     class Config:
         from_attributes = True
 
 class AssetPrepareRequest(BaseModel):
     ad_account_ids: List[str]
-
-class AssetRetryRequest(BaseModel):
-    binding_id: str
-
 
 class MediaUploadSessionRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
@@ -108,10 +111,17 @@ def _oss_extension(name: str, mime_type: str) -> str:
     return ext
 
 
-def _oss_object_key(user: User, asset_id: str, name: str, md5: Optional[str], mime_type: str) -> str:
+def _oss_object_key(
+    user: User,
+    asset_id: str,
+    name: str,
+    md5: Optional[str],
+    mime_type: str,
+    sha256: str,
+) -> str:
     now = datetime.utcnow()
     stamp = now.strftime("%Y%m%d%H%M%S")
-    digest = (md5 or hashlib.sha256(asset_id.encode()).hexdigest())[:32].lower()
+    digest = (md5 or sha256)[:32].lower()
     stored_name = f"{user.id}_{stamp}_{digest}.{_oss_extension(name, mime_type)}"
     tenant_id = effective_tenant_id(user) or "unassigned"
     return f"{settings.OSS_BASE_PATH}/{tenant_id}/{user.id}/{settings.OSS_PLATFORM}/{now:%Y/%m/%d}/{asset_id}/{stored_name}"
@@ -140,25 +150,28 @@ def media_download_url(
 
 
 def _accessible_account_ids(db: Session, user: User) -> Optional[set[str]]:
-    if user.is_admin():
+    # 保留模块内名称，避免已有调用方和回归脚本变化；实际规则集中维护。
+    return accessible_account_ids(db, user)
+
+
+def _accessible_account_keys(db: Session, user: User) -> Optional[set[str]]:
+    """返回统计事件可能使用的内部 ID 和 act_xxx 标识。"""
+    account_ids = _accessible_account_ids(db, user)
+    if account_ids is None:
         return None
-    direct = {row[0] for row in db.query(UserAccount.account_id).filter(UserAccount.user_id == user.id).all()}
-    grouped = db.query(account_group_accounts.c.account_id).join(
-        account_group_users, account_group_users.c.group_id == account_group_accounts.c.group_id
-    ).filter(account_group_users.c.user_id == user.id).all()
-    return direct | {row[0] for row in grouped}
+    keys = set(account_ids)
+    if account_ids:
+        rows = db.query(AdAccount.id, AdAccount.account_id).filter(
+            AdAccount.id.in_(account_ids)
+        ).all()
+        keys.update(value for row in rows for value in row if value)
+    return keys
 
 
 def _asset_query(db: Session, user: User):
-    account_ids = _accessible_account_ids(db, user)
-    q = db.query(CreativeAsset).filter(CreativeAsset.status != "ARCHIVED")
-    if account_ids is not None:
-        q = q.filter(
-            (CreativeAsset.created_by == user.id)
-            | ((CreativeAsset.visibility == "TENANT") & (CreativeAsset.tenant_id == effective_tenant_id(user)))
-            | CreativeAsset.account_id.in_(account_ids or {"__no_accounts__"})
-        )
-    return q
+    # 素材库按租户共享：created_by、visibility 和素材归属账户不参与可见性判断。
+    # 用户是否能操作具体广告账户，仍由 _assert_account_access 单独校验。
+    return db.query(CreativeAsset).filter(CreativeAsset.status != "ARCHIVED")
 
 
 def _get_asset_or_404(db: Session, asset_id: str, user: User) -> CreativeAsset:
@@ -166,6 +179,76 @@ def _get_asset_or_404(db: Session, asset_id: str, user: User) -> CreativeAsset:
     if not asset:
         raise HTTPException(status_code=404, detail="素材不存在或无权访问")
     return asset
+
+
+def _assert_asset_edit_access(asset: CreativeAsset, user: User) -> None:
+    if user.is_admin() or asset.created_by == user.id:
+        return
+    raise HTTPException(status_code=403, detail="素材已共享，只有上传人或管理员可以修改")
+
+
+def _asset_response_list(db: Session, assets: list[CreativeAsset], user: Optional[User] = None) -> list[dict]:
+    """批量补充上传人和日汇总统计，避免素材列表扫描使用事件。"""
+    asset_ids = [asset.id for asset in assets]
+    uploader_ids = {asset.created_by for asset in assets if asset.created_by}
+    users = {}
+    if uploader_ids:
+        users = {
+            user_id: (username, email)
+            for user_id, username, email in db.query(User.id, User.username, User.email).filter(
+                User.id.in_(uploader_ids)
+            ).all()
+        }
+    binding_stats = {}
+    usage_stats = {}
+    if asset_ids:
+        binding_filters = [MetaAssetBinding.asset_id.in_(asset_ids)]
+        account_ids = _accessible_account_ids(db, user) if user else None
+        if account_ids is not None:
+            binding_filters.append(
+                MetaAssetBinding.ad_account_id.in_(account_ids or {"__no_accounts__"})
+            )
+        binding_stats = {
+            asset_id: (int(total or 0), int(ready or 0), int(failed or 0))
+            for asset_id, total, ready, failed in db.query(
+                MetaAssetBinding.asset_id,
+                func.count(MetaAssetBinding.id),
+                func.sum(case((MetaAssetBinding.status == "READY", 1), else_=0)),
+                func.sum(case((MetaAssetBinding.status == "FAILED", 1), else_=0)),
+            ).filter(*binding_filters).group_by(MetaAssetBinding.asset_id).all()
+        }
+        usage_stats = {
+            asset_id: (int(total or 0), int(success or 0), int(failed or 0), last_used_at)
+            for asset_id, total, success, failed, last_used_at in db.query(
+                CreativeAssetUsageDailyStat.asset_id,
+                func.sum(CreativeAssetUsageDailyStat.usage_count),
+                func.sum(CreativeAssetUsageDailyStat.successful_usage_count),
+                func.sum(CreativeAssetUsageDailyStat.failed_usage_count),
+                func.max(CreativeAssetUsageDailyStat.last_used_at),
+            ).filter(CreativeAssetUsageDailyStat.asset_id.in_(asset_ids)).group_by(CreativeAssetUsageDailyStat.asset_id).all()
+        }
+    result = []
+    for asset in assets:
+        data = asset.to_dict()
+        username, email = users.get(asset.created_by, (None, None))
+        binding_count, ready_binding_count, failed_binding_count = binding_stats.get(asset.id, (0, 0, 0))
+        usage_count, successful_usage_count, failed_usage_count, last_used_at = usage_stats.get(asset.id, (0, 0, 0, None))
+        data["uploader_name"] = username or ("已删除用户" if asset.created_by else "系统")
+        data["uploader_email"] = email
+        data["uploaded_at"] = asset.created_at.isoformat() + "Z" if asset.created_at else None
+        data["can_edit"] = bool(user and (user.is_admin() or asset.created_by == user.id))
+        data["binding_count"] = binding_count
+        data["ready_binding_count"] = ready_binding_count
+        data["failed_binding_count"] = failed_binding_count
+        data["publish_count"] = usage_count
+        data["successful_publish_count"] = successful_usage_count
+        data["last_published_at"] = last_used_at.isoformat() + "Z" if last_used_at else None
+        data["usage_count"] = usage_count
+        data["successful_usage_count"] = successful_usage_count
+        data["failed_usage_count"] = failed_usage_count
+        data["last_used_at"] = last_used_at.isoformat() + "Z" if last_used_at else None
+        result.append(data)
+    return result
 
 
 def _assert_account_access(db: Session, account_id: str, user: User) -> AdAccount:
@@ -225,20 +308,13 @@ def list_asset_bindings(
     user: User = Depends(get_current_active_user),
 ):
     asset = _get_asset_or_404(db, asset_id, user)
-    rows = db.query(MetaAssetBinding).filter(MetaAssetBinding.asset_id == asset_id).all()
-    # 兼容异步改造前已上传到 Meta 的历史素材：旧流程只写 fb_hash/fb_video_id，
-    # 没有创建账户级 binding。首次打开映射时补齐一条 READY 映射。
-    if not rows and asset.account_id and (asset.fb_hash or asset.fb_video_id):
-        account = db.query(AdAccount).filter(AdAccount.id == asset.account_id).first()
-        if account:
-            binding = MetaAssetBinding(
-                id=uuid.uuid4().hex, tenant_id=account.tenant_id, asset_id=asset.id, ad_account_id=account.id,
-                meta_asset_id=asset.fb_video_id or asset.fb_hash,
-                meta_asset_type=asset.asset_type, status="READY",
-                processing_status="READY", uploaded_at=asset.created_at,
-                last_verified_at=datetime.utcnow(),
-            )
-            db.add(binding); db.commit(); rows = [binding]
+    account_ids = _accessible_account_ids(db, user)
+    binding_query = db.query(MetaAssetBinding).filter(MetaAssetBinding.asset_id == asset_id)
+    if account_ids is not None:
+        binding_query = binding_query.filter(
+            MetaAssetBinding.ad_account_id.in_(account_ids or {"__no_accounts__"})
+        )
+    rows = binding_query.all()
     result = []
     for row in rows:
         item = row.to_dict()
@@ -256,7 +332,7 @@ def prepare_asset_bindings(
 ):
     """为目标广告账户建立素材映射占位，实际上传由异步任务执行。"""
     asset = _get_asset_or_404(db, asset_id, user)
-    if settings.MEDIA_STORAGE_PROVIDER == "oss" and asset.processing_status != "READY":
+    if asset.processing_status != "READY":
         raise HTTPException(status_code=409, detail="素材尚未完成 OSS 处理，请等待素材状态变为 READY")
     if not req.ad_account_ids:
         raise HTTPException(status_code=400, detail="至少选择一个广告账户")
@@ -312,94 +388,12 @@ def retry_asset_binding(
     ).first()
     if not binding:
         raise HTTPException(status_code=404, detail="素材映射不存在或无权访问")
+    _assert_account_access(db, binding.ad_account_id, user)
     binding.status = "PENDING"
     binding.error_message = None
     db.commit()
     task = retry_asset_binding_task.delay(binding.id)
     return {"status": "QUEUED", "binding_id": binding.id, "task_id": task.id}
-
-
-def _save_local(file: UploadFile) -> dict:
-    """保存上传文件到本地，返回存储信息"""
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    ext = os.path.splitext(file.filename or "file")[1].lower()
-    stored = f"{uuid.uuid4().hex}{ext}"
-    dest = os.path.join(settings.UPLOAD_DIR, stored)
-    size = 0
-    digest = hashlib.sha256()
-    with open(dest, "wb") as f:
-        while True:
-            chunk = file.file.read(1024 * 1024)
-            if not chunk:
-                break
-            size += len(chunk)
-            digest.update(chunk)
-            f.write(chunk)
-    mime = file.content_type or mimetypes.guess_type(dest)[0] or "application/octet-stream"
-    return {
-        "stored": stored,
-        "dest": dest,
-        "size": size,
-        "mime": mime,
-        "url": f"/uploads/{stored}",
-        "sha256": digest.hexdigest(),
-    }
-
-
-def _image_dimensions(path: str, mime: str) -> tuple[Optional[int], Optional[int]]:
-    """读取常见图片尺寸，不依赖额外图像库。"""
-    try:
-        with open(path, "rb") as stream:
-            header = stream.read(32)
-            if mime == "image/png" and header[:8] == b"\x89PNG\r\n\x1a\n":
-                return struct.unpack(">II", header[16:24])
-            if mime == "image/gif" and header[:6] in (b"GIF87a", b"GIF89a"):
-                return struct.unpack("<HH", header[6:10])
-            if mime in {"image/jpeg", "image/jpg"} and header[:2] == b"\xff\xd8":
-                stream.seek(2)
-                while True:
-                    marker_prefix = stream.read(1)
-                    if not marker_prefix:
-                        break
-                    if marker_prefix != b"\xff":
-                        continue
-                    marker = stream.read(1)
-                    while marker == b"\xff":
-                        marker = stream.read(1)
-                    if marker in {b"\xd8", b"\xd9"}:
-                        continue
-                    length_bytes = stream.read(2)
-                    if len(length_bytes) != 2:
-                        break
-                    length = struct.unpack(">H", length_bytes)[0]
-                    if marker[0] in set(range(0xC0, 0xC4)) | set(range(0xC5, 0xC8)) | set(range(0xC9, 0xCC)) | set(range(0xCD, 0xD0)):
-                        data = stream.read(5)
-                        return struct.unpack(">HH", data[1:5])
-                    stream.seek(max(length - 2, 0), 1)
-    except (OSError, struct.error, IndexError):
-        pass
-    return None, None
-
-
-def _video_metadata(path: str) -> tuple[Optional[int], Optional[int], Optional[float]]:
-    """通过可选 ffprobe 读取视频元数据；未安装时交给异步 Meta 流程处理。"""
-    ffprobe = shutil.which("ffprobe")
-    if not ffprobe:
-        return None, None, None
-    try:
-        result = subprocess.run(
-            [ffprobe, "-v", "error", "-show_entries", "stream=width,height,duration",
-             "-of", "json", path],
-            capture_output=True, text=True, timeout=10, check=True,
-        )
-        streams = json.loads(result.stdout).get("streams") or []
-        video = next((item for item in streams if item.get("width") and item.get("height")), None)
-        if not video:
-            return None, None, None
-        duration = float(video["duration"]) if video.get("duration") else None
-        return int(video["width"]), int(video["height"]), duration
-    except (OSError, ValueError, TypeError, subprocess.SubprocessError, json.JSONDecodeError):
-        return None, None, None
 
 
 @router.post("/upload-sessions")
@@ -409,8 +403,6 @@ def create_media_upload_session(
     user: User = Depends(get_current_active_user),
 ):
     """创建 OSS 直传会话；文件内容由浏览器直接上传到 OSS。"""
-    if settings.MEDIA_STORAGE_PROVIDER != "oss":
-        raise HTTPException(status_code=503, detail="OSS 素材存储未启用")
     allowed = ALLOWED_IMAGE if payload.asset_type == "image" else ALLOWED_VIDEO
     if payload.mime_type not in allowed:
         raise HTTPException(status_code=400, detail=f"素材类型与 MIME 不匹配: {payload.mime_type}")
@@ -443,7 +435,9 @@ def create_media_upload_session(
         }
 
     asset_id = uuid.uuid4().hex
-    object_key = _oss_object_key(user, asset_id, payload.name, payload.md5, payload.mime_type)
+    object_key = _oss_object_key(
+        user, asset_id, payload.name, payload.md5, payload.mime_type, payload.sha256
+    )
     now = datetime.utcnow()
     asset = CreativeAsset(
         id=asset_id,
@@ -451,7 +445,7 @@ def create_media_upload_session(
         name=payload.name,
         original_name=payload.name,
         created_by=user.id,
-        visibility="ACCOUNT",
+        visibility="TENANT",
         group_id=payload.group_id,
         asset_type=payload.asset_type,
         meta_account_id=payload.meta_account_id,
@@ -480,17 +474,27 @@ def create_media_upload_session(
         expires_at=now + timedelta(seconds=settings.OSS_UPLOAD_EXPIRE_SECONDS),
         created_by=user.id,
     )
+    binding = MetaAssetBinding(
+        id=uuid.uuid4().hex,
+        tenant_id=account.tenant_id,
+        asset_id=asset.id,
+        ad_account_id=account.id,
+        meta_asset_type=asset.asset_type,
+        status="PENDING",
+    )
     try:
         upload = AliyunOSSStorage().presign_put(object_key, payload.mime_type)
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     db.add(asset)
     db.add(session)
+    db.add(binding)
     db.commit()
     return {
         "duplicate": False,
         "asset_id": asset.id,
         "upload_session_id": session.id,
+        "binding_id": binding.id,
         "object_key": object_key,
         "upload": upload,
         "expires_at": session.expires_at.isoformat(),
@@ -553,137 +557,6 @@ def complete_media_upload_session(
     return {"asset_id": asset.id, "status": asset.status, "task_id": task_id, "asset": asset.to_dict()}
 
 
-@router.post("/upload", response_model=MediaItem)
-async def upload_media(
-    file: UploadFile = File(...),
-    meta_account_id: Optional[str] = Form(None),
-    account_id: Optional[str] = Form(None),
-    group_id: Optional[str] = Form(None),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_active_user),
-):
-    """上传图片或视频素材
-
-    - meta_account_id：归属的主账号（BM），用于 FB 上传
-    - account_id：归属的广告账户（act_xxx），用于 FB 上传归属
-    至少提供一个，FB 上传才会使用真实 token；否则降级为本地占位。
-    """
-    if settings.MEDIA_STORAGE_PROVIDER == "oss":
-        raise HTTPException(status_code=409, detail="OSS 模式请使用直传上传会话接口")
-    mime = file.content_type or ""
-    is_image = mime in ALLOWED_IMAGE
-    is_video = mime in ALLOWED_VIDEO
-    if not (is_image or is_video):
-        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {mime}")
-
-    # 大小预检
-    if file.size and file.size > MAX_SIZE:
-        raise HTTPException(status_code=400, detail="文件超过大小限制")
-
-    info = _save_local(file)
-    asset_type = "image" if is_image else "video"
-    width, height = _image_dimensions(info["dest"], info["mime"]) if is_image else (None, None)
-    duration = None
-    if is_video:
-        width, height, duration = _video_metadata(info["dest"])
-        if width and height and (width < 600 or height < 600):
-            try:
-                os.remove(info["dest"])
-            except OSError:
-                pass
-            raise HTTPException(status_code=400, detail="视频尺寸不能小于 600 × 600")
-        if width and height and (width / height < 0.5 or width / height > 2.2):
-            try:
-                os.remove(info["dest"])
-            except OSError:
-                pass
-            raise HTTPException(status_code=400, detail="视频比例不适合常用 Meta 广告版位")
-        if duration and duration > 241:
-            try:
-                os.remove(info["dest"])
-            except OSError:
-                pass
-            raise HTTPException(status_code=400, detail="视频时长不能超过 241 秒")
-    if is_image and (not width or not height or width < 600 or height < 600):
-        try:
-            os.remove(info["dest"])
-        except OSError:
-            pass
-        raise HTTPException(status_code=400, detail="图片无法解析或尺寸不能小于 600 × 600")
-    if is_image and (width / height < 0.5 or width / height > 2.2):
-        try:
-            os.remove(info["dest"])
-        except OSError:
-            pass
-        raise HTTPException(status_code=400, detail="图片比例不适合常用 Meta 广告版位")
-    _assert_group_access(db, group_id, user)
-
-    # 这里只校验账户归属；凭据解析和 Meta 写操作都放到 Worker。
-    if account_id:
-        account = _assert_account_access(db, account_id, user)
-    elif meta_account_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Meta 素材必须指定广告账户；上传接口属于广告账户而非 BM",
-        )
-    else:
-        raise HTTPException(status_code=400, detail="Meta 素材必须指定广告账户")
-
-    # 同租户、同类型、同内容直接复用本地素材，避免重复占盘。
-    existing = _asset_query(db, user).filter(
-        CreativeAsset.sha256 == info["sha256"], CreativeAsset.asset_type == asset_type,
-        CreativeAsset.status != "ARCHIVED",
-    ).first()
-    if existing:
-        try:
-            os.remove(info["dest"])
-        except OSError:
-            pass
-        binding = db.query(MetaAssetBinding).filter(
-            MetaAssetBinding.asset_id == existing.id, MetaAssetBinding.ad_account_id == account.id
-        ).first()
-        if not binding:
-            binding = MetaAssetBinding(id=uuid.uuid4().hex, tenant_id=account.tenant_id, asset_id=existing.id, ad_account_id=account.id,
-                                       meta_asset_type=asset_type, status="PENDING")
-            db.add(binding); db.commit()
-        if binding.status != "READY":
-            upload_asset_task.delay(binding.id)
-        data = existing.to_dict()
-        data.update({"binding_id": binding.id})
-        return data
-
-    asset = CreativeAsset(
-        id=str(uuid.uuid4()),
-        name=file.filename or info["stored"],
-        created_by=user.id,
-        visibility="ACCOUNT",
-        group_id=group_id,
-        asset_type=asset_type,
-        meta_account_id=meta_account_id,
-        account_id=account_id,
-        filename=info["stored"],
-        file_path=info["dest"],
-        url=info["url"],
-        size=info["size"],
-        mime_type=info["mime"],
-        width=width,
-        height=height,
-        duration=duration,
-        status="PENDING",
-        sha256=info["sha256"],
-    )
-    db.add(asset)
-    db.commit()
-    db.refresh(asset)
-    binding = MetaAssetBinding(id=uuid.uuid4().hex, tenant_id=account.tenant_id, asset_id=asset.id, ad_account_id=account.id,
-                               meta_asset_type=asset_type, status="PENDING")
-    db.add(binding); db.commit()
-    task = upload_asset_task.delay(binding.id)
-    data = asset.to_dict()
-    data.update({"binding_id": binding.id, "task_id": task.id})
-    return data
-
-
 @router.get("", response_model=List[MediaItem])
 def list_media(
     meta_account_id: Optional[str] = None,
@@ -707,12 +580,265 @@ def list_media(
     if tag_id:
         q = q.join(creative_asset_tag_links, creative_asset_tag_links.c.asset_id == CreativeAsset.id).filter(creative_asset_tag_links.c.tag_id == tag_id)
     items = q.order_by(desc(CreativeAsset.created_at)).all()
-    return [i.to_dict() for i in items]
+    return _asset_response_list(db, items, user)
+
+
+@router.get("/{asset_id}/stats")
+def get_media_stats(
+    asset_id: str,
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_active_user),
+):
+    """返回素材使用统计，支持按时间范围和广告账户拆分。"""
+    _get_asset_or_404(db, asset_id, user)
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="统计开始日期不能晚于结束日期")
+
+    event_filters = [CreativeAssetUsageEvent.asset_id == asset_id]
+    account_scope_keys = _accessible_account_keys(db, user)
+    if account_scope_keys is not None:
+        event_filters.append(
+            CreativeAssetUsageEvent.ad_account_id.in_(account_scope_keys or {"__no_accounts__"})
+        )
+    if start_date:
+        event_filters.append(CreativeAssetUsageEvent.occurred_at >= datetime.combine(start_date, datetime.min.time()))
+    if end_date:
+        event_filters.append(CreativeAssetUsageEvent.occurred_at < datetime.combine(end_date + timedelta(days=1), datetime.min.time()))
+
+    summary_row = db.query(
+        func.count(CreativeAssetUsageEvent.id),
+        func.sum(case((CreativeAssetUsageEvent.status == "SUCCESS", 1), else_=0)),
+        func.sum(case((CreativeAssetUsageEvent.status == "FAILED", 1), else_=0)),
+        func.max(CreativeAssetUsageEvent.occurred_at),
+    ).filter(*event_filters).one()
+    account_daily_filters = [
+        CreativeAssetUsageAccountDailyStat.asset_id == asset_id,
+    ]
+    if account_scope_keys is not None:
+        account_daily_filters.append(
+            CreativeAssetUsageAccountDailyStat.ad_account_id.in_(account_scope_keys or {"__no_accounts__"})
+        )
+    if start_date:
+        account_daily_filters.append(CreativeAssetUsageAccountDailyStat.stat_date >= start_date)
+    if end_date:
+        account_daily_filters.append(CreativeAssetUsageAccountDailyStat.stat_date <= end_date)
+    account_rows = db.query(
+        CreativeAssetUsageAccountDailyStat.ad_account_id,
+        func.sum(CreativeAssetUsageAccountDailyStat.usage_count),
+        func.sum(CreativeAssetUsageAccountDailyStat.successful_usage_count),
+        func.sum(CreativeAssetUsageAccountDailyStat.failed_usage_count),
+        func.max(CreativeAssetUsageAccountDailyStat.last_used_at),
+    ).filter(*account_daily_filters).group_by(CreativeAssetUsageAccountDailyStat.ad_account_id).all()
+    account_row_keys = {value for value, *_ in account_rows if value}
+    account_map = {}
+    if account_row_keys:
+        for account in db.query(AdAccount).filter(
+            or_(AdAccount.id.in_(account_row_keys), AdAccount.account_id.in_(account_row_keys))
+        ).all():
+            account_map[account.id] = account
+            account_map[account.account_id] = account
+
+    total, success, failed, last_used_at = summary_row
+    by_account = []
+    for account_id, count, account_success, account_failed, account_last_used_at in account_rows:
+        account = account_map.get(account_id)
+        by_account.append({
+            "ad_account_id": account_id,
+            "account_name": account.account_name if account else (account_id or "未关联账户"),
+            "usage_count": int(count or 0),
+            "successful_usage_count": int(account_success or 0),
+            "failed_usage_count": int(account_failed or 0),
+            "last_used_at": account_last_used_at.isoformat() + "Z" if account_last_used_at else None,
+        })
+
+    daily_start = start_date or (datetime.utcnow().date() - timedelta(days=29))
+    daily_end = end_date or datetime.utcnow().date()
+    daily_filters = [
+        CreativeAssetUsageDailyStat.asset_id == asset_id,
+        CreativeAssetUsageDailyStat.stat_date >= daily_start,
+        CreativeAssetUsageDailyStat.stat_date <= daily_end,
+    ]
+    if account_scope_keys is not None:
+        daily_rows = db.query(
+            CreativeAssetUsageAccountDailyStat.stat_date,
+            func.sum(CreativeAssetUsageAccountDailyStat.usage_count),
+            func.sum(CreativeAssetUsageAccountDailyStat.successful_usage_count),
+            func.sum(CreativeAssetUsageAccountDailyStat.failed_usage_count),
+        ).filter(
+            CreativeAssetUsageAccountDailyStat.asset_id == asset_id,
+            CreativeAssetUsageAccountDailyStat.ad_account_id.in_(account_scope_keys or {"__no_accounts__"}),
+            CreativeAssetUsageAccountDailyStat.stat_date >= daily_start,
+            CreativeAssetUsageAccountDailyStat.stat_date <= daily_end,
+        ).group_by(CreativeAssetUsageAccountDailyStat.stat_date).order_by(
+            CreativeAssetUsageAccountDailyStat.stat_date
+        ).all()
+    else:
+        daily_rows = db.query(
+            CreativeAssetUsageDailyStat.stat_date,
+            CreativeAssetUsageDailyStat.usage_count,
+            CreativeAssetUsageDailyStat.successful_usage_count,
+            CreativeAssetUsageDailyStat.failed_usage_count,
+        ).filter(*daily_filters).order_by(CreativeAssetUsageDailyStat.stat_date).all()
+    daily = [{
+        "date": str(day),
+        "usage_count": int(count or 0),
+        "successful_usage_count": int(success or 0),
+        "failed_usage_count": int(failed or 0),
+    } for day, count, success, failed in daily_rows]
+    return {
+        "asset_id": asset_id,
+        "range_start": start_date.isoformat() if start_date else None,
+        "range_end": end_date.isoformat() if end_date else None,
+        "usage_count": int(total or 0),
+        "successful_usage_count": int(success or 0),
+        "failed_usage_count": int(failed or 0),
+        "last_used_at": last_used_at.isoformat() + "Z" if last_used_at else None,
+        "by_account": by_account,
+        "daily": daily,
+    }
+
+
+@router.get("/stats/overview")
+def get_media_stats_overview(
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    asset_type: Optional[str] = Query(None),
+    account_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_active_user),
+):
+    """素材库级使用统计，按当前用户可见范围汇总。"""
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="统计开始日期不能晚于结束日期")
+    asset_query = _asset_query(db, user)
+    if asset_type:
+        asset_query = asset_query.filter(CreativeAsset.asset_type == asset_type)
+    account = _assert_account_access(db, account_id, user) if account_id else None
+    if account_id:
+        asset_query = asset_query.filter(CreativeAsset.account_id == account_id)
+    assets = asset_query.all()
+    asset_ids = [asset.id for asset in assets]
+    if not asset_ids:
+        return {
+            "asset_count": 0,
+            "ready_asset_count": 0,
+            "binding_count": 0,
+            "ready_binding_count": 0,
+            "usage_count": 0,
+            "successful_usage_count": 0,
+            "failed_usage_count": 0,
+            "success_rate": 0,
+            "top_assets": [],
+        }
+
+    account_ids = _accessible_account_ids(db, user)
+    account_scope_keys = _accessible_account_keys(db, user)
+    binding_filters = [MetaAssetBinding.asset_id.in_(asset_ids)]
+    if account_ids is not None:
+        binding_filters.append(
+            MetaAssetBinding.ad_account_id.in_(account_ids or {"__no_accounts__"})
+        )
+    if account_id:
+        binding_filters.append(MetaAssetBinding.ad_account_id == account_id)
+    binding_count, ready_binding_count = db.query(
+        func.count(MetaAssetBinding.id),
+        func.sum(case((MetaAssetBinding.status == "READY", 1), else_=0)),
+    ).filter(*binding_filters).one()
+    if account:
+        event_filters = [
+            CreativeAssetUsageAccountDailyStat.asset_id.in_(asset_ids),
+            CreativeAssetUsageAccountDailyStat.ad_account_id.in_({account.id, account.account_id}),
+        ]
+        if start_date:
+            event_filters.append(CreativeAssetUsageAccountDailyStat.stat_date >= start_date)
+        if end_date:
+            event_filters.append(CreativeAssetUsageAccountDailyStat.stat_date <= end_date)
+        total, success, failed = db.query(
+            func.sum(CreativeAssetUsageAccountDailyStat.usage_count),
+            func.sum(CreativeAssetUsageAccountDailyStat.successful_usage_count),
+            func.sum(CreativeAssetUsageAccountDailyStat.failed_usage_count),
+        ).filter(*event_filters).one()
+        top_rows = db.query(
+            CreativeAssetUsageAccountDailyStat.asset_id,
+            func.sum(CreativeAssetUsageAccountDailyStat.usage_count),
+            func.sum(CreativeAssetUsageAccountDailyStat.successful_usage_count),
+        ).filter(*event_filters).group_by(
+            CreativeAssetUsageAccountDailyStat.asset_id,
+        ).order_by(func.sum(CreativeAssetUsageAccountDailyStat.usage_count).desc()).limit(10).all()
+    elif account_scope_keys is not None:
+        account_daily_filters = [
+            CreativeAssetUsageAccountDailyStat.asset_id.in_(asset_ids),
+            CreativeAssetUsageAccountDailyStat.ad_account_id.in_(account_scope_keys or {"__no_accounts__"}),
+        ]
+        if start_date:
+            account_daily_filters.append(CreativeAssetUsageAccountDailyStat.stat_date >= start_date)
+        if end_date:
+            account_daily_filters.append(CreativeAssetUsageAccountDailyStat.stat_date <= end_date)
+        total, success, failed = db.query(
+            func.sum(CreativeAssetUsageAccountDailyStat.usage_count),
+            func.sum(CreativeAssetUsageAccountDailyStat.successful_usage_count),
+            func.sum(CreativeAssetUsageAccountDailyStat.failed_usage_count),
+        ).filter(*account_daily_filters).one()
+        top_rows = db.query(
+            CreativeAssetUsageAccountDailyStat.asset_id,
+            func.sum(CreativeAssetUsageAccountDailyStat.usage_count),
+            func.sum(CreativeAssetUsageAccountDailyStat.successful_usage_count),
+        ).filter(*account_daily_filters).group_by(
+            CreativeAssetUsageAccountDailyStat.asset_id,
+        ).order_by(func.sum(CreativeAssetUsageAccountDailyStat.usage_count).desc()).limit(10).all()
+    else:
+        daily_filters = [CreativeAssetUsageDailyStat.asset_id.in_(asset_ids)]
+        if start_date:
+            daily_filters.append(CreativeAssetUsageDailyStat.stat_date >= start_date)
+        if end_date:
+            daily_filters.append(CreativeAssetUsageDailyStat.stat_date <= end_date)
+        total, success, failed = db.query(
+            func.sum(CreativeAssetUsageDailyStat.usage_count),
+            func.sum(CreativeAssetUsageDailyStat.successful_usage_count),
+            func.sum(CreativeAssetUsageDailyStat.failed_usage_count),
+        ).filter(*daily_filters).one()
+        top_rows = db.query(
+            CreativeAssetUsageDailyStat.asset_id,
+            func.sum(CreativeAssetUsageDailyStat.usage_count),
+            func.sum(CreativeAssetUsageDailyStat.successful_usage_count),
+        ).filter(*daily_filters).group_by(
+            CreativeAssetUsageDailyStat.asset_id,
+        ).order_by(func.sum(CreativeAssetUsageDailyStat.usage_count).desc()).limit(10).all()
+    assets_by_id = {asset.id: asset for asset in assets}
+    top_assets = []
+    for top_asset_id, asset_usage_count, asset_success_count in top_rows:
+        asset = assets_by_id.get(top_asset_id)
+        if not asset:
+            continue
+        top_assets.append({
+            "asset_id": asset.id,
+            "name": asset.name,
+            "asset_type": asset.asset_type,
+            "usage_count": int(asset_usage_count or 0),
+            "successful_usage_count": int(asset_success_count or 0),
+        })
+    usage_count = int(total or 0)
+    successful_usage_count = int(success or 0)
+    return {
+        "range_start": start_date.isoformat() if start_date else None,
+        "range_end": end_date.isoformat() if end_date else None,
+        "asset_count": len(assets),
+        "ready_asset_count": sum(1 for asset in assets if asset.processing_status == "READY" or asset.status == "READY"),
+        "binding_count": int(binding_count or 0),
+        "ready_binding_count": int(ready_binding_count or 0),
+        "usage_count": usage_count,
+        "successful_usage_count": successful_usage_count,
+        "failed_usage_count": int(failed or 0),
+        "success_rate": round(successful_usage_count * 100 / usage_count, 2) if usage_count else 0,
+        "top_assets": top_assets,
+    }
 
 
 @router.get("/{asset_id}", response_model=MediaItem)
 def get_media(asset_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
-    return _get_asset_or_404(db, asset_id, user).to_dict()
+    return _asset_response_list(db, [_get_asset_or_404(db, asset_id, user)], user)[0]
 
 
 @router.delete("/{asset_id}")
@@ -723,19 +849,13 @@ def delete_media(
 ):
     """软删除素材，并异步清理 OSS 原始文件和衍生文件。"""
     asset = _get_asset_or_404(db, asset_id, user)
+    _assert_asset_edit_access(asset, user)
     asset.status = "ARCHIVED"
-    asset.storage_status = "DELETING" if asset.object_key else "DELETED"
+    asset.storage_status = "DELETING"
     asset.deleted_at = datetime.utcnow()
     db.commit()
-    task_id = None
-    if asset.object_key:
-        task_id = delete_oss_asset_task.delay(asset.id).id
-    elif asset.file_path and os.path.exists(asset.file_path):
-        try:
-            os.remove(asset.file_path)
-        except OSError:
-            pass
-    return {"success": True, "status": "DELETING" if task_id else "DELETED", "task_id": task_id}
+    task_id = delete_oss_asset_task.delay(asset.id).id
+    return {"success": True, "status": "DELETING", "task_id": task_id}
 
 
 @router.post("/{asset_id}/refresh-metadata")
@@ -744,27 +864,14 @@ def refresh_metadata(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_active_user),
 ):
-    """重新解析历史素材元数据，不触发 Meta 上传。"""
+    """重新解析 OSS 素材元数据，不触发 Meta 上传。"""
     asset = _get_asset_or_404(db, asset_id, user)
-    if settings.MEDIA_STORAGE_PROVIDER == "oss":
-        if not asset.object_key or asset.storage_status != "READY":
-            raise HTTPException(status_code=409, detail="素材尚未完成 OSS 处理")
-        asset.processing_status = "PROCESSING"
-        asset.status = "PROCESSING"
-        asset.error = None
-        db.commit()
-        task = process_oss_asset_task.delay(asset.id, True)
-        return {"asset": asset.to_dict(), "status": "PROCESSING", "task_id": task.id}
-    if not asset.file_path or not os.path.isfile(asset.file_path):
-        raise HTTPException(status_code=400, detail="素材文件不存在，无法解析")
-    if asset.asset_type == "image":
-        width, height = _image_dimensions(asset.file_path, asset.mime_type or "")
-        duration = None
-    else:
-        width, height, duration = _video_metadata(asset.file_path)
-    if not width or not height:
-        raise HTTPException(status_code=422, detail="无法解析素材尺寸，请检查容器媒体工具或文件格式")
-    asset.width, asset.height, asset.duration = width, height, duration
+    _assert_asset_edit_access(asset, user)
+    if not asset.object_key or asset.storage_status != "READY":
+        raise HTTPException(status_code=409, detail="素材尚未完成 OSS 处理")
+    asset.processing_status = "PROCESSING"
+    asset.status = "PROCESSING"
+    asset.error = None
     db.commit()
-    db.refresh(asset)
-    return asset.to_dict()
+    task = process_oss_asset_task.delay(asset.id, True)
+    return {"asset": asset.to_dict(), "status": "PROCESSING", "task_id": task.id}

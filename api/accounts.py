@@ -39,6 +39,7 @@ from models import (
 from services.credential_service import CredentialError, CredentialService
 from services.meta import AdAccountService, MetaAdsService, MetaApiError, MetaClient
 from services.fb_connector_client import FBConnectorClient, FBConnectorError
+from services.account_access import accessible_account_ids
 from config.settings import settings
 from tasks.meta_sync_tasks import sync_ad_account_task
 
@@ -131,14 +132,11 @@ def _verify_bm_ownership(
     验证不通过直接抛 400；调用 Meta 失败同样视为不通过（安全默认值）。
     """
     if settings.FB_ACCESS_MODE == "connector":
-        credential = db.query(Credential).filter(
-            Credential.meta_account_id == meta.id,
-            Credential.status == "ACTIVE",
-        ).order_by(Credential.updated_at.desc()).first()
-        if not credential:
-            raise HTTPException(status_code=400, detail="没有可用的 Meta 凭据")
+        credential_id = meta.connector_credential_id
+        if not credential_id:
+            raise HTTPException(status_code=400, detail="BM 未绑定海外 Connector 凭据")
         try:
-            result = FBConnectorClient().verify_account(meta.business_id, account_id, credential.id)
+            result = FBConnectorClient().verify_account(meta.business_id, account_id, credential_id)
         except FBConnectorError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         if not result.get("ok"):
@@ -197,7 +195,9 @@ def _apply_meta_transfer(
         BusinessAssetAccess.asset_id == account.id,
     ).first()
     if access:
+        account.business_id = target_business_id
         return
+    account.business_id = target_business_id
     db.add(BusinessAssetAccess(
         id=uuid.uuid4().hex,
         tenant_id=account.tenant_id,
@@ -217,7 +217,13 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
     避免出现"同一资源两套字段契约"的问题（前端类型与实际响应对不上）。
     """
     credential = None
-    if db:
+    connector_credential_id = None
+    if settings.FB_ACCESS_MODE == "connector":
+        connector_credential_id = (
+            (a.business.connector_credential_id if a.business else None)
+            or a.connector_credential_id
+        )
+    elif db:
         if a.business_id and a.business:
             credential = db.query(Credential).filter(Credential.id == a.business.default_credential_id).first()
         elif a.credential_id:
@@ -254,14 +260,18 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
                 "access_level": rel.access_level,
                 "access_source": rel.access_source,
                 "status": rel.status,
-                "credential_id": rel.credential_id,
+                "credential_id": (
+                    (rel.business.connector_credential_id if rel.business else None)
+                    if settings.FB_ACCESS_MODE == "connector"
+                    else rel.credential_id
+                ),
             }
             for rel in (a.access_relations if db else [])
         ],
         "owner_type": a.owner_type,
         "asset_type": a.asset_type or "OWNED",
-        "credential_id": a.credential_id,
-        "credential_status": credential.status if credential else None,
+        "credential_id": connector_credential_id or a.credential_id,
+        "credential_status": "ACTIVE" if connector_credential_id else (credential.status if credential else None),
         "credential_expires_at": credential.expires_at.isoformat() if credential and credential.expires_at else None,
         "credential_last_verified_at": credential.last_verified_at.isoformat() if credential and credential.last_verified_at else None,
         "authorized_by_user_id": credential.granted_by_user_id if credential else None,
@@ -325,8 +335,9 @@ def list_accounts(
     # 用 is_admin() 而非硬编码 role：多租户改造后租户管理员的 role 是
     # `tenant_admin`，直接比对 "admin" 会让管理员被当成普通用户、看不到账户。
     if not current_user.is_admin():
-        sub = db.query(UserAccount.account_id).filter(UserAccount.user_id == current_user.id)
-        q = q.filter(AdAccount.id.in_(sub))
+        q = q.filter(
+            AdAccount.id.in_(accessible_account_ids(db, current_user) or {"__no_accounts__"})
+        )
     if search:
         like = f"%{search}%"
         q = q.filter(or_(
@@ -398,8 +409,9 @@ def _submit_sync(db: Session, account: AdAccount, countdown: int = 0) -> str:
         raise HTTPException(
             status_code=400, detail=f"账户 {account.id} 未关联有效的 BM，无法同步"
         )
-    # 提前校验凭据可用性，避免投递一个注定失败的任务
-    _resolve_bm_token(db, meta)
+    # 当前同步任务只通过海外 Connector 执行；不要再从国内 Credential 表取 Token。
+    if not meta.connector_credential_id:
+        raise HTTPException(status_code=400, detail="BM 未绑定海外 Connector 凭据")
     return sync_ad_account_task.apply_async(args=[account.id], countdown=countdown).id
 
 
@@ -523,11 +535,7 @@ def get_account(
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
     if not current_user.is_admin():
-        linked = db.query(UserAccount).filter(
-            UserAccount.user_id == current_user.id,
-            UserAccount.account_id == a.id,
-        ).first()
-        if not linked:
+        if a.id not in (accessible_account_ids(db, current_user) or set()):
             raise HTTPException(status_code=403, detail="无权访问该账户")
     return account_to_dict(a, db)
 
@@ -560,27 +568,9 @@ def create_account(
         .first()
     )
     if dup:
-        access = db.query(BusinessAssetAccess).filter(
-            BusinessAssetAccess.business_id == meta.id,
-            BusinessAssetAccess.asset_type == "AD_ACCOUNT",
-            BusinessAssetAccess.asset_id == dup.id,
-        ).first()
-        if access:
-            raise HTTPException(status_code=400, detail=f"该 BM 已接入账户 {data.account_id}")
-        access = BusinessAssetAccess(
-            id=uuid.uuid4().hex,
-            tenant_id=meta.tenant_id,
-            business_id=meta.id,
-            asset_type="AD_ACCOUNT",
-            asset_id=dup.id,
-            access_level="MANAGE",
-            access_source="PARTNER",
-            status="ACTIVE",
-        )
-        db.add(access)
-        db.commit()
-        db.refresh(dup)
-        return account_to_dict(dup, db)
+        if dup.business_id == meta.id:
+            raise HTTPException(status_code=400, detail=f"账户已存在：该 BM 已接入账户 {data.account_id}")
+        # 同一 Meta 账户允许分别纳管到多个 BM；每个 BM 保留独立账户实体。
 
     account_name = data.account_name
     if not data.skip_verification:
@@ -610,6 +600,17 @@ def create_account(
         capabilities={},
     )
     db.add(a)
+    db.flush()
+    db.add(BusinessAssetAccess(
+        id=uuid.uuid4().hex,
+        tenant_id=meta.tenant_id,
+        business_id=meta.id,
+        asset_type="AD_ACCOUNT",
+        asset_id=a.id,
+        access_level="MANAGE",
+        access_source="DIRECT",
+        status="ACTIVE",
+    ))
     db.commit()
     db.refresh(a)
     return account_to_dict(a)
@@ -962,11 +963,7 @@ def _get_account_for_user(db: Session, account_pk: str, current_user: User) -> A
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
     if not current_user.is_admin():
-        linked = db.query(UserAccount).filter(
-            UserAccount.user_id == current_user.id,
-            UserAccount.account_id == a.id,
-        ).first()
-        if not linked:
+        if a.id not in (accessible_account_ids(db, current_user) or set()):
             raise HTTPException(status_code=403, detail="无权访问该账户")
     return a
 

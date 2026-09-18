@@ -29,6 +29,12 @@ from tasks.meta_sync_tasks import sync_meta_authorization_task, sync_ad_accounts
 
 router = APIRouter(prefix="/api/v1/meta-auth", tags=["Meta OAuth 授权"])
 
+
+@router.get("/mode")
+def auth_mode(_: User = Depends(require_admin)):
+    """返回前端授权模式，避免在 Connector 模式展示手工 Token 入口。"""
+    return {"access_mode": settings.FB_ACCESS_MODE}
+
 class OAuthCompleteRequest(BaseModel):
     credential_id: str = Field(..., description="本次 OAuth 产生的临时凭据 ID")
     business_id: str = Field(..., description="用户选择的 Meta Business ID")
@@ -188,6 +194,8 @@ def authorize_meta(request: Request, meta_account_id: str | None = Query(None, d
 
 @router.get("/callback", include_in_schema=True)
 def meta_oauth_callback(state: str = Query(...), code: str | None = Query(None), error: str | None = Query(None), error_description: str | None = Query(None), db: Session = Depends(get_db)):
+    if settings.FB_ACCESS_MODE == "connector":
+        return _frontend_redirect(meta_auth="error", message="OAuth 回调必须由海外 Connector 处理")
     if error or not code: return _frontend_redirect(meta_auth="error", message=error_description or error or "用户取消授权")
     try:
         payload = jwt.decode(state, settings.SECRET_KEY, algorithms=["HS256"])

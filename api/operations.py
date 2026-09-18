@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from core.auth import require_admin
 from core.database import get_db
+from config.settings import settings
 from models import AuditLog, Credential, MetaSyncLog, User
 from core.enums import CredentialStatus
 from datetime import datetime
@@ -32,6 +33,8 @@ def credential_health(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
+    if settings.FB_ACCESS_MODE == "connector":
+        return []
     rows = db.query(Credential).order_by(Credential.updated_at.desc()).all()
     now = datetime.utcnow()
     result = []

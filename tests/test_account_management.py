@@ -21,6 +21,7 @@ from sqlalchemy.pool import StaticPool
 import main
 from core.database import Base, get_db
 from core.enums import CredentialStatus
+from config.settings import settings
 from models import AdAccount, AuditLog, Credential, MetaAccount, SystemStatus, User
 from services.credential_service import CredentialService
 
@@ -100,7 +101,15 @@ def _make_meta(client, token: str = "EAAA-fake-token-0123456789") -> dict:
         },
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()
+    payload = resp.json()
+    db = TestingSessionLocal()
+    try:
+        meta = db.query(MetaAccount).filter(MetaAccount.id == payload["id"]).first()
+        meta.connector_credential_id = "connector-test-credential"
+        db.commit()
+    finally:
+        db.close()
+    return payload
 
 
 # ==========================================================================
@@ -110,7 +119,22 @@ def test_requires_authentication(anon_client):
     """未带 Token 访问三层管理接口一律被中间件拦截"""
     assert anon_client.get("/api/v1/meta-accounts").status_code == 401
     assert anon_client.get("/api/v1/credentials").status_code == 401
-    assert anon_client.get("/api/v1/accounts").status_code == 401
+
+
+def test_connector_mode_closes_manual_token_entrypoints(client, monkeypatch):
+    """Connector 模式只保留 OAuth/opaque credential 链路。"""
+    monkeypatch.setattr(settings, "FB_ACCESS_MODE", "connector", raising=False)
+
+    assert client.get("/api/v1/meta-auth/mode").json() == {"access_mode": "connector"}
+    assert client.get("/api/v1/credentials").json() == []
+    assert client.post(
+        "/api/v1/credentials",
+        json={"meta_account_id": "meta-1", "access_token": "EAAA-test-token-1234567890"},
+    ).status_code == 410
+    assert client.post(
+        "/api/v1/meta-accounts",
+        json={"name": "手工 BM", "business_id": "bm-manual", "access_token": "EAAA-test-token-1234567890"},
+    ).status_code == 410
 
 
 # ==========================================================================
@@ -268,7 +292,16 @@ def _make_account(client, business_id: str) -> dict:
         },
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()
+    payload = resp.json()
+    db = TestingSessionLocal()
+    try:
+        account = db.query(AdAccount).filter(AdAccount.id == payload["id"]).first()
+        account.account_status = "ACTIVE"
+        account.payment_status = "AVAILABLE"
+        db.commit()
+    finally:
+        db.close()
+    return payload
 
 
 def test_account_requires_business(client):
@@ -498,14 +531,20 @@ def test_disabled_business_excluded_from_pool(client):
     assert body["total"] == 0
 
 
-def test_disabled_credential_excluded_from_pool(client):
-    """凭据被停用 → 该 BM 下的账户不再进入可投放账户池"""
+def test_unbound_connector_credential_excluded_from_pool(client):
+    """Connector 凭据解绑 → 该 BM 下的账户不再进入可投放账户池"""
     meta = _make_meta(client)
     _make_account(client, business_id=meta["id"])
     assert client.get("/api/v1/accounts/available-for-deployment").json()["total"] == 1
 
-    cred_id = meta["credential_id"]
-    assert client.post(f"/api/v1/credentials/{cred_id}/disable").status_code == 200
+    db = TestingSessionLocal()
+    try:
+        db.query(MetaAccount).filter(MetaAccount.id == meta["id"]).update(
+            {MetaAccount.connector_credential_id: None}
+        )
+        db.commit()
+    finally:
+        db.close()
 
     body = client.get("/api/v1/accounts/available-for-deployment").json()
     assert body["total"] == 0

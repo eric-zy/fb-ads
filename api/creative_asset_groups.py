@@ -146,10 +146,14 @@ def move_assets(req: MoveAssetsRequest, db: Session = Depends(get_db), user: Use
             )).first()
             if not member:
                 raise HTTPException(status_code=403, detail="无权向该分组移动素材")
-    from api.media import _asset_query
+    from api.media import _assert_asset_edit_access, _asset_query
     assets = _asset_query(db, user).filter(CreativeAsset.id.in_(req.asset_ids)).all()
     if len(assets) != len(set(req.asset_ids)):
         raise HTTPException(status_code=403, detail="包含无权操作的素材")
+    # 素材在租户内可读/可用，但分组归类仍属于素材元数据修改，不能因为
+    # 共享可见性而让其他用户改动上传人的素材。
+    for asset in assets:
+        _assert_asset_edit_access(asset, user)
     for asset in assets:
         asset.group_id = req.group_id
     db.commit()

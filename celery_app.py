@@ -92,6 +92,11 @@ celery_app.conf.beat_schedule = {
         "task": "account.release_expired_assignments",
         "schedule": crontab(minute="*/10"),
     },
+    "media-usage-daily-stats": {
+        "task": "media.rebuild_usage_daily_stats",
+        "schedule": crontab(minute="*/15"),
+        "args": (3,),
+    },
 }
 
 # 自动发现任务
@@ -125,6 +130,7 @@ for _task_module in (
     "tasks.credential_tasks",  # 凭据到期巡检
     "tasks.media_tasks",  # 异步 Meta 素材上传与视频处理
     "tasks.assignment_tasks",  # 广告账户分配关系维护
+    "tasks.media_usage_tasks",  # 素材使用按日汇总
 ):
     try:
         __import__(_task_module)

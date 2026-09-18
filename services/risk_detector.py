@@ -22,7 +22,7 @@ class RiskDetector:
         金额单位统一为**最小货币单位**（与 AdAccount.daily_spend_limit 一致）。
 
         Args:
-            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+            account_id: 广告账户内部主键
 
         Returns:
             (今日花费, 日限额) 或 None
@@ -133,7 +133,7 @@ class RiskDetector:
         """冻结账户
 
         Args:
-            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+            account_id: 广告账户内部主键
         """
         try:
             account = resolve_ad_account(self.db, account_id)
@@ -158,7 +158,7 @@ class RiskDetector:
         """执行风险缓解行动
 
         Args:
-            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+            account_id: 广告账户内部主键
 
         Returns:
             行动统计：

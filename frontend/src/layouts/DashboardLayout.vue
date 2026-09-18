@@ -21,6 +21,7 @@
           <el-sub-menu index="analytics">
             <template #title><el-icon><PieChart /></el-icon><span>数据分析</span></template>
             <el-menu-item index="reports"><el-icon><PieChart /></el-icon><span>投放概览</span></el-menu-item>
+            <el-menu-item index="account-overview"><el-icon><DataAnalysis /></el-icon><span>账户消耗总览</span></el-menu-item>
           </el-sub-menu>
           <el-menu-item index="risk-control"><el-icon><Warning /></el-icon><span>风控中心</span></el-menu-item>
           <el-divider />
@@ -85,7 +86,7 @@ import { useAccountStore } from '@/stores/accountStore'
 import { sinanApi } from '@/api/sinan'
 import {
   DocumentCopy, Promotion, Collection, Upload, List, Picture, Timer,
-  PieChart, Warning, OfficeBuilding, Setting, Switch, ArrowDown, Bell, Connection,
+  PieChart, DataAnalysis, Warning, OfficeBuilding, Setting, Switch, ArrowDown, Bell, Connection,
 } from '@element-plus/icons-vue'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { useLocale } from '@/stores/localeStore'

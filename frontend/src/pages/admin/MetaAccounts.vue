@@ -9,7 +9,7 @@
       </div>
       <div class="head-actions">
         <el-button type="primary" @click="authorizeMeta(defaultRow)">连接 Meta</el-button>
-        <el-button :icon="Plus" @click="openCreate">新增 BM</el-button>
+        <el-button v-if="!connectorMode" :icon="Plus" @click="openCreate">新增 BM</el-button>
       </div>
     </div>
 
@@ -92,7 +92,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑 BM' : '新增 BM'" width="540px" destroy-on-close>
+    <el-dialog v-if="!connectorMode" v-model="dialogVisible" :title="isEdit ? '编辑 BM' : '新增 BM'" width="540px" destroy-on-close>
       <el-form :model="form" label-width="120px">
         <el-form-item label="BM 名称" required><el-input v-model="form.name" placeholder="如：公司主 BM" /></el-form-item>
         <el-form-item label="Business ID" required><el-input v-model="form.business_id" placeholder="如：1234567890" :disabled="isEdit" /></el-form-item>
@@ -108,7 +108,7 @@
       <template #footer><el-button @click="dialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="save">保存</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="rotateVisible" :title="`更换 Token - ${rotateTarget?.name || ''}`" width="540px" destroy-on-close>
+    <el-dialog v-if="!connectorMode" v-model="rotateVisible" :title="`更换 Token - ${rotateTarget?.name || ''}`" width="540px" destroy-on-close>
       <el-alert type="info" :closable="false" show-icon title="旧凭据会保留为「已停用」以便回溯，新凭据立即生效" class="mb12" />
       <el-form :model="rotateForm" label-width="120px">
         <el-form-item label="新 Token" required><el-input v-model="rotateForm.access_token" type="textarea" :rows="3" show-password /></el-form-item>
@@ -154,6 +154,7 @@ const logsLoading = ref(false)
 const logsTarget = ref<MetaAccountItem | null>(null)
 const syncLogs = ref<SyncLogItem[]>([])
 const defaultRow = ref<MetaAccountItem | null>(null)
+const connectorMode = ref(false)
 
 function emptyForm() { return { name: '', business_id: '', access_token: '', app_id: '', timezone: '', currency: '', description: '', is_default: false } }
 function formatTime(v: string | null) { if (!v) return '-'; return v.replace('T', ' ').slice(0, 19) }
@@ -166,10 +167,19 @@ function statusType(row: MetaAccountItem): 'success' | 'danger' | 'info' { if (r
 function logStatusType(status: string): 'success' | 'danger' | 'warning' | 'info' { if (status === 'SUCCESS') return 'success'; if (status === 'FAILED') return 'danger'; if (status === 'PARTIAL_SUCCESS') return 'warning'; return 'info' }
 
 async function authorizeMeta(row: MetaAccountItem | null) {
-  if (!row) { ElMessage.warning('请先新增 BM'); return }
-  try { const { data } = await credentialApi.oauthAuthorize(row.id); window.location.assign(data.authorization_url) } catch {}
+  try {
+    const { data } = row ? await credentialApi.oauthAuthorize(row.id) : await credentialApi.oauthAuthorizeFirst()
+    if (!data?.authorization_url) throw new Error('后端未返回 Meta 授权地址')
+    window.location.assign(data.authorization_url)
+  } catch {}
 }
-async function load() { loading.value = true; try { const { data } = await metaAccountApi.list(); list.value = data; defaultRow.value = list.value.find((item) => item.is_default) || list.value[0] || null } catch {} finally { loading.value = false } }
+async function loadMode() {
+  try {
+    const { data } = await credentialApi.accessMode()
+    connectorMode.value = data?.access_mode === 'connector'
+  } catch { connectorMode.value = false }
+}
+async function load() { loading.value = true; try { await loadMode(); const { data } = await metaAccountApi.list(); list.value = data; defaultRow.value = list.value.find((item) => item.is_default) || list.value[0] || null } catch {} finally { loading.value = false } }
 function openCreate() { isEdit.value = false; editingId.value = null; form.value = emptyForm(); dialogVisible.value = true }
 function openEdit(row: MetaAccountItem) { isEdit.value = true; editingId.value = row.id; form.value = { name: row.name, business_id: row.business_id, access_token: '', app_id: row.app_id || '', timezone: row.timezone || '', currency: row.currency || '', description: row.description || '', is_default: row.is_default }; dialogVisible.value = true }
 async function save() { if (!form.value.name || !form.value.business_id) { ElMessage.warning('请填写 BM 名称和 Business ID'); return }; if (!isEdit.value && !form.value.access_token) { ElMessage.warning('新增 BM 时必须提供 Access Token'); return }; saving.value = true; try { if (isEdit.value && editingId.value) { const payload: Record<string, unknown> = { ...form.value }; if (!payload.access_token) delete payload.access_token; await metaAccountApi.update(editingId.value, payload); ElMessage.success('已更新') } else { await metaAccountApi.create({ ...form.value }); ElMessage.success('已新增 BM') }; dialogVisible.value = false; await load() } catch {} finally { saving.value = false } }

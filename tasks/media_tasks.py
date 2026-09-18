@@ -1,5 +1,6 @@
 """素材上传及视频处理任务。所有 Meta 写操作均在 Worker 中执行。"""
 import os
+import hashlib
 import shutil
 import tempfile
 import requests
@@ -9,13 +10,10 @@ from celery.exceptions import Retry
 from core.database import SessionLocal
 from core.tenant import resolve_tenant_of, tenant_task
 from models import CreativeAsset, MetaAssetBinding, AdAccount
-from config.settings import settings
 from services.storage import AliyunOSSStorage
 from services.media_processing import image_dimensions, video_metadata, generate_video_cover, generate_thumbnail
-from services.credential_service import CredentialService
 from services.credential_resolver import CredentialResolver
 from services.fb_connector_client import FBConnectorClient, FBConnectorError
-from services.meta import MetaApiError
 
 
 @shared_task(bind=True, name="media.delete_oss_asset", max_retries=5, default_retry_delay=60)
@@ -26,13 +24,10 @@ def delete_oss_asset_task(self, asset_id: str):
         asset = db.query(CreativeAsset).filter(CreativeAsset.id == asset_id).first()
         if not asset:
             return {"status": "deleted", "asset_id": asset_id}
-        if settings.MEDIA_STORAGE_PROVIDER == "oss":
-            storage = AliyunOSSStorage()
-            for key in {asset.object_key, asset.thumbnail_key, asset.cover_key}:
-                if key:
-                    storage.delete(key)
-        elif asset.file_path and os.path.isfile(asset.file_path):
-            os.remove(asset.file_path)
+        storage = AliyunOSSStorage()
+        for key in {asset.object_key, asset.thumbnail_key, asset.cover_key}:
+            if key:
+                storage.delete(key)
         asset.storage_status = "DELETED"
         asset.deleted_at = datetime.utcnow()
         db.commit()
@@ -60,18 +55,24 @@ def process_oss_asset_task(self, asset_id: str, force: bool = False):
         asset.processing_status = "PROCESSING"
         asset.status = "PROCESSING"
         db.commit()
-        if settings.MEDIA_STORAGE_PROVIDER != "oss":
-            raise RuntimeError("OSS 素材处理任务要求 MEDIA_STORAGE_PROVIDER=oss")
         source = os.path.join(temp_dir, asset.stored_name or "source")
         url = AliyunOSSStorage().download_url(asset.object_key)
+        md5_digest = hashlib.md5()
+        sha256_digest = hashlib.sha256()
         with requests.get(url, stream=True, timeout=300) as response:
             response.raise_for_status()
             with open(source, "wb") as output:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if chunk:
+                        md5_digest.update(chunk)
+                        sha256_digest.update(chunk)
                         output.write(chunk)
         if asset.size is not None and os.path.getsize(source) != asset.size:
             raise RuntimeError("OSS 对象大小与素材声明不一致")
+        if asset.md5 and md5_digest.hexdigest().lower() != asset.md5.lower():
+            raise RuntimeError("OSS 对象 MD5 与素材记录不一致")
+        if asset.sha256 and sha256_digest.hexdigest().lower() != asset.sha256.lower():
+            raise RuntimeError("OSS 对象 SHA-256 与素材记录不一致")
         if asset.asset_type == "image":
             asset.width, asset.height = image_dimensions(source, asset.mime_type or "")
         else:
@@ -117,7 +118,6 @@ def process_oss_asset_task(self, asset_id: str, force: bool = False):
 @tenant_task(lambda self, binding_id: resolve_tenant_of(MetaAssetBinding, binding_id))
 def upload_asset_task(self, binding_id: str):
     db = SessionLocal()
-    temp_dir = tempfile.mkdtemp(prefix="meta-upload-")
     try:
         binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
         asset = db.query(CreativeAsset).filter(CreativeAsset.id == binding.asset_id).first() if binding else None
@@ -126,9 +126,7 @@ def upload_asset_task(self, binding_id: str):
             raise RuntimeError("素材映射或广告账户不存在")
         if binding.status == "READY" and binding.meta_asset_id:
             return {"status": "success", "binding_id": binding_id, "meta_asset_id": binding.meta_asset_id}
-        if settings.MEDIA_STORAGE_PROVIDER == "oss" and (
-            asset.storage_status != "READY" or asset.processing_status != "READY" or not asset.object_key
-        ):
+        if asset.storage_status != "READY" or asset.processing_status != "READY" or not asset.object_key:
             binding.status = "PENDING"
             binding.error_code = "ASSET_NOT_READY"
             binding.error_message = "OSS 素材尚未完成处理，任务将稍后重试"
@@ -139,61 +137,27 @@ def upload_asset_task(self, binding_id: str):
         binding.error_message = None
         db.commit()
         ref = CredentialResolver(db).for_account(account.id)
-        if ref.mode == "connector":
-            if settings.MEDIA_STORAGE_PROVIDER != "oss" or not asset.object_key:
-                raise RuntimeError("Connector 模式要求素材已存入 OSS")
-            source_url = AliyunOSSStorage().download_url(asset.object_key)
-            result = FBConnectorClient().upload_media(
-                asset.id,
-                ref.credential_id,
-                account.account_id,
-                asset.asset_type,
-                source_url,
-                idempotency_key=binding.id,
-            )
-            binding.connector_task_id = result.get("task_id")
-            binding.status = "PROCESSING"
-            binding.processing_status = "UPLOADING"
-            binding.uploaded_at = datetime.utcnow()
-            asset.status = "PROCESSING"
-            db.commit()
-            if binding.connector_task_id:
-                poll_connector_media_task.apply_async(args=[binding_id], countdown=15)
-            return {"status": "queued", "binding_id": binding_id, "connector_task_id": binding.connector_task_id}
-        source_path = asset.file_path
-        if settings.MEDIA_STORAGE_PROVIDER == "oss":
-            source_path = os.path.join(temp_dir, asset.stored_name or "source")
-            url = AliyunOSSStorage().download_url(asset.object_key)
-            with requests.get(url, stream=True, timeout=300) as response:
-                response.raise_for_status()
-                with open(source_path, "wb") as output:
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            output.write(chunk)
-            if asset.size is not None and os.path.getsize(source_path) != asset.size:
-                raise RuntimeError("OSS 对象大小与素材记录不一致")
-        if not source_path or not os.path.isfile(source_path):
-            binding.status = "FAILED"
-            binding.error_code = "ASSET_FILE_MISSING"
-            binding.error_message = f"素材文件不存在: {source_path or '<empty>'}"
-            asset.status = "FAILED"
-            asset.error = binding.error_message
-            db.commit()
-            return {"status": "failed", "error_code": binding.error_code, "error": binding.error_message}
-        service = CredentialService(db).build_service(account.id)
-        result = (service.upload_video(account.account_id, source_path)
-                  if asset.asset_type == "video" else service.upload_image(account.account_id, source_path))
-        binding.meta_asset_id = result.get("video_id") if asset.asset_type == "video" else result.get("hash")
-        if not binding.meta_asset_id:
-            raise RuntimeError("Meta 未返回素材 ID")
+        if ref.mode != "connector":
+            raise RuntimeError("当前素材上传只支持海外 Connector")
+        source_url = AliyunOSSStorage().download_url(asset.object_key)
+        result = FBConnectorClient().upload_media(
+            asset.id,
+            ref.credential_id,
+            account.account_id,
+            asset.asset_type,
+            source_url,
+            idempotency_key=binding.id,
+        )
+        binding.connector_task_id = result.get("task_id")
+        binding.status = "PROCESSING"
+        binding.processing_status = "UPLOADING"
         binding.uploaded_at = datetime.utcnow()
-        binding.processing_status = "UPLOADING" if asset.asset_type == "video" else "READY"
-        binding.status = "PROCESSING" if asset.asset_type == "video" else "READY"
-        asset.status = "PROCESSING" if asset.asset_type == "video" else "READY"
+        asset.status = "PROCESSING"
         db.commit()
-        if asset.asset_type == "video":
-            poll_video_ready_task.apply_async(args=[binding_id], countdown=15)
-        return {"status": "success", "binding_id": binding_id, "meta_asset_id": binding.meta_asset_id}
+        if not binding.connector_task_id:
+            raise RuntimeError("Connector 未返回素材任务 ID")
+        poll_connector_media_task.apply_async(args=[binding_id], countdown=15)
+        return {"status": "queued", "binding_id": binding_id, "connector_task_id": binding.connector_task_id}
     except Exception as exc:
         db.rollback()
         if isinstance(exc, Retry):
@@ -203,22 +167,10 @@ def upload_asset_task(self, binding_id: str):
             if binding:
                 binding.status = "FAILED"
                 binding.error_message = str(exc)[:1000]
-                binding.error_code = (
-                    f"META_{exc.category.value}" if isinstance(exc, MetaApiError)
-                    else type(exc).__name__
-                )
+                binding.error_code = type(exc).__name__
                 db.commit()
-        # Meta 权限、对象不存在和参数校验错误不会因重试恢复，避免持续消耗队列/API 配额。
-        if isinstance(exc, MetaApiError) and not exc.retryable:
-            return {
-                "status": "failed",
-                "binding_id": binding_id,
-                "error_code": f"META_{exc.category.value}",
-                "error": str(exc),
-            }
         raise self.retry(exc=exc)
     finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
         db.close()
 
 
@@ -267,36 +219,5 @@ def poll_connector_media_task(self, binding_id: str):
     except Exception as exc:
         db.rollback()
         raise self.retry(exc=exc)
-    finally:
-        db.close()
-
-@shared_task(bind=True, name="meta.poll_video_ready", max_retries=20, default_retry_delay=15)
-@tenant_task(lambda self, binding_id: resolve_tenant_of(MetaAssetBinding, binding_id))
-def poll_video_ready_task(self, binding_id: str):
-    db = SessionLocal()
-    try:
-        binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
-        asset = db.query(CreativeAsset).filter(CreativeAsset.id == binding.asset_id).first() if binding else None
-        account = db.query(AdAccount).filter(AdAccount.id == binding.ad_account_id).first() if binding else None
-        if not binding or binding.status != "PROCESSING":
-            return {"status": "done"}
-        service = CredentialService(db).build_service(account.id)
-        result = service.client._get(binding.meta_asset_id, {"fields": "status"})
-        status = result.get("status") or {}
-        value = status.get("video_status") or status.get("processing_phase") or status.get("status")
-        if str(value).upper() in {"READY", "PUBLISHED", "COMPLETED"}:
-            binding.status = "READY"; binding.processing_status = "READY"; binding.last_verified_at = datetime.utcnow(); asset.status = "READY"
-            db.commit(); return {"status": "ready"}
-        if str(value).upper() in {"ERROR", "FAILED"}:
-            raise RuntimeError(f"Meta 视频处理失败: {status}")
-        db.commit()
-        raise self.retry()
-    except Exception as exc:
-        db.rollback()
-        if "Retry" not in type(exc).__name__:
-            binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
-            if binding:
-                binding.status = "FAILED"; binding.error_message = str(exc)[:1000]; db.commit()
-        raise
     finally:
         db.close()

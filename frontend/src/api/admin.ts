@@ -71,6 +71,7 @@ export const credentialApi = {
   reveal: (id: string) => request.post('/api/v1/credentials/' + id + '/reveal', { confirm: true }), remove: (id: string) => request.delete('/api/v1/credentials/' + id),
   oauthAuthorize: (metaAccountId?: string) => request.get('/api/v1/meta-auth/authorize', { params: { ...(metaAccountId ? { meta_account_id: metaAccountId } : {}), return_to: oauthReturnTo() } }),
   oauthAuthorizeFirst: () => request.get('/api/v1/meta-auth/authorize-first', { params: { return_to: oauthReturnTo() } }),
+  accessMode: () => request.get('/api/v1/meta-auth/mode'),
   oauthSdkConfig: () => request.get('/api/v1/meta-auth/sdk-config'),
   oauthSdkLogin: (access_token: string) => request.post('/api/v1/meta-auth/sdk-login', { access_token }),
   oauthBusinesses: (credentialId: string) => request.get('/api/v1/meta-auth/businesses', { params: { credential_id: credentialId } }),

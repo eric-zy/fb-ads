@@ -27,7 +27,6 @@ from core.auth import require_meta_asset_admin as require_admin
 from core.enums import CredentialStatus
 from core.logger import logger
 from models import (
-    AccountStatus,
     AdAccount, BusinessAssetAccess,
     BusinessStatus,
     Credential,
@@ -45,6 +44,14 @@ from services.meta.errors import MetaApiError
 from tasks.meta_sync_tasks import sync_ad_accounts_task, sync_business_task
 
 router = APIRouter(prefix="/api/v1/meta-accounts", tags=["主账号管理"])
+
+
+def _reject_manual_token_flow() -> None:
+    if settings.FB_ACCESS_MODE == "connector":
+        raise HTTPException(
+            status_code=410,
+            detail="当前使用海外 Connector OAuth，请通过 OAuth 授权 BM",
+        )
 
 
 # ==================== 请求/响应模型 ====================
@@ -92,6 +99,27 @@ def _get_meta_or_404(db: Session, meta_id: str) -> MetaAccount:
 
 def _credential_health(db: Session, meta_id: str) -> Dict[str, Any]:
     """汇总该 BM 的凭据健康状态（供列表页直接展示）"""
+    if settings.FB_ACCESS_MODE == "connector":
+        meta = db.query(MetaAccount).filter(MetaAccount.id == meta_id).first()
+        if meta and meta.connector_credential_id:
+            return {
+                "credential_id": meta.connector_credential_id,
+                "credential_status": CredentialStatus.ACTIVE.value,
+                "credential_masked": None,
+                "credential_expires_at": None,
+                "credential_is_expired": False,
+                "has_credential": True,
+                "credential_source": "CONNECTOR",
+            }
+        return {
+            "credential_id": None,
+            "credential_status": "NONE",
+            "credential_masked": None,
+            "credential_expires_at": None,
+            "credential_is_expired": False,
+            "has_credential": False,
+            "credential_source": "NONE",
+        }
     cred = (
         db.query(Credential)
         .filter(Credential.meta_account_id == meta_id)
@@ -99,20 +127,6 @@ def _credential_health(db: Session, meta_id: str) -> Dict[str, Any]:
         .first()
     )
     if not cred:
-        # Connector 模式下凭据保存在海外，国内只保存 opaque credential ID。
-        # 因此不能仅通过本地 credentials 表判断 BM 是否已授权。
-        if meta := db.query(MetaAccount).filter(MetaAccount.id == meta_id).first():
-            if meta.connector_credential_id:
-                return {
-                    "credential_id": meta.connector_credential_id,
-                    "credential_status": CredentialStatus.ACTIVE.value,
-                    "credential_masked": None,
-                    "credential_expires_at": None,
-                    "credential_is_expired": False,
-                    "has_credential": True,
-                    "credential_source": "CONNECTOR",
-                }
-        # 没有本地凭据，也没有海外凭据引用，才表示未授权。
         return {
             "credential_id": None,
             "credential_status": "NONE",
@@ -139,7 +153,7 @@ def _meta_to_dict(db: Session, meta: MetaAccount) -> Dict[str, Any]:
 
 
 def _resolve_token(db: Session, meta: MetaAccount) -> str:
-    """解析该 BM 可用的明文 Token（凭据表优先，兼容历史明文）"""
+    """解析该 BM 显式指定的明文 Token。"""
     try:
         token, _ = CredentialService(db).resolve_token_for_meta(meta.id)
         return token
@@ -221,6 +235,7 @@ def create_meta_account(
 
     重复 Business ID 禁止创建。
     """
+    _reject_manual_token_flow()
     if db.query(MetaAccount).filter(MetaAccount.business_id == payload.business_id).first():
         raise HTTPException(status_code=400, detail=f"BM ID {payload.business_id} 已存在")
 
@@ -299,6 +314,8 @@ def update_meta_account(
 
     data = payload.model_dump(exclude_unset=True)
     new_token = data.pop("access_token", None)
+    if new_token:
+        _reject_manual_token_flow()
 
     if "status" in data and data["status"] not in (s.value for s in BusinessStatus):
         raise HTTPException(
@@ -413,17 +430,16 @@ def verify_account(
     Token 从凭据表解析（加密优先，兼容历史明文）。
     """
     meta = _get_meta_or_404(db, payload.meta_account_id)
-    token = _resolve_token(db, meta)
-
     if settings.FB_ACCESS_MODE == "connector":
-        credential = db.query(Credential).filter(Credential.meta_account_id == meta.id, Credential.status == CredentialStatus.ACTIVE.value).order_by(Credential.updated_at.desc()).first()
-        if not credential:
-            raise HTTPException(status_code=400, detail="没有可用的 Meta 凭据")
+        credential_id = meta.connector_credential_id
+        if not credential_id:
+            raise HTTPException(status_code=400, detail="BM 未绑定海外 Connector 凭据")
         try:
-            return FBConnectorClient().verify_account(meta.business_id, payload.account_id, credential.id)
+            return FBConnectorClient().verify_account(meta.business_id, payload.account_id, credential_id)
         except FBConnectorError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    token = _resolve_token(db, meta)
     try:
         return MetaAdsService(MetaClient(access_token=token)).verify_account_under_bm(
             business_id=meta.business_id,
@@ -441,6 +457,8 @@ def list_meta_credentials(
 ):
     """列出该 BM 名下的凭据（脱敏）"""
     _get_meta_or_404(db, meta_id)
+    if settings.FB_ACCESS_MODE == "connector":
+        return []
     items = (
         db.query(Credential)
         .filter(Credential.meta_account_id == meta_id)
@@ -463,6 +481,7 @@ def rotate_meta_token(
     请求体：{"access_token": "新的明文 Token", "token_type": "USER"}
     旧凭据保留为 DISABLED，便于回溯。
     """
+    _reject_manual_token_flow()
     meta = _get_meta_or_404(db, meta_id)
 
     new_token = (payload or {}).get("access_token")
@@ -514,7 +533,11 @@ def sync_meta_accounts(
     """
     meta = _get_meta_or_404(db, meta_id)
     # 提前校验凭据可用性，避免投递一个注定失败的任务
-    _resolve_token(db, meta)
+    if settings.FB_ACCESS_MODE == "connector":
+        if not meta.connector_credential_id:
+            raise HTTPException(status_code=400, detail="BM 未绑定海外 Connector 凭据")
+    else:
+        _resolve_token(db, meta)
 
     async_result = sync_ad_accounts_task.delay(meta.id)
 
@@ -541,7 +564,7 @@ def sync_meta_accounts(
 
 class SetDefaultCredentialRequest(BaseModel):
     credential_id: Optional[str] = Field(
-        None, description="凭据 ID；传空表示清除指定，回退为「最新一条 ACTIVE 凭据」"
+        None, description="凭据 ID；传空表示清除默认凭据"
     )
 
 
@@ -557,10 +580,11 @@ def set_default_credential(
 
     一个 BM 可保留多条凭据（轮换留痕），默认凭据决定调 Meta API 时用哪一条：
         - 显式指定后固定使用该条
-        - 未指定（或传空）回退为「最新一条 ACTIVE 凭据」
+        - 未指定时 BM 不可执行需要 Token 的操作
 
     非 ACTIVE 凭据不允许设为默认——否则该 BM 会立刻不可用。
     """
+    _reject_manual_token_flow()
     meta = _get_meta_or_404(db, meta_id)
 
     if not payload.credential_id:
@@ -577,7 +601,7 @@ def set_default_credential(
         return {
             "meta_account_id": meta.id,
             "default_credential_id": None,
-            "message": "已清除默认凭据，将回退为最新一条 ACTIVE 凭据",
+            "message": "默认凭据已清除",
         }
 
     cred = db.query(Credential).filter(Credential.id == payload.credential_id).first()
@@ -622,7 +646,7 @@ def list_ad_accounts_from_meta(
     meta = _get_meta_or_404(db, meta_id)
     try:
         raw = MetaSyncService(db).fetch_ad_accounts_from_meta(meta.id)
-    except MetaApiError as e:
+    except (FBConnectorError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     existing = {
@@ -636,7 +660,7 @@ def list_ad_accounts_from_meta(
     accounts = []
     for item in raw:
         account_id = str(item.get("id", "")).strip()
-        if account_id and not account_id.startswith("act_"):
+        if settings.FB_ACCESS_MODE != "connector" and account_id and not account_id.startswith("act_"):
             account_id = f"act_{account_id}"
         accounts.append(
             {

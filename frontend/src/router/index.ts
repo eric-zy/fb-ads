@@ -27,6 +27,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'material', name: 'Material', component: () => import('@/pages/dashboard/Material.vue'), meta: { title: '素材库' } },
       { path: 'scheduled-tasks', name: 'ScheduledTasks', component: () => import('@/pages/dashboard/ScheduledTasks.vue'), meta: { title: '定时任务' } },
       { path: 'reports', name: 'Reports', component: () => import('@/pages/dashboard/Reports.vue'), meta: { title: '报表分析' } },
+      { path: 'account-overview', name: 'AccountOverview', component: () => import('@/pages/dashboard/AccountOverview.vue'), meta: { title: '广告账户消耗总览' } },
       { path: 'risk-control', name: 'RiskControl', component: () => import('@/pages/dashboard/RiskControl.vue'), meta: { title: '风险控制' } },
       { path: 'accounts', name: 'Accounts', component: () => import('@/pages/dashboard/Accounts.vue'), meta: { title: '账号中心' } },
       { path: 'settings', name: 'Settings', component: () => import('@/pages/dashboard/Settings.vue'), meta: { title: '设置' } },

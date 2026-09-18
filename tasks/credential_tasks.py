@@ -53,6 +53,9 @@ def check_expiring_credentials(self, warn_days: int = None) -> Dict:
     Returns:
         {"expired": int, "expiring": int, "details": [...]}
     """
+    if settings.FB_ACCESS_MODE == "connector":
+        return {"expired": 0, "expiring": 0, "permission_missing": 0, "details": [], "skipped": "connector"}
+
     warn_days = warn_days or getattr(
         settings, "CREDENTIAL_EXPIRY_WARN_DAYS", DEFAULT_WARN_DAYS
     )

@@ -15,16 +15,15 @@ class AnalyticsEngine:
     def __init__(self, db: Session):
         self.db = db
 
-    def _account_key(self, account_id: str) -> str:
+    def _account_key(self, account_id: str) -> Optional[str]:
         """把账户标识归一到主键 `AdAccount.id`
 
         本模块的查询条件都是 `AccountInsight.ad_account_id` / `Campaign.ad_account_id`，
         二者都是指向 `ad_accounts.id` 的外键。若外部传入 Meta 账户号 act_xxx，
-        查询会**恒返回空**——历史上"日报永远是空"就是这个原因。
-        解析失败时退回原值，保持既有行为不变得更差。
+        查询只接受内部主键；传入 Meta 账户号时直接返回空结果。
         """
         account = resolve_ad_account(self.db, account_id)
-        return account.id if account else account_id
+        return account.id if account else None
     
     def calculate_metrics(self, spend: float, impressions: int, clicks: int,
                          conversions: int = 0) -> Dict[str, float]:
@@ -153,7 +152,7 @@ class AnalyticsEngine:
         """生成日报告
 
         Args:
-            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+            account_id: 广告账户内部主键
         """
         try:
             account_key = self._account_key(account_id)
@@ -207,7 +206,7 @@ class AnalyticsEngine:
         """生成周报告
 
         Args:
-            account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+            account_id: 广告账户内部主键
         """
         try:
             if end_date is None:

@@ -3,6 +3,7 @@ import request from '@/utils/request'
 import axios from 'axios'
 import type { AxiosProgressEvent } from 'axios'
 import { md5ArrayBuffer } from '@/utils/md5'
+import { sha256ArrayBuffer } from '@/utils/sha256'
 
 export interface MediaItem {
   id: string
@@ -32,6 +33,20 @@ export interface MediaItem {
   cover_key?: string | null
   storage_status?: string | null
   processing_status?: string | null
+  uploader_name?: string | null
+  uploader_email?: string | null
+  uploaded_at?: string | null
+  can_edit?: boolean
+  binding_count?: number
+  ready_binding_count?: number
+  failed_binding_count?: number
+  publish_count?: number
+  successful_publish_count?: number
+  last_published_at?: string | null
+  usage_count?: number
+  successful_usage_count?: number
+  failed_usage_count?: number
+  last_used_at?: string | null
 }
 
 export interface CreativeAssetGroup {
@@ -42,6 +57,50 @@ export interface CreativeAssetGroup {
   visibility: 'PRIVATE' | 'TENANT' | string
 }
 export interface CreativeAssetTag { id: string; name: string; color?: string | null }
+
+export interface MediaUsageStats {
+  asset_id: string
+  range_start: string | null
+  range_end: string | null
+  usage_count: number
+  successful_usage_count: number
+  failed_usage_count: number
+  last_used_at: string | null
+  daily: Array<{
+    date: string
+    usage_count: number
+    successful_usage_count: number
+    failed_usage_count: number
+  }>
+  by_account: Array<{
+    ad_account_id: string
+    account_name: string
+    usage_count: number
+    successful_usage_count: number
+    failed_usage_count: number
+    last_used_at: string | null
+  }>
+}
+
+export interface MediaOverviewStats {
+  range_start: string | null
+  range_end: string | null
+  asset_count: number
+  ready_asset_count: number
+  binding_count: number
+  ready_binding_count: number
+  usage_count: number
+  successful_usage_count: number
+  failed_usage_count: number
+  success_rate: number
+  top_assets: Array<{
+    asset_id: string
+    name: string
+    asset_type: string
+    usage_count: number
+    successful_usage_count: number
+  }>
+}
 
 export interface MetaAssetBinding {
   id: string
@@ -78,6 +137,10 @@ export interface UploadResult {
 
 export const mediaApi = {
   get: (id: string) => request.get<MediaItem>(`/api/v1/media/${id}`),
+  stats: (id: string, params?: { start_date?: string; end_date?: string }) =>
+    request.get<MediaUsageStats>(`/api/v1/media/${id}/stats`, { params }),
+  statsOverview: (params?: { start_date?: string; end_date?: string; asset_type?: string; account_id?: string }) =>
+    request.get<MediaOverviewStats>('/api/v1/media/stats/overview', { params }),
   getDownloadUrl: (id: string, kind: 'original' | 'thumbnail' | 'cover' = 'original') =>
     request.get<{ asset_id: string; url: string; expires_in: number }>(
       `/api/v1/media/${id}/download-url`,
@@ -91,8 +154,7 @@ export const mediaApi = {
     onProgress?: (e: AxiosProgressEvent) => void
   ): Promise<UploadResult> => {
     return file.arrayBuffer().then(async (buffer) => {
-      const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
-      const sha256 = Array.from(new Uint8Array(hashBuffer)).map((value) => value.toString(16).padStart(2, '0')).join('')
+      const sha256 = await sha256ArrayBuffer(buffer)
       const md5 = md5ArrayBuffer(buffer)
       const assetType = file.type.startsWith('video/') ? 'video' : 'image'
       const session = await request.post<UploadSessionResponse>('/api/v1/media/upload-sessions', {

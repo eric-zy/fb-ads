@@ -16,7 +16,9 @@ def test_client_builds_signed_request(monkeypatch):
 
     monkeypatch.setattr("services.fb_connector_client.requests.request", fake_request)
     client = FBConnectorClient(base_url="https://connector.test", signing_key="secret")
-    result = client.create_campaign("task-1", {"name": "demo"}, idempotency_key="idem-1")
+    result = client.create_campaign(
+        "task-1", "credential-1", "account-1", {"name": "demo"}, idempotency_key="idem-1"
+    )
     assert result == {"ok": True}
     assert captured["kwargs"]["headers"]["X-Service-Name"] == "saas"
     assert captured["kwargs"]["headers"]["X-Idempotency-Key"] == "idem-1"

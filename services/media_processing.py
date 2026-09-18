@@ -10,6 +10,25 @@ import subprocess
 from typing import Optional
 
 
+def _ffprobe_dimensions(path: str) -> tuple[Optional[int], Optional[int]]:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None, None
+    try:
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "json", path],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        streams = json.loads(result.stdout).get("streams") or []
+        stream = streams[0] if streams else None
+        if not stream or not stream.get("width") or not stream.get("height"):
+            return None, None
+        return int(stream["width"]), int(stream["height"])
+    except (OSError, ValueError, TypeError, IndexError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None, None
+
+
 def image_dimensions(path: str, mime: str) -> tuple[Optional[int], Optional[int]]:
     try:
         with open(path, "rb") as stream:
@@ -21,11 +40,20 @@ def image_dimensions(path: str, mime: str) -> tuple[Optional[int], Optional[int]
             if mime in {"image/jpeg", "image/jpg"} and header[:2] == b"\xff\xd8":
                 stream.seek(2)
                 while True:
-                    if stream.read(1) != b"\xff":
+                    prefix = stream.read(1)
+                    if not prefix:
+                        break
+                    if prefix != b"\xff":
                         continue
                     marker = stream.read(1)
+                    if not marker:
+                        break
                     while marker == b"\xff":
                         marker = stream.read(1)
+                        if not marker:
+                            break
+                    if not marker:
+                        break
                     if marker in {b"\xd8", b"\xd9"}:
                         continue
                     length_bytes = stream.read(2)
@@ -38,7 +66,8 @@ def image_dimensions(path: str, mime: str) -> tuple[Optional[int], Optional[int]
                     stream.seek(max(length - 2, 0), 1)
     except (OSError, struct.error, IndexError):
         pass
-    return None, None
+    # WebP 以及异常/扩展 JPEG 由容器内的 ffprobe 兜底解析。
+    return _ffprobe_dimensions(path)
 
 
 def video_metadata(path: str) -> tuple[Optional[int], Optional[int], Optional[float]]:

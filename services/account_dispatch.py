@@ -54,3 +54,36 @@ class AccountDispatchService:
             self.db.add(AccountAssignmentLog(id=uuid.uuid4().hex, tenant_id=tenant_id, account_id=account_id, from_user_id=row.user_id, action="RELEASE", operator_id=operator_id, reason="释放账户"))
         self.db.commit()
         return len(rows)
+
+    def dispatch_unassigned(self, tenant_id: str, operator_id: str | None = None):
+        """将当前租户内已纳管且可用、但尚未分配的账户按规则批量分配。
+
+        OAuth/同步任务使用此方法，和管理员手工批量分配保持同一套规则。
+        没有匹配规则的账户只记录到 errors，不阻断其它账户入池。
+        """
+        accounts = self.db.query(AdAccount.id).join(
+            BusinessAssetAccess, BusinessAssetAccess.asset_id == AdAccount.id
+        ).filter(
+            AdAccount.tenant_id == tenant_id,
+            AdAccount.system_status == "ACTIVE",
+            BusinessAssetAccess.tenant_id == tenant_id,
+            BusinessAssetAccess.status == "ACTIVE",
+        ).all()
+        assigned = skipped = 0
+        errors = []
+        for (account_id,) in accounts:
+            exists = self.db.query(UserAccount.id).filter(
+                UserAccount.tenant_id == tenant_id,
+                UserAccount.account_id == account_id,
+                UserAccount.assignment_status == "ACTIVE",
+            ).first()
+            if exists:
+                skipped += 1
+                continue
+            try:
+                self.dispatch(tenant_id, account_id, operator_id)
+                assigned += 1
+            except ValueError as exc:
+                self.db.rollback()
+                errors.append({"account_id": account_id, "reason": str(exc)})
+        return {"assigned": assigned, "skipped": skipped, "errors": errors}

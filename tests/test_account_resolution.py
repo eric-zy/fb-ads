@@ -1,16 +1,4 @@
-"""账户标识归一 + 服务层缺陷回归测试
-
-背景：系统里存在两种"广告账户 ID"：
-    1. 内部主键 `AdAccount.id`      —— 所有业务表外键指向它
-    2. Meta 账户号 `AdAccount.account_id`（act_xxx）—— 只有调 Meta API 才需要
-
-历史上同一个 `account_id` 参数在不同方法里被当成不同东西，导致：
-    - 凭据解析访问不存在的 `AdAccount.meta_account_id` → AttributeError
-    - 风控返回的统计没有 `events_created` 键 → 告警永远不触发
-    - `AdsManager.fetch_insights` 方法不存在 → 洞察定时任务从未成功
-
-本文件固化这些修复，防止回归。
-"""
+"""广告账户主键、凭据解析与洞察链路回归测试。"""
 import pytest
 
 from core.enums import CredentialStatus
@@ -18,8 +6,14 @@ from models import AccountInsight, AdAccount, MetaAccount
 from services.ad_account_resolver import resolve_ad_account
 from services.ads_manager import AdsManager
 from services.credential_service import CredentialService
-from services.fb_client import fb_client
+from services.fb_connector_client import FBConnectorClient
 from services.risk_detector import RiskDetector
+
+
+@pytest.fixture(autouse=True)
+def connector_available(monkeypatch):
+    """让服务层测试只验证调用协议，不连接真实海外服务。"""
+    monkeypatch.setattr(FBConnectorClient, "__init__", lambda self, **kwargs: None)
 
 
 @pytest.fixture()
@@ -30,6 +24,7 @@ def bm_and_account(db):
             id="acc1",
             business_id="bm1",
             account_id="act_1",
+            connector_credential_id="connector-1",
             daily_spend_limit=10000,  # 100.00 元（最小货币单位）
         )
     )
@@ -44,9 +39,9 @@ def test_resolve_by_primary_key(db, bm_and_account):
     assert resolve_ad_account(db, "acc1").id == "acc1"
 
 
-def test_resolve_by_meta_account_number(db, bm_and_account):
-    """按 act_xxx 也应能定位（兼容历史调用方）"""
-    assert resolve_ad_account(db, "act_1").id == "acc1"
+def test_resolve_requires_internal_primary_key(db, bm_and_account):
+    """业务层只接受广告账户内部主键。"""
+    assert resolve_ad_account(db, "act_1") is None
 
 
 def test_resolve_unknown_returns_none(db):
@@ -83,8 +78,8 @@ def test_default_credential_takes_priority(db, bm_and_account):
     assert token == "token-older"
 
 
-def test_default_credential_falls_back_when_unusable(db, bm_and_account):
-    """指定的默认凭据不可用时回退到推导逻辑，避免整个 BM 不可用"""
+def test_default_credential_does_not_fallback_when_unusable(db, bm_and_account):
+    """默认凭据失效时直接报错，不按创建时间猜测其它凭据。"""
     service = CredentialService(db)
     target = service.create_for_meta("bm1", "token-target", replace_active=False)
     fallback = service.create_for_meta("bm1", "token-fallback", replace_active=False)
@@ -96,9 +91,8 @@ def test_default_credential_falls_back_when_unusable(db, bm_and_account):
     target.status = CredentialStatus.DISABLED.value
     db.commit()
 
-    token, hit = service.resolve_token("acc1")
-    assert hit.id == fallback.id
-    assert token == "token-fallback"
+    with pytest.raises(Exception, match="无可用凭据"):
+        service.resolve_token("acc1")
 
 
 def test_mark_invalid_by_account_marks_bm_credential(db, bm_and_account):
@@ -116,10 +110,8 @@ def test_mark_invalid_by_account_marks_bm_credential(db, bm_and_account):
 # --------------------------------------------------------------------------
 def test_execute_risk_actions_reports_events_created(db, bm_and_account, monkeypatch):
     """花费超限时既要暂停系列，也要返回新建的风险事件数"""
-    monkeypatch.setattr(
-        fb_client, "get_insights", lambda *a, **k: [{"spend": "90.00"}]  # 90 元 > 80 元阈值
-    )
-    monkeypatch.setattr(fb_client, "pause_campaign", lambda *a, **k: True)
+    monkeypatch.setattr(FBConnectorClient, "get_insights", lambda *a, **k: {"items": [{"spend": "90.00"}]})
+    monkeypatch.setattr(FBConnectorClient, "pause_campaign", lambda *a, **k: True)
 
     result = RiskDetector(db).execute_risk_actions("acc1")
 
@@ -127,20 +119,13 @@ def test_execute_risk_actions_reports_events_created(db, bm_and_account, monkeyp
     assert result["events_created"] == 1
 
 
-def test_execute_risk_actions_accepts_meta_account_number(db, bm_and_account, monkeypatch):
-    """传 act_xxx 时也要能工作，并归一到主键写入风险事件"""
-    monkeypatch.setattr(
-        fb_client, "get_insights", lambda *a, **k: [{"spend": "90.00"}]
-    )
-    monkeypatch.setattr(fb_client, "pause_campaign", lambda *a, **k: True)
-
-    result = RiskDetector(db).execute_risk_actions("act_1")
-    assert result["events_created"] == 1
-
-    from models import RiskEvent
-
-    event = db.query(RiskEvent).order_by(RiskEvent.created_at.desc()).first()
-    assert event.ad_account_id == "acc1"  # 外键必须存主键，不能存 act_xxx
+def test_execute_risk_actions_rejects_meta_account_number(db, bm_and_account):
+    """业务任务只接受 AdAccount.id，不再兼容 Meta 账户号。"""
+    assert RiskDetector(db).execute_risk_actions("act_1") == {
+        "campaigns_paused": 0,
+        "accounts_frozen": 0,
+        "events_created": 0,
+    }
 
 
 def test_execute_risk_actions_unknown_account(db, monkeypatch):
@@ -153,9 +138,9 @@ def test_execute_risk_actions_unknown_account(db, monkeypatch):
 # --------------------------------------------------------------------------
 def test_fetch_insights_persists_by_primary_key(db, bm_and_account, monkeypatch):
     monkeypatch.setattr(
-        fb_client,
+        FBConnectorClient,
         "get_insights",
-        lambda *a, **k: [
+        lambda *a, **k: {"items": [
             {
                 "date_start": "2026-09-01",
                 "spend": "10.50",
@@ -163,7 +148,7 @@ def test_fetch_insights_persists_by_primary_key(db, bm_and_account, monkeypatch)
                 "clicks": "50",
                 "actions": [{"action_type": "purchase", "value": "2"}],
             }
-        ],
+        ]},
     )
 
     count = AdsManager(db).fetch_insights("acc1", "2026-09-01", "2026-09-01")
@@ -183,7 +168,7 @@ def test_fetch_insights_is_idempotent(db, bm_and_account, monkeypatch):
     payload = [
         {"date_start": "2026-09-01", "spend": "10.00", "impressions": "100", "clicks": "5"}
     ]
-    monkeypatch.setattr(fb_client, "get_insights", lambda *a, **k: payload)
+    monkeypatch.setattr(FBConnectorClient, "get_insights", lambda *a, **k: {"items": payload})
 
     AdsManager(db).fetch_insights("acc1", "2026-09-01", "2026-09-01")
     payload[0]["spend"] = "20.00"
@@ -195,14 +180,14 @@ def test_fetch_insights_is_idempotent(db, bm_and_account, monkeypatch):
 
 
 def test_fetch_insights_unknown_account_returns_zero(db, monkeypatch):
-    monkeypatch.setattr(fb_client, "get_insights", lambda *a, **k: [{"spend": "1"}])
+    monkeypatch.setattr(FBConnectorClient, "get_insights", lambda *a, **k: {"items": [{"spend": "1"}]})
     assert AdsManager(db).fetch_insights("not-exist", "2026-09-01", "2026-09-01") == 0
 
 
 def test_get_account_spend_today_converts_unit(db, bm_and_account, monkeypatch):
     """Meta 返回主单位，库内统一最小货币单位"""
     monkeypatch.setattr(
-        fb_client, "get_insights", lambda *a, **k: [{"spend": "12.34"}]
+        FBConnectorClient, "get_insights", lambda *a, **k: {"items": [{"spend": "12.34"}]}
     )
     assert AdsManager(db).get_account_spend_today("acc1") == 1234
 
@@ -210,15 +195,15 @@ def test_get_account_spend_today_converts_unit(db, bm_and_account, monkeypatch):
 # --------------------------------------------------------------------------
 # 缺陷 D：日报按 Meta 账户号查询曾恒返回空
 # --------------------------------------------------------------------------
-def test_sync_campaigns_normalizes_account_reference(db, bm_and_account, monkeypatch):
-    """传 act_xxx 同步系列时：调 Meta 用 act_xxx，写外键必须存主键"""
+def test_sync_campaigns_uses_primary_key_and_connector(db, bm_and_account, monkeypatch):
+    """业务层接收主键，Connector 请求使用 Meta 账户号。"""
     monkeypatch.setattr(
-        fb_client,
-        "get_campaigns",
-        lambda aid: [{"id": "c1", "name": "Campaign 1", "status": "ACTIVE"}],
+        FBConnectorClient,
+        "list_campaigns",
+        lambda *args: {"campaigns": [{"id": "c1", "name": "Campaign 1", "status": "ACTIVE"}]},
     )
 
-    created, _updated = AdsManager(db).sync_campaigns("act_1")
+    created, _updated = AdsManager(db).sync_campaigns("acc1")
     assert created == 1
 
     from models import Campaign
@@ -229,12 +214,12 @@ def test_sync_campaigns_normalizes_account_reference(db, bm_and_account, monkeyp
 
 
 def test_sync_campaigns_unknown_account(db, monkeypatch):
-    monkeypatch.setattr(fb_client, "get_campaigns", lambda aid: [])
+    monkeypatch.setattr(FBConnectorClient, "list_campaigns", lambda *args: {"campaigns": []})
     assert AdsManager(db).sync_campaigns("not-exist") == (0, 0)
 
 
-def test_daily_report_accepts_meta_account_number(db, bm_and_account):
-    """AccountInsight.ad_account_id 存主键，传 act_xxx 时必须自动归一"""
+def test_daily_report_rejects_meta_account_number(db, bm_and_account):
+    """日报查询只接受内部主键。"""
     from datetime import date
 
     from services.analytics import AnalyticsEngine
@@ -248,7 +233,5 @@ def test_daily_report_accepts_meta_account_number(db, bm_and_account):
 
     engine = AnalyticsEngine(db)
     by_key = engine.generate_daily_report("acc1", date(2026, 9, 1))
-    by_meta = engine.generate_daily_report("act_1", date(2026, 9, 1))
-
     assert by_key["metrics"]["spend"] == 10.5
-    assert by_meta == by_key  # 两种标识结果一致
+    assert engine.generate_daily_report("act_1", date(2026, 9, 1)) == {}

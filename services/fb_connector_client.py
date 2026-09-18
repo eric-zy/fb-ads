@@ -111,10 +111,33 @@ class FBConnectorClient:
     def media_upload_status(self, task_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("GET", f"/internal/meta/media/upload/{task_id}", {}, request_id=request_id)
 
-    def create_campaign(self, task_id: str, credential_id: str, account_id: str, payload: dict[str, Any], *, request_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+    def create_campaign(
+        self,
+        task_id: str,
+        credential_id: str,
+        account_id: str,
+        payload: dict[str, Any],
+        *,
+        request_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """创建 Campaign，所有调用方必须显式提供凭据和广告账户。"""
         if not idempotency_key:
             raise FBConnectorError("投放创建必须提供幂等键")
-        return self._request("POST", "/internal/meta/campaigns/create", {"task_id": task_id, "credential_id": credential_id, "account_id": account_id, "payload": payload, "idempotency_key": idempotency_key}, request_id=request_id, idempotency_key=idempotency_key)
+        request_payload = {
+            "task_id": task_id,
+            "credential_id": credential_id,
+            "account_id": account_id,
+            "payload": payload,
+            "idempotency_key": idempotency_key,
+        }
+        return self._request(
+            "POST",
+            "/internal/meta/campaigns/create",
+            request_payload,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
 
     def deploy_campaign(self, payload: dict[str, Any], *, request_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
         if not idempotency_key:
@@ -138,14 +161,37 @@ class FBConnectorClient:
     def list_ads(self, adset_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/internal/meta/campaigns/ads", {"adset_id": adset_id, "credential_id": credential_id}, request_id=request_id)
 
-    def update_object(self, object_type: str, object_id: str, credential_id: str, status: str, *, request_id: str | None = None) -> dict[str, Any]:
-        return self._request("POST", "/internal/meta/campaigns/update-object", {"object_type": object_type, "object_id": object_id, "credential_id": credential_id, "status": status}, request_id=request_id)
+    def update_object(
+        self,
+        object_type: str,
+        object_id: str,
+        credential_id: str,
+        fields: dict[str, Any],
+        *,
+        request_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        if not fields:
+            raise FBConnectorError("投放对象更新字段不能为空")
+        return self._request(
+            "POST",
+            "/internal/meta/campaigns/update-object",
+            {
+                "object_type": object_type,
+                "object_id": object_id,
+                "credential_id": credential_id,
+                "fields": fields,
+                "idempotency_key": idempotency_key,
+            },
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
 
     def cleanup_deployment(self, connector_task_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/internal/meta/campaigns/cleanup", {"connector_task_id": connector_task_id, "credential_id": credential_id}, request_id=request_id)
 
-    def get_insights(self, account_id: str, days: int = 30, *, level: str = "account", since: str | None = None, until: str | None = None, request_id: str | None = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {"account_id": account_id, "days": days, "level": level}
+    def get_insights(self, account_id: str, credential_id: str, days: int = 30, *, level: str = "account", since: str | None = None, until: str | None = None, request_id: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {"account_id": account_id, "credential_id": credential_id, "days": days, "level": level}
         if since and until:
             payload.update({"since": since, "until": until})
         return self._request("POST", "/internal/meta/reports/insights", payload, request_id=request_id)

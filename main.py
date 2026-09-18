@@ -1,8 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-import os
 from sqlalchemy.orm import Session
 from datetime import date
 from typing import List, Optional
@@ -197,10 +195,6 @@ app.include_router(reports_api.router)
 app.include_router(sinan_api.router)
 app.include_router(connector_callbacks_api.router)
 app.include_router(connector_callbacks_insights_api.router)
-
-# 静态文件：上传的素材可直接访问
-os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
 
 # ==================== 认证API ====================
 

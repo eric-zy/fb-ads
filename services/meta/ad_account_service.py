@@ -10,26 +10,15 @@
 判断条件（全部满足才可用）：
     BM.status = ACTIVE
     AND AdAccount.system_status = ACTIVE
-    AND Credential.status = ACTIVE 且未过期
+    AND Connector 凭据已绑定
     AND Meta 侧账户状态允许投放
 """
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from core.enums import CredentialStatus
-from models import AdAccount, BusinessAssetAccess, MetaAccount, Credential, BusinessStatus, SystemStatus
-
-
-def _credential_service(db):
-    """延迟导入，避免与 services.credential_service 形成循环导入
-
-    credential_service 依赖 services.meta（MetaClient），而本模块又被
-    services/meta/__init__.py 导出，顶层直接 import 会构成环。
-    """
-    from services.credential_service import CredentialService
-
-    return CredentialService(db)
+from models import AdAccount, BusinessAssetAccess, MetaAccount, BusinessStatus, SystemStatus, User
+from services.account_access import accessible_account_ids
 
 # Meta 侧明确不可投放的账户状态。
 # Graph API 的 account_status 返回数字字符串（1=ACTIVE / 2=DISABLED / 3=UNSETTLED ...），
@@ -61,24 +50,17 @@ class AdAccountService:
             reason = account.system_status_reason or "管理员已禁用"
             return False, f"系统侧已禁用：{reason}"
 
-        # 2) BM 账号校验；个人账号不要求 BM，改用自身 OAuth 凭据。
+        # 2) BM 账号校验；个人账号不要求 BM，但必须绑定 Connector 凭据。
         business: Optional[MetaAccount] = account.business
         if business and business.status != BusinessStatus.ACTIVE.value:
             return False, f"BM 状态为 {business.status}"
 
-        # 3) 凭据是否可用（BM 账户或个人账号自身凭据）
-        if business:
-            cred = _credential_service(self.db).get_meta_credential(business.id)
-        elif account.credential_id:
-            cred = self.db.query(Credential).filter(Credential.id == account.credential_id).first()
-        else:
-            cred = None
-        if not cred:
-            return False, "账号无可用凭据"
-        if cred.status != CredentialStatus.ACTIVE.value:
-            return False, f"凭据状态为 {cred.status}"
-        if cred.is_expired():
-            return False, "凭据已过期"
+        # 3) 只认海外 Connector 凭据引用，不回退到国内凭据表或全局 Token。
+        connector_credential_id = (
+            business.connector_credential_id if business else account.connector_credential_id
+        )
+        if not connector_credential_id:
+            return False, "账号未绑定海外 Connector 凭据"
 
         # 4) Meta 侧状态。投放属于写操作，未同步或未知状态必须安全拒绝，
         # 避免仅凭本地 system_status=ACTIVE 就向 Meta 创建对象。
@@ -130,15 +112,10 @@ class AdAccountService:
                 BusinessAssetAccess.status == "ACTIVE",
             )
         if user_id:
-            from models import User, UserAccount
             user = self.db.query(User).filter(User.id == user_id).first()
             if user and not user.is_admin():
-                assigned = self.db.query(UserAccount.account_id).filter(UserAccount.user_id == user_id)
-                from models.account_group import account_group_accounts, account_group_users
-                grouped = self.db.query(account_group_accounts.c.account_id).join(
-                    account_group_users, account_group_users.c.group_id == account_group_accounts.c.group_id
-                ).filter(account_group_users.c.user_id == user_id)
-                q = q.filter(AdAccount.id.in_(assigned.union(grouped)))
+                visible_ids = accessible_account_ids(self.db, user) or {"__no_accounts__"}
+                q = q.filter(AdAccount.id.in_(visible_ids))
 
         result: List[Dict] = []
         for account in q.order_by(AdAccount.created_at.desc()).all():
@@ -147,9 +124,8 @@ class AdAccountService:
                 continue
 
             business: Optional[MetaAccount] = account.business
-            cred = (
-                _credential_service(self.db).get_meta_credential(business.id)
-                if business else self.db.query(Credential).filter(Credential.id == account.credential_id).first()
+            connector_credential_id = (
+                business.connector_credential_id if business else account.connector_credential_id
             )
 
             item = {
@@ -166,11 +142,10 @@ class AdAccountService:
                     "business_id": business.business_id if business else None,
                 },
                 "credential": {
-                    "id": cred.id if cred else None,
-                    "status": cred.status if cred else None,
-                    "is_expired": cred.is_expired() if cred else None,
-                    # 脱敏，绝不明文返回
-                    "masked": (cred.to_dict().get("access_token_masked") if cred else None),
+                    "id": connector_credential_id,
+                    "status": "ACTIVE",
+                    "is_expired": False,
+                    "masked": None,
                 },
                 "payment_status": account.payment_status,
                 "payment_source": account.payment_source,
@@ -197,17 +172,10 @@ class AdAccountService:
                 rejected.append({"account_id": pk, "reason": "账户不存在"})
                 continue
             if user_id:
-                from models import User, UserAccount
                 user = self.db.query(User).filter(User.id == user_id).first()
                 if user and not user.is_admin():
-                    assigned = self.db.query(UserAccount).filter(
-                        UserAccount.user_id == user_id, UserAccount.account_id == account.id
-                    ).first()
-                    from models.account_group import account_group_accounts, account_group_users
-                    grouped = self.db.query(account_group_accounts.c.account_id).join(
-                        account_group_users, account_group_users.c.group_id == account_group_accounts.c.group_id
-                    ).filter(account_group_users.c.user_id == user_id, account_group_accounts.c.account_id == account.id).first()
-                    if not assigned and not grouped:
+                    visible_ids = accessible_account_ids(self.db, user) or set()
+                    if account.id not in visible_ids:
                         rejected.append({"account_id": account.account_id, "reason": "账户未分配给当前用户"})
                         continue
             ok, reason = self.check_available(account, allow_paused_debug=allow_paused_debug)

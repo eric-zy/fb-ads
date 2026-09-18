@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 import uuid
 from fb_connector.models import ConnectorDeliveryTask, connector_session_factory
@@ -22,10 +22,11 @@ class CampaignPauseRequest(BaseModel):
     idempotency_key: str = Field(..., min_length=8, max_length=128)
 
 class ObjectRequest(BaseModel):
-    object_type: str = Field(..., pattern="^(ADSET|AD)$")
+    object_type: str = Field(..., pattern="^(CAMPAIGN|ADSET|AD)$")
     object_id: str = Field(..., min_length=1, max_length=64)
     credential_id: str = Field(..., min_length=1, max_length=50)
-    status: str = Field(..., pattern="^(ACTIVE|PAUSED)$")
+    fields: dict = Field(..., min_length=1)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
 class ParentRequest(BaseModel):
     parent_id: str = Field(..., min_length=1, max_length=64)
@@ -92,8 +93,27 @@ async def list_ads(payload: ParentRequest):
 @router.post("/update-object")
 async def update_object(payload: ObjectRequest):
     service = _meta_service(payload.credential_id)
-    result = service.update_adset(payload.object_id, {"status": payload.status}) if payload.object_type == "ADSET" else service.update_ad(payload.object_id, {"status": payload.status})
-    return {"object_type": payload.object_type, "object_id": payload.object_id, "status": payload.status, "result": result}
+    fields = payload.fields
+    if set(fields) - {"status", "daily_budget"}:
+        raise HTTPException(status_code=400, detail="只允许更新 status 或 daily_budget")
+    if "status" in fields and fields["status"] not in {"ACTIVE", "PAUSED"}:
+        raise HTTPException(status_code=400, detail="status 必须为 ACTIVE 或 PAUSED")
+    if "daily_budget" in fields:
+        try:
+            fields["daily_budget"] = int(fields["daily_budget"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="daily_budget 必须为整数分")
+        if fields["daily_budget"] <= 0:
+            raise HTTPException(status_code=400, detail="daily_budget 必须为正数")
+    if payload.object_type == "CAMPAIGN":
+        result = service.update_campaign(payload.object_id, fields)
+    elif payload.object_type == "ADSET":
+        result = service.update_adset(payload.object_id, fields)
+    else:
+        if "daily_budget" in fields:
+            raise HTTPException(status_code=400, detail="广告不支持更新 daily_budget")
+        result = service.update_ad(payload.object_id, fields)
+    return {"object_type": payload.object_type, "object_id": payload.object_id, "fields": fields, "result": result, "idempotency_key": payload.idempotency_key}
 
 @router.post("/list")
 async def list_campaigns(payload: CampaignListRequest):

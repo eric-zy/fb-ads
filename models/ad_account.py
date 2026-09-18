@@ -43,19 +43,6 @@ from core.database import Base
 from core.tenant import TenantMixin
 
 
-class AccountStatus(str, enum.Enum):
-    """【遗留】账户状态枚举
-
-    已被 `system_status` + `account_status` 取代，仅为兼容历史导入保留，
-    新代码请使用 SystemStatus。
-    """
-
-    ACTIVE = "active"
-    FROZEN = "frozen"
-    PAUSED = "paused"
-    SUSPENDED = "suspended"
-
-
 class SystemStatus(str, enum.Enum):
     """系统侧状态（文档 §7）：是否允许该账户参与批量投放"""
 
@@ -154,8 +141,8 @@ class AdAccount(TenantMixin, Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     __table_args__ = (
-        # 文档 §24：同一 BM 内账户不重复；跨 BM 允许同一 act_xxx
-        UniqueConstraint("tenant_id", "account_id", name="uq_tenant_ad_account"),
+        # 同一租户下，同一 BM 内账户不重复；同一 Meta 账户可被多个 BM 纳管
+        UniqueConstraint("tenant_id", "business_id", "account_id", name="uq_tenant_business_ad_account"),
         Index("ix_ad_accounts_account_id", "account_id"),
         # ---- 租户隔离复合索引：行级隔离下索引必须以 tenant_id 打头 ----
         Index("ix_ad_accounts_tenant_business", "tenant_id", "business_id"),
@@ -163,16 +150,6 @@ class AdAccount(TenantMixin, Base):
         Index("ix_ad_accounts_tenant_account_status", "tenant_id", "account_status"),
         Index("ix_ad_accounts_tenant_effective", "tenant_id", "effective_status"),
     )
-
-    # ---------- 兼容属性 ----------
-    @property
-    def is_frozen(self) -> bool:
-        """兼容旧字段：系统侧禁用即视为冻结
-
-        注意：这是只读派生属性，**不能用于数据库查询过滤**
-        （过滤请用 `AdAccount.system_status == SystemStatus.DISABLED.value`）。
-        """
-        return self.system_status == SystemStatus.DISABLED.value
 
     def __repr__(self):
         return f"<AdAccount {self.account_id} ({self.account_name})>"

@@ -3,13 +3,22 @@
     <div class="page-head">
       <div>
         <h2 class="page-title">凭据与 Meta 授权</h2>
-        <p class="page-subtitle">管理 BM 的 Meta Access Token，并通过 Meta OAuth 完成授权、权限校验和自动同步广告账户</p>
+        <p class="page-subtitle">{{ connectorMode ? '通过 Meta OAuth 完成授权，凭据由海外 Connector 托管' : '管理 BM 的 Meta Access Token，并通过 Meta OAuth 完成授权、权限校验和自动同步广告账户' }}</p>
       </div>
       <div class="head-actions">
         <el-button type="success" :loading="authorizing" @click="startMetaAuth">Meta OAuth 授权</el-button>
-        <el-button type="primary" :icon="Plus" @click="openCreate">手工新增 Token</el-button>
+        <el-button v-if="!connectorMode" type="primary" :icon="Plus" @click="openCreate">手工新增 Token</el-button>
       </div>
     </div>
+
+    <el-alert
+      v-if="connectorMode"
+      type="info"
+      :closable="false"
+      show-icon
+      class="tip-alert"
+      title="当前使用海外 Connector OAuth，国内服务不保存或管理 Meta 明文 Token。请在主账号管理中发起授权、同步和重新授权。"
+    />
 
     <el-alert v-if="authResult" :type="authResult.type" :closable="true" show-icon class="tip-alert" @close="clearAuthResult">
       <template #title>
@@ -69,7 +78,7 @@
         <el-table-column label="最近校验" width="170">
           <template #default="{ row }">{{ row.last_verified_at ? formatTime(row.last_verified_at) : '未校验' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="360" fixed="right">
+        <el-table-column v-if="!connectorMode" label="操作" width="360" fixed="right">
           <template #default="{ row }">
             <el-button link type="success" size="small" @click="reauthorize(row)">重新授权</el-button>
             <el-button link type="primary" size="small" :loading="verifyingId === row.id" @click="verifyOne(row)">校验</el-button>
@@ -85,7 +94,7 @@
       </el-table>
     </el-card>
 
-    <el-dialog v-model="showCreate" title="手工新增 Meta 凭据" width="560px" destroy-on-close>
+    <el-dialog v-if="!connectorMode" v-model="showCreate" title="手工新增 Meta 凭据" width="560px" destroy-on-close>
       <el-alert type="info" :closable="false" show-icon class="mb12" title="推荐优先使用 Meta OAuth。手工 Token 仅用于系统用户等已有 Token 的场景。" />
       <el-form :model="createForm" label-width="120px">
         <el-form-item label="所属 BM" required>
@@ -116,7 +125,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showRotate" :title="`轮换 Token - ${current?.meta_account_name || ''}`" width="560px" destroy-on-close>
+    <el-dialog v-if="!connectorMode" v-model="showRotate" :title="`轮换 Token - ${current?.meta_account_name || ''}`" width="560px" destroy-on-close>
       <el-form :model="rotateForm" label-width="120px">
         <el-form-item label="凭据名称"><el-input v-model="rotateForm.name" placeholder="留空沿用原名称" /></el-form-item>
         <el-form-item label="新 Token" required><el-input v-model="rotateForm.access_token" type="textarea" :rows="3" show-password /></el-form-item>
@@ -136,7 +145,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="showReveal" title="查看明文 Token" width="560px">
+    <el-dialog v-if="!connectorMode" v-model="showReveal" title="查看明文 Token" width="560px">
       <el-alert type="warning" :closable="false" show-icon title="此操作会记录审计日志，请勿外传。" />
       <el-input :model-value="revealedToken" type="textarea" :rows="4" readonly class="reveal-box" />
       <template #footer><el-button @click="copyToken">复制</el-button><el-button type="primary" @click="showReveal = false">关闭</el-button></template>
@@ -167,6 +176,7 @@ const showReveal = ref(false)
 const current = ref<CredentialItem | null>(null)
 const revealedToken = ref('')
 const authResult = ref<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null)
+const connectorMode = ref(false)
 
 const createForm = ref({ meta_account_id: '', access_token: '', name: '', app_id: '', token_type: 'USER', expires_at: '' as string | null, replace_active: true })
 const rotateForm = ref({ access_token: '', name: '', token_type: 'USER', expires_at: '' as string | null, keep_old: true })
@@ -198,6 +208,12 @@ function handleOAuthCallback() {
 async function loadMetas() {
   try { const { data } = await metaAccountApi.list(); metas.value = data } catch { metas.value = [] }
 }
+async function loadMode() {
+  try {
+    const { data } = await credentialApi.accessMode()
+    connectorMode.value = data?.access_mode === 'connector'
+  } catch { connectorMode.value = false }
+}
 async function loadList() {
   loading.value = true
   try {
@@ -208,7 +224,7 @@ async function loadList() {
     list.value = data
   } finally { loading.value = false }
 }
-async function refreshAll() { await Promise.all([loadMetas(), loadList()]) }
+async function refreshAll() { await Promise.all([loadMode(), loadMetas(), loadList()]) }
 
 async function startMetaAuth(metaId = metaFilter.value) {
   if (!metaId) { ElMessage.warning('请先选择要授权的 BM'); return }

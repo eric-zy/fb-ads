@@ -78,45 +78,15 @@ class CredentialService:
         raise CredentialError(f"广告账户 {ad_account_id} 无可用凭据")
 
     def get_meta_credential(self, meta_account_id: str) -> Optional[Credential]:
-        """取该 BM 当前生效（ACTIVE）的凭据，没有则返回 None
-
-        解析顺序：
-            1. BM 显式指定的 `default_credential_id`（管理员可人工选择）
-            2. 该 BM 下最新一条 ACTIVE 凭据（向后兼容的推导逻辑）
-
-        指定的默认凭据若已被禁用/过期，会记录 warning 并回退到推导逻辑，
-        避免因指向失效凭据导致整个 BM 不可用。
-        """
-        meta = (
-            self.db.query(MetaAccount)
-            .filter(MetaAccount.id == meta_account_id)
-            .first()
-        )
-        if meta and meta.default_credential_id:
-            cred = (
-                self.db.query(Credential)
-                .filter(
-                    Credential.id == meta.default_credential_id,
-                    Credential.status == CredentialStatus.ACTIVE.value,
-                )
-                .first()
-            )
-            if cred:
-                return cred
-            logger.warning(
-                f"[CredentialService] BM {meta_account_id} 指定的默认凭据 "
-                f"{meta.default_credential_id} 不可用，回退为最新 ACTIVE 凭据"
-            )
-
-        return (
-            self.db.query(Credential)
-            .filter(
-                Credential.meta_account_id == meta_account_id,
-                Credential.status == CredentialStatus.ACTIVE.value,
-            )
-            .order_by(Credential.created_at.desc())
-            .first()
-        )
+        """取 BM 显式指定且仍有效的凭据，不按创建时间猜测。"""
+        meta = self.db.query(MetaAccount).filter(MetaAccount.id == meta_account_id).first()
+        if not meta or not meta.default_credential_id:
+            return None
+        return self.db.query(Credential).filter(
+            Credential.id == meta.default_credential_id,
+            Credential.meta_account_id == meta_account_id,
+            Credential.status == CredentialStatus.ACTIVE.value,
+        ).first()
 
     def resolve_token_for_meta(
         self,
@@ -302,6 +272,9 @@ class CredentialService:
         )
         cred.set_access_token(plain_token)
         self.db.add(cred)
+        meta = self.db.query(MetaAccount).filter(MetaAccount.id == meta_account_id).first()
+        if meta and (replace_active or not meta.default_credential_id):
+            meta.default_credential_id = cred.id
         self.db.commit()
         self.db.refresh(cred)
 

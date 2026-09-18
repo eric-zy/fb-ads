@@ -2,7 +2,7 @@
 
 流程（文档 §23）：
 
-    Business → Credential → Meta API → Normalize → Validate → Upsert → Update Sync Status
+    Business → Connector Credential → Meta API → Normalize → Validate → Upsert → Update Sync Status
 
 Upsert 规则（文档 §24）：
     - 唯一键：(tenant_id, account_id)；BM 访问关系另存 BusinessAssetAccess
@@ -20,12 +20,10 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from config.settings import settings
 from core.logger import logger
 from models import (
     AdAccount,
     BusinessAssetAccess,
-    Credential,
     MetaAccount,
     MetaSyncLog,
     # SyncStatus 是 BM 上的同步状态位（models/meta_account.py），
@@ -35,9 +33,8 @@ from models import (
     SyncType,
     SystemStatus,
 )
-from services.meta.business_service import BusinessService
-from services.meta.client import MetaClient
-from services.meta.errors import MetaApiError
+from services.credential_resolver import CredentialResolver
+from services.fb_connector_client import FBConnectorClient, FBConnectorError
 
 
 def _minor_int(value) -> Optional[int]:
@@ -55,7 +52,6 @@ class MetaSyncService:
 
     def __init__(self, db: Session):
         self.db = db
-        self.business_service = BusinessService(db)
 
     # ------------------------------------------------------------------
     # 同步日志
@@ -106,15 +102,6 @@ class MetaSyncService:
         self.db.refresh(log)
         return log
 
-    def _dev_mode_log(self, business_id: Optional[str], sync_type: str) -> MetaSyncLog:
-        """未配置真实 FB 凭据时的降级日志"""
-        logger.warning(f"[DEV] 未配置 FB 凭据，跳过 {sync_type} 同步")
-        log = self._start_log(business_id, sync_type)
-        return self._finish_log(
-            log, total=0, success=0, failed=0,
-            error_message="开发模式：未配置 FB_ACCESS_TOKEN，未连接 Meta",
-        )
-
     # ------------------------------------------------------------------
     # 同步 BM 基础信息
     # ------------------------------------------------------------------
@@ -129,8 +116,14 @@ class MetaSyncService:
         self.db.commit()
 
         try:
-            data = self.business_service.fetch_business_info(business)
-        except MetaApiError as e:
+            credential_id = business.connector_credential_id
+            if not credential_id:
+                raise FBConnectorError("BM 未绑定海外 Connector 凭据")
+            data = FBConnectorClient().verify_business(business.business_id, credential_id)
+            business.name = data.get("name") or business.name
+            business.timezone = data.get("timezone") or business.timezone
+            business.currency = data.get("currency") or business.currency
+        except FBConnectorError as e:
             business.sync_status = SyncStatus.FAILED.value
             business.last_sync_error = str(e)
             self.db.commit()
@@ -160,11 +153,13 @@ class MetaSyncService:
         self.db.commit()
 
         try:
-            token = self.business_service._resolve_token(business)
-            raw_accounts: List[Dict[str, Any]] = MetaClient(
-                access_token=token
-            ).get_ad_accounts(business.business_id)
-        except MetaApiError as e:
+            credential_id = business.connector_credential_id
+            if not credential_id:
+                raise FBConnectorError("BM 未绑定海外 Connector 凭据")
+            raw_accounts = FBConnectorClient().sync_accounts(
+                business.business_id, credential_id
+            ).get("accounts", [])
+        except FBConnectorError as e:
             business.sync_status = SyncStatus.FAILED.value
             business.last_sync_error = str(e)
             self.db.commit()
@@ -225,8 +220,12 @@ class MetaSyncService:
         if not business:
             raise ValueError(f"BM 不存在: {business_id}")
 
-        token = self.business_service._resolve_token(business)
-        return MetaClient(access_token=token).get_ad_accounts(business.business_id)
+        credential_id = business.connector_credential_id
+        if not credential_id:
+            raise ValueError("BM 未绑定海外 Connector 凭据")
+        return FBConnectorClient().sync_accounts(
+            business.business_id, credential_id
+        ).get("accounts", [])
 
     def import_ad_accounts(
         self, business_id: str, account_ids: List[str]
@@ -247,9 +246,13 @@ class MetaSyncService:
         }
 
         try:
-            token = self.business_service._resolve_token(business)
-            raw_accounts = MetaClient(access_token=token).get_ad_accounts(business.business_id)
-        except MetaApiError as e:
+            credential_id = business.connector_credential_id
+            if not credential_id:
+                raise FBConnectorError("BM 未绑定海外 Connector 凭据")
+            raw_accounts = FBConnectorClient().sync_accounts(
+                business.business_id, credential_id
+            ).get("accounts", [])
+        except FBConnectorError as e:
             return self._finish_log(log, total=len(wanted), success=0, failed=len(wanted),
                                     error_message=str(e))
 
@@ -339,12 +342,8 @@ class MetaSyncService:
                     status="ACTIVE",
                 )
                 self.db.add(access)
-            credential = self.db.query(Credential).filter(
-                Credential.meta_account_id == business.id,
-                Credential.status == "ACTIVE",
-            ).order_by(Credential.updated_at.desc()).first()
-            if credential:
-                access.credential_id = credential.id
+            account.connector_credential_id = business.connector_credential_id
+            access.credential_id = None
             access.last_verified_at = datetime.utcnow()
             access.last_error = None
             # 兼容旧代码：business_id 保留为真实 owner（首次接入时为当前 BM），
@@ -354,12 +353,8 @@ class MetaSyncService:
 
         if business and business.connection_id:
             account.connection_id = business.connection_id
-        elif account.credential_id:
-            credential = self.db.query(Credential).filter(
-                Credential.id == account.credential_id
-            ).first()
-            if credential and credential.connection_id:
-                account.connection_id = credential.connection_id
+        elif account.connector_credential_id:
+            account.connection_id = None
 
         account.meta_business_id = raw_business_id or (business.business_id if business else None)
         # Meta 返回的 business 与当前 BM 不一致时，表示当前 BM 以合作方身份管理该客户账户。
@@ -406,19 +401,28 @@ class MetaSyncService:
         log = self._start_log(business.id if business else None, SyncType.AD_ACCOUNT.value)
 
         try:
-            # 个人广告账户不归属 BM，必须使用该账户绑定的 OAuth 凭据。
-            # 延迟导入，避免 services.meta -> sync_service -> credential_service
-            # 与 credential_service -> services.meta 形成循环依赖。
-            from services.credential_service import CredentialError, CredentialService
-            service = CredentialService(self.db).build_service(ad_account_id)
-            raw = service.get_ad_account(account.account_id)
+            ref = CredentialResolver(self.db).for_account(account.id)
+            if business:
+                raw_accounts = FBConnectorClient().sync_accounts(
+                    business.business_id, ref.credential_id
+                ).get("accounts", [])
+            else:
+                raw_accounts = FBConnectorClient().oauth_ad_accounts(
+                    ref.credential_id
+                ).get("accounts", [])
+            wanted = account.account_id.removeprefix("act_")
+            raw = next(
+                (
+                    item for item in raw_accounts
+                    if str(item.get("id", "")).removeprefix("act_") == wanted
+                ),
+                None,
+            )
+            if not raw:
+                raise FBConnectorError("Connector 未返回该广告账户")
             self._upsert_ad_account(business, raw, existing=account)
             self.db.commit()
-        except CredentialError as e:
-            account.last_sync_error = str(e)
-            self.db.commit()
-            return self._finish_log(log, total=1, success=0, failed=1, error_message=str(e))
-        except MetaApiError as e:
+        except FBConnectorError as e:
             account.last_sync_error = str(e)
             self.db.commit()
             return self._finish_log(log, total=1, success=0, failed=1, error_message=str(e))

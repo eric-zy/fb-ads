@@ -108,16 +108,14 @@ class MetaAccount(TenantMixin, Base):
     is_default = Column(Boolean, default=False, comment="是否为默认主账号")
 
     # ---------- 默认凭据（文档 §5 credential_id） ----------
-    # 反向设计下（1 BM → N 凭据），原先只能按"最新一条 ACTIVE"推导默认凭据，
-    # 管理员无法显式指定、多条并存时结果取决于创建时间。
-    # 该字段让默认凭据可显式指定；为空时仍回退到原推导逻辑，向后兼容。
+    # 一个 BM 可保留多条凭据，必须显式指定当前生效凭据。
     # use_alter=True：与 credentials.meta_account_id 构成双向外键，
     # 必须延后到 ALTER 阶段建约束，否则 create_all 会因循环依赖失败。
     default_credential_id = Column(
         String(50),
         ForeignKey("credentials.id", ondelete="SET NULL", use_alter=True),
         nullable=True,
-        comment="默认凭据 ID；为空则回退为「最新一条 ACTIVE 凭据」",
+        comment="默认凭据 ID；为空表示未配置凭据",
     )
     default_credential = relationship(
         "Credential", foreign_keys=[default_credential_id]

@@ -3,6 +3,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+if [[ ! -f .env ]]; then
+  echo "[deploy] missing deploy/.env; copy .env.example and fill production values first" >&2
+  exit 1
+fi
+if grep -Eiq 'change-me|replace-with|example\.com|your-secret|your_app|your_access' .env; then
+  echo "[deploy] placeholder value detected in deploy/.env" >&2
+  exit 1
+fi
+
 compose=(docker compose -f docker-compose.yml)
 if [[ -f ../frontend/dist/index.html ]]; then
   echo "[deploy] using prebuilt frontend/dist static assets"
@@ -14,6 +23,9 @@ fi
 # API/Worker/Beat 共用 fbads-api:latest，只构建一次，避免三个服务并行生成重复镜像。
 "${compose[@]}" build api nginx
 
+echo "[deploy] 校验 SaaS 运行配置：Connector / OSS / 生产密钥..."
+"${compose[@]}" run --rm --no-deps api python -c 'from config.settings import settings; settings.validate_runtime_config(); print("runtime config ok")'
+
 echo "[deploy] 校验 API 容器媒体工具：ffprobe..."
 "${compose[@]}" run --rm api ffprobe -version >/dev/null
 
@@ -23,16 +35,16 @@ echo "[deploy] 校验 API 容器媒体工具：ffprobe..."
 # 这里不依赖 current 的文本输出判断是否需要迁移，避免连接异常、多个 head
 # 或 Alembic 输出格式变化导致误判并漏执行迁移。
 echo "[deploy] 迁移前数据库版本："
-"${compose[@]}" run --rm api alembic current || {
+"${compose[@]}" run --rm api python -m alembic current || {
   echo "[deploy] 无法读取数据库当前版本，终止部署。" >&2
   exit 1
 }
 
-echo "[deploy] 执行数据库迁移：alembic upgrade head"
-"${compose[@]}" run --rm api alembic upgrade head
+echo "[deploy] 执行数据库迁移：python -m alembic upgrade head"
+"${compose[@]}" run --rm api python -m alembic upgrade head
 
 echo "[deploy] 校验数据库当前版本："
-"${compose[@]}" run --rm api alembic current
+"${compose[@]}" run --rm api python -m alembic current
 echo "[deploy] 数据库迁移完成。"
 
 # 数据库结构确认后再切换 API/Worker/Beat，避免出现 ORM 已更新而表结构未更新的窗口。

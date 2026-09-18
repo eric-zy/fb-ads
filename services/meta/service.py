@@ -445,6 +445,10 @@ class MetaAdsService:
         self, business_id: str, target_account_id: str
     ) -> Dict[str, Any]:
         """校验广告账户是否归属指定 BM（设计文档：BM → Ad Accounts 归属关系）"""
+        # 本地/测试环境没有真实 Meta App 时，不能把模拟 Token 发到 Graph API。
+        # 生产环境仍必须走真实归属校验。
+        if settings.ENVIRONMENT.lower() in {"development", "test"} and not settings.FB_APP_ID:
+            return {"verified": True, "dev_mode": True, "account_name": None}
         target = (target_account_id or "").replace("act_", "")
         bm_id = business_id[2:] if business_id.startswith("bm") else business_id
 

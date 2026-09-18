@@ -70,6 +70,12 @@ def _no_real_meta_api(monkeypatch):
     dev_mode 跳过分支——测试不应依赖外部凭据与网络。
     """
     monkeypatch.setattr(settings, "FB_ACCESS_TOKEN", "", raising=False)
+    # 测试必须同时清空 App 配置；仅清空 Token 时，BusinessService 仍会
+    # 认为 Meta App 已配置并对测试 Token 发起真实 Graph API 请求。
+    monkeypatch.setattr(settings, "FB_APP_ID", "", raising=False)
+    monkeypatch.setattr(settings, "FB_APP_SECRET", "", raising=False)
+    monkeypatch.setattr(settings, "FB_ACCESS_MODE", "direct", raising=False)
+    monkeypatch.setattr(settings, "ENVIRONMENT", "test", raising=False)
 
 
 def override_get_db():

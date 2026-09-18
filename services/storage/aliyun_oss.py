@@ -1,8 +1,4 @@
-"""Aliyun OSS V2 adapter.
-
-The SDK is imported lazily so local development can keep using the existing
-local storage mode until the OSS dependency and cloud credentials are enabled.
-"""
+"""Aliyun OSS V2 adapter."""
 
 from __future__ import annotations
 
@@ -27,8 +23,6 @@ class ObjectHead:
 
 class AliyunOSSStorage:
     def __init__(self) -> None:
-        if settings.MEDIA_STORAGE_PROVIDER != "oss":
-            raise StorageError("OSS 存储未启用")
         missing = [name for name, value in {
             "OSS_REGION": settings.OSS_REGION,
             "OSS_ENDPOINT": settings.OSS_ENDPOINT,

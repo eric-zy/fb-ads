@@ -131,10 +131,21 @@ REDIS_PASSWORD=<强密码>
 CELERY_BROKER_URL=redis://:你的REDIS_PASSWORD@redis:6379/0
 CELERY_RESULT_BACKEND=redis://:你的REDIS_PASSWORD@redis:6379/1
 CORS_ORIGINS=http://<服务器IP>     # 先用 IP 直连，不部署域名
-FB_APP_ID/FB_APP_SECRET/FB_ACCESS_TOKEN=<Meta 应用凭据>
+FB_ACCESS_MODE=connector
+FB_CONNECTOR_BASE_URL=<海外 Connector 地址>
+FB_CONNECTOR_SIGNING_KEY=<与海外 Connector 一致>
+CONNECTOR_SERVICE_TOKEN=<与海外 Connector 一致>
+SAAS_CALLBACK_BASE_URL=<国内 SaaS 回调地址>
+FRONTEND_BASE_URL=http://<服务器IP>:8094
+ADS_OSS_ACCESS_KEY_ID=<阿里云 RAM AccessKey ID>
+ADS_OSS_ACCESS_KEY_SECRET=<阿里云 RAM AccessKey Secret>
+ADS_OSS_BUCKET=q8picaaa
+ADS_OSS_REGION=cn-beijing
 ```
 
 > 注意：设了 REDIS_PASSWORD 后，`CELERY_BROKER_URL` 与 `CELERY_RESULT_BACKEND` 也要带密码，格式 `redis://:密码@redis:6379/0`。
+> Connector 模式下 Meta App Secret、OAuth 回调和 Meta Access Token 只配置在海外 Connector，国内 SaaS 不再配置 `FB_ACCESS_TOKEN`。
+> 当前素材服务强制使用阿里云 OSS，至少要配置 `ADS_OSS_ACCESS_KEY_ID`、`ADS_OSS_ACCESS_KEY_SECRET`、`ADS_OSS_BUCKET`、`ADS_OSS_REGION`。
 
 生成密钥：
 ```bash
@@ -168,17 +179,17 @@ fb-ads-nginx-1         fbads-nginx       Up
 ## 5. 初始化数据库与管理员
 
 ### 5.1 跑数据库迁移
-生产部署脚本会自动执行幂等迁移：每次部署都会运行 `alembic upgrade head`，已执行的版本会自动跳过，未执行的版本按链路补齐。迁移成功后才切换 API、Worker 和 Beat，避免代码与表结构不一致。
+生产部署脚本会自动执行幂等迁移：每次部署都会运行 `python -m alembic upgrade head`，已执行的版本会自动跳过，未执行的版本按链路补齐。迁移成功后才切换 API、Worker 和 Beat，避免代码与表结构不一致。
 
-数据库迁移统一由 `deploy/deploy.sh` 自动执行。脚本会启动并等待 PostgreSQL 健康检查，重新构建 API 镜像以带入最新迁移文件，检查迁移前版本，执行 `alembic upgrade head`，再输出迁移后的当前版本。任一步失败都会停止，不会继续重启业务容器。
+数据库迁移统一由 `deploy/deploy.sh` 自动执行。脚本会启动并等待 PostgreSQL 健康检查，重新构建 API 镜像以带入最新迁移文件，检查迁移前版本，执行 `python -m alembic upgrade head`，再输出迁移后的当前版本。任一步失败都会停止，不会继续重启业务容器。
 
 API/Worker 共用的后端镜像已内置 `ffmpeg`，其中包含 `ffprobe`，用于服务端解析视频尺寸、比例和时长。部署脚本会在迁移前执行 `ffprobe -version` 校验。
 
-手动执行时：
+仅在排障时手动执行：
 ```bash
 docker compose up -d db redis
-docker compose run --rm api alembic upgrade head
-docker compose run --rm api alembic current
+docker compose run --rm api python -m alembic upgrade head
+docker compose run --rm api python -m alembic current
 ```
 
 > 若 `alembic` 提示找不到，改用项目的初始化命令：

@@ -3,7 +3,7 @@
 # 导入 models 时会自动注册全局 ORM 过滤钩子。
 from models.tenant import Tenant, TenantStatus, TenantPlan, UserRole
 
-from models.ad_account import AdAccount, AccountStatus, SystemStatus
+from models.ad_account import AdAccount, SystemStatus
 from models.business_asset_access import BusinessAssetAccess
 from models.account_assignment import AccountAssignmentRule, AccountAssignmentLog
 from models.meta_account import MetaAccount, BusinessStatus, SyncStatus
@@ -12,6 +12,9 @@ from models.media_upload_session import MediaUploadSession
 from models.creative_asset_group import CreativeAssetGroup, creative_asset_group_members
 from models.creative_asset_tag import CreativeAssetTag, creative_asset_tag_links
 from models.meta_asset_binding import MetaAssetBinding
+from models.creative_asset_usage_event import CreativeAssetUsageEvent
+from models.creative_asset_usage_daily_stat import CreativeAssetUsageDailyStat
+from models.creative_asset_usage_account_daily_stat import CreativeAssetUsageAccountDailyStat
 from models.campaign import Campaign, CampaignStatus
 from models.ad_group import AdGroup
 from models.ad import Ad
@@ -49,7 +52,6 @@ __all__ = [
     'UserRole',
     'AdAccount',
     'BusinessAssetAccess',
-    'AccountStatus',   # 遗留枚举，已被 SystemStatus 取代，仅为兼容保留
     'SystemStatus',
     'MetaAccount',
     'BusinessStatus',
@@ -61,6 +63,9 @@ __all__ = [
     'CreativeAsset',
     'MediaUploadSession',
     'MetaAssetBinding',
+    'CreativeAssetUsageEvent',
+    'CreativeAssetUsageDailyStat',
+    'CreativeAssetUsageAccountDailyStat',
     'PublishTask',
     'PublishedAd',
     'AccountInsight',

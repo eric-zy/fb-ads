@@ -23,19 +23,17 @@ from core.enums import (
 )
 from core.logger import logger
 from core.tenant import resolve_tenant_of, tenant_task
+from config.settings import settings
 from models import CampaignInstance, AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, AdAccount, MetaPage, SinanCredential
-from services.campaign_builder import CampaignDeploymentBuilder
-from services.credential_service import CredentialError, CredentialService
+from services.credential_service import CredentialService
 from services.credential_resolver import CredentialResolver
 from services.connector_campaign_builder import build_connector_payload
 from services.fb_connector_client import FBConnectorClient
+from services.media_usage import extract_asset_ids, record_template_usage
 from services.meta import MetaApiError
 from services.meta.page_access import page_account_access_error
 from services.integrations.sinan_client import SinanClient
 from core.security import decrypt_token
-from tasks.meta_sync_tasks import sync_delivery_objects_task
-import copy
-import os
 
 # 未到达终态的子项状态
 _ACTIVE_ITEM_STATUSES = [JobItemStatus.PENDING.value, JobItemStatus.RUNNING.value]
@@ -71,6 +69,18 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
                 cleanup = {"status": "FAILED", "error": str(exc)}
             item.mark_failed(result.get("error_code") or "CONNECTOR_DEPLOY_FAILED", result.get("error_message") or "海外投放创建失败", ErrorCategory.UNKNOWN)
             item.response_payload = {**(item.response_payload or {}), "cleanup": cleanup}
+            template = item.job.template if item.job else None
+            record_template_usage(
+                db,
+                tenant_id=item.tenant_id,
+                event_key_prefix=f"PUBLISH:JOB_ITEM:{job_item_id}",
+                asset_ids=extract_asset_ids(template.creative_config_json if template else None),
+                status="FAILED",
+                publish_task_id=item.job_id,
+                ad_account_id=item.ad_account_id,
+                error_message=result.get("error_message") or "海外投放创建失败",
+                details={"mode": "connector", "job_item_id": job_item_id},
+            )
             db.commit()
             _finalize_job_if_done(db, item.job_id)
             db.commit()
@@ -97,6 +107,18 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
             adset = list(adsets_by_key.values())[min(pos - 1, len(adsets_by_key) - 1)] if adsets_by_key else None
             if adset:
                 db.add(AdInstance(id=uuid.uuid4().hex, adset_instance_id=adset.id, meta_ad_id=remote.get("id"), name=remote.get("client_key") or f"Ad {pos}", status="PAUSED"))
+        template = item.job.template if item.job else None
+        record_template_usage(
+            db,
+            tenant_id=item.tenant_id,
+            event_key_prefix=f"PUBLISH:JOB_ITEM:{job_item_id}",
+            asset_ids=extract_asset_ids(template.creative_config_json if template else None),
+            status="SUCCESS",
+            publish_task_id=item.job_id,
+            ad_account_id=item.ad_account_id,
+            external_id=item.meta_campaign_id,
+            details={"mode": "connector", "job_item_id": job_item_id},
+        )
         db.commit()
         _finalize_job_if_done(db, item.job_id)
         db.commit()
@@ -108,7 +130,7 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
 @shared_task(bind=True, name="meta.retry_asset_binding", max_retries=2, default_retry_delay=30)
 @tenant_task(lambda self, binding_id: resolve_tenant_of(MetaAssetBinding, binding_id))
 def retry_asset_binding_task(self, binding_id: str) -> Dict[str, Any]:
-    """独立重试单个素材到账户的 Meta 上传。"""
+    """重置素材绑定并重新投递 Connector 上传任务。"""
     db = SessionLocal()
     try:
         binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
@@ -116,138 +138,33 @@ def retry_asset_binding_task(self, binding_id: str) -> Dict[str, Any]:
             return {"status": "failed", "error": "素材映射不存在"}
         asset = db.query(CreativeAsset).filter(CreativeAsset.id == binding.asset_id).first()
         account = db.query(AdAccount).filter(AdAccount.id == binding.ad_account_id).first()
-        if not asset or not asset.file_path or not os.path.exists(asset.file_path):
-            raise RuntimeError("素材文件不存在")
+        if not asset or not asset.object_key:
+            raise RuntimeError("OSS 素材不存在")
         if not account:
             raise RuntimeError("广告账户不存在")
-        service = CredentialService(db).build_service(account.id)
-        binding.status = "UPLOADING"
+        if asset.storage_status != "READY" or asset.processing_status != "READY":
+            raise RuntimeError("素材尚未完成 OSS 处理")
+        binding.status = "PENDING"
         binding.error_message = None
+        binding.error_code = None
         db.commit()
-        result = (service.upload_video(account.account_id, asset.file_path)
-                  if asset.asset_type == "video"
-                  else service.upload_image(account.account_id, asset.file_path))
-        binding.meta_asset_id = result.get("video_id") if asset.asset_type == "video" else result.get("hash")
-        if not binding.meta_asset_id:
-            raise RuntimeError("Meta 未返回素材 ID")
-        binding.status = "READY"
-        binding.uploaded_at = datetime.utcnow()
-        binding.last_verified_at = datetime.utcnow()
-        db.commit()
-        return {"status": "success", "binding": binding.to_dict()}
+        from tasks.media_tasks import upload_asset_task
+        task = upload_asset_task.delay(binding.id)
+        return {"status": "queued", "binding_id": binding.id, "task_id": task.id}
     except Exception as exc:
         db.rollback()
         binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
         if binding:
             binding.status = "FAILED"
             binding.error_message = str(exc)
-            if isinstance(exc, MetaApiError):
-                binding.error_code = f"META_{exc.category.value}"
+            binding.error_code = type(exc).__name__
             db.commit()
-        # 权限/对象不存在/校验错误需要重新授权或修正资产，不应自动重复上传。
-        if isinstance(exc, MetaApiError) and not exc.retryable:
-            return {"status": "failed", "binding_id": binding_id, "error": str(exc)}
         try:
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             return {"status": "failed", "error": str(exc)}
     finally:
         db.close()
-
-
-def _prepare_template_assets(db: Session, service: Any, template: Any, ad_account_id: str, meta_ad_account_id: str) -> Any:
-    """在账户子任务内按需上传素材，并解析为当前账户专属的 Meta ID。"""
-    config = copy.deepcopy(template.creative_config_json or {})
-    # 兼容新模板的公共文案配置，以及旧模板的创意级配置。
-    # 仅在本次账户部署副本中合并，不回写公共模板，避免不同账户之间互相污染。
-    shared = config.get("shared_creative") or {}
-    if not isinstance(shared, dict):
-        shared = {}
-    creatives = config.get("creatives")
-    if not isinstance(creatives, list):
-        creatives = [config] if config else []
-    for creative in creatives:
-        if isinstance(creative, dict):
-            for field in ("primary_text", "headline", "description", "cta", "landing_url"):
-                if (creative.get(field) is None or creative.get(field) == "") and shared.get(field) not in (None, ""):
-                    creative[field] = shared[field]
-    carousel_cards = config.get("carousel_cards")
-    if isinstance(carousel_cards, list):
-        for card in carousel_cards:
-            if isinstance(card, dict):
-                for field in ("primary_text", "headline", "description", "cta", "landing_url"):
-                    if (card.get(field) is None or card.get(field) == "") and shared.get(field) not in (None, ""):
-                        card[field] = shared[field]
-    # 直接投放时创意可能挂在 adsets[].creatives，而不是顶层 creatives。
-    # 两种结构都要注入当前广告账户对应的 image_hash/video_id。
-    creative_groups = [creatives]
-    creative_groups.extend(
-        adset.get("creatives")
-        for adset in (config.get("adsets") or [])
-        if isinstance(adset, dict) and isinstance(adset.get("creatives"), list)
-    )
-    for creative in (item for group in creative_groups for item in group):
-        if not isinstance(creative, dict):
-            continue
-        asset_id = creative.get("asset_id")
-        if not asset_id:
-            continue
-        asset = db.query(CreativeAsset).filter(CreativeAsset.id == asset_id).first()
-        if not asset or not asset.file_path or not os.path.exists(asset.file_path):
-            raise RuntimeError(f"素材文件不存在: {asset_id}")
-        binding = db.query(MetaAssetBinding).filter(
-            MetaAssetBinding.asset_id == asset_id,
-            MetaAssetBinding.ad_account_id == ad_account_id,
-        ).first()
-        if not binding:
-            import uuid
-            binding = MetaAssetBinding(id=uuid.uuid4().hex, tenant_id=account.tenant_id, asset_id=asset_id,
-                                       ad_account_id=ad_account_id,
-                                       meta_asset_type=asset.asset_type, status="PENDING")
-            db.add(binding)
-            db.flush()
-        if binding.status != "READY" or not binding.meta_asset_id:
-            binding.status = "UPLOADING"
-            binding.error_message = None
-            db.commit()
-            try:
-                result = (service.upload_video(meta_ad_account_id, asset.file_path)
-                          if asset.asset_type == "video"
-                          else service.upload_image(meta_ad_account_id, asset.file_path))
-                meta_id = result.get("video_id") if asset.asset_type == "video" else result.get("hash")
-                if not meta_id:
-                    raise RuntimeError("Meta 未返回素材 ID")
-                binding.meta_asset_id = meta_id
-                binding.status = "READY"
-                binding.uploaded_at = datetime.utcnow()
-                binding.last_verified_at = datetime.utcnow()
-                db.commit()
-            except Exception as exc:
-                db.rollback()
-                binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding.id).first()
-                if binding:
-                    binding.status = "FAILED"
-                    binding.error_message = str(exc)
-                    db.commit()
-                raise
-        meta_id = binding.meta_asset_id
-        creative["video_id" if asset.asset_type == "video" else "image_hash"] = meta_id
-    if config.get("creative_format") == "CAROUSEL":
-        for index, card in enumerate(config.get("carousel_cards") or [], 1):
-            asset_id = card.get("asset_id")
-            asset = db.query(CreativeAsset).filter(CreativeAsset.id == asset_id).first() if asset_id else None
-            if not asset or asset.asset_type != "image":
-                raise RuntimeError(f"轮播第 {index} 张卡片图片素材不存在或类型错误")
-            binding = db.query(MetaAssetBinding).filter(
-                MetaAssetBinding.asset_id == asset_id,
-                MetaAssetBinding.ad_account_id == ad_account_id,
-            ).first()
-            if not binding or binding.status != "READY" or not binding.meta_asset_id:
-                raise RuntimeError(f"轮播第 {index} 张卡片素材尚未同步完成")
-            card["image_hash"] = binding.meta_asset_id
-            card["asset_type"] = "image"
-    config["creatives"] = creatives
-    return config
 
 
 # ----------------------------------------------------------------------
@@ -337,7 +254,7 @@ def _mark_item_failed(
     item.response_payload = payload
     # 只有 Token 本身失效才禁用凭据。对象级权限不足不代表该 Token 对
     # 其它 BM/账户也无效，不能因此切断整条 OAuth 授权连接。
-    if category == ErrorCategory.AUTH:
+    if category == ErrorCategory.AUTH and settings.FB_ACCESS_MODE != "connector":
         CredentialService(db).mark_invalid_by_account(item.ad_account_id, message)
     db.commit()
 
@@ -412,6 +329,7 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
     """单个账户的部署执行（设计文档第 39 节）"""
     db = SessionLocal()
     job_id: Optional[str] = None
+    usage_asset_ids: list[str] = []
     try:
         item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
         if not item:
@@ -437,6 +355,7 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             item.mark_failed("NO_ACCOUNT", "广告账户不存在", ErrorCategory.VALIDATION)
             db.commit()
             return {"error": "account missing"}
+        usage_asset_ids = extract_asset_ids(template.creative_config_json)
 
         page_id = (template.creative_config_json or {}).get("page_id")
         page = db.query(MetaPage).filter(
@@ -483,6 +402,16 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
         # Connector 模式只在国内生成协议并投递海外任务，国内不读取 FB Token。
         ref = CredentialResolver(db).for_account(item.ad_account_id)
         if ref.mode == "connector":
+            record_template_usage(
+                db,
+                tenant_id=item.tenant_id,
+                event_key_prefix=f"PUBLISH:JOB_ITEM:{job_item_id}",
+                asset_ids=usage_asset_ids,
+                status="PENDING",
+                publish_task_id=job_id,
+                ad_account_id=item.ad_account_id,
+                details={"mode": "connector", "job_item_id": job_item_id},
+            )
             protocol_payload = build_connector_payload(
                 template, account.account_id, budget_override=budget_override,
                 status=status, campaign_name=sinan.get("campaign_name"),
@@ -501,67 +430,7 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             poll_connector_deployment_task.apply_async(args=[job_item_id], countdown=5)
             return {"status": "QUEUED", "job_item_id": job_item_id, **result}
 
-        # direct 模式每个账户解析自己的 token（多 BM / 多账户架构的关键）
-        try:
-            service = CredentialService(db).build_service(
-                item.ad_account_id,
-                access_business_id=item.access_business_id,
-            )
-        except CredentialError as e:
-            item.mark_failed("NO_CREDENTIAL", str(e), ErrorCategory.AUTH)
-            db.commit()
-            logger.error(f"[JobItem {job_item_id}] 凭据不可用: {e}")
-            return {"error": str(e)}
-
-        original_creative_config = template.creative_config_json
-        original_template_name = template.name
-        if sinan.get("landing_url"):
-            patched_config = copy.deepcopy(template.creative_config_json or {})
-            creatives = patched_config.get("creatives") if isinstance(patched_config.get("creatives"), list) else [patched_config]
-            for creative in creatives: creative["landing_url"] = sinan["landing_url"]
-            patched_config["creatives"] = creatives
-            if isinstance(patched_config.get("carousel_cards"), list):
-                for card in patched_config["carousel_cards"]:
-                    if isinstance(card, dict): card["landing_url"] = sinan["landing_url"]
-            template.creative_config_json = patched_config
-        template.creative_config_json = _prepare_template_assets(
-            db, service, template, item.ad_account_id, account.account_id
-        )
-
-        try:
-            builder = CampaignDeploymentBuilder(
-                db,
-                service,
-                template,
-                ad_account_id=item.ad_account_id,
-                meta_ad_account_id=account.account_id,
-                budget_override=budget_override,
-                status=status,
-                campaign_name=sinan.get("campaign_name"),
-                adset_name=sinan.get("adset_name"),
-            )
-            result = builder.build()
-        finally:
-            # 账户专属 hash/video_id 只应进入映射表，不能污染公共模板。
-            template.creative_config_json = original_creative_config
-            template.name = original_template_name
-
-        item.status = JobItemStatus.SUCCESS.value
-        item.campaign_instance_id = result.get("campaign_instance_id")
-        item.meta_campaign_id = result.get("meta_campaign_id")
-        item.adset_ids = result.get("adset_ids")
-        item.ad_ids = result.get("ad_ids")
-        item.response_payload = result
-        db.commit()
-
-        # 发布完成后自动拉取一次 Meta 状态，详情页无需等待人工点击“同步 Meta”。
-        # 同步失败不影响已成功的发布结果，由同步任务自身记录并可在页面手动重试。
-        sync_delivery_objects_task.delay(item.ad_account_id)
-
-        logger.info(
-            f"[JobItem {job_item_id}] 部署成功 campaign={result.get('meta_campaign_id')}"
-        )
-        return result
+        raise RuntimeError("广告账户未绑定海外 Connector 凭据")
 
     except MetaApiError as e:
         db.rollback()
@@ -581,6 +450,20 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
         if cleanup:
             message += f"；补偿清理失败对象: {', '.join(cleanup)}"
         _mark_item_failed(db, job_item_id, e.code, message, e.category)
+        item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
+        if item:
+            record_template_usage(
+                db,
+                tenant_id=item.tenant_id,
+                event_key_prefix=f"PUBLISH:JOB_ITEM:{job_item_id}",
+                asset_ids=usage_asset_ids,
+                status="FAILED",
+                publish_task_id=job_id,
+                ad_account_id=item.ad_account_id,
+                error_message=message,
+                details={"mode": "connector", "job_item_id": job_item_id},
+            )
+            db.commit()
         return {"error": message, "category": e.category.value}
     except ValueError as e:
         # 模板参数在调用 Meta 前校验，按业务校验失败记录，避免被归类为 UNKNOWN。
@@ -599,6 +482,20 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 }
         message = str(e) + (f"；补偿清理失败对象: {', '.join(cleanup)}" if cleanup else "")
         _mark_item_failed(db, job_item_id, "INVALID_TEMPLATE", message, ErrorCategory.VALIDATION)
+        item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
+        if item:
+            record_template_usage(
+                db,
+                tenant_id=item.tenant_id,
+                event_key_prefix=f"PUBLISH:JOB_ITEM:{job_item_id}",
+                asset_ids=usage_asset_ids,
+                status="FAILED",
+                publish_task_id=job_id,
+                ad_account_id=item.ad_account_id,
+                error_message=message,
+                details={"mode": "connector", "job_item_id": job_item_id},
+            )
+            db.commit()
         return {"error": message, "category": ErrorCategory.VALIDATION.value}
     except Exception as e:  # 兜底，避免 worker 静默吞异常
         db.rollback()
@@ -616,6 +513,20 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 }
         message = str(e) + (f"；补偿清理失败对象: {', '.join(cleanup)}" if cleanup else "")
         _mark_item_failed(db, job_item_id, None, message, ErrorCategory.UNKNOWN)
+        item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
+        if item:
+            record_template_usage(
+                db,
+                tenant_id=item.tenant_id,
+                event_key_prefix=f"PUBLISH:JOB_ITEM:{job_item_id}",
+                asset_ids=usage_asset_ids,
+                status="FAILED",
+                publish_task_id=job_id,
+                ad_account_id=item.ad_account_id,
+                error_message=message,
+                details={"mode": "connector", "job_item_id": job_item_id},
+            )
+            db.commit()
         return {"error": message}
     finally:
         _finalize_job_if_done(db, job_id)
@@ -651,10 +562,8 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
         action = job.action_type
         params = job.params or {}
 
-        service = CredentialService(db).build_service(
-            item.ad_account_id,
-            access_business_id=item.access_business_id,
-        )
+        credential = CredentialResolver(db).for_account(item.ad_account_id)
+        connector = FBConnectorClient()
 
         # 优先用子项记录的实例，其次按 模板+账户 反查
         instance = item.campaign_instance
@@ -675,11 +584,23 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
             return {"error": "no instance"}
 
         if action == ActionType.PAUSE.value:
-            service.pause_campaign(instance.meta_campaign_id)
+            connector.update_object(
+                "CAMPAIGN",
+                instance.meta_campaign_id,
+                credential.credential_id,
+                {"status": "PAUSED"},
+                idempotency_key=f"{action}:campaign:{instance.meta_campaign_id}",
+            )
             instance.status = InstanceStatus.PAUSED.value
             instance.meta_status = InstanceStatus.PAUSED.value
         elif action == ActionType.ENABLE.value:
-            service.enable_campaign(instance.meta_campaign_id)
+            connector.update_object(
+                "CAMPAIGN",
+                instance.meta_campaign_id,
+                credential.credential_id,
+                {"status": "ACTIVE"},
+                idempotency_key=f"{action}:campaign:{instance.meta_campaign_id}",
+            )
             instance.status = InstanceStatus.ACTIVE.value
             instance.meta_status = InstanceStatus.ACTIVE.value
         elif action == ActionType.UPDATE_BUDGET.value:
@@ -691,8 +612,21 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 db.commit()
                 return {"error": "budget required"}
             # 预算在 AdSet 维度（设计文档第 22 节：找到实例 → 改预算）
+            daily_budget = int(round(float(budget) * 100))
+            if daily_budget <= 0:
+                item.mark_failed(
+                    "INVALID_BUDGET", "budget_override 必须为正数", ErrorCategory.VALIDATION
+                )
+                db.commit()
+                return {"error": "invalid budget"}
             for adset in instance.adsets:
-                service.update_budget(adset.meta_adset_id, budget, level="adset")
+                connector.update_object(
+                    "ADSET",
+                    adset.meta_adset_id,
+                    credential.credential_id,
+                    {"daily_budget": daily_budget},
+                    idempotency_key=f"{action}:adset:{adset.meta_adset_id}:{daily_budget}",
+                )
         else:
             item.mark_failed(
                 "UNSUPPORTED_ACTION", f"不支持的动作: {action}", ErrorCategory.VALIDATION

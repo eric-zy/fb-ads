@@ -62,30 +62,5 @@ def release(account_id: str, db: Session = Depends(get_db), current_user: User =
 def dispatch_unassigned(db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
     """将当前账户池内尚未分配的账户按规则批量分配。"""
     tenant_id = effective_tenant_id(current_user)
-    accounts = db.query(AdAccount.id).join(
-        BusinessAssetAccess, BusinessAssetAccess.asset_id == AdAccount.id
-    ).filter(
-        AdAccount.tenant_id == tenant_id,
-        AdAccount.system_status == "ACTIVE",
-        BusinessAssetAccess.tenant_id == tenant_id,
-        BusinessAssetAccess.status == "ACTIVE",
-    ).all()
-    assigned = 0
-    skipped = 0
-    errors = []
-    service = AccountDispatchService(db)
-    for (account_id,) in accounts:
-        exists = db.query(UserAccount.id).filter(
-            UserAccount.tenant_id == tenant_id,
-            UserAccount.account_id == account_id,
-            UserAccount.assignment_status == "ACTIVE",
-        ).first()
-        if exists:
-            skipped += 1
-            continue
-        try:
-            service.dispatch(tenant_id, account_id, current_user.id)
-            assigned += 1
-        except ValueError as exc:
-            errors.append({"account_id": account_id, "reason": str(exc)})
-    return {"status": "COMPLETED", "assigned": assigned, "skipped": skipped, "errors": errors}
+    result = AccountDispatchService(db).dispatch_unassigned(tenant_id, current_user.id)
+    return {"status": "COMPLETED", **result}

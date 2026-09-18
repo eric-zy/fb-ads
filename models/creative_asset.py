@@ -18,7 +18,7 @@ class CreativeAsset(TenantMixin, Base):
     name = Column(String(255), nullable=False, comment="素材名称（原始文件名）")
 
     created_by = Column(String(50), ForeignKey("users.id"), nullable=True, index=True, comment="上传用户")
-    visibility = Column(String(20), nullable=False, default="ACCOUNT", server_default="ACCOUNT", comment="PRIVATE/ACCOUNT/TENANT")
+    visibility = Column(String(20), nullable=False, default="TENANT", server_default="TENANT", comment="当前按租户共享；保留字段供后续扩展")
     group_id = Column(String(50), ForeignKey("creative_asset_groups.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # 素材类型
@@ -43,8 +43,8 @@ class CreativeAsset(TenantMixin, Base):
     processing_status = Column(String(20), nullable=True, comment="PENDING/PROCESSING/READY/FAILED")
     thumbnail_key = Column(String(1024), nullable=True)
     cover_key = Column(String(1024), nullable=True)
-    md5 = Column(String(32), nullable=True, index=True, comment="兼容性内容指纹")
-    sha256 = Column(String(64), nullable=True, index=True, comment="文件内容指纹")
+    md5 = Column(String(32), nullable=True, index=True, comment="兼容性内容指纹；上传校验和文件名优先使用")
+    sha256 = Column(String(64), nullable=True, index=True, comment="规范内容指纹；同租户同类型按此去重")
 
     # Facebook 引用标识（上传到 FB 后回填）
     fb_hash = Column(String(255), comment="图片 hash（AdImage）")

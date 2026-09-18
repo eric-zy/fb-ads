@@ -8,34 +8,23 @@ from core.database import SessionLocal
 from core.logger import logger
 from core.tenant import for_all_tenants, tenant_task
 from config.settings import settings
-from services.ad_account_resolver import resolve_tenant_of_ad_account_ref
+from models import AdAccount
 from services.ads_manager import AdsManager
 from services.risk_detector import RiskDetector
 from services.analytics import AnalyticsEngine
 from services.notifications import NotificationService
 
 
-def _resolve_account_tenant(account_ref: str):
-    """按广告账户解析租户：先按主键 id，再按 Meta 账户号 account_id(act_xxx)
-
-    历史调用方两种都传过，这里做兼容（实现见 services/ad_account_resolver）。
-    注意 act_xxx 并非全局唯一（唯一约束是 business_id + account_id），
-    同一账户被多个租户录入时会命中首个，因此编排任务一律派发主键
-    `account.id`，不走这条兜底分支。
-    """
-    return resolve_tenant_of_ad_account_ref(account_ref)
-
-
 # ==================== 洞察数据采集 ====================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=300)
-@tenant_task(lambda self, account_id, days=1: _resolve_account_tenant(account_id))
-def fetch_account_insights(self, account_id: str, days: int = 1) -> Dict:
+@tenant_task(lambda self, account_id, days=3: resolve_tenant_of(AdAccount, account_id))
+def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
     """拉取账户洞察数据
     
     Args:
         account_id: 广告账户ID
-        days: 采集天数，默认1天
+        days: 采集天数，默认最近3天；用于覆盖 Meta 延迟归因和修正数据
     
     Returns:
         采集结果统计
@@ -45,7 +34,8 @@ def fetch_account_insights(self, account_id: str, days: int = 1) -> Dict:
         logger.info(f"Fetching insights for account {account_id}")
         
         ads_manager = AdsManager(db)
-        start_date = (date.today() - timedelta(days=days)).strftime('%Y-%m-%d')
+        # days 表示包含今天在内的自然日数量。
+        start_date = (date.today() - timedelta(days=max(days - 1, 0))).strftime('%Y-%m-%d')
         end_date = date.today().strftime('%Y-%m-%d')
         
         insights_count = ads_manager.fetch_insights(account_id, start_date, end_date)
@@ -68,7 +58,7 @@ def fetch_account_insights(self, account_id: str, days: int = 1) -> Dict:
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=300)
 @for_all_tenants
-def fetch_all_accounts_insights(self, days: int = 1) -> Dict:
+def fetch_all_accounts_insights(self, days: int = 3) -> Dict:
     """拉取所有账户的洞察数据"""
     db = SessionLocal()
     try:

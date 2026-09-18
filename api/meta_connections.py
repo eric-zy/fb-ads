@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from core.auth import require_meta_asset_admin as require_admin
 from core.database import get_db
 from core.tenant import bypass_tenant
+from config.settings import settings
 from models import AdAccount, Credential, MetaAccount, MetaConnection, MetaPage, User
 from tasks.meta_sync_tasks import sync_meta_authorization_task
 
@@ -40,6 +41,8 @@ def list_connections(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
+    if settings.FB_ACCESS_MODE == "connector":
+        return []
     if current_user.is_platform_admin():
         with bypass_tenant():
             return _rows(db)
@@ -52,6 +55,8 @@ def sync_connection(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
+    if settings.FB_ACCESS_MODE == "connector":
+        raise HTTPException(status_code=410, detail="当前使用海外 Connector OAuth，请通过 BM 页面同步")
     connection = db.query(MetaConnection).filter(MetaConnection.id == connection_id).first()
     if not connection:
         raise HTTPException(status_code=404, detail="Meta 授权连接不存在")

@@ -43,6 +43,8 @@ def create_tag(req: TagRequest, db: Session = Depends(get_db), user: User = Depe
 def set_asset_tags(asset_id: str, req: AssetTagsRequest, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
     from api.media import _get_asset_or_404
     asset = _get_asset_or_404(db, asset_id, user)
+    from api.media import _assert_asset_edit_access
+    _assert_asset_edit_access(asset, user)
     tags = db.query(CreativeAssetTag).filter(CreativeAssetTag.id.in_(set(req.tag_ids))).all() if req.tag_ids else []
     if len(tags) != len(set(req.tag_ids)):
         raise HTTPException(status_code=400, detail="包含不存在或无权使用的标签")

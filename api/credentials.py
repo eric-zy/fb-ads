@@ -36,6 +36,15 @@ VALID_STATUSES = tuple(s.value for s in CredentialStatus)
 REQUIRED_ADS_SCOPES = {"ads_read", "ads_management"}
 
 
+def _reject_manual_credentials() -> None:
+    """Connector 模式只允许通过 OAuth 产生 opaque credential_id。"""
+    if settings.FB_ACCESS_MODE == "connector":
+        raise HTTPException(
+            status_code=410,
+            detail="当前使用海外 Connector OAuth，不支持手工 Token 凭据管理",
+        )
+
+
 # ==================== 请求/响应模型 ====================
 
 class CredentialCreate(BaseModel):
@@ -131,6 +140,8 @@ def list_credentials(
     _: User = Depends(require_admin),
 ):
     """凭据列表（仅返回脱敏 Token）"""
+    if settings.FB_ACCESS_MODE == "connector":
+        return []
     q = db.query(Credential)
     if meta_account_id:
         q = q.filter(Credential.meta_account_id == meta_account_id)
@@ -153,6 +164,7 @@ def get_credential(
     _: User = Depends(require_admin),
 ):
     """凭据详情（脱敏）"""
+    _reject_manual_credentials()
     return _credential_to_dict(db, _get_credential_or_404(db, credential_id))
 
 
@@ -168,6 +180,7 @@ def create_credential(
     默认会把该 BM 现有的生效凭据置为 DISABLED，即"轮换"语义；
     如需并存多条（例如灰度切换）可传 replace_active=false。
     """
+    _reject_manual_credentials()
     meta = db.query(MetaAccount).filter(MetaAccount.id == payload.meta_account_id).first()
     if not meta:
         raise HTTPException(status_code=400, detail="指定的 BM 主账号不存在")
@@ -218,6 +231,7 @@ def update_credential(
     current_user: User = Depends(require_admin),
 ):
     """更新凭据元信息（不含 Token 本身，换 Token 请用 /rotate）"""
+    _reject_manual_credentials()
     cred = _get_credential_or_404(db, credential_id)
 
     data = payload.model_dump(exclude_unset=True)
@@ -256,6 +270,7 @@ def rotate_credential(
     keep_old=true（默认）时旧凭据保留为 DISABLED，便于回溯；
     keep_old=false 时直接删除旧凭据。
     """
+    _reject_manual_credentials()
     old = _get_credential_or_404(db, credential_id)
     if not old.meta_account_id:
         raise HTTPException(status_code=400, detail="该凭据未绑定 BM，无法轮换")
@@ -310,6 +325,7 @@ def verify_credential(
 
     校验通过会刷新 last_verified_at；失败会把凭据标记为 INVALID 并写入 last_error。
     """
+    _reject_manual_credentials()
     cred = _get_credential_or_404(db, credential_id)
     service = CredentialService(db)
     result = service.verify_credential(cred)
@@ -342,6 +358,7 @@ def disable_credential(
     current_user: User = Depends(require_admin),
 ):
     """停用凭据（保留记录，不再参与解析）"""
+    _reject_manual_credentials()
     cred = _get_credential_or_404(db, credential_id)
     cred.status = CredentialStatus.DISABLED.value
     db.commit()
@@ -368,6 +385,7 @@ def enable_credential(
 
     已过期的凭据不允许直接启用，应先轮换 Token。
     """
+    _reject_manual_credentials()
     cred = _get_credential_or_404(db, credential_id)
     if cred.is_expired():
         raise HTTPException(status_code=400, detail="凭据已过期，请改用 /rotate 更换 Token")
@@ -399,6 +417,7 @@ def reveal_credential(
 
     必须显式传 confirm=true，避免前端误调用造成 Token 泄露。
     """
+    _reject_manual_credentials()
     if not payload.confirm:
         raise HTTPException(status_code=400, detail="请传 confirm=true 以确认查看明文 Token")
 
@@ -437,6 +456,7 @@ def delete_credential(
     若该凭据是该 BM 唯一的生效凭据，删除后该 BM 下的广告账户将无法调用 Meta API，
     接口会先给出提醒（可通过 force 参数强制删除）。
     """
+    _reject_manual_credentials()
     cred = _get_credential_or_404(db, credential_id)
 
     # 被广告账户引用的凭据不能物理删除，否则会触发外键异常并破坏账号授权链路。

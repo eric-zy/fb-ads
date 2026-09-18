@@ -16,19 +16,19 @@ from typing import Dict
 
 from celery import shared_task
 
+from config.settings import settings
 from core.database import SessionLocal
 from core.logger import logger
 from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task, bypass_tenant
 from models import AdAccount, MetaAccount, CampaignInstance, AdSetInstance, AdInstance, Credential, SyncAlert
 import uuid
-from services.ad_account_resolver import resolve_tenant_of_ad_account_ref
 from services.ads_manager import AdsManager
 from services.meta import MetaSyncService
 from services.meta.page_service import MetaPageSyncService
-from services.credential_service import CredentialService
 from services.credential_resolver import CredentialResolver
 from services.fb_connector_client import FBConnectorClient
 from services.notifications import NotificationService
+from services.account_dispatch import AccountDispatchService
 
 
 def _log_to_dict(log) -> Dict:
@@ -39,6 +39,8 @@ def _log_to_dict(log) -> Dict:
 @tenant_task(lambda self, credential_id: resolve_tenant_of(Credential, credential_id))
 def sync_meta_pages_task(self, credential_id: str) -> Dict:
     """按凭据同步该租户可管理的 Facebook Pages。"""
+    if settings.FB_ACCESS_MODE == "connector":
+        return {"status": "skipped", "credential_id": credential_id, "reason": "connector 页面同步走 API Connector"}
     db = SessionLocal()
     try:
         credential = db.query(Credential).filter(Credential.id == credential_id).first()
@@ -76,6 +78,8 @@ def _credential_label(credential: Credential, credential_id: str) -> str:
 @for_all_tenants
 def sync_all_meta_pages_task(self) -> Dict:
     """定时巡检所有租户的有效 OAuth 凭据。"""
+    if settings.FB_ACCESS_MODE == "connector":
+        return {"status": "skipped", "reason": "connector 页面同步不扫描国内 Credential 表"}
     db = SessionLocal()
     submitted = []
     try:
@@ -95,6 +99,8 @@ def sync_all_meta_pages_task(self) -> Dict:
 @tenant_task(lambda self, credential_id: resolve_tenant_of(Credential, credential_id))
 def sync_meta_authorization_task(self, credential_id: str) -> Dict:
     """XMP 式一次授权后的统一资产同步入口：BM、广告账户、Facebook Page。"""
+    if settings.FB_ACCESS_MODE == "connector":
+        return {"status": "skipped", "credential_id": credential_id, "reason": "connector OAuth 在海外完成资产同步"}
     db = SessionLocal()
     try:
         credential = db.query(Credential).filter(Credential.id == credential_id).first()
@@ -135,7 +141,13 @@ def sync_ad_accounts_task(self, business_id: str) -> Dict:
             f"[meta_sync] BM {business_id} 账户同步完成: "
             f"{log.status} ({log.success_count}/{log.total_count})"
         )
-        return {"status": "success", "sync_log": _log_to_dict(log)}
+        # OAuth 导入/定时同步完成后，自动把新账户交给 SaaS 分配规则。
+        # 同步成功不应因“尚未配置分配规则”而失败，因此分配结果单独返回。
+        assignment = AccountDispatchService(db).dispatch_unassigned(
+            tenant_id=service.db.query(MetaAccount).filter(MetaAccount.id == business_id).first().tenant_id,
+            operator_id=None,
+        )
+        return {"status": "success", "sync_log": _log_to_dict(log), "assignment": assignment}
     except Exception as exc:
         logger.error(f"[meta_sync] BM {business_id} 账户同步失败: {exc}")
         try:
@@ -183,7 +195,7 @@ def sync_ad_account_task(self, ad_account_id: str) -> Dict:
 
 
 @shared_task(bind=True, name="meta.sync_campaigns", max_retries=2, default_retry_delay=60)
-@tenant_task(lambda self, account_id: resolve_tenant_of_ad_account_ref(account_id))
+@tenant_task(lambda self, account_id: resolve_tenant_of(AdAccount, account_id))
 def sync_campaigns_task(self, account_id: str) -> Dict:
     """同步某个广告账户下的广告系列（Campaign）
 
@@ -191,7 +203,7 @@ def sync_campaigns_task(self, account_id: str) -> Dict:
     账户多或网络慢时会拖垮请求线程。改为异步后 HTTP 只负责投递任务。
 
     Args:
-        account_id: 广告账户主键，兼容 Meta 账户号 act_xxx
+        account_id: 广告账户内部主键
     """
     db = SessionLocal()
     try:
@@ -216,24 +228,22 @@ def sync_campaigns_task(self, account_id: str) -> Dict:
 
 
 @shared_task(bind=True, name="meta.sync_delivery_objects", max_retries=2, default_retry_delay=60)
-@tenant_task(lambda self, account_id: resolve_tenant_of_ad_account_ref(account_id))
+@tenant_task(lambda self, account_id: resolve_tenant_of(AdAccount, account_id))
 def sync_delivery_objects_task(self, account_id: str) -> Dict:
     """异步同步本地 Campaign / AdSet / Ad 的 Meta 状态。"""
     db = SessionLocal()
     try:
-        account = db.query(AdAccount).filter(
-            (AdAccount.id == account_id) | (AdAccount.account_id == account_id)
-        ).first()
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
         if not account:
             return {"status": "failed", "error": "广告账户不存在"}
         ref = CredentialResolver(db).for_account(account.id)
-        service = None if ref.mode == "connector" else CredentialService(db).build_service(account.id)
         campaigns = db.query(CampaignInstance).filter(CampaignInstance.ad_account_id == account.id).all()
         # 每个账户只拉取一次，避免按 Campaign / AdSet 重复请求 Meta API。
         sync_errors = []
         try:
-            remote_campaigns = (FBConnectorClient().list_campaigns(account.account_id, ref.credential_id).get("campaigns", [])
-                                if ref.mode == "connector" else service.list_campaigns(account.account_id))
+            remote_campaigns = FBConnectorClient().list_campaigns(
+                account.account_id, ref.credential_id
+            ).get("campaigns", [])
         except Exception as exc:
             logger.warning(f"[meta_sync] 账户 {account.id} Campaign 拉取失败: {exc}")
             remote_campaigns = []
@@ -253,8 +263,9 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                     campaign_key = str(campaign.meta_campaign_id)
                     if campaign_key not in remote_adsets_by_campaign:
                         try:
-                            remote_adsets_by_campaign[campaign_key] = (FBConnectorClient().list_adsets(campaign.meta_campaign_id, ref.credential_id).get("adsets", [])
-                                                                       if ref.mode == "connector" else service.list_adsets(campaign.meta_campaign_id))
+                            remote_adsets_by_campaign[campaign_key] = FBConnectorClient().list_adsets(
+                                campaign.meta_campaign_id, ref.credential_id
+                            ).get("adsets", [])
                         except Exception as exc:
                             logger.warning(f"[meta_sync] Campaign {campaign_key} AdSet 拉取失败: {exc}")
                             remote_adsets_by_campaign[campaign_key] = []
@@ -269,8 +280,9 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                         adset_key = str(adset.meta_adset_id)
                         if adset_key not in remote_ads_by_adset:
                             try:
-                                remote_ads_by_adset[adset_key] = (FBConnectorClient().list_ads(adset.meta_adset_id, ref.credential_id).get("ads", [])
-                                                                 if ref.mode == "connector" else service.list_ads(adset.meta_adset_id))
+                                remote_ads_by_adset[adset_key] = FBConnectorClient().list_ads(
+                                    adset.meta_adset_id, ref.credential_id
+                                ).get("ads", [])
                             except Exception as exc:
                                 logger.warning(f"[meta_sync] AdSet {adset_key} Ad 拉取失败: {exc}")
                                 remote_ads_by_adset[adset_key] = []
@@ -351,25 +363,30 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
         if not account:
             return {"status": "failed", "error": "广告账户不存在"}
         ref = CredentialResolver(db).for_account(account.id)
-        service = None if ref.mode == "connector" else CredentialService(db).build_service(account.id)
         remote_status = "PAUSED" if action == "PAUSE" else "ACTIVE"
         if object_type == "ADSET":
             obj = db.query(AdSetInstance).filter(AdSetInstance.id == object_id).first()
             if not obj or not obj.meta_adset_id:
                 raise RuntimeError("广告组 Meta ID 不存在")
-            if ref.mode == "connector":
-                FBConnectorClient().update_object("ADSET", obj.meta_adset_id, ref.credential_id, remote_status)
-            else:
-                service.update_adset(obj.meta_adset_id, {"status": remote_status})
+            FBConnectorClient().update_object(
+                "ADSET",
+                obj.meta_adset_id,
+                ref.credential_id,
+                {"status": remote_status},
+                idempotency_key=f"{action}:adset:{obj.meta_adset_id}",
+            )
             obj.status = remote_status
         elif object_type == "AD":
             obj = db.query(AdInstance).filter(AdInstance.id == object_id).first()
             if not obj or not obj.meta_ad_id:
                 raise RuntimeError("广告 Meta ID 不存在")
-            if ref.mode == "connector":
-                FBConnectorClient().update_object("AD", obj.meta_ad_id, ref.credential_id, remote_status)
-            else:
-                service.update_ad(obj.meta_ad_id, {"status": remote_status})
+            FBConnectorClient().update_object(
+                "AD",
+                obj.meta_ad_id,
+                ref.credential_id,
+                {"status": remote_status},
+                idempotency_key=f"{action}:ad:{obj.meta_ad_id}",
+            )
             obj.status = remote_status
         else:
             raise RuntimeError("不支持的投放对象类型")
