@@ -1,49 +1,57 @@
 <template>
   <div class="material">
-    <el-card shadow="never">
+    <el-card shadow="never" class="library-shell">
       <template #header>
         <div class="header-bar">
-          <div>
+          <div class="title-block">
+            <div class="eyebrow">CONTENT LIBRARY</div>
             <h2 class="page-title">素材库</h2>
-            <p class="page-desc">上传图片 / 视频素材，批量发布广告时可直接引用（支持图文、视频文字）。</p>
+            <p class="page-desc">统一管理图片与视频素材，发布广告时可直接复用。</p>
           </div>
-          <el-upload
-            :auto-upload="false"
-            :show-file-list="false"
-            :on-change="onSelect"
-            :disabled="uploading"
-            accept="image/*,video/*"
-          >
-            <el-button type="primary" :icon="UploadFilled" :loading="uploading">
-              上传素材
-            </el-button>
-          </el-upload>
-          <el-select v-model="uploadAccountId" placeholder="上传目标账户" filterable style="width: 220px">
-            <el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} (${account.account_id})`" :value="account.id" />
-          </el-select>
-          <span class="shared-hint">素材按租户共享，上传人仅用于记录</span>
-          <el-button text type="primary" @click="createGroupVisible = true">新建分组</el-button>
-          <el-button text type="primary" :disabled="!groups.length" @click="openMembers">成员管理</el-button>
+          <div class="header-actions">
+            <el-select v-model="uploadAccountId" class="upload-account" placeholder="上传目标账户" filterable>
+              <el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} (${account.account_id})`" :value="account.id" />
+            </el-select>
+            <el-upload
+              :auto-upload="false"
+              :show-file-list="false"
+              :on-change="onSelect"
+              :disabled="uploading"
+              accept="image/*,video/*"
+            >
+              <el-button type="primary" :icon="UploadFilled" :loading="uploading">
+                上传素材
+              </el-button>
+            </el-upload>
+            <el-button @click="createGroupVisible = true">新建分组</el-button>
+            <el-button :disabled="!groups.length" @click="openMembers">成员管理</el-button>
+          </div>
+        </div>
+        <div class="shared-hint">
+          <span class="hint-dot" />
+          租户内共享素材，上传人仅用于记录；相同文件会自动去重。
         </div>
       </template>
 
       <div class="filters">
-        <el-select v-model="filterType" placeholder="类型" clearable style="width: 120px" @change="load">
+        <div class="filter-title">素材筛选</div>
+        <el-select v-model="filterType" placeholder="类型" clearable class="filter-type" @change="load">
           <el-option label="全部" value="" />
           <el-option label="图片" value="image" />
           <el-option label="视频" value="video" />
         </el-select>
-        <el-select v-model="filterAccount" placeholder="归属账户筛选（可选）" clearable filterable style="width: 260px" @change="load">
+        <el-select v-model="filterAccount" placeholder="归属账户筛选（可选）" clearable filterable class="filter-account" @change="load">
             <el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} (${account.account_id})`" :value="account.id" />
         </el-select>
-        <el-select v-model="filterGroup" placeholder="素材分组" clearable filterable style="width: 180px" @change="load">
+        <el-select v-model="filterGroup" placeholder="素材分组" clearable filterable class="filter-group" @change="load">
           <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
         </el-select>
-        <el-select v-model="filterTag" placeholder="素材标签" clearable filterable style="width: 160px" @change="load">
+        <el-select v-model="filterTag" placeholder="素材标签" clearable filterable class="filter-tag" @change="load">
           <el-option v-for="tag in tags" :key="tag.id" :label="tag.name" :value="tag.id" />
         </el-select>
-        <el-button @click="createTagVisible = true">新建标签</el-button>
+        <el-button class="new-tag" @click="createTagVisible = true">新建标签</el-button>
         <el-date-picker
+          class="overview-picker"
           v-model="overviewRange"
           type="daterange"
           value-format="YYYY-MM-DD"
@@ -55,13 +63,16 @@
         />
       </div>
 
-      <div v-if="overview" class="overview-bar">
-        <div class="overview-item"><span>可见素材</span><strong>{{ overview.asset_count }}</strong><small>就绪 {{ overview.ready_asset_count }}</small></div>
-        <div class="overview-item"><span>账户绑定</span><strong>{{ overview.ready_binding_count }}/{{ overview.binding_count }}</strong><small>已就绪 / 总数</small></div>
-        <div class="overview-item"><span>使用次数</span><strong>{{ overview.usage_count }}</strong><small>成功 {{ overview.successful_usage_count }}</small></div>
-        <div class="overview-item"><span>成功率</span><strong>{{ overview.success_rate }}%</strong><small>失败 {{ overview.failed_usage_count }}</small></div>
+      <div v-if="overview" class="overview-section">
+        <div class="overview-grid">
+          <div class="overview-item"><span>可见素材</span><strong>{{ overview.asset_count }}</strong><small>就绪 {{ overview.ready_asset_count }}</small></div>
+          <div class="overview-item"><span>账户绑定</span><strong>{{ overview.ready_binding_count }}<em>/{{ overview.binding_count }}</em></strong><small>已就绪 / 总数</small></div>
+          <div class="overview-item"><span>使用次数</span><strong>{{ overview.usage_count }}</strong><small>成功 {{ overview.successful_usage_count }}</small></div>
+          <div class="overview-item success"><span>投放成功率</span><strong>{{ overview.success_rate }}<em>%</em></strong><small>失败 {{ overview.failed_usage_count }}</small></div>
+        </div>
         <div v-if="overview.top_assets.length" class="overview-top" title="按使用次数排序">
-          热门素材：{{ overview.top_assets.slice(0, 3).map(item => `${item.name} (${item.usage_count})`).join('、') }}
+          <span class="top-label">热门素材</span>
+          {{ overview.top_assets.slice(0, 3).map(item => `${item.name} (${item.usage_count})`).join('、') }}
         </div>
       </div>
 
@@ -83,14 +94,19 @@
             <img v-else-if="item.asset_type === 'video' && previewUrls[item.id]?.url" :src="previewUrls[item.id].url" alt="视频封面" />
             <video v-else-if="item.asset_type === 'video' && item.url" :src="item.url" muted :poster="item.url" />
             <el-icon v-else class="thumb-icon"><Picture /></el-icon>
+            <div class="thumb-overlay">
+              <span>{{ item.asset_type === 'image' ? '图片' : '视频' }}</span>
+              <span class="preview-action">点击预览</span>
+            </div>
           </div>
           <div class="info">
-            <div class="name" :title="item.name">{{ item.name }}</div>
+            <div class="name-row"><div class="name" :title="item.name">{{ item.name }}</div><span class="ready-dot" :class="{ failed: !isAssetReady(item) }" /></div>
             <div class="uploader" :title="item.uploader_email || undefined">
               上传人：{{ item.uploader_name || '系统' }} · {{ formatUploadedAt(item.uploaded_at || item.created_at) }}
             </div>
             <div class="asset-stats clickable" @click.stop="openStats(item)">
-              绑定 {{ item.ready_binding_count || 0 }}/{{ item.binding_count || 0 }} · 投放 {{ item.successful_publish_count || 0 }}/{{ item.publish_count || 0 }} 次
+              <span>绑定 <b>{{ item.ready_binding_count || 0 }}/{{ item.binding_count || 0 }}</b></span>
+              <span>投放 <b>{{ item.successful_publish_count || 0 }}/{{ item.publish_count || 0 }}</b></span>
             </div>
             <div class="meta">
               <el-tag size="small" :type="item.asset_type === 'image' ? 'success' : 'warning'">
@@ -120,9 +136,9 @@
                 <el-button link type="danger" size="small">删除</el-button>
               </template>
             </el-popconfirm>
-            <el-button link type="primary" size="small" :disabled="!isAssetReady(item)" @click="openBindings(item)">映射</el-button>
+            <el-button link type="primary" size="small" :disabled="!isAssetReady(item)" @click="openBindings(item)">查看映射</el-button>
             <el-button link type="success" size="small" :disabled="!isAssetReady(item)" @click="syncAllAccounts(item)">同步账户</el-button>
-            <el-button v-if="item.can_edit" link size="small" @click="refreshMetadata(item)">刷新信息</el-button>
+            <el-button v-if="item.can_edit" link size="small" @click="refreshMetadata(item)">刷新</el-button>
           </div>
         </div>
       </div>
@@ -596,84 +612,123 @@ onMounted(async () => {
 </script>
 
 <style scoped lang="scss">
+.material { color: #1f2937; }
+.library-shell { border: 0; border-radius: 16px; background: #fff; box-shadow: 0 8px 28px rgba(15, 35, 70, .06); }
+.library-shell :deep(.el-card__header) { padding: 24px 28px 18px; border-bottom: 1px solid #edf1f7; }
+.library-shell :deep(.el-card__body) { padding: 20px 28px 28px; }
 .header-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  .page-title { margin: 0; font-size: 18px; }
-  .page-desc { margin: 4px 0 0; font-size: 13px; color: #909399; }
-  .shared-hint { color: #67c23a; font-size: 12px; white-space: nowrap; }
+  gap: 24px;
+  .title-block { min-width: 240px; }
+  .eyebrow { color: #8a9ab0; font-size: 10px; font-weight: 700; letter-spacing: 1.4px; }
+  .page-title { margin: 5px 0 3px; color: #172b4d; font-size: 24px; line-height: 1.25; }
+  .page-desc { margin: 0; color: #8492a6; font-size: 13px; }
+  .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+  .upload-account { width: 230px; }
 }
-.clickable { cursor: pointer; }
-.error-detail { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: inherit; color: #f56c6c; }
+.shared-hint { display: flex; align-items: center; gap: 7px; margin-top: 16px; color: #718096; font-size: 12px; }
+.hint-dot { width: 7px; height: 7px; border-radius: 50%; background: #35b779; box-shadow: 0 0 0 4px #e8f7ef; }
 .filters {
   display: flex;
-  gap: 12px;
-  margin-bottom: 16px;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  border: 1px solid #edf1f7;
+  border-radius: 12px;
+  background: #f8fafc;
+  .filter-title { margin-right: 2px; color: #506176; font-size: 13px; font-weight: 600; }
+  .filter-type { width: 110px; }
+  .filter-account { width: 245px; }
+  .filter-group { width: 170px; }
+  .filter-tag { width: 150px; }
+  .overview-picker { width: 250px; margin-left: auto; }
 }
+.overview-section { margin-bottom: 20px; }
+.overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.overview-item {
+  padding: 16px 18px;
+  border: 1px solid #edf1f7;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #fff, #f8fbff);
+  span, small { display: block; color: #8a98aa; font-size: 12px; }
+  strong { display: block; margin: 8px 0 4px; color: #172b4d; font-size: 26px; line-height: 1; }
+  em { color: #9aa8b9; font-size: 14px; font-style: normal; font-weight: 500; }
+  &.success strong { color: #16a36a; }
+}
+.overview-top { overflow: hidden; margin-top: 12px; padding: 10px 14px; border-radius: 9px; background: #f5f8fc; color: #65758b; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.top-label { margin-right: 8px; color: #344b6a; font-weight: 600; }
+.bulk-bar { display:flex; align-items:center; gap:10px; margin-bottom:12px; padding: 10px 14px; border: 1px solid #dbeafe; border-radius: 10px; background: #f5f9ff; color:#506176; font-size:13px; }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 18px;
+  align-items: stretch;
 }
-.bulk-bar { display:flex; align-items:center; gap:10px; margin-bottom:12px; color:#606266; font-size:13px; }
-.member-add { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
 .card {
   position: relative;
-  border: 1px solid #ebeef5;
-  border-radius: 8px;
+  min-width: 0;
+  border: 1px solid #e8edf4;
+  border-radius: 14px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  background: #fff;
+  transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+  &:hover { border-color: #c8d9f5; box-shadow: 0 10px 24px rgba(31, 76, 135, .1); transform: translateY(-2px); }
   .thumb {
-    height: 140px;
-    background: #f5f7fa;
+    position: relative;
+    height: 180px;
+    background: linear-gradient(135deg, #eef3f9, #dfe7f1);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     img, video { width: 100%; height: 100%; object-fit: cover; }
-    .thumb-icon { font-size: 40px; color: #c0c4cc; }
+    .thumb-icon { font-size: 42px; color: #a9b7c8; }
+    .thumb-overlay { position: absolute; right: 10px; bottom: 10px; left: 10px; display: flex; align-items: center; justify-content: space-between; color: #fff; font-size: 11px; opacity: 0; transition: opacity .2s ease; }
+    &:hover .thumb-overlay { opacity: 1; }
+    .thumb-overlay > span:first-child { padding: 3px 7px; border-radius: 5px; background: rgba(18, 38, 68, .72); }
+    .preview-action { padding: 3px 7px; border-radius: 5px; background: rgba(18, 38, 68, .62); }
   }
-  .asset-check { position:absolute; left:8px; top:8px; z-index:2; background:rgba(255,255,255,.9); padding:2px 4px; border-radius:4px; }
-  .info { padding: 8px 10px; flex: 1; }
-  .overview-bar { display: flex; align-items: stretch; gap: 12px; margin: 14px 0 4px; padding: 12px 14px; border: 1px solid #ebeef5; border-radius: 6px; background: #fafcff; }
-  .overview-item { min-width: 125px; padding-right: 16px; border-right: 1px solid #ebeef5; }
-  .overview-item span, .overview-item small { display: block; color: #909399; font-size: 12px; }
-  .overview-item strong { display: block; margin: 4px 0; color: #303133; font-size: 20px; line-height: 1.2; }
-  .overview-top { align-self: center; overflow: hidden; color: #606266; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-  .name {
-    font-size: 13px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .uploader {
-    margin-top: 4px;
-    overflow: hidden;
-    color: #909399;
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .asset-stats {
-    margin-top: 3px;
-    overflow: hidden;
-    color: #606266;
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .asset-stats.clickable { cursor: pointer; }
-  .stats-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; color: #606266; font-size: 13px; }
-  .stats-section-title { margin: 18px 0 8px; color: #303133; font-size: 14px; font-weight: 600; }
-  .meta { margin-top: 6px; display: flex; align-items: center; gap: 8px; }
-  .tags { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
-  .placement-tip { margin-top: 6px; color: #909399; font-size: 11px; line-height: 1.4; }
-  .size { font-size: 12px; color: #909399; }
-  .status { margin-top: 6px; display: flex; align-items: center; gap: 8px; }
-  .fb-ok { font-size: 12px; color: #67c23a; }
-  .actions { padding: 6px 10px; border-top: 1px solid #f0f0f0; text-align: right; }
+  .asset-check { position:absolute; left:10px; top:10px; z-index:2; background:rgba(255,255,255,.92); padding:3px 5px; border-radius:6px; }
+  .info { padding: 14px 15px 12px; flex: 1; }
+  .name-row { display: flex; align-items: center; gap: 8px; }
+  .ready-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #35b779; box-shadow: 0 0 0 3px #e8f7ef; }
+  .ready-dot.failed { background: #e6a23c; box-shadow: 0 0 0 3px #fff4df; }
+  .name { color: #203552; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .uploader { margin-top: 6px; overflow: hidden; color: #94a1b2; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .asset-stats { display: flex; gap: 14px; margin-top: 10px; color: #75849a; font-size: 11px; }
+  .asset-stats b { color: #3e5777; font-weight: 600; }
+  .meta { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
+  .tags { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .placement-tip { margin-top: 8px; color: #8292a6; font-size: 11px; line-height: 1.4; }
+  .size { font-size: 11px; color: #93a0b1; }
+  .status { margin-top: 10px; display: flex; align-items: center; gap: 8px; }
+  .fb-ok { font-size: 11px; color: #2daa70; }
+  .actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 2px; min-height: 42px; padding: 5px 10px; border-top: 1px solid #f0f3f7; background: #fbfcfe; }
 }
-.preview-media { display: block; max-width: 100%; max-height: 68vh; margin: 0 auto; object-fit: contain; }
+.stats-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; color: #606266; font-size: 13px; }
+.stats-section-title { margin: 18px 0 8px; color: #303133; font-size: 14px; font-weight: 600; }
+.member-add { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+.clickable { cursor: pointer; }
+.error-detail { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: inherit; color: #f56c6c; }
+.preview-media { display: block; max-width: 100%; max-height: 68vh; margin: 0 auto; object-fit: contain; border-radius: 8px; }
+@media (max-width: 1100px) {
+  .header-bar { align-items: flex-start; flex-direction: column; }
+  .header-actions { justify-content: flex-start; }
+  .filters .overview-picker { margin-left: 0; }
+  .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 680px) {
+  .library-shell :deep(.el-card__header), .library-shell :deep(.el-card__body) { padding-right: 16px; padding-left: 16px; }
+  .header-actions, .header-actions .el-select, .header-actions .el-upload, .header-actions .el-button { width: 100%; }
+  .header-actions .el-upload .el-button { width: 100%; }
+  .filters > * { width: 100% !important; margin-left: 0 !important; }
+  .overview-grid { grid-template-columns: 1fr 1fr; }
+  .grid { grid-template-columns: 1fr; }
+}
 </style>
