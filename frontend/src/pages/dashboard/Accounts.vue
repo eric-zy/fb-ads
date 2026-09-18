@@ -193,9 +193,13 @@ async function completeOAuth() {
   if (!oauthCredentialId.value || !selectedOAuthAccountIds.value.length) return
   completing.value = true
   try {
-    await credentialApi.oauthCompleteAccounts({ credential_id: oauthCredentialId.value, account_ids: selectedOAuthAccountIds.value })
+    const { data } = await credentialApi.oauthCompleteAccounts({ credential_id: oauthCredentialId.value, account_ids: selectedOAuthAccountIds.value })
     oauthStep.value = 'success'
-    ElMessage.success('授权资产已接入，广告账号正在同步')
+    if (data?.page_sync?.status === 'FAILED') {
+      ElMessage.warning('授权资产已接入，但 Facebook Page 同步失败，请稍后在投放模板中重试')
+    } else {
+      ElMessage.success('授权资产已接入，广告账号和 Facebook Page 已同步')
+    }
     // 接入接口只负责入队，广告账户由 Celery 异步落库；短轮询避免用户看到空列表。
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await new Promise(resolve => window.setTimeout(resolve, 1500))

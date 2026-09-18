@@ -224,7 +224,10 @@
           <el-select v-model="creativeForm.page_id" filterable style="width:100%" placeholder="选择已授权的 Facebook 页面">
             <el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name} (${page.page_id})`" :value="page.page_id" />
           </el-select>
-          <div v-if="!metaPages.length" class="tip">暂无已同步页面，请先完成 Meta OAuth 授权后刷新页面。</div>
+            <div v-if="!metaPages.length" class="tip page-sync-tip">
+              <span>暂无已同步页面，请先完成 Meta OAuth 授权或同步页面。</span>
+              <el-button size="small" :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
+            </div>
         </el-form-item>
         <el-form-item label="素材形式">
           <el-radio-group v-model="creativeForm.creative_format">
@@ -293,6 +296,7 @@ const { t } = useLocale()
 const templates = ref<CampaignTemplate[]>([])
 const mediaAssets = ref<MediaItem[]>([])
 const metaPages = ref<MetaPage[]>([])
+const pagesSyncing = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const dialogVisible = ref(false)
@@ -483,6 +487,18 @@ const loadMediaAssets = async () => {
 }
 const loadMetaPages = async () => {
   try { const { data } = await metaPagesApi.list(); metaPages.value = data } catch { metaPages.value = [] }
+}
+const syncMetaPages = async () => {
+  pagesSyncing.value = true
+  try {
+    const { data } = await metaPagesApi.syncAll()
+    await loadMetaPages()
+    if (data?.status === 'FAILED') ElMessage.error('Facebook 页面同步失败')
+    else if (!metaPages.value.length) ElMessage.warning('当前授权未返回可用的 Facebook 页面')
+    else ElMessage.success(`已同步 ${metaPages.value.length} 个 Facebook 页面`)
+  } catch {
+    ElMessage.error('Facebook 页面同步失败，请检查 Meta 授权状态')
+  } finally { pagesSyncing.value = false }
 }
 
 const resetForm = () => {
@@ -733,6 +749,7 @@ onMounted(loadTemplates)
   .page-desc { margin: 4px 0 0; font-size: 13px; color: #909399; line-height: 1.6; max-width: 760px; }
 }
 .tip { color: #909399; font-size: 12px; margin-top: 4px; line-height: 1.5; }
+.page-sync-tip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .inline-fields { display: flex; align-items: center; gap: 10px; }
 .template-steps { margin-bottom: 20px; }
 .creative-block { margin: 14px 0 20px; padding: 16px 18px 6px; border: 1px solid #ebeef5; border-radius: 8px; background: #fafcff; }

@@ -26,9 +26,10 @@ from services.ads_manager import AdsManager
 from services.meta import MetaSyncService
 from services.meta.page_service import MetaPageSyncService
 from services.credential_resolver import CredentialResolver
-from services.fb_connector_client import FBConnectorClient
+from services.fb_connector_client import FBConnectorClient, FBConnectorError
 from services.notifications import NotificationService
 from services.account_dispatch import AccountDispatchService
+from services.meta.connector_page_sync import sync_connector_pages
 
 
 def _log_to_dict(log) -> Dict:
@@ -132,7 +133,7 @@ def sync_meta_authorization_task(self, credential_id: str) -> Dict:
 @shared_task(bind=True, name="meta.sync_ad_accounts", max_retries=2, default_retry_delay=60)
 @tenant_task(lambda self, business_id: resolve_tenant_of(MetaAccount, business_id, column="id"))
 def sync_ad_accounts_task(self, business_id: str) -> Dict:
-    """同步某个 BM 下的全部广告账户"""
+    """同步某个 BM 下的全部广告账户，并刷新其 Facebook Page。"""
     db = SessionLocal()
     try:
         service = MetaSyncService(db)
@@ -141,13 +142,43 @@ def sync_ad_accounts_task(self, business_id: str) -> Dict:
             f"[meta_sync] BM {business_id} 账户同步完成: "
             f"{log.status} ({log.success_count}/{log.total_count})"
         )
+        business = db.query(MetaAccount).filter(MetaAccount.id == business_id).first()
+        page_sync = {"status": "SKIPPED", "count": 0, "page_ids": []}
+        if settings.FB_ACCESS_MODE == "connector" and business and business.connector_credential_id:
+            try:
+                page_sync = {
+                    "status": "SUCCESS",
+                    **sync_connector_pages(
+                        db,
+                        business.tenant_id,
+                        business.connector_credential_id,
+                    ),
+                }
+                db.commit()
+            except FBConnectorError as exc:
+                db.rollback()
+                logger.warning(
+                    f"[meta_sync] BM {business_id} Page 同步失败（账户同步已完成）: {exc}"
+                )
+                page_sync = {
+                    "status": "FAILED",
+                    "credential_id": business.connector_credential_id,
+                    "count": 0,
+                    "page_ids": [],
+                    "error": str(exc),
+                }
         # OAuth 导入/定时同步完成后，自动把新账户交给 SaaS 分配规则。
         # 同步成功不应因“尚未配置分配规则”而失败，因此分配结果单独返回。
         assignment = AccountDispatchService(db).dispatch_unassigned(
-            tenant_id=service.db.query(MetaAccount).filter(MetaAccount.id == business_id).first().tenant_id,
+            tenant_id=business.tenant_id if business else None,
             operator_id=None,
         )
-        return {"status": "success", "sync_log": _log_to_dict(log), "assignment": assignment}
+        return {
+            "status": "success",
+            "sync_log": _log_to_dict(log),
+            "page_sync": page_sync,
+            "assignment": assignment,
+        }
     except Exception as exc:
         logger.error(f"[meta_sync] BM {business_id} 账户同步失败: {exc}")
         try:

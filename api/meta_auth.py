@@ -25,6 +25,7 @@ from models.tenant import UserRole
 from services.credential_service import CredentialService, CredentialError
 from services.meta.oauth_service import MetaOAuthError, MetaOAuthService
 from services.fb_connector_client import FBConnectorClient, FBConnectorError
+from services.meta.connector_page_sync import sync_connector_pages
 from tasks.meta_sync_tasks import sync_meta_authorization_task, sync_ad_accounts_task, sync_meta_pages_task
 
 router = APIRouter(prefix="/api/v1/meta-auth", tags=["Meta OAuth 授权"])
@@ -295,7 +296,15 @@ def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session =
                 account.owner_type = "BUSINESS" if meta else "PERSONAL"
                 if meta: meta.connector_credential_id = payload.credential_id
                 imported.append({"id": account.id, "account_id": account_id, "business_id": meta.id if meta else None, "business_name": meta.name if meta else None, "owner_type": account.owner_type})
-            db.commit(); return {"success": True, "accounts": imported}
+            db.commit()
+            page_sync = {"status": "SKIPPED", "count": 0, "page_ids": []}
+            try:
+                page_sync = {"status": "SUCCESS", **sync_connector_pages(db, effective_tenant_id(current_user), payload.credential_id)}
+                db.commit()
+            except FBConnectorError as exc:
+                db.rollback()
+                page_sync = {"status": "FAILED", "credential_id": payload.credential_id, "count": 0, "page_ids": [], "error": str(exc)}
+            return {"success": True, "accounts": imported, "page_sync": page_sync}
         except FBConnectorError as exc:
             db.rollback(); raise HTTPException(status_code=503, detail=str(exc)) from exc
     cred = db.query(Credential).filter(Credential.id == payload.credential_id).first()
@@ -440,7 +449,14 @@ def oauth_complete(payload: OAuthCompleteRequest, db: Session = Depends(get_db),
             target.connector_credential_id = payload.credential_id
             target.default_credential_id = None
             db.commit()
-            return {"success": True, "meta_account_id": target.id, "business": business}
+            page_sync = {"status": "SKIPPED", "count": 0, "page_ids": []}
+            try:
+                page_sync = {"status": "SUCCESS", **sync_connector_pages(db, effective_tenant_id(current_user), payload.credential_id)}
+                db.commit()
+            except FBConnectorError as exc:
+                db.rollback()
+                page_sync = {"status": "FAILED", "credential_id": payload.credential_id, "count": 0, "page_ids": [], "error": str(exc)}
+            return {"success": True, "meta_account_id": target.id, "business": business, "page_sync": page_sync}
         except FBConnectorError as exc:
             db.rollback()
             raise HTTPException(status_code=503, detail=str(exc)) from exc

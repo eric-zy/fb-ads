@@ -74,7 +74,15 @@
           <template v-else>
             <el-form-item label="广告系列名称" required><el-input v-model="directForm.name" placeholder="例如 US 流量测试" /></el-form-item>
             <el-form-item label="推广目标" required><el-select v-model="directForm.objective" style="width:100%"><el-option label="流量 OUTCOME_TRAFFIC" value="OUTCOME_TRAFFIC" /><el-option label="销售 OUTCOME_SALES" value="OUTCOME_SALES" /><el-option label="互动 OUTCOME_ENGAGEMENT" value="OUTCOME_ENGAGEMENT" /><el-option label="潜在客户 OUTCOME_LEADS" value="OUTCOME_LEADS" /></el-select></el-form-item>
-            <el-form-item label="Facebook Page" required><el-select v-model="directForm.page_id" filterable style="width:100%" placeholder="选择已同步的 Facebook Page"><el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name || page.page_id} (${page.page_id})`" :value="page.page_id" /></el-select></el-form-item>
+            <el-form-item label="Facebook Page" required>
+              <el-select v-model="directForm.page_id" filterable style="width:100%" placeholder="选择已同步的 Facebook Page">
+                <el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name || page.page_id} (${page.page_id})`" :value="page.page_id" />
+              </el-select>
+              <div v-if="!metaPages.length" class="page-sync-inline">
+                <span>暂无已同步页面。</span>
+                <el-button size="small" :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
+              </div>
+            </el-form-item>
             <el-form-item label="默认日预算" required><el-input-number v-model="directForm.daily_budget" :min="1" :step="1" /><span class="tip-inline">美元/天</span></el-form-item>
             <el-form-item label="优化目标"><el-select v-model="directForm.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" :disabled="directForm.objective === 'OUTCOME_SALES'" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" :disabled="directForm.objective === 'OUTCOME_SALES'" /><el-option label="转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" /></el-select></el-form-item>
             <el-alert v-if="!directObjectiveValid" type="warning" :closable="false" show-icon title="当前目标与优化目标不兼容，请改用转化优化或切换为流量目标" />
@@ -412,6 +420,7 @@ const preflightResult = ref<any>(null)
 const rateLimitStatus = ref<{ count: number; limit: number; usage_ratio: number } | null>(null)
 const assetBindings = ref<MetaAssetBinding[]>([])
 const metaPages = ref<MetaPage[]>([])
+const pagesSyncing = ref(false)
 const mediaAssets = ref<any[]>([])
 const activeStep = ref(0)
 
@@ -630,12 +639,38 @@ const syncAccessBusinessDefaults = () => {
   }
 }
 
-const loadDirectResources = async () => {
+const loadMetaPages = async () => {
   try {
-    const [pages, assets] = await Promise.all([metaPagesApi.list('ACTIVE'), mediaApi.list()])
-    metaPages.value = pages.data || []
-    mediaAssets.value = (assets.data || []).filter((item: any) => ['READY', 'PENDING', 'PROCESSING'].includes(item.status))
-  } catch { metaPages.value = []; mediaAssets.value = [] }
+    const { data } = await metaPagesApi.list('ACTIVE')
+    metaPages.value = data || []
+  } catch {
+    metaPages.value = []
+  }
+}
+
+const syncMetaPages = async () => {
+  pagesSyncing.value = true
+  try {
+    const { data } = await metaPagesApi.syncAll()
+    await loadMetaPages()
+    if (data?.status === 'FAILED') ElMessage.error('Facebook 页面同步失败')
+    else if (data?.status === 'PARTIAL_SUCCESS') ElMessage.warning('部分 Facebook 页面同步失败，请检查授权状态')
+    else if (!metaPages.value.length) ElMessage.warning('当前授权未返回可用的 Facebook 页面')
+    else ElMessage.success(`已同步 ${metaPages.value.length} 个 Facebook 页面`)
+  } catch {
+    ElMessage.error('Facebook 页面同步失败，请检查 Meta 授权状态')
+  } finally {
+    pagesSyncing.value = false
+  }
+}
+
+const loadDirectResources = async () => {
+  await Promise.all([
+    loadMetaPages(),
+    mediaApi.list()
+      .then(({ data }) => { mediaAssets.value = (data || []).filter((item: any) => ['READY', 'PENDING', 'PROCESSING'].includes(item.status)) })
+      .catch(() => { mediaAssets.value = [] }),
+  ])
 }
 
 const pollAssetBindings = (assetIds: string[]): Promise<void> => {
@@ -871,6 +906,7 @@ onUnmounted(stopPolling)
 }
 .tip { color: #909399; font-size: 12px; margin-top: 4px; }
 .tip-inline { color: #909399; font-size: 12px; margin-left: 10px; }
+.page-sync-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; color: #909399; font-size: 12px; line-height: 1.5; }
 .publish-steps { margin: 6px 0 28px; }
 .publish-form { max-width: 920px; }
 .publish-mode { margin-bottom: 18px; }

@@ -7,13 +7,12 @@ from sqlalchemy.orm import Session
 from core.auth import get_current_active_user, require_meta_asset_admin as require_admin
 from core.database import get_db
 from core.enums import CredentialStatus
-from core.tenant import bypass_tenant, effective_tenant_id
-from models import Credential, MetaPage, User
+from core.tenant import bypass_tenant, effective_tenant_id, tenant_scope
+from models import AdAccount, Credential, MetaAccount, MetaPage, User
 from tasks.meta_sync_tasks import sync_meta_pages_task
 from config.settings import settings
-from services.fb_connector_client import FBConnectorClient, FBConnectorError
-from datetime import datetime
-import uuid
+from services.fb_connector_client import FBConnectorError
+from services.meta.connector_page_sync import sync_connector_pages
 
 router = APIRouter(prefix="/api/v1/meta-pages", tags=["Facebook Pages"])
 
@@ -44,6 +43,51 @@ def list_pages(
     return [item.to_dict() for item in query.order_by(MetaPage.page_name).all()]
 
 
+@router.post("/sync-all")
+def sync_all_pages(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """Refresh Pages for every Connector credential visible to this tenant."""
+    bm_query = db.query(MetaAccount).filter(MetaAccount.connector_credential_id.isnot(None))
+    account_query = db.query(AdAccount).filter(AdAccount.connector_credential_id.isnot(None))
+    if current_user.is_platform_admin():
+        with bypass_tenant():
+            businesses = bm_query.all()
+            ad_accounts = account_query.all()
+        targets = {
+            (item.tenant_id, item.connector_credential_id)
+            for item in [*businesses, *ad_accounts]
+            if item.tenant_id and item.connector_credential_id
+        }
+    else:
+        tenant_id = effective_tenant_id(current_user)
+        businesses = bm_query.all()
+        ad_accounts = account_query.all()
+        targets = {
+            (tenant_id, item.connector_credential_id)
+            for item in [*businesses, *ad_accounts]
+            if item.connector_credential_id
+        }
+
+    results = []
+    for tenant_id, credential_id in sorted(targets):
+        try:
+            with tenant_scope(tenant_id):
+                result = sync_connector_pages(db, tenant_id, credential_id)
+                db.commit()
+            results.append({"status": "SUCCESS", "tenant_id": tenant_id, **result})
+        except FBConnectorError as exc:
+            db.rollback()
+            results.append({"status": "FAILED", "tenant_id": tenant_id, "credential_id": credential_id, "error": str(exc)})
+
+    return {
+        "status": "SUCCESS" if all(item["status"] == "SUCCESS" for item in results) else "PARTIAL_SUCCESS",
+        "count": sum(item.get("count", 0) for item in results),
+        "results": results,
+    }
+
+
 @router.post("/sync")
 def sync_pages(
     credential_id: str = Query(...),
@@ -61,23 +105,30 @@ def sync_pages(
     if settings.FB_ACCESS_MODE == "connector":
         if not credential_id:
             raise HTTPException(status_code=400, detail="Connector 凭据 ID 不能为空")
+        if current_user.is_platform_admin():
+            with bypass_tenant():
+                owner = db.query(MetaAccount).filter(
+                    MetaAccount.connector_credential_id == credential_id
+                ).first()
+                if not owner:
+                    owner = db.query(AdAccount).filter(
+                        AdAccount.connector_credential_id == credential_id
+                    ).first()
+        else:
+            owner = db.query(MetaAccount).filter(
+                MetaAccount.connector_credential_id == credential_id
+            ).first()
+            if not owner:
+                owner = db.query(AdAccount).filter(
+                    AdAccount.connector_credential_id == credential_id
+                ).first()
+        if not owner or not owner.tenant_id:
+            raise HTTPException(status_code=404, detail="Connector 凭据不存在或不属于当前租户")
         try:
-            result = FBConnectorClient().sync_pages(credential_id)
-            rows = result.get("pages", [])
-            synced = []
-            for remote in rows:
-                page_id = str(remote.get("id") or "").strip()
-                if not page_id:
-                    continue
-                page = db.query(MetaPage).filter(MetaPage.page_id == page_id).first()
-                if not page:
-                    page = MetaPage(id=uuid.uuid4().hex, page_id=page_id, page_name=remote.get("name") or page_id, credential_id=credential_id, tenant_id=effective_tenant_id(current_user))
-                    db.add(page)
-                page.page_name = remote.get("name") or page_id; page.tasks = remote.get("tasks") or []
-                page.credential_id = credential_id; page.connector_credential_id = credential_id; page.status = CredentialStatus.ACTIVE.value; page.last_synced_at = datetime.utcnow()
-                synced.append(page_id)
-            db.commit()
-            return {"task_id": None, "credential_id": credential_id, "status": "SUCCESS", "count": len(synced), "page_ids": synced}
+            with tenant_scope(owner.tenant_id):
+                result = sync_connector_pages(db, owner.tenant_id, credential_id)
+                db.commit()
+            return {"task_id": None, "status": "SUCCESS", **result}
         except FBConnectorError as exc:
             db.rollback(); raise HTTPException(status_code=503, detail=str(exc)) from exc
     task = sync_meta_pages_task.delay(credential_id)

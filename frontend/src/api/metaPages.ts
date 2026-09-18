@@ -16,6 +16,7 @@ export interface MetaPage {
 export const metaPagesApi = {
   list: (status = 'ACTIVE') =>
     request.get<MetaPage[]>('/api/v1/meta-pages', { params: { status } }),
+  syncAll: () => request.post('/api/v1/meta-pages/sync-all'),
   sync: (credentialId: string) =>
     request.post('/api/v1/meta-pages/sync', null, { params: { credential_id: credentialId } }),
 }
