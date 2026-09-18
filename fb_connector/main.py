@@ -10,9 +10,11 @@ import uuid
 import hmac
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from services.request_signer import verify_request
+from core.logger import logger
 from fb_connector.api.oauth import router as oauth_router
 from fb_connector.api.assets import router as assets_router
 from fb_connector.api.media import router as media_router
@@ -26,6 +28,39 @@ app.include_router(assets_router)
 app.include_router(media_router)
 app.include_router(campaigns_router)
 app.include_router(reports_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(request: Request, exc: RequestValidationError):
+    """Expose safe, actionable validation details for cross-service callers.
+
+    Starlette's default 422 response is useful to an interactive browser but
+    the access log only contains the status code.  Return the request ID and
+    omit raw input values so malformed requests can be fixed without ever
+    logging or echoing credentials/tokens.
+    """
+    request_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    # Pydantic may put a ValueError instance into ``ctx`` for model-level
+    # validators.  Keep only stable JSON-safe fields in the wire response.
+    errors = [
+        {
+            "loc": error.get("loc", ()),
+            "msg": error.get("msg", "请求参数校验失败"),
+            "type": error.get("type", "value_error"),
+        }
+        for error in exc.errors()
+    ]
+    logger.warning(
+        "[Connector] request validation failed path=%s request_id=%s errors=%s",
+        request.url.path,
+        request_id,
+        errors,
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": errors, "request_id": request_id},
+        headers={"X-Request-Id": request_id},
+    )
 
 
 def _service_secret() -> str:
