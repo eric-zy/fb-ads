@@ -6,7 +6,7 @@ import sqlalchemy as sa
 
 
 revision: str = "0043_shared_creative_assets"
-down_revision: Union[str, None] = "0042_creative_asset_usage_account_daily_stats"
+down_revision: Union[str, None] = "0042_asset_usage_acct_daily"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

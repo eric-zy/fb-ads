@@ -5,7 +5,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0040_creative_asset_usage_daily_stats"
+revision: str = "0040_asset_usage_daily"
 down_revision: Union[str, None] = "0039_creative_asset_usage_events"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
