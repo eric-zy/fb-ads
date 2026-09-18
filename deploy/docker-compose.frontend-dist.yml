@@ -1,0 +1,5 @@
+services:
+  nginx:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend-dist
