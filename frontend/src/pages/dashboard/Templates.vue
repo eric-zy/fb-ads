@@ -221,13 +221,15 @@
         <section v-if="templateStep === 3">
         <el-divider content-position="left">广告创意</el-divider>
         <el-form-item label="Facebook 页面" required>
-          <el-select v-model="creativeForm.page_id" filterable style="width:100%" placeholder="选择已授权的 Facebook 页面">
-            <el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name} (${page.page_id})`" :value="page.page_id" />
-          </el-select>
-            <div v-if="!metaPages.length" class="tip page-sync-tip">
-              <span>暂无已同步页面，请先完成 Meta OAuth 授权或同步页面。</span>
-              <el-button size="small" :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
-            </div>
+          <div class="page-select-row">
+            <el-select v-model="creativeForm.page_id" filterable class="page-select" placeholder="选择已授权的 Facebook 页面">
+              <el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name} (${page.page_id})`" :value="page.page_id" />
+            </el-select>
+            <el-button type="primary" plain :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
+          </div>
+          <div v-if="!metaPages.length" class="tip page-sync-tip">
+            暂无已同步页面，请先完成 Meta OAuth 授权或点击右侧按钮同步。
+          </div>
         </el-form-item>
         <el-form-item label="素材形式">
           <el-radio-group v-model="creativeForm.creative_format">
@@ -751,7 +753,13 @@ onMounted(loadTemplates)
   .page-desc { margin: 4px 0 0; font-size: 13px; color: #909399; line-height: 1.6; max-width: 760px; }
 }
 .tip { color: #909399; font-size: 12px; margin-top: 4px; line-height: 1.5; }
-.page-sync-tip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.page-select-row { display: flex; align-items: center; gap: 10px; width: 100%; }
+.page-select { flex: 1; min-width: 0; }
+.page-sync-tip { color: #8a98aa; }
+@media (max-width: 680px) {
+  .page-select-row { align-items: stretch; flex-direction: column; }
+  .page-select-row .el-button { width: 100%; }
+}
 .inline-fields { display: flex; align-items: center; gap: 10px; }
 .template-steps { margin-bottom: 20px; }
 .creative-block { margin: 14px 0 20px; padding: 16px 18px 6px; border: 1px solid #ebeef5; border-radius: 8px; background: #fafcff; }
