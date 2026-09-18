@@ -53,9 +53,11 @@
         <el-empty v-if="!list.length" description="暂无素材，点击右上角上传" />
         <div v-for="item in list" :key="item.id" class="card">
           <el-checkbox v-model="selectedIds" :label="item.id" class="asset-check"><span /></el-checkbox>
-          <div class="thumb">
-            <img v-if="item.asset_type === 'image' && item.url" :src="item.url" alt="" />
-            <video v-else-if="item.asset_type === 'video' && item.url" :src="item.url" controls />
+          <div class="thumb" @click="openPreview(item)">
+            <img v-if="item.asset_type === 'image' && previewUrls[item.id]" :src="previewUrls[item.id]" alt="" />
+            <img v-else-if="item.asset_type === 'image' && item.url" :src="item.url" alt="" />
+            <video v-else-if="item.asset_type === 'video' && previewUrls[item.id]" :src="previewUrls[item.id]" muted :poster="previewUrls[item.id]" />
+            <video v-else-if="item.asset_type === 'video' && item.url" :src="item.url" muted :poster="item.url" />
             <el-icon v-else class="thumb-icon"><Picture /></el-icon>
           </div>
           <div class="info">
@@ -73,8 +75,8 @@
             </div>
             <div v-if="placementAdvice(item)" class="placement-tip">{{ placementAdvice(item) }}</div>
             <div class="status">
-              <el-tag v-if="['ready', 'READY'].includes(item.status)" size="small" type="success">本地就绪</el-tag>
-              <el-tag v-else-if="['uploading', 'UPLOADING', 'PENDING', 'PROCESSING'].includes(item.status)" size="small" type="info">上传中</el-tag>
+              <el-tag v-if="item.processing_status === 'READY' || (!item.processing_status && ['ready', 'READY'].includes(item.status))" size="small" type="success">素材就绪</el-tag>
+              <el-tag v-else-if="['uploading', 'UPLOADING', 'PENDING', 'PROCESSING'].includes(item.status) || ['PENDING', 'PROCESSING'].includes(item.processing_status || '')" size="small" type="info">处理中</el-tag>
               <el-tooltip v-else-if="item.status === 'FAILED' || item.status === 'failed'" :content="item.error || '点击查看失败原因'" placement="top">
                 <el-tag size="small" type="danger" class="clickable" @click="openFailure(item)">失败</el-tag>
               </el-tooltip>
@@ -88,8 +90,8 @@
                 <el-button link type="danger" size="small">删除</el-button>
               </template>
             </el-popconfirm>
-            <el-button link type="primary" size="small" @click="openBindings(item)">映射</el-button>
-            <el-button link type="success" size="small" @click="syncAllAccounts(item)">同步账户</el-button>
+            <el-button link type="primary" size="small" :disabled="!isAssetReady(item)" @click="openBindings(item)">映射</el-button>
+            <el-button link type="success" size="small" :disabled="!isAssetReady(item)" @click="syncAllAccounts(item)">同步账户</el-button>
             <el-button link size="small" @click="refreshMetadata(item)">刷新信息</el-button>
           </div>
         </div>
@@ -125,6 +127,7 @@
       <el-table :data="bindings" v-loading="bindingLoading" size="small">
         <el-table-column prop="account_name" label="账号" min-width="180" />
         <el-table-column prop="status" label="状态" width="110" />
+        <el-table-column prop="connector_task_id" label="外部任务" min-width="180" show-overflow-tooltip />
         <el-table-column prop="meta_asset_id" label="Meta 素材 ID" min-width="180" show-overflow-tooltip />
         <el-table-column prop="error_message" label="错误" min-width="180" show-overflow-tooltip />
         <el-table-column label="操作" width="90"><template #default="{ row }"><el-button v-if="row.status === 'FAILED'" link type="primary" @click="retryBinding(row)">重试</el-button></template></el-table-column>
@@ -140,11 +143,16 @@
         </el-descriptions-item>
       </el-descriptions>
     </el-dialog>
+    <el-dialog v-model="previewVisible" :title="previewAsset?.name || '素材预览'" width="760px" destroy-on-close>
+      <img v-if="previewAsset?.asset_type === 'image' && previewOriginalUrl" :src="previewOriginalUrl" class="preview-media" alt="" />
+      <video v-else-if="previewAsset?.asset_type === 'video' && previewOriginalUrl" :src="previewOriginalUrl" class="preview-media" controls autoplay />
+      <el-empty v-else description="素材预览暂不可用" />
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { UploadFilled, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { mediaApi, type MediaItem, type CreativeAssetGroup, type CreativeAssetTag } from '@/api/media'
@@ -179,6 +187,10 @@ const bindings = ref<any[]>([])
 const bindingAssetId = ref('')
 const failureVisible = ref(false)
 const failureAsset = ref<MediaItem | null>(null)
+const previewUrls = reactive<Record<string, string>>({})
+const previewVisible = ref(false)
+const previewAsset = ref<MediaItem | null>(null)
+const previewOriginalUrl = ref('')
 let bindingTimer: number | null = null
 
 const load = async () => {
@@ -191,6 +203,13 @@ const load = async () => {
       tag_id: filterTag.value || undefined,
     })
     list.value = data
+    await Promise.all(data.map(async (item) => {
+      if (item.url || item.processing_status !== 'READY') return
+      try {
+        const { data: signed } = await mediaApi.getDownloadUrl(item.id, item.asset_type === 'video' ? 'cover' : 'thumbnail')
+        previewUrls[item.id] = signed.url
+      } catch { /* 预览失败不影响列表 */ }
+    }))
   } finally {
     loading.value = false
   }
@@ -212,14 +231,42 @@ const onSelect = async (file: any) => {
   uploading.value = true
   try {
     const res = await mediaApi.upload(raw, { account_id: filterAccount.value, group_id: filterGroup.value || undefined })
-    ElMessage.success(`已上传：${res.data.name}`)
+    ElMessage.success(res.duplicate ? `文件已存在，已关联当前广告账户：${res.data.name}` : `已上传：${res.data.name}`)
     await load()
+    if (res.data.status === 'PROCESSING' || res.data.processing_status === 'PROCESSING') {
+      await waitForAsset(res.data.id)
+      await load()
+    }
   } catch (e: any) {
     const detail = e?.response?.data?.detail || e?.message || '素材上传失败'
     ElMessage.error(String(detail))
   } finally {
     uploading.value = false
   }
+}
+
+const isAssetReady = (item: MediaItem) => item.processing_status === 'READY' || (!item.processing_status && item.status === 'READY')
+
+const openPreview = async (item: MediaItem) => {
+  previewAsset.value = item
+  previewOriginalUrl.value = ''
+  previewVisible.value = true
+  try {
+    if (item.url) previewOriginalUrl.value = item.url
+    else if (item.processing_status === 'READY') {
+      const { data } = await mediaApi.getDownloadUrl(item.id, 'original')
+      previewOriginalUrl.value = data.url
+    }
+  } catch { /* 全局请求层已静默，弹窗保留空状态 */ }
+}
+
+const waitForAsset = async (assetId: string) => {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise(resolve => window.setTimeout(resolve, 2000))
+    const { data } = await mediaApi.get(assetId)
+    if (data.status === 'READY' || data.status === 'FAILED') return data
+  }
+  return null
 }
 
 const validateMediaFile = (file: File): Promise<string | null> => new Promise(resolve => {
@@ -335,15 +382,22 @@ const syncAllAccounts = async (item: MediaItem) => {
 const refreshMetadata = async (item: MediaItem) => {
   try {
     const { data } = await mediaApi.refreshMetadata(item.id)
-    Object.assign(item, data)
-    ElMessage.success('素材信息已刷新')
+    if ('asset' in data) Object.assign(item, data.asset)
+    if ('status' in data && data.status === 'PROCESSING') {
+      ElMessage.success('已提交素材信息刷新任务')
+      await waitForAsset(item.id)
+      await load()
+    } else {
+      Object.assign(item, data)
+      ElMessage.success('素材信息已刷新')
+    }
   } catch { /* 全局拦截器提示错误 */ }
 }
 
 const remove = async (item: MediaItem) => {
   try {
-    await mediaApi.remove(item.id)
-    ElMessage.success('已删除')
+    const { data } = await mediaApi.remove(item.id)
+    ElMessage.success(data?.status === 'DELETING' ? '已提交删除任务' : '已删除')
     await load()
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
@@ -440,6 +494,7 @@ onMounted(async () => {
   .thumb {
     height: 140px;
     background: #f5f7fa;
+    cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -462,4 +517,5 @@ onMounted(async () => {
   .fb-ok { font-size: 12px; color: #67c23a; }
   .actions { padding: 6px 10px; border-top: 1px solid #f0f0f0; text-align: right; }
 }
+.preview-media { display: block; max-width: 100%; max-height: 68vh; margin: 0 auto; object-fit: contain; }
 </style>

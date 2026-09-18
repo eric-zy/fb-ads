@@ -1,7 +1,7 @@
 """
 素材库接口：图片 / 视频上传、列表、删除。
-上传会同时保存本地文件并调用 Facebook 上传（拿到 image_hash / video_id），
-供批量发布时引用，避免重复上传。
+OSS 模式使用浏览器直传 + 服务端校验 + 异步媒体处理；本地模式保留旧上传兼容。
+素材就绪后按广告账户建立独立 Meta/Connector 映射。
 权限：登录用户即可（普通用户上传归自己账户；管理员可指定主账号）。
 """
 import os
@@ -12,18 +12,18 @@ import struct
 import json
 import shutil
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 
 from core.database import get_db
 from core.tenant import effective_tenant_id
 from core.auth import get_current_active_user
 from core.logger import logger
-from models import CreativeAsset, MetaAccount, AdAccount, MetaAssetBinding, User, UserAccount, CreativeAssetGroup
+from models import CreativeAsset, MetaAccount, AdAccount, MetaAssetBinding, User, UserAccount, CreativeAssetGroup, MediaUploadSession
 from models.account_group import account_group_accounts, account_group_users
 from models.creative_asset_tag import creative_asset_tag_links
 from services.credential_service import CredentialError, CredentialService
@@ -31,7 +31,8 @@ from services.meta import MetaAdsService, MetaClient
 from services.meta.errors import MetaApiError
 from config.settings import settings
 from tasks.campaign_tasks import retry_asset_binding_task
-from tasks.media_tasks import upload_asset_task
+from tasks.media_tasks import upload_asset_task, process_oss_asset_task, delete_oss_asset_task
+from services.storage import AliyunOSSStorage, StorageError
 
 router = APIRouter(prefix="/api/v1/media", tags=["素材库"])
 
@@ -46,6 +47,7 @@ class MediaItem(BaseModel):
     created_by: Optional[str] = None
     visibility: str = "ACCOUNT"
     group_id: Optional[str] = None
+    tag_ids: Optional[List[str]] = None
     asset_type: str
     meta_account_id: Optional[str]
     account_id: Optional[str]
@@ -58,10 +60,23 @@ class MediaItem(BaseModel):
     mime_type: Optional[str]
     duration: Optional[float]
     status: str
+    retry_count: int = 0
     error: Optional[str]
     created_at: Optional[str]
+    updated_at: Optional[str] = None
     binding_id: Optional[str] = None
     task_id: Optional[str] = None
+    original_name: Optional[str] = None
+    stored_name: Optional[str] = None
+    object_key: Optional[str] = None
+    storage_bucket: Optional[str] = None
+    storage_region: Optional[str] = None
+    storage_status: Optional[str] = None
+    processing_status: Optional[str] = None
+    thumbnail_key: Optional[str] = None
+    cover_key: Optional[str] = None
+    md5: Optional[str] = None
+    sha256: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -71,6 +86,57 @@ class AssetPrepareRequest(BaseModel):
 
 class AssetRetryRequest(BaseModel):
     binding_id: str
+
+
+class MediaUploadSessionRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    asset_type: str = Field(..., pattern="^(image|video)$")
+    mime_type: str = Field(..., min_length=1, max_length=100)
+    size: int = Field(..., gt=0, le=MAX_SIZE)
+    md5: Optional[str] = Field(None, min_length=32, max_length=32, pattern="^[0-9a-fA-F]{32}$")
+    sha256: str = Field(..., min_length=64, max_length=64, pattern="^[0-9a-fA-F]{64}$")
+    account_id: Optional[str] = None
+    meta_account_id: Optional[str] = None
+    group_id: Optional[str] = None
+
+
+def _oss_extension(name: str, mime_type: str) -> str:
+    ext = os.path.splitext(name)[1].lower().lstrip(".")
+    allowed = {"jpg", "jpeg", "png", "gif", "webp", "mp4", "mov", "mkv", "webm"}
+    if ext not in allowed:
+        ext = (mimetypes.guess_extension(mime_type) or ".bin").lstrip(".").lower()
+    return ext
+
+
+def _oss_object_key(user: User, asset_id: str, name: str, md5: Optional[str], mime_type: str) -> str:
+    now = datetime.utcnow()
+    stamp = now.strftime("%Y%m%d%H%M%S")
+    digest = (md5 or hashlib.sha256(asset_id.encode()).hexdigest())[:32].lower()
+    stored_name = f"{user.id}_{stamp}_{digest}.{_oss_extension(name, mime_type)}"
+    tenant_id = effective_tenant_id(user) or "unassigned"
+    return f"{settings.OSS_BASE_PATH}/{tenant_id}/{user.id}/{settings.OSS_PLATFORM}/{now:%Y/%m/%d}/{asset_id}/{stored_name}"
+
+
+@router.get("/{asset_id}/download-url")
+def media_download_url(
+    asset_id: str,
+    kind: str = Query("original", pattern="^(original|thumbnail|cover)$"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_active_user),
+):
+    asset = _get_asset_or_404(db, asset_id, user)
+    if not asset.object_key or asset.storage_status != "READY":
+        raise HTTPException(status_code=409, detail="素材尚未完成 OSS 处理")
+    key = asset.object_key
+    if kind == "thumbnail" and asset.thumbnail_key:
+        key = asset.thumbnail_key
+    elif kind == "cover" and asset.cover_key:
+        key = asset.cover_key
+    try:
+        url = AliyunOSSStorage().download_url(key)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"asset_id": asset.id, "url": url, "expires_in": settings.OSS_DOWNLOAD_EXPIRE_SECONDS}
 
 
 def _accessible_account_ids(db: Session, user: User) -> Optional[set[str]]:
@@ -85,7 +151,7 @@ def _accessible_account_ids(db: Session, user: User) -> Optional[set[str]]:
 
 def _asset_query(db: Session, user: User):
     account_ids = _accessible_account_ids(db, user)
-    q = db.query(CreativeAsset)
+    q = db.query(CreativeAsset).filter(CreativeAsset.status != "ARCHIVED")
     if account_ids is not None:
         q = q.filter(
             (CreativeAsset.created_by == user.id)
@@ -110,6 +176,31 @@ def _assert_account_access(db: Session, account_id: str, user: User) -> AdAccoun
     if account_ids is not None and account.id not in account_ids:
         raise HTTPException(status_code=403, detail="无权使用该广告账户")
     return account
+
+
+def _upsert_asset_binding(db: Session, asset: CreativeAsset, account: AdAccount) -> MetaAssetBinding:
+    """为素材和广告账户建立幂等映射，上传去重时也必须执行。"""
+    binding = db.query(MetaAssetBinding).filter(
+        MetaAssetBinding.asset_id == asset.id,
+        MetaAssetBinding.ad_account_id == account.id,
+    ).first()
+    if not binding:
+        binding = MetaAssetBinding(
+            id=uuid.uuid4().hex,
+            tenant_id=account.tenant_id,
+            asset_id=asset.id,
+            ad_account_id=account.id,
+            meta_asset_type=asset.asset_type,
+            status="PENDING",
+        )
+        db.add(binding)
+    elif binding.status in ("FAILED", "EXPIRED"):
+        binding.status = "PENDING"
+        binding.error_message = None
+        binding.error_code = None
+        binding.connector_task_id = None
+        binding.updated_at = datetime.utcnow()
+    return binding
 
 
 def _assert_group_access(db: Session, group_id: Optional[str], user: User) -> None:
@@ -165,6 +256,8 @@ def prepare_asset_bindings(
 ):
     """为目标广告账户建立素材映射占位，实际上传由异步任务执行。"""
     asset = _get_asset_or_404(db, asset_id, user)
+    if settings.MEDIA_STORAGE_PROVIDER == "oss" and asset.processing_status != "READY":
+        raise HTTPException(status_code=409, detail="素材尚未完成 OSS 处理，请等待素材状态变为 READY")
     if not req.ad_account_ids:
         raise HTTPException(status_code=400, detail="至少选择一个广告账户")
     created = []
@@ -309,6 +402,157 @@ def _video_metadata(path: str) -> tuple[Optional[int], Optional[int], Optional[f
         return None, None, None
 
 
+@router.post("/upload-sessions")
+def create_media_upload_session(
+    payload: MediaUploadSessionRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_active_user),
+):
+    """创建 OSS 直传会话；文件内容由浏览器直接上传到 OSS。"""
+    if settings.MEDIA_STORAGE_PROVIDER != "oss":
+        raise HTTPException(status_code=503, detail="OSS 素材存储未启用")
+    allowed = ALLOWED_IMAGE if payload.asset_type == "image" else ALLOWED_VIDEO
+    if payload.mime_type not in allowed:
+        raise HTTPException(status_code=400, detail=f"素材类型与 MIME 不匹配: {payload.mime_type}")
+    _assert_group_access(db, payload.group_id, user)
+    if payload.account_id:
+        account = _assert_account_access(db, payload.account_id, user)
+    else:
+        raise HTTPException(status_code=400, detail="素材必须指定广告账户")
+
+    existing = _asset_query(db, user).filter(
+        CreativeAsset.sha256 == payload.sha256.lower(),
+        CreativeAsset.size == payload.size,
+        CreativeAsset.asset_type == payload.asset_type,
+        CreativeAsset.status != "ARCHIVED",
+    ).order_by(CreativeAsset.updated_at.desc()).first()
+    if existing:
+        binding = _upsert_asset_binding(db, existing, account)
+        db.commit()
+        task_id = None
+        if existing.processing_status == "READY" and binding.status == "PENDING":
+            task_id = upload_asset_task.delay(binding.id).id
+        return {
+            "duplicate": True,
+            "asset_id": existing.id,
+            "status": existing.status,
+            "asset": existing.to_dict(),
+            "binding": binding.to_dict(),
+            "binding_id": binding.id,
+            "task_id": task_id,
+        }
+
+    asset_id = uuid.uuid4().hex
+    object_key = _oss_object_key(user, asset_id, payload.name, payload.md5, payload.mime_type)
+    now = datetime.utcnow()
+    asset = CreativeAsset(
+        id=asset_id,
+        tenant_id=account.tenant_id,
+        name=payload.name,
+        original_name=payload.name,
+        created_by=user.id,
+        visibility="ACCOUNT",
+        group_id=payload.group_id,
+        asset_type=payload.asset_type,
+        meta_account_id=payload.meta_account_id,
+        account_id=payload.account_id,
+        stored_name=os.path.basename(object_key),
+        object_key=object_key,
+        storage_bucket=settings.OSS_BUCKET,
+        storage_region=settings.OSS_REGION,
+        storage_status="UPLOADING",
+        processing_status="PENDING",
+        size=payload.size,
+        mime_type=payload.mime_type,
+        status="PENDING",
+        md5=payload.md5.lower() if payload.md5 else None,
+        sha256=payload.sha256.lower(),
+    )
+    session = MediaUploadSession(
+        id=uuid.uuid4().hex,
+        tenant_id=account.tenant_id,
+        asset_id=asset.id,
+        object_key=object_key,
+        expected_size=payload.size,
+        expected_md5=payload.md5.lower() if payload.md5 else None,
+        expected_sha256=payload.sha256.lower(),
+        status="UPLOADING",
+        expires_at=now + timedelta(seconds=settings.OSS_UPLOAD_EXPIRE_SECONDS),
+        created_by=user.id,
+    )
+    try:
+        upload = AliyunOSSStorage().presign_put(object_key, payload.mime_type)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    db.add(asset)
+    db.add(session)
+    db.commit()
+    return {
+        "duplicate": False,
+        "asset_id": asset.id,
+        "upload_session_id": session.id,
+        "object_key": object_key,
+        "upload": upload,
+        "expires_at": session.expires_at.isoformat(),
+    }
+
+
+@router.post("/upload-sessions/{session_id}/complete")
+def complete_media_upload_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_active_user),
+):
+    """完成 OSS 上传并以 HeadObject 结果作为服务端事实来源。"""
+    session = db.query(MediaUploadSession).filter(
+        MediaUploadSession.id == session_id,
+        MediaUploadSession.tenant_id == effective_tenant_id(user),
+        MediaUploadSession.created_by == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="上传会话不存在")
+    if session.status == "COMPLETED":
+        asset = db.query(CreativeAsset).filter(CreativeAsset.id == session.asset_id).first()
+        return {"asset_id": session.asset_id, "status": "PROCESSING", "asset": asset.to_dict() if asset else None}
+    if session.expires_at < datetime.utcnow():
+        session.status = "EXPIRED"
+        session.error_message = "上传会话已过期"
+        db.commit()
+        raise HTTPException(status_code=400, detail="上传会话已过期")
+    try:
+        head = AliyunOSSStorage().head(session.object_key)
+    except Exception as exc:
+        session.status = "FAILED"
+        session.error_message = str(exc)[:500]
+        db.commit()
+        raise HTTPException(status_code=400, detail="OSS 对象不存在或无法校验") from exc
+    if session.expected_size is not None and head.size != session.expected_size:
+        session.status = "FAILED"
+        session.error_message = "OSS 对象大小与上传声明不一致"
+        db.commit()
+        raise HTTPException(status_code=400, detail=session.error_message)
+    asset = db.query(CreativeAsset).filter(CreativeAsset.id == session.asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    asset.storage_status = "READY"
+    asset.processing_status = "PROCESSING"
+    asset.status = "PROCESSING"
+    session.status = "COMPLETED"
+    session.completed_at = datetime.utcnow()
+    db.commit()
+    try:
+        task = process_oss_asset_task.delay(asset.id)
+        task_id = task.id
+    except Exception as exc:
+        logger.warning("[media] OSS 媒体处理任务投递失败 asset=%s: %s", asset.id, exc)
+        asset.processing_status = "FAILED"
+        asset.status = "FAILED"
+        asset.error = "OSS 上传已完成，但素材处理任务投递失败，请点击刷新信息重试"
+        db.commit()
+        raise HTTPException(status_code=503, detail=asset.error) from exc
+    return {"asset_id": asset.id, "status": asset.status, "task_id": task_id, "asset": asset.to_dict()}
+
+
 @router.post("/upload", response_model=MediaItem)
 async def upload_media(
     file: UploadFile = File(...),
@@ -324,6 +568,8 @@ async def upload_media(
     - account_id：归属的广告账户（act_xxx），用于 FB 上传归属
     至少提供一个，FB 上传才会使用真实 token；否则降级为本地占位。
     """
+    if settings.MEDIA_STORAGE_PROVIDER == "oss":
+        raise HTTPException(status_code=409, detail="OSS 模式请使用直传上传会话接口")
     mime = file.content_type or ""
     is_image = mime in ALLOWED_IMAGE
     is_video = mime in ALLOWED_VIDEO
@@ -464,22 +710,32 @@ def list_media(
     return [i.to_dict() for i in items]
 
 
+@router.get("/{asset_id}", response_model=MediaItem)
+def get_media(asset_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
+    return _get_asset_or_404(db, asset_id, user).to_dict()
+
+
 @router.delete("/{asset_id}")
 def delete_media(
     asset_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_active_user),
 ):
-    """删除素材（同时删除本地文件）"""
+    """软删除素材，并异步清理 OSS 原始文件和衍生文件。"""
     asset = _get_asset_or_404(db, asset_id, user)
-    if asset.file_path and os.path.exists(asset.file_path):
+    asset.status = "ARCHIVED"
+    asset.storage_status = "DELETING" if asset.object_key else "DELETED"
+    asset.deleted_at = datetime.utcnow()
+    db.commit()
+    task_id = None
+    if asset.object_key:
+        task_id = delete_oss_asset_task.delay(asset.id).id
+    elif asset.file_path and os.path.exists(asset.file_path):
         try:
             os.remove(asset.file_path)
         except OSError:
             pass
-    db.delete(asset)
-    db.commit()
-    return {"success": True}
+    return {"success": True, "status": "DELETING" if task_id else "DELETED", "task_id": task_id}
 
 
 @router.post("/{asset_id}/refresh-metadata")
@@ -490,6 +746,15 @@ def refresh_metadata(
 ):
     """重新解析历史素材元数据，不触发 Meta 上传。"""
     asset = _get_asset_or_404(db, asset_id, user)
+    if settings.MEDIA_STORAGE_PROVIDER == "oss":
+        if not asset.object_key or asset.storage_status != "READY":
+            raise HTTPException(status_code=409, detail="素材尚未完成 OSS 处理")
+        asset.processing_status = "PROCESSING"
+        asset.status = "PROCESSING"
+        asset.error = None
+        db.commit()
+        task = process_oss_asset_task.delay(asset.id, True)
+        return {"asset": asset.to_dict(), "status": "PROCESSING", "task_id": task.id}
     if not asset.file_path or not os.path.isfile(asset.file_path):
         raise HTTPException(status_code=400, detail="素材文件不存在，无法解析")
     if asset.asset_type == "image":

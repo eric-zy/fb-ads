@@ -50,3 +50,8 @@ httpx==0.25.2   # fastapi/starlette TestClient 依赖，缺失会导致 tests/co
 click==8.1.7
 colorama==0.4.6
 pytz==2023.3
+
+# Alibaba Cloud OSS SDK V2
+alibabacloud-oss-v2>=1.2.0,<2.0.0
+alibabacloud-credentials>=1.0.0,<2.0.0
+alibabacloud-sts20150401>=1.1.0,<2.0.0

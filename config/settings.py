@@ -108,6 +108,29 @@ class Settings(BaseSettings):
     # ========== 素材上传配置 ==========
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads"))
     MAX_UPLOAD_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", str(200 * 1024 * 1024)))  # 200MB
+    MEDIA_STORAGE_PROVIDER: str = os.getenv("MEDIA_STORAGE_PROVIDER", "local").lower()
+    OSS_REGION: str = os.getenv("ADS_OSS_REGION", os.getenv("OSS_REGION", ""))
+    OSS_ENDPOINT: str = os.getenv("ADS_OSS_ENDPOINT", os.getenv("OSS_ENDPOINT", "")) or (
+        f"https://oss-{OSS_REGION}.aliyuncs.com" if OSS_REGION else ""
+    )
+    OSS_BUCKET: str = os.getenv("ADS_OSS_BUCKET", os.getenv("OSS_BUCKET", ""))
+    OSS_BASE_PATH: str = os.getenv("OSS_BASE_PATH", "ossuser/oversea").strip("/")
+    OSS_PLATFORM: str = os.getenv("OSS_PLATFORM", "meta").strip("/") or "meta"
+    OSS_UPLOAD_EXPIRE_SECONDS: int = int(os.getenv("OSS_UPLOAD_EXPIRE_SECONDS", "900"))
+    OSS_DOWNLOAD_EXPIRE_SECONDS: int = int(os.getenv("OSS_DOWNLOAD_EXPIRE_SECONDS", "900"))
+    OSS_ACCESS_KEY_ID: str = os.getenv(
+        "ADS_OSS_ACCESS_KEY_ID",
+        os.getenv("ALIBABA_CLOUD_ACCESS_KEY_ID", os.getenv("OSS_ACCESS_KEY_ID", "")),
+    )
+    OSS_ACCESS_KEY_SECRET: str = os.getenv(
+        "ADS_OSS_ACCESS_KEY_SECRET",
+        os.getenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", os.getenv("OSS_ACCESS_KEY_SECRET", "")),
+    )
+    # 兼容已有配置名；Role ARN 是可选的，没有时直接使用 RAM 用户 AccessKey。
+    OSS_STS_ROLE_ARN: str = os.getenv("OSS_STS_ROLE_ARN", "")
+    OSS_STS_ACCESS_KEY_ID: str = OSS_ACCESS_KEY_ID
+    OSS_STS_ACCESS_KEY_SECRET: str = OSS_ACCESS_KEY_SECRET
+    OSS_STS_DURATION_SECONDS: int = int(os.getenv("OSS_STS_DURATION_SECONDS", "3600"))
     
     # ========== 通知配置 ==========
     NOTIFY_EMAIL: Optional[str] = os.getenv("NOTIFY_EMAIL")
@@ -167,5 +190,24 @@ class Settings(BaseSettings):
                 raise ValueError(f"FB Connector 缺少配置: {', '.join(missing)}")
         if role == "saas" and self.FB_ACCESS_MODE == "connector" and not self.FB_CONNECTOR_BASE_URL:
             raise ValueError("FB_ACCESS_MODE=connector 时必须设置 FB_CONNECTOR_BASE_URL")
+        if self.MEDIA_STORAGE_PROVIDER not in {"local", "oss"}:
+            raise ValueError("MEDIA_STORAGE_PROVIDER 必须是 local 或 oss")
+        if self.MEDIA_STORAGE_PROVIDER == "oss":
+            required = {
+                "OSS_REGION": self.OSS_REGION,
+                "OSS_ENDPOINT": self.OSS_ENDPOINT,
+                "OSS_BUCKET": self.OSS_BUCKET,
+                "OSS_ACCESS_KEY_ID": self.OSS_ACCESS_KEY_ID,
+                "OSS_ACCESS_KEY_SECRET": self.OSS_ACCESS_KEY_SECRET,
+            }
+            missing = [key for key, value in required.items() if not value]
+            if missing:
+                raise ValueError(f"OSS 存储缺少配置: {', '.join(missing)}")
+            if not (900 <= self.OSS_UPLOAD_EXPIRE_SECONDS <= 43200):
+                raise ValueError("OSS_UPLOAD_EXPIRE_SECONDS 必须在 900 到 43200 秒之间")
+            if not (900 <= self.OSS_DOWNLOAD_EXPIRE_SECONDS <= 43200):
+                raise ValueError("OSS_DOWNLOAD_EXPIRE_SECONDS 必须在 900 到 43200 秒之间")
+            if not (900 <= self.OSS_STS_DURATION_SECONDS <= 43200):
+                raise ValueError("OSS_STS_DURATION_SECONDS 必须在 900 到 43200 秒之间")
 
 settings = Settings()

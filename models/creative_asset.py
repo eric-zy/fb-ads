@@ -34,6 +34,16 @@ class CreativeAsset(TenantMixin, Base):
     filename = Column(String(255), comment="服务器存储文件名")
     file_path = Column(String(512), comment="本地存储相对路径（UPLOAD_DIR 下）")
     url = Column(String(1024), comment="可访问的 URL（本地或对象存储）")
+    original_name = Column(String(255), nullable=True, comment="用户上传的原始文件名")
+    stored_name = Column(String(255), nullable=True, comment="对象存储中的文件名")
+    object_key = Column(String(1024), nullable=True, comment="OSS Object Key")
+    storage_bucket = Column(String(128), nullable=True)
+    storage_region = Column(String(64), nullable=True)
+    storage_status = Column(String(20), nullable=True, comment="PENDING/UPLOADING/READY/FAILED/DELETED")
+    processing_status = Column(String(20), nullable=True, comment="PENDING/PROCESSING/READY/FAILED")
+    thumbnail_key = Column(String(1024), nullable=True)
+    cover_key = Column(String(1024), nullable=True)
+    md5 = Column(String(32), nullable=True, index=True, comment="兼容性内容指纹")
     sha256 = Column(String(64), nullable=True, index=True, comment="文件内容指纹")
 
     # Facebook 引用标识（上传到 FB 后回填）
@@ -76,6 +86,14 @@ class CreativeAsset(TenantMixin, Base):
             "meta_account_id": self.meta_account_id,
             "account_id": self.account_id,
             "url": self.url,
+            "original_name": self.original_name or self.name,
+            "stored_name": self.stored_name or self.filename,
+            "object_key": self.object_key,
+            "storage_status": self.storage_status,
+            "processing_status": self.processing_status,
+            "thumbnail_key": self.thumbnail_key,
+            "cover_key": self.cover_key,
+            "md5": self.md5,
             "sha256": self.sha256,
             "fb_hash": self.fb_hash,
             "fb_video_id": self.fb_video_id,

@@ -1,0 +1,17 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "oss:PutObject",
+        "oss:AbortMultipartUpload",
+        "oss:ListParts",
+        "oss:ListMultipartUploads"
+      ],
+      "Resource": [
+        "acs:oss:*:*:your-private-bucket/ossuser/oversea/*"
+      ]
+    }
+  ]
+}

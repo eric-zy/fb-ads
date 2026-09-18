@@ -108,6 +108,9 @@ class FBConnectorClient:
             raise FBConnectorError("素材上传必须提供幂等键")
         return self._request("POST", "/internal/meta/media/upload", {"media_id": media_id, "credential_id": credential_id, "account_id": account_id, "asset_type": asset_type, "source_url": source_url, "idempotency_key": idempotency_key}, request_id=request_id, idempotency_key=idempotency_key)
 
+    def media_upload_status(self, task_id: str, *, request_id: str | None = None) -> dict[str, Any]:
+        return self._request("GET", f"/internal/meta/media/upload/{task_id}", {}, request_id=request_id)
+
     def create_campaign(self, task_id: str, credential_id: str, account_id: str, payload: dict[str, Any], *, request_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
         if not idempotency_key:
             raise FBConnectorError("投放创建必须提供幂等键")

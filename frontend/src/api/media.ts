@@ -1,6 +1,8 @@
 // 素材库接口封装
 import request from '@/utils/request'
+import axios from 'axios'
 import type { AxiosProgressEvent } from 'axios'
+import { md5ArrayBuffer } from '@/utils/md5'
 
 export interface MediaItem {
   id: string
@@ -24,6 +26,12 @@ export interface MediaItem {
   created_at: string | null
   group_id?: string | null
   tag_ids?: string[]
+  original_name?: string | null
+  object_key?: string | null
+  thumbnail_key?: string | null
+  cover_key?: string | null
+  storage_status?: string | null
+  processing_status?: string | null
 }
 
 export interface CreativeAssetGroup {
@@ -41,6 +49,7 @@ export interface MetaAssetBinding {
   ad_account_id: string
   account_name?: string | null
   meta_asset_id: string | null
+  connector_task_id?: string | null
   meta_asset_type: string
   status: 'PENDING' | 'UPLOADING' | 'PROCESSING' | 'READY' | 'FAILED' | 'EXPIRED' | string
   error_message: string | null
@@ -48,22 +57,75 @@ export interface MetaAssetBinding {
   last_verified_at: string | null
 }
 
+export interface UploadSessionResponse {
+  duplicate: boolean
+  asset_id: string
+  asset?: MediaItem
+  upload_session_id?: string
+  object_key?: string
+  upload?: { url: string; method: 'PUT'; headers?: Record<string, string> }
+  binding_id?: string
+  binding?: MetaAssetBinding
+  task_id?: string | null
+}
+
+export interface UploadResult {
+  data: MediaItem
+  duplicate?: boolean
+  binding_id?: string
+  task_id?: string | null
+}
+
 export const mediaApi = {
+  get: (id: string) => request.get<MediaItem>(`/api/v1/media/${id}`),
+  getDownloadUrl: (id: string, kind: 'original' | 'thumbnail' | 'cover' = 'original') =>
+    request.get<{ asset_id: string; url: string; expires_in: number }>(
+      `/api/v1/media/${id}/download-url`,
+      { params: { kind }, skipErrorMessage: true },
+    ),
   list: (params?: { meta_account_id?: string; account_id?: string; asset_type?: string; group_id?: string; tag_id?: string }) =>
     request.get<MediaItem[]>('/api/v1/media', { params }),
   upload: (
     file: File,
     extra?: { meta_account_id?: string; account_id?: string; group_id?: string },
     onProgress?: (e: AxiosProgressEvent) => void
-  ) => {
-    const form = new FormData()
-    form.append('file', file)
-    if (extra?.meta_account_id) form.append('meta_account_id', extra.meta_account_id)
-    if (extra?.account_id) form.append('account_id', extra.account_id)
-    if (extra?.group_id) form.append('group_id', extra.group_id)
-    return request.post<MediaItem>('/api/v1/media/upload', form, {
-      // 不要手动设置 Content-Type；浏览器需要自动补 multipart boundary。
-      onUploadProgress: onProgress,
+  ): Promise<UploadResult> => {
+    return file.arrayBuffer().then(async (buffer) => {
+      const hashBuffer = await crypto.subtle.digest('SHA-256', buffer)
+      const sha256 = Array.from(new Uint8Array(hashBuffer)).map((value) => value.toString(16).padStart(2, '0')).join('')
+      const md5 = md5ArrayBuffer(buffer)
+      const assetType = file.type.startsWith('video/') ? 'video' : 'image'
+      const session = await request.post<UploadSessionResponse>('/api/v1/media/upload-sessions', {
+        name: file.name,
+        asset_type: assetType,
+        mime_type: file.type,
+        size: file.size,
+        md5,
+        sha256,
+        account_id: extra?.account_id,
+        meta_account_id: extra?.meta_account_id,
+        group_id: extra?.group_id,
+      })
+      if (session.data.duplicate) {
+        if (!session.data.asset) throw new Error('重复素材响应缺少素材信息')
+        return {
+          data: session.data.asset,
+          duplicate: true,
+          binding_id: session.data.binding_id,
+          task_id: session.data.task_id,
+        }
+      }
+      const upload = session.data.upload
+      if (!upload?.url) throw new Error('OSS 上传签名缺失')
+      await axios.put(upload.url, file, {
+        headers: upload.headers || { 'Content-Type': file.type },
+        onUploadProgress: onProgress,
+        skipErrorMessage: true,
+      })
+      const completed = await request.post<{ asset: MediaItem; task_id?: string }>(
+        `/api/v1/media/upload-sessions/${session.data.upload_session_id}/complete`,
+      )
+      return { data: completed.data.asset }
     })
   },
   groups: {
@@ -84,7 +146,7 @@ export const mediaApi = {
     setAssetTags: (assetId: string, tag_ids: string[]) => request.put(`/api/v1/creative-asset-tags/assets/${assetId}`, { tag_ids }),
   },
   remove: (id: string) => request.delete('/api/v1/media/' + id),
-  refreshMetadata: (id: string) => request.post<MediaItem>(`/api/v1/media/${id}/refresh-metadata`),
+  refreshMetadata: (id: string) => request.post<MediaItem | { asset: MediaItem; status: string; task_id?: string }>(`/api/v1/media/${id}/refresh-metadata`),
   bindings: (assetId: string) =>
     request.get<MetaAssetBinding[]>(`/api/v1/media/${assetId}/bindings`),
   prepare: (assetId: string, adAccountIds: string[]) =>
