@@ -13,6 +13,19 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Older deployments created Alembic's version_num as VARCHAR(32).  This
+    # revision id is longer than that, so PostgreSQL would successfully run
+    # the business DDL and then fail while updating alembic_version.  Widen
+    # the bookkeeping column before creating any business tables.  The whole
+    # migration is transactional on PostgreSQL, so a failed retry remains
+    # safe and can be rerun from revision 0043.
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.execute(
+            "ALTER TABLE alembic_version "
+            "ALTER COLUMN version_num TYPE VARCHAR(255)"
+        )
+
     op.create_table(
         "publish_previews",
         sa.Column("id", sa.String(length=50), nullable=False),
