@@ -48,7 +48,44 @@ echo "[deploy] 校验数据库当前版本："
 echo "[deploy] 数据库迁移完成。"
 
 # 数据库结构确认后再切换 API/Worker/Beat，避免出现 ORM 已更新而表结构未更新的窗口。
-"${compose[@]}" up -d --force-recreate api celery-worker celery-beat nginx
+echo "[deploy] 启动 API/Worker/Beat/Nginx，并等待 API 健康检查..."
+"${compose[@]}" up -d --wait --force-recreate api celery-worker celery-beat nginx
+
+echo "[deploy] 等待 API 就绪：http://127.0.0.1:8000/health"
+api_ready=false
+for attempt in $(seq 1 30); do
+  if curl --fail --silent --show-error --max-time 5 \
+      http://127.0.0.1:8000/health >/dev/null; then
+    api_ready=true
+    break
+  fi
+  echo "[deploy] API 尚未就绪 ($attempt/30)，等待 2s..."
+  sleep 2
+done
+if [[ "$api_ready" != true ]]; then
+  echo "[deploy] API 健康检查失败，最近日志：" >&2
+  "${compose[@]}" logs --tail=100 api >&2 || true
+  exit 1
+fi
+
+echo "[deploy] 等待 Nginx 网页入口：http://127.0.0.1:8094/"
+web_ready=false
+for attempt in $(seq 1 15); do
+  if curl --fail --silent --show-error --max-time 5 \
+      http://127.0.0.1:8094/ >/dev/null; then
+    web_ready=true
+    break
+  fi
+  echo "[deploy] Nginx 尚未就绪 ($attempt/15)，等待 2s..."
+  sleep 2
+done
+if [[ "$web_ready" != true ]]; then
+  echo "[deploy] Nginx 网页入口检查失败，最近日志：" >&2
+  "${compose[@]}" logs --tail=100 nginx >&2 || true
+  exit 1
+fi
+
+echo "[deploy] API 和网页入口均已就绪。"
 
 # 默认保留镜像和 BuildKit 缓存，避免下一次部署重新下载 Debian/Python 依赖。
 # 确需清理时显式执行：PRUNE_DOCKER_CACHE=1 ./deploy.sh

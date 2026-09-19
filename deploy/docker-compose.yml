@@ -49,6 +49,12 @@ services:
       - uploads:/app/uploads
       - logs:/app/logs
     networks: [fbnet]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --max-time 5 http://127.0.0.1:8000/health >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
     # 本地 Vite 开发环境需要直接代理到 API；生产环境可通过 nginx 内网访问。
     ports:
       - "8000:8000"
@@ -97,7 +103,8 @@ services:
       # 未备案期间通过公网 IP:8094 访问；备案后可改回 127.0.0.1:8094 并由 Caddy 反代。
       - "8094:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     networks: [fbnet]
 
 volumes:
