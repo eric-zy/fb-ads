@@ -21,7 +21,7 @@ class CampaignJob(TenantMixin, Base):
     template_id = Column(String(50), ForeignKey("campaign_templates.id"), nullable=True, index=True)
 
     action_type = Column(String(32), default=ActionType.CREATE.value,
-                         comment="CREATE / PAUSE / ENABLE / UPDATE_BUDGET / SYNC")
+                         comment="CREATE / PAUSE / ENABLE / ARCHIVE / UPDATE_BUDGET / SYNC")
     status = Column(String(32), default=JobStatus.PENDING.value, index=True)
 
     total_accounts = Column(Integer, default=0)
@@ -32,6 +32,10 @@ class CampaignJob(TenantMixin, Base):
     params = Column(JSON)
 
     created_by = Column(String(50), comment="操作人 user_id")
+    preview_id = Column(String(50), nullable=True, index=True, comment="提交时使用的发布预览")
+    submitted_by = Column(String(50), nullable=True, comment="最终确认提交的用户")
+    submitted_at = Column(DateTime, nullable=True)
+    idempotency_key = Column(String(128), nullable=True, index=True)
     error_message = Column(Text, comment="Job 级失败原因")
 
     # ---- 定时执行支持 ----
@@ -65,6 +69,10 @@ class CampaignJob(TenantMixin, Base):
             "failed_count": self.failed_count,
             "params": self.params,
             "created_by": self.created_by,
+            "preview_id": self.preview_id,
+            "submitted_by": self.submitted_by,
+            "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
+            "idempotency_key": self.idempotency_key,
             "error_message": self.error_message,
             "scheduled_at": self.scheduled_at.isoformat() if self.scheduled_at else None,
             "celery_task_id": self.celery_task_id,

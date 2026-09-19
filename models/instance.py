@@ -36,6 +36,11 @@ class CampaignInstance(TenantMixin, Base):
 
     status = Column(String(32), default=InstanceStatus.PAUSED.value, comment="本地状态 ACTIVE / PAUSED / ARCHIVED / DELETED")
     meta_status = Column(String(32), comment="Meta 侧状态同步，如 ACTIVE / PAUSED")
+    desired_status = Column(String(32), comment="本地期望的远端状态")
+    last_synced_at = Column(DateTime, nullable=True)
+    last_action_id = Column(String(50), nullable=True)
+    last_error = Column(String(1000), nullable=True)
+    archived_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -57,6 +62,11 @@ class CampaignInstance(TenantMixin, Base):
             "template_name": self.template.name if self.template else None,
             "status": self.status,
             "meta_status": self.meta_status,
+            "desired_status": self.desired_status,
+            "last_synced_at": self.last_synced_at.isoformat() if self.last_synced_at else None,
+            "last_action_id": self.last_action_id,
+            "last_error": self.last_error,
+            "archived_at": self.archived_at.isoformat() if self.archived_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -78,6 +88,12 @@ class AdSetInstance(TenantMixin, Base):
     meta_adset_id = Column(String(128), index=True, comment="Meta 侧 AdSet ID")
     name = Column(String(255))
     status = Column(String(32), default=InstanceStatus.PAUSED.value)
+    meta_status = Column(String(32), nullable=True)
+    desired_status = Column(String(32), nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+    last_action_id = Column(String(50), nullable=True)
+    last_error = Column(String(1000), nullable=True)
+    archived_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -93,6 +109,12 @@ class AdSetInstance(TenantMixin, Base):
             "meta_adset_id": self.meta_adset_id,
             "name": self.name,
             "status": self.status,
+            "meta_status": self.meta_status,
+            "desired_status": self.desired_status,
+            "last_synced_at": self.last_synced_at.isoformat() if self.last_synced_at else None,
+            "last_action_id": self.last_action_id,
+            "last_error": self.last_error,
+            "archived_at": self.archived_at.isoformat() if self.archived_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -116,6 +138,12 @@ class AdInstance(TenantMixin, Base):
     meta_ad_id = Column(String(128), index=True, comment="Meta 侧 Ad ID")
     name = Column(String(255))
     status = Column(String(32), default=InstanceStatus.PAUSED.value)
+    meta_status = Column(String(32), nullable=True)
+    desired_status = Column(String(32), nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+    last_action_id = Column(String(50), nullable=True)
+    last_error = Column(String(1000), nullable=True)
+    archived_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -132,6 +160,12 @@ class AdInstance(TenantMixin, Base):
             "meta_ad_id": self.meta_ad_id,
             "name": self.name,
             "status": self.status,
+            "meta_status": self.meta_status,
+            "desired_status": self.desired_status,
+            "last_synced_at": self.last_synced_at.isoformat() if self.last_synced_at else None,
+            "last_action_id": self.last_action_id,
+            "last_error": self.last_error,
+            "archived_at": self.archived_at.isoformat() if self.archived_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

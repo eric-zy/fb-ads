@@ -43,6 +43,8 @@ from models.sync_alert import SyncAlert
 from models.sync_log import MetaSyncLog, SyncType, SyncLogStatus
 from models.async_task import AsyncTaskRecord
 from models.sinan_credential import SinanCredential
+from models.publish_preview import PublishPreview
+from models.delivery_action import DeliveryAction
 
 __all__ = [
     # 租户
@@ -96,4 +98,6 @@ __all__ = [
     'SyncLogStatus',
     'AsyncTaskRecord',
     'SinanCredential',
+    'PublishPreview',
+    'DeliveryAction',
 ]

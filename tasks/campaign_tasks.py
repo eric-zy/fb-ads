@@ -120,7 +120,15 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
         template_id = item.job.template_id
         instance = db.query(CampaignInstance).filter(CampaignInstance.template_id == template_id, CampaignInstance.ad_account_id == item.ad_account_id).first()
         if not instance:
-            instance = CampaignInstance(id=uuid.uuid4().hex, template_id=template_id, ad_account_id=item.ad_account_id, meta_campaign_id=item.meta_campaign_id, status="PAUSED")
+            instance = CampaignInstance(
+                id=uuid.uuid4().hex,
+                template_id=template_id,
+                ad_account_id=item.ad_account_id,
+                meta_campaign_id=item.meta_campaign_id,
+                status="PAUSED",
+                meta_status="PAUSED",
+                desired_status="PAUSED",
+            )
             db.add(instance)
         else:
             instance.meta_campaign_id = item.meta_campaign_id
@@ -729,7 +737,7 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
             db.commit()
             return {"error": "no instance"}
 
-        if action == ActionType.PAUSE.value:
+        if action in (ActionType.PAUSE.value, ActionType.ARCHIVE.value):
             connector.update_object(
                 "CAMPAIGN",
                 instance.meta_campaign_id,
@@ -737,8 +745,11 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 {"status": "PAUSED"},
                 idempotency_key=f"{action}:campaign:{instance.meta_campaign_id}",
             )
-            instance.status = InstanceStatus.PAUSED.value
+            instance.status = InstanceStatus.ARCHIVED.value if action == ActionType.ARCHIVE.value else InstanceStatus.PAUSED.value
             instance.meta_status = InstanceStatus.PAUSED.value
+            instance.desired_status = instance.status
+            instance.archived_at = datetime.utcnow() if action == ActionType.ARCHIVE.value else None
+            instance.last_synced_at = datetime.utcnow()
         elif action == ActionType.ENABLE.value:
             connector.update_object(
                 "CAMPAIGN",
@@ -749,6 +760,9 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
             )
             instance.status = InstanceStatus.ACTIVE.value
             instance.meta_status = InstanceStatus.ACTIVE.value
+            instance.desired_status = InstanceStatus.ACTIVE.value
+            instance.archived_at = None
+            instance.last_synced_at = datetime.utcnow()
         elif action == ActionType.UPDATE_BUDGET.value:
             budget = params.get("budget_override")
             if not budget:

@@ -188,7 +188,9 @@ class JobService:
         ]
         account_results += [{"account_id": x.get("account_id"), "status": "BLOCKED", "reason": x.get("reason")} for x in rejected]
         if rejected:
-            warnings.append({"code": "ACCOUNTS_REJECTED", "message": f"{len(rejected)} 个账户不可投放，将被剔除", "items": rejected})
+            # 不再静默剔除账户。预览必须明确阻断，用户处理或移除账户后
+            # 重新预览，提交时的账户集合才会与快照一致。
+            errors.append({"code": "ACCOUNTS_REJECTED", "message": f"{len(rejected)} 个账户不可投放，请处理后重新预览", "items": rejected})
         if not available:
             errors.append({"code": "NO_AVAILABLE_ACCOUNT", "message": "没有可投放的广告账户"})
         existing = self.db.query(CampaignInstance).filter(
@@ -257,6 +259,16 @@ class JobService:
         from services.meta import AdAccountService
 
         params = params or {}
+        preview_id = params.get("_preview_id")
+        idempotency_key = params.get("_idempotency_key")
+        if idempotency_key:
+            existing = (
+                self.db.query(CampaignJob)
+                .filter(CampaignJob.idempotency_key == idempotency_key)
+                .first()
+            )
+            if existing:
+                return existing
         requested_status = params.get("status", InstanceStatus.PAUSED.value)
         # 投放账户资格由 AdAccountService 统一判断；用户支付状态不参与拦截。
         ad_account_ids, rejected = AdAccountService(self.db).filter_available_ids(
@@ -319,6 +331,10 @@ class JobService:
             total_accounts=len(ad_account_ids),
             params=params,
             created_by=created_by,
+            preview_id=preview_id,
+            submitted_by=created_by,
+            submitted_at=datetime.utcnow(),
+            idempotency_key=idempotency_key,
             scheduled_at=scheduled_at if is_scheduled else None,
         )
         self.db.add(job)

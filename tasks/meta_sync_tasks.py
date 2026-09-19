@@ -12,6 +12,7 @@
     只导入 tasks 包本身，不会递归子模块，漏了会报
     "Received unregistered task of type 'meta.sync_ad_accounts'"。
 """
+from datetime import datetime
 from typing import Dict
 
 from celery import shared_task
@@ -20,7 +21,7 @@ from config.settings import settings
 from core.database import SessionLocal
 from core.logger import logger
 from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task, bypass_tenant
-from models import AdAccount, MetaAccount, CampaignInstance, AdSetInstance, AdInstance, Credential, SyncAlert
+from models import AdAccount, MetaAccount, CampaignInstance, AdSetInstance, AdInstance, Credential, DeliveryAction, SyncAlert
 import uuid
 from services.ads_manager import AdsManager
 from services.meta import MetaSyncService
@@ -287,7 +288,10 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
             remote = remote_campaign_by_id.get(str(campaign.meta_campaign_id))
             if remote:
                 campaign.meta_status = remote.get("effective_status") or remote.get("status")
-                campaign.status = remote.get("status") or campaign.status
+                remote_status = remote.get("status") or campaign.meta_status
+                if campaign.status != "ARCHIVED":
+                    campaign.status = remote_status or campaign.status
+                campaign.last_synced_at = datetime.utcnow()
                 updated += 1
             for adset in campaign.adsets:
                 if adset.meta_adset_id:
@@ -304,7 +308,10 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                     remote_set_by_id = {str(item.get("id")): item for item in remote_adsets_by_campaign[campaign_key]}
                     remote_set = remote_set_by_id.get(str(adset.meta_adset_id))
                     if remote_set:
-                        adset.status = remote_set.get("effective_status") or remote_set.get("status") or adset.status
+                        adset.meta_status = remote_set.get("effective_status") or remote_set.get("status")
+                        if adset.status != "ARCHIVED":
+                            adset.status = remote_set.get("status") or adset.meta_status or adset.status
+                        adset.last_synced_at = datetime.utcnow()
                         updated += 1
                 for ad in adset.ads:
                     if ad.meta_ad_id:
@@ -321,7 +328,10 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                         remote_ad_by_id = {str(item.get("id")): item for item in remote_ads_by_adset[adset_key]}
                         remote_ad = remote_ad_by_id.get(str(ad.meta_ad_id))
                         if remote_ad:
-                            ad.status = remote_ad.get("effective_status") or remote_ad.get("status") or ad.status
+                            ad.meta_status = remote_ad.get("effective_status") or remote_ad.get("status")
+                            if ad.status != "ARCHIVED":
+                                ad.status = remote_ad.get("status") or ad.meta_status or ad.status
+                            ad.last_synced_at = datetime.utcnow()
                             updated += 1
         db.commit()
         if sync_errors:
@@ -385,8 +395,8 @@ def sync_all_delivery_objects_task(self) -> Dict:
 
 
 @shared_task(bind=True, name="meta.update_delivery_object", max_retries=2, default_retry_delay=30)
-@tenant_task(lambda self, object_type, object_id, account_id, action: resolve_tenant_of(AdAccount, account_id))
-def update_delivery_object_task(self, object_type: str, object_id: str, account_id: str, action: str) -> Dict:
+@tenant_task(lambda self, object_type, object_id, account_id, action, action_record_id=None: resolve_tenant_of(AdAccount, account_id))
+def update_delivery_object_task(self, object_type: str, object_id: str, account_id: str, action: str, action_record_id: str | None = None) -> Dict:
     """异步暂停/启用单个 AdSet 或 Ad。"""
     db = SessionLocal()
     try:
@@ -394,7 +404,13 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
         if not account:
             return {"status": "failed", "error": "广告账户不存在"}
         ref = CredentialResolver(db).for_account(account.id)
-        remote_status = "PAUSED" if action == "PAUSE" else "ACTIVE"
+        remote_status = "PAUSED" if action in {"PAUSE", "ARCHIVE"} else "ACTIVE"
+        desired_status = "ARCHIVED" if action == "ARCHIVE" else remote_status
+        action_row = db.query(DeliveryAction).filter(DeliveryAction.id == action_record_id).first() if action_record_id else None
+        if action_row:
+            action_row.status = "RUNNING"
+            action_row.started_at = datetime.utcnow()
+            db.commit()
         if object_type == "ADSET":
             obj = db.query(AdSetInstance).filter(AdSetInstance.id == object_id).first()
             if not obj or not obj.meta_adset_id:
@@ -406,7 +422,12 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
                 {"status": remote_status},
                 idempotency_key=f"{action}:adset:{obj.meta_adset_id}",
             )
-            obj.status = remote_status
+            obj.meta_status = remote_status
+            obj.status = desired_status
+            obj.desired_status = desired_status
+            obj.archived_at = datetime.utcnow() if action == "ARCHIVE" else None
+            obj.last_action_id = action_record_id
+            obj.last_synced_at = datetime.utcnow()
         elif object_type == "AD":
             obj = db.query(AdInstance).filter(AdInstance.id == object_id).first()
             if not obj or not obj.meta_ad_id:
@@ -418,13 +439,30 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
                 {"status": remote_status},
                 idempotency_key=f"{action}:ad:{obj.meta_ad_id}",
             )
-            obj.status = remote_status
+            obj.meta_status = remote_status
+            obj.status = desired_status
+            obj.desired_status = desired_status
+            obj.archived_at = datetime.utcnow() if action == "ARCHIVE" else None
+            obj.last_action_id = action_record_id
+            obj.last_synced_at = datetime.utcnow()
         else:
             raise RuntimeError("不支持的投放对象类型")
+        if action_row:
+            action_row.status = "SUCCESS"
+            action_row.remote_status = remote_status
+            action_row.result_payload = {"state": desired_status}
+            action_row.finished_at = datetime.utcnow()
         db.commit()
         return {"status": "success", "object_type": object_type, "object_id": object_id, "state": remote_status}
     except Exception as exc:
         db.rollback()
+        if action_record_id:
+            action_row = db.query(DeliveryAction).filter(DeliveryAction.id == action_record_id).first()
+            if action_row:
+                action_row.status = "FAILED"
+                action_row.error_message = str(exc)[:1000]
+                action_row.finished_at = datetime.utcnow()
+                db.commit()
         logger.error(f"[meta] {object_type} {object_id} 操作失败: {exc}")
         try:
             raise self.retry(exc=exc)

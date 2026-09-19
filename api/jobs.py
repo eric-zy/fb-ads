@@ -5,7 +5,9 @@
     HTTP Request → Create Job → Return job_id → Worker Async Execute
                                                   （原则二：任务异步）
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import uuid
 from typing import List, Optional
 
@@ -18,7 +20,8 @@ from core.database import get_db
 from core.enums import ActionType, InstanceStatus
 from core.logger import logger
 from core.tenant import effective_tenant_id
-from models import CampaignInstance, CampaignTemplate, CampaignJob, User
+from models import CampaignInstance, CampaignTemplate, CampaignJob, CampaignJobItem, PublishPreview, User
+from services.account_access import accessible_account_ids
 
 def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
     if not user_id:
@@ -49,6 +52,9 @@ class CampaignCreateRequest(BaseModel):
     access_business_ids: Optional[dict[str, str]] = Field(
         None, description="按本地广告账户 ID 指定本次发布使用的 BM"
     )
+    preview_id: Optional[str] = Field(None, description="发布前预览快照 ID")
+    snapshot_hash: Optional[str] = Field(None, description="发布前预览快照哈希")
+    idempotency_key: Optional[str] = Field(None, max_length=128, description="客户端幂等键")
 
 class CampaignPreflightRequest(CampaignCreateRequest):
     pass
@@ -242,7 +248,83 @@ def _submit(
         "total_accounts": job.total_accounts,
         "scheduled_at": job.scheduled_at.isoformat() if job.scheduled_at else None,
         "rejected_accounts": (job.params or {}).get("rejected_accounts", []),
+        "preview_id": job.preview_id,
     }
+
+
+def _canonical_hash(payload: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _create_preview(
+    db: Session,
+    req: CampaignPreflightRequest,
+    result: dict,
+    template_id: str,
+    current_user: User,
+) -> PublishPreview:
+    request_snapshot = {
+        "template_id": template_id,
+        "source": req.source or ("TEMPLATE" if req.template_id else "DIRECT"),
+        "inline_config": req.inline_config,
+        "ad_account_ids": sorted(set(req.ad_account_ids or [])),
+        "budget_override": req.budget_override,
+        "status": req.status,
+        "sinan_promotion_id": req.sinan_promotion_id,
+        "access_business_ids": req.access_business_ids or {},
+    }
+    snapshot_hash = _canonical_hash({"request": request_snapshot, "result": result})
+    preview = PublishPreview(
+        id=uuid.uuid4().hex,
+        created_by=current_user.id,
+        template_id=template_id,
+        source=request_snapshot["source"],
+        request_snapshot=request_snapshot,
+        result_snapshot=result,
+        account_ids=sorted(set(result.get("ready_account_ids") or [])),
+        snapshot_hash=snapshot_hash,
+        status="READY",
+        expires_at=datetime.utcnow() + timedelta(minutes=30),
+    )
+    db.add(preview)
+    db.commit()
+    db.refresh(preview)
+    return preview
+
+
+def _validate_preview_for_submit(
+    db: Session,
+    req: CampaignCreateRequest,
+    current_user: User,
+) -> PublishPreview:
+    if not req.preview_id or not req.snapshot_hash:
+        raise HTTPException(status_code=400, detail="提交前必须先完成预览校验")
+    preview = (
+        db.query(PublishPreview)
+        .filter(PublishPreview.id == req.preview_id)
+        .first()
+    )
+    if not preview or preview.created_by != current_user.id and not current_user.is_admin():
+        raise HTTPException(status_code=404, detail="预览不存在或无权提交")
+    if not preview.is_valid():
+        if preview.status == "READY":
+            preview.status = "EXPIRED"
+            db.commit()
+        raise HTTPException(status_code=409, detail="预览已过期，请重新执行预览")
+    if req.snapshot_hash != preview.snapshot_hash:
+        raise HTTPException(status_code=409, detail="预览内容已变化，请重新执行预览")
+    expected = sorted(set(preview.account_ids or []))
+    actual = sorted(set(req.ad_account_ids or []))
+    if expected != actual:
+        raise HTTPException(status_code=409, detail="提交账户与预览账户不一致，请重新执行预览")
+    visible = accessible_account_ids(db, current_user)
+    if visible is not None and any(account_id not in visible for account_id in expected):
+        raise HTTPException(status_code=403, detail="提交账户权限已变化，请重新选择账户")
+    if req.template_id and req.template_id != preview.template_id:
+        raise HTTPException(status_code=409, detail="提交模板与预览模板不一致")
+    return preview
 
 
 # ==================== 批量投放 ====================
@@ -254,6 +336,11 @@ def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_
     result = JobService(db).preflight_campaign(template_id, req.ad_account_ids, req.budget_override, req.status, created_by=current_user.id)
     result["source"] = req.source or ("TEMPLATE" if req.template_id else "DIRECT")
     result["template_id"] = template_id
+    if result.get("passed"):
+        preview = _create_preview(db, req, result, template_id, current_user)
+        result["preview_id"] = preview.id
+        result["snapshot_hash"] = preview.snapshot_hash
+        result["expires_at"] = preview.expires_at.isoformat()
     return result
 
 @router.post("/campaign-create")
@@ -269,6 +356,7 @@ def create_campaign_batch(
         req.template_id or "DIRECT",
         req.source or ("TEMPLATE" if req.template_id else "DIRECT"),
     )
+    preview = _validate_preview_for_submit(db, req, current_user)
     template_id = _ensure_template(db, req, effective_tenant_id(current_user))
     result = _submit(
         db,
@@ -282,9 +370,15 @@ def create_campaign_batch(
             "access_business_ids": req.access_business_ids or {},
             "source": req.source or ("TEMPLATE" if req.template_id else "DIRECT"),
             "save_as_template": req.save_as_template,
+            "_preview_id": preview.id,
+            "_idempotency_key": req.idempotency_key or f"publish:{preview.id}",
         },
         created_by=current_user,
     )
+    preview.status = "SUBMITTED"
+    preview.submitted_at = datetime.utcnow()
+    preview.submitted_job_id = result["job_id"]
+    db.commit()
     logger.info(
         "[JobAPI] campaign-create submitted job_id=%s accounts=%s status=%s",
         result["job_id"],
@@ -333,7 +427,10 @@ def list_scheduled_jobs(
     """待执行的定时任务列表（按计划执行时间升序）"""
     jobs = JobService(db).list_scheduled_jobs(limit=limit)
     result = []
+    visible = accessible_account_ids(db, current_user)
     for job in jobs:
+        if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
+            continue
         payload = job.to_dict()
         payload["publisher"] = _publisher_info(db, job.created_by)
         result.append(payload)
@@ -349,6 +446,9 @@ def dispatch_job_now(
     """把定时任务提前为立即执行（会撤销原定的延迟投递）"""
     owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == effective_tenant_id(current_user)).first()
     if not owned:
+        raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+    visible = accessible_account_ids(db, current_user)
+    if visible is not None and owned.created_by != current_user.id and not any(item.ad_account_id in visible for item in owned.items):
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     try:
         job = JobService(db).dispatch_now(job_id)
@@ -435,7 +535,20 @@ def list_jobs(
 ):
     """任务列表"""
     jobs = JobService(db).list_jobs(limit=limit, status=status)
-    return [j.to_dict() for j in jobs]
+    visible = accessible_account_ids(db, current_user)
+    result = []
+    for job in jobs:
+        if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
+            continue
+        payload = job.to_dict()
+        if visible is not None:
+            items = [item for item in job.items if item.ad_account_id in visible]
+            payload["total_accounts"] = len(items)
+            payload["success_count"] = sum(item.status in ("SUCCESS", "SKIPPED") for item in items)
+            payload["failed_count"] = sum(item.status == "FAILED" for item in items)
+        payload["publisher"] = _publisher_info(db, job.created_by)
+        result.append(payload)
+    return result
 
 
 @router.get("/{job_id}")
@@ -448,9 +561,17 @@ def get_job(
     owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == effective_tenant_id(current_user)).first()
     if not owned:
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+    visible = accessible_account_ids(db, current_user)
+    if visible is not None and owned.created_by != current_user.id and not any(item.ad_account_id in visible for item in owned.items):
+        raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     detail = JobService(db).get_job_detail(job_id)
     if not detail:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if visible is not None:
+        detail["items"] = [item for item in detail["items"] if item["ad_account_id"] in visible]
+        detail["total_accounts"] = len(detail["items"])
+        detail["success_count"] = sum(item["status"] in ("SUCCESS", "SKIPPED") for item in detail["items"])
+        detail["failed_count"] = sum(item["status"] == "FAILED" for item in detail["items"])
     detail["publisher"] = _publisher_info(db, owned.created_by)
     return detail
 
@@ -459,9 +580,15 @@ def get_job(
 def retry_job(
     job_id: str,
     db: Session = Depends(get_db),
-    _=Depends(get_current_active_user),
+    current_user=Depends(require_permission("job:retry")),
 ):
     """只重跑失败的子项（设计文档第 30 节）"""
+    job = db.query(CampaignJob).filter(CampaignJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    visible = accessible_account_ids(db, current_user)
+    if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
+        raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     count = JobService(db).retry_failed(job_id)
     if count == 0:
         raise HTTPException(status_code=400, detail="没有可重试的失败子项")
@@ -472,9 +599,15 @@ def retry_job(
 def cancel_job(
     job_id: str,
     db: Session = Depends(get_db),
-    _=Depends(get_current_active_user),
+    current_user=Depends(require_permission("job:cancel")),
 ):
     """取消任务"""
+    existing = db.query(CampaignJob).filter(CampaignJob.id == job_id).first()
+    if not existing:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    visible = accessible_account_ids(db, current_user)
+    if visible is not None and existing.created_by != current_user.id and not any(item.ad_account_id in visible for item in existing.items):
+        raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     job = JobService(db).cancel_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")

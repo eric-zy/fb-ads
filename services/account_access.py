@@ -48,3 +48,9 @@ def accessible_account_ids(db: Session, user: User) -> Optional[set[str]]:
         )
     grouped = {row[0] for row in group_query.all()}
     return direct | grouped
+
+
+def can_access_account(db: Session, user: User, account_id: str) -> bool:
+    """检查当前用户是否能访问指定广告账户。"""
+    visible = accessible_account_ids(db, user)
+    return visible is None or account_id in visible

@@ -287,6 +287,7 @@
           </el-alert>
           <el-alert v-if="preflightResult" :type="preflightResult.passed ? 'success' : 'error'" :closable="false" show-icon style="margin-top:12px">
             <template #title>{{ preflightResult.passed ? `预检通过：${preflightResult.ready_account_ids.length} 个账户可投放` : '预检未通过，暂不能提交' }}</template>
+            <div v-if="preflightResult.passed && preflightResult.expires_at" class="preflight-detail">本次预览仅对当前账户、素材和配置有效，提交前会再次校验；有效期至 {{ preflightResult.expires_at }}</div>
             <div v-for="item in preflightResult.errors" :key="`error-${item.code}`" class="preflight-error-item">{{ item.message }}</div>
             <div v-for="item in preflightResult.warnings" :key="`warning-${item.code}`" class="preflight-warning">
               <div>{{ item.message }}</div>
@@ -506,7 +507,7 @@ const directConfig = computed<Record<string, any> | null>(() => {
 const templateReady = computed(() => form.publish_mode === 'DIRECT'
   ? !!directConfig.value?.page_id
   : !!selectedTemplate.value?.creative_config_json?.page_id)
-const canSubmit = computed(() => (form.publish_mode === 'DIRECT' ? !!directConfig.value : !!form.template_id) && templateReady.value && form.ad_account_ids.length > 0 && !!preflightResult.value?.passed)
+const canSubmit = computed(() => (form.publish_mode === 'DIRECT' ? !!directConfig.value : !!form.template_id) && templateReady.value && form.ad_account_ids.length > 0 && !!preflightResult.value?.passed && !!preflightResult.value?.preview_id && !!preflightResult.value?.snapshot_hash)
 const templateBudget = computed(() => {
   if (!selectedTemplate.value) return '-'
   if (selectedTemplate.value.budget_type === 'LIFETIME') return '$' + (selectedTemplate.value.lifetime_budget ?? '-') + ' 总预算'
@@ -766,6 +767,9 @@ const submit = async () => {
       status: form.status,
       sinan_promotion_id: form.sinan_promotion_id || undefined,
       access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined,
+      preview_id: preflightResult.value.preview_id,
+      snapshot_hash: preflightResult.value.snapshot_hash,
+      idempotency_key: `publish:${preflightResult.value.preview_id}`,
     })
     if (data.rejected_accounts?.length) {
       ElMessage.warning(`有 ${data.rejected_accounts.length} 个账号未进入任务，请检查账号状态`)
@@ -827,12 +831,12 @@ watch(() => form.save_as_template, enabled => {
   if (!enabled) form.template_name = ''
 })
 
-const missingAssetAccounts = computed(() => (preflightResult.value?.warnings || []).filter((item: any) => item.code === 'ACCOUNTS_REJECTED' && item.items?.some((row: any) => row.reason === '素材尚未同步完成')))
+const missingAssetAccounts = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['ASSET_SYNC_PENDING', 'ACCOUNTS_REJECTED'].includes(item.code) && item.items?.some((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步')))
 const preflightBlockedAccounts = computed(() => (preflightResult.value?.warnings || []).flatMap((item: any) => item.items || []))
 const preflightReasonByAccount = computed<Record<string, string>>(() => Object.fromEntries(preflightBlockedAccounts.value.map((item: any) => [item.account_id, item.reason || '预检未通过'])))
 
 const syncMissingAssets = async () => {
-  const rows = missingAssetAccounts.value.flatMap((warning: any) => warning.items || []).filter((row: any) => row.reason === '素材尚未同步完成')
+  const rows = missingAssetAccounts.value.flatMap((warning: any) => warning.items || []).filter((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步')
   const assetIds = [...new Set(rows.flatMap((row: any) => row.asset_ids || []))]
   const accountIds = [...new Set(rows.map((row: any) => row.account_id))]
   if (!assetIds.length || !accountIds.length) return

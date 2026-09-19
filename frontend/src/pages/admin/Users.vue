@@ -100,6 +100,13 @@
             <el-checkbox label="ad_account:manage">管理账户</el-checkbox>
             <el-checkbox label="job:create">创建投放</el-checkbox>
             <el-checkbox label="job:retry">重试任务</el-checkbox>
+            <el-checkbox label="job:cancel">取消任务</el-checkbox>
+            <el-checkbox label="campaign:read">查看已发布广告</el-checkbox>
+            <el-checkbox label="campaign:pause">暂停广告</el-checkbox>
+            <el-checkbox label="campaign:enable">启用广告</el-checkbox>
+            <el-checkbox label="campaign:archive">归档广告</el-checkbox>
+            <el-checkbox label="campaign:update_budget">修改预算</el-checkbox>
+            <el-checkbox label="campaign:sync">同步 Meta 状态</el-checkbox>
             <el-checkbox label="insight:read">查看报表</el-checkbox>
           </el-checkbox-group>
         </el-form-item>

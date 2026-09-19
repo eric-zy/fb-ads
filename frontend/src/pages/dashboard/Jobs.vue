@@ -65,6 +65,7 @@
           <template #default="{ row }">
             <el-button link type="primary" @click="viewDetail(row.id)">详情</el-button>
             <el-button
+              v-if="canRetry"
               link
               type="warning"
               :disabled="!row.failed_count || isFinal(row.status) === false"
@@ -72,7 +73,7 @@
             >
               重跑失败
             </el-button>
-            <el-button link type="danger" :disabled="isFinal(row.status)" @click="handleCancel(row)">
+            <el-button v-if="canCancel" link type="danger" :disabled="isFinal(row.status)" @click="handleCancel(row)">
               取消
             </el-button>
           </template>
@@ -160,7 +161,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -168,6 +169,7 @@ import {
   isFinalStatus,
   type CampaignJob,
 } from '@/api/jobs'
+import { useUserStore } from '@/stores/userStore'
 
 const jobs = ref<CampaignJob[]>([])
 const currentJob = ref<CampaignJob | null>(null)
@@ -175,6 +177,9 @@ const loading = ref(false)
 const detailVisible = ref(false)
 const statusFilter = ref('')
 const autoRefresh = ref(true)
+const userStore = useUserStore()
+const canRetry = computed(() => userStore.isAdmin || userStore.hasPermission('job:retry'))
+const canCancel = computed(() => userStore.isAdmin || userStore.hasPermission('job:cancel'))
 
 let timer: number | null = null
 

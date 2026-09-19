@@ -30,6 +30,10 @@ export interface CampaignJob {
   failed_count: number
   params: Record<string, any> | null
   created_by: string | null
+  preview_id?: string | null
+  submitted_by?: string | null
+  submitted_at?: string | null
+  idempotency_key?: string | null
   publisher?: { id: string; username: string; email?: string | null } | null
   error_message: string | null
   created_at: string | null
@@ -44,6 +48,7 @@ export interface JobSubmitResult {
   template_id?: string | null
   source?: 'TEMPLATE' | 'DIRECT' | string
   total_accounts: number
+  preview_id?: string | null
 }
 export interface CampaignPreflightResult {
   passed: boolean
@@ -54,6 +59,9 @@ export interface CampaignPreflightResult {
   warnings: Array<{ code: string; message: string; items?: any[] }>
   accounts: Array<{ account_id: string; status: string; reason?: string }>
   ready_account_ids: string[]
+  preview_id?: string | null
+  snapshot_hash?: string | null
+  expires_at?: string | null
 }
 
 export interface CreateCampaignPayload {
@@ -82,6 +90,9 @@ export interface ScheduleCampaignPayload {
   /** 计划执行时间，ISO 8601（如 2026-08-30T10:00:00Z 或 2026-08-30T18:00:00+08:00） */
   scheduled_at: string
   access_business_ids?: Record<string, string>
+  preview_id?: string
+  snapshot_hash?: string
+  idempotency_key?: string
 }
 
 export const jobsApi = {
