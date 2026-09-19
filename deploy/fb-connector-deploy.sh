@@ -9,6 +9,10 @@ COMPOSE_FILE="$SCRIPT_DIR/docker-compose.connector-prod.yml"
 ENV_FILE="${CONNECTOR_ENV_FILE:-$SCRIPT_DIR/fb-connector.env}"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-fb-connector}"
 
+# Compose 文件中的 env_file 使用 CONNECTOR_ENV_FILE；显式导出绝对路径，
+# 确保自定义环境文件和默认环境文件在 Linux 部署机上解析一致。
+export CONNECTOR_ENV_FILE="$ENV_FILE"
+
 cd "$PROJECT_DIR"
 
 if [[ ! -f "$ENV_FILE" ]]; then
