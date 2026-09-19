@@ -120,6 +120,27 @@ async def upload_status(task_id: str):
         if not row:
             raise HTTPException(status_code=404, detail="上传任务不存在")
         logger.info("[ConnectorMediaAPI] status task_id=%s status=%s", task_id, row.status)
-        return {"task_id": row.task_id, "media_id": row.media_id, "status": row.status, "meta_asset_id": row.meta_asset_id, "error_message": row.error_message}
+        total_bytes = row.total_bytes or 0
+        uploaded_bytes = row.uploaded_bytes or 0
+        progress = (
+            round(min(max(uploaded_bytes / total_bytes, 0), 1) * 100, 2)
+            if total_bytes
+            else 0
+        )
+        return {
+            "task_id": row.task_id,
+            "media_id": row.media_id,
+            "status": row.status,
+            "phase": row.phase,
+            "total_bytes": row.total_bytes,
+            "uploaded_bytes": uploaded_bytes,
+            "progress": progress,
+            "upload_session_id": row.upload_session_id,
+            "start_offset": row.start_offset,
+            "end_offset": row.end_offset,
+            "meta_video_id": row.meta_video_id,
+            "meta_asset_id": row.meta_asset_id,
+            "error_message": row.error_message,
+        }
     finally:
         session.close()

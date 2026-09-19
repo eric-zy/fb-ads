@@ -139,6 +139,7 @@ class MetaClient:
         files: Optional[dict] = None,
         *,
         timeout: Optional[int] = None,
+        url_override: Optional[str] = None,
     ) -> dict:
         """统一的 Graph API POST 调用与错误映射。
 
@@ -153,8 +154,9 @@ class MetaClient:
             request_params["access_token"] = self.access_token
             log_params = {k: v for k, v in request_params.items() if k != "access_token"}
             logger.info("[MetaAPI] POST path=%s params=%s files=%s", path, log_params, list((files or {}).keys()))
+            base_url = (url_override or "https://graph.facebook.com").rstrip("/")
             response = requests.post(
-                f"https://graph.facebook.com/{settings.FB_API_VERSION}/{path.lstrip('/')}",
+                f"{base_url}/{settings.FB_API_VERSION}/{path.lstrip('/')}",
                 data=request_params,
                 files=files,
                 timeout=timeout or settings.FB_API_TIMEOUT,

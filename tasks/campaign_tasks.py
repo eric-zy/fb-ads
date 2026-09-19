@@ -40,7 +40,12 @@ from core.security import decrypt_token
 # 未到达终态的子项状态
 _ACTIVE_ITEM_STATUSES = [JobItemStatus.PENDING.value, JobItemStatus.RUNNING.value]
 
-@shared_task(bind=True, name="campaign.poll_connector_deployment", max_retries=20, default_retry_delay=15)
+@shared_task(
+    bind=True,
+    name="campaign.poll_connector_deployment",
+    max_retries=settings.FB_CONNECTOR_DELIVERY_POLL_MAX_RETRIES,
+    default_retry_delay=15,
+)
 @tenant_task(lambda self, job_item_id: resolve_tenant_of(CampaignJobItem, job_item_id))
 def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
     """轮询海外部署结果，并将最终 Meta ID 回写国内任务项。"""
@@ -186,9 +191,10 @@ def retry_asset_binding_task(self, binding_id: str) -> Dict[str, Any]:
         binding.error_message = None
         binding.error_code = None
         db.commit()
-        from tasks.media_tasks import upload_asset_task
-        task = upload_asset_task.delay(binding.id)
-        return {"status": "queued", "binding_id": binding.id, "task_id": task.id}
+        queued = queue_pending_asset_bindings([binding], retry_failed=True, db=db)
+        if not queued:
+            return {"status": "already_processing", "binding_id": binding.id}
+        return {"status": "queued", "binding_id": binding.id, "task_id": queued[0]["task_id"]}
     except Exception as exc:
         db.rollback()
         binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
@@ -496,7 +502,11 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 db.commit()
                 return {"error": "material sync failed", "asset_ids": [row.asset_id for row in failed_bindings]}
 
-            queued_bindings = queue_pending_asset_bindings(bindings, retry_failed=False)
+            queued_bindings = queue_pending_asset_bindings(
+                bindings,
+                retry_failed=False,
+                db=db,
+            )
             ready_bindings = [
                 row for row in bindings
                 if row.status == "READY" and row.meta_asset_id

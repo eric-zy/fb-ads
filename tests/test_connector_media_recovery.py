@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from fb_connector.api.media import _media_task_is_stale
 from fb_connector.api.campaigns import _delivery_task_is_stale
+from config.settings import settings
 
 
 def test_media_task_is_stale_only_for_active_states(monkeypatch):
@@ -25,3 +26,14 @@ def test_delivery_task_recovery_uses_same_stale_boundary(monkeypatch):
     assert _delivery_task_is_stale(SimpleNamespace(status="RETRY", updated_at=old), now)
     assert _delivery_task_is_stale(SimpleNamespace(status="QUEUED", updated_at=old), now)
     assert not _delivery_task_is_stale(SimpleNamespace(status="SUCCESS", updated_at=old), now)
+
+
+def test_media_poll_window_covers_video_upload_timeout():
+    assert settings.CONNECTOR_MEDIA_POLL_MAX_RETRIES * 15 >= settings.FB_VIDEO_UPLOAD_TIMEOUT
+
+
+def test_delivery_poll_window_covers_domestic_recovery_threshold():
+    assert (
+        settings.FB_CONNECTOR_DELIVERY_POLL_MAX_RETRIES * 15
+        >= settings.ASYNC_TASK_STALE_SECONDS
+    )

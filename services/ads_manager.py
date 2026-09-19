@@ -221,7 +221,8 @@ class AdsManager:
             
         except Exception as e:
             logger.error(f"Failed to get account spend: {str(e)}")
-            return 0
+            # 风控不能把“无法读取花费”当成真实的 0，否则会跳过超预算保护。
+            raise
 
     def fetch_insights(self, account_id: str, start_date: str, end_date: str) -> int:
         """拉取账户洞察并落库到 account_insights（Celery 定时任务入口）

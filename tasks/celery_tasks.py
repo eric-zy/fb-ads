@@ -121,7 +121,7 @@ def check_account_risk(self, account_id: str) -> Dict:
             notify_risk_events.delay(account_id)
         
         return {
-            "status": "success",
+            "status": "partial" if results.get("spend_check_status") == "FAILED" else "success",
             "account_id": account_id,
             "results": results,
             "timestamp": datetime.utcnow().isoformat()

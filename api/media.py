@@ -2,7 +2,7 @@
 素材库接口：图片 / 视频上传、列表、删除。
 素材统一使用 OSS 浏览器直传 + 服务端校验 + 异步媒体处理。
 素材就绪后按广告账户建立独立 Meta/Connector 映射。
-权限：登录用户即可（普通用户上传归自己账户；管理员可指定主账号）。
+权限：登录用户即可；素材默认进入租户共享素材库，投放或显式同步时再绑定广告账户。
 """
 import os
 import uuid
@@ -22,8 +22,7 @@ from models import CreativeAsset, AdAccount, MetaAssetBinding, CreativeAssetUsag
 from models.creative_asset_group import creative_asset_group_members
 from models.creative_asset_tag import creative_asset_tag_links
 from config.settings import settings
-from tasks.campaign_tasks import retry_asset_binding_task
-from tasks.media_tasks import upload_asset_task, process_oss_asset_task, delete_oss_asset_task
+from tasks.media_tasks import process_oss_asset_task, delete_oss_asset_task
 from services.storage import AliyunOSSStorage, StorageError
 from services.account_access import accessible_account_ids
 from services.media_binding_service import ensure_asset_bindings, queue_pending_asset_bindings
@@ -333,7 +332,7 @@ def prepare_asset_bindings(
 ):
     """为目标广告账户建立素材映射占位，实际上传由异步任务执行。"""
     asset = _get_asset_or_404(db, asset_id, user)
-    if asset.processing_status != "READY":
+    if asset.storage_status != "READY" or asset.processing_status != "READY":
         raise HTTPException(status_code=409, detail="素材尚未完成 OSS 处理，请等待素材状态变为 READY")
     if not req.ad_account_ids:
         raise HTTPException(status_code=400, detail="至少选择一个广告账户")
@@ -344,7 +343,7 @@ def prepare_asset_bindings(
     db.commit()
     # 重新同步不仅建立占位记录，也必须为已有的 PENDING/失败记录重新派发上传任务。
     # READY 的绑定无需重复上传；UPLOADING/PROCESSING 由原任务继续处理，避免重复任务。
-    queued = queue_pending_asset_bindings(created)
+    queued = queue_pending_asset_bindings(created, db=db)
     return {
         "asset_id": asset_id,
         "status": "QUEUED" if queued else "READY",
@@ -368,11 +367,15 @@ def retry_asset_binding(
     if not binding:
         raise HTTPException(status_code=404, detail="素材映射不存在或无权访问")
     _assert_account_access(db, binding.ad_account_id, user)
-    binding.status = "PENDING"
+    binding.status = "FAILED"
     binding.error_message = None
     db.commit()
-    task = retry_asset_binding_task.delay(binding.id)
-    return {"status": "QUEUED", "binding_id": binding.id, "task_id": task.id}
+    queued = queue_pending_asset_bindings([binding], retry_failed=True, db=db)
+    return {
+        "status": "QUEUED" if queued else binding.status,
+        "binding_id": binding.id,
+        "task_id": queued[0]["task_id"] if queued else None,
+    }
 
 
 @router.post("/upload-sessions")
@@ -386,10 +389,10 @@ def create_media_upload_session(
     if payload.mime_type not in allowed:
         raise HTTPException(status_code=400, detail=f"素材类型与 MIME 不匹配: {payload.mime_type}")
     _assert_group_access(db, payload.group_id, user)
-    if payload.account_id:
-        account = _assert_account_access(db, payload.account_id, user)
-    else:
-        raise HTTPException(status_code=400, detail="素材必须指定广告账户")
+    account = _assert_account_access(db, payload.account_id, user) if payload.account_id else None
+    tenant_id = account.tenant_id if account else effective_tenant_id(user)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="当前用户未绑定租户")
 
     existing = _asset_query(db, user).filter(
         CreativeAsset.sha256 == payload.sha256.lower(),
@@ -398,18 +401,19 @@ def create_media_upload_session(
         CreativeAsset.status != "ARCHIVED",
     ).order_by(CreativeAsset.updated_at.desc()).first()
     if existing:
-        binding = _upsert_asset_binding(db, existing, account)
+        binding = _upsert_asset_binding(db, existing, account) if account else None
         db.commit()
         task_id = None
-        if existing.processing_status == "READY" and binding.status == "PENDING":
-            task_id = upload_asset_task.delay(binding.id).id
+        if account and existing.processing_status == "READY" and binding.status == "PENDING":
+            queued = queue_pending_asset_bindings([binding], db=db)
+            task_id = queued[0]["task_id"] if queued else None
         return {
             "duplicate": True,
             "asset_id": existing.id,
             "status": existing.status,
             "asset": existing.to_dict(),
-            "binding": binding.to_dict(),
-            "binding_id": binding.id,
+            "binding": binding.to_dict() if binding else None,
+            "binding_id": binding.id if binding else None,
             "task_id": task_id,
         }
 
@@ -420,7 +424,7 @@ def create_media_upload_session(
     now = datetime.utcnow()
     asset = CreativeAsset(
         id=asset_id,
-        tenant_id=account.tenant_id,
+        tenant_id=tenant_id,
         name=payload.name,
         original_name=payload.name,
         created_by=user.id,
@@ -443,7 +447,7 @@ def create_media_upload_session(
     )
     session = MediaUploadSession(
         id=uuid.uuid4().hex,
-        tenant_id=account.tenant_id,
+        tenant_id=tenant_id,
         asset_id=asset.id,
         object_key=object_key,
         expected_size=payload.size,
@@ -453,27 +457,30 @@ def create_media_upload_session(
         expires_at=now + timedelta(seconds=settings.OSS_UPLOAD_EXPIRE_SECONDS),
         created_by=user.id,
     )
-    binding = MetaAssetBinding(
-        id=uuid.uuid4().hex,
-        tenant_id=account.tenant_id,
-        asset_id=asset.id,
-        ad_account_id=account.id,
-        meta_asset_type=asset.asset_type,
-        status="PENDING",
-    )
+    binding = None
+    if account:
+        binding = MetaAssetBinding(
+            id=uuid.uuid4().hex,
+            tenant_id=tenant_id,
+            asset_id=asset.id,
+            ad_account_id=account.id,
+            meta_asset_type=asset.asset_type,
+            status="PENDING",
+        )
     try:
         upload = AliyunOSSStorage().presign_put(object_key, payload.mime_type)
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     db.add(asset)
     db.add(session)
-    db.add(binding)
+    if binding:
+        db.add(binding)
     db.commit()
     return {
         "duplicate": False,
         "asset_id": asset.id,
         "upload_session_id": session.id,
-        "binding_id": binding.id,
+        "binding_id": binding.id if binding else None,
         "object_key": object_key,
         "upload": upload,
         "expires_at": session.expires_at.isoformat(),

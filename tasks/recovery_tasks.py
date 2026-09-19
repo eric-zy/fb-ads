@@ -11,6 +11,7 @@ from core.enums import JobItemStatus
 from core.logger import logger
 from core.tenant import bypass_tenant
 from models import CampaignJobItem, CreativeAsset, MetaAssetBinding
+from services.media_binding_service import queue_pending_asset_bindings
 
 
 def _cutoff() -> datetime:
@@ -33,6 +34,7 @@ def recover_stale_domestic_work(limit: int = 100):
                     CreativeAsset.status != "ARCHIVED",
                 )
                 .order_by(CreativeAsset.updated_at.asc())
+                .with_for_update(skip_locked=True)
                 .limit(limit)
                 .all()
             )
@@ -72,6 +74,7 @@ def recover_stale_domestic_work(limit: int = 100):
                     ),
                 )
                 .order_by(MetaAssetBinding.updated_at.asc())
+                .with_for_update(skip_locked=True)
                 .limit(limit)
                 .all()
             )
@@ -83,11 +86,10 @@ def recover_stale_domestic_work(limit: int = 100):
                 binding.error_message = "检测到素材同步任务超时，已自动重新入队"
                 db.commit()
                 try:
-                    from tasks.media_tasks import upload_asset_task
-
-                    upload_asset_task.delay(binding_id)
-                    result["bindings"] += 1
-                    logger.warning("[Recovery] requeued stale binding binding_id=%s", binding_id)
+                    queued = queue_pending_asset_bindings([binding], db=db)
+                    if queued:
+                        result["bindings"] += 1
+                        logger.warning("[Recovery] requeued stale binding binding_id=%s", binding_id)
                 except Exception as exc:
                     db.rollback()
                     binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
@@ -107,6 +109,7 @@ def recover_stale_domestic_work(limit: int = 100):
                     CampaignJobItem.updated_at < _cutoff(),
                 )
                 .order_by(CampaignJobItem.updated_at.asc())
+                .with_for_update(skip_locked=True)
                 .limit(limit)
                 .all()
             )

@@ -47,7 +47,13 @@ class InsightsRequest(BaseModel):
         return self
 
 @router.post("/insights")
-async def insights(payload: InsightsRequest):
+def insights(payload: InsightsRequest):
+    """查询 Insights。
+
+    MetaAdsService 使用同步 HTTP 客户端，必须让 FastAPI 将该处理器放到
+    threadpool；如果声明为 async def，会阻塞 Uvicorn 事件循环，多个账户的
+    报表请求会被串行化并触发国内客户端超时。
+    """
     logger.info(
         "[ConnectorInsightsAPI] start account_id=%s credential_id=%s days=%s level=%s",
         payload.account_id,

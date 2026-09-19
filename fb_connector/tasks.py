@@ -1,12 +1,15 @@
 import os
 import tempfile
 import json
+import time
 from urllib.parse import urlparse
 
 from celery import shared_task
 import requests
 import uuid
 from datetime import datetime, timedelta
+from redis import Redis
+from redis.exceptions import LockError
 
 from core.logger import logger
 from services.request_signer import build_signature_headers
@@ -14,6 +17,75 @@ from services.request_signer import build_signature_headers
 from config.settings import settings
 from fb_connector.credential_store import DatabaseCredentialVault, report_meta_auth_failure
 from services.meta import MetaAdsService, MetaClient
+
+
+def _media_account_lock(account_id: str):
+    """创建跨 media worker 的账户级 Redis 锁。"""
+    redis_client = Redis.from_url(
+        settings.CELERY_BROKER_URL,
+        socket_connect_timeout=settings.REDIS_TIMEOUT,
+        socket_timeout=settings.REDIS_TIMEOUT,
+    )
+    return redis_client.lock(
+        f"fb_connector:media_account:{account_id}",
+        timeout=settings.CONNECTOR_MEDIA_ACCOUNT_LOCK_TTL,
+    )
+
+
+def _refresh_source_url(task_id: str, media_id: str, source_url: str) -> str:
+    """在海外 Worker 真正开始下载前刷新国内 OSS 签名 URL。
+
+    兼容未配置刷新回调的旧环境：刷新失败时保留原 URL，后续下载错误
+    仍会进入 Celery 重试；生产配置完整时可避免队列等待导致 URL 过期。
+    """
+    if not settings.SAAS_CALLBACK_BASE_URL or not settings.SAAS_INTERNAL_SIGNING_KEY:
+        return source_url
+
+    path = "/api/v1/internal/fb-connector/media-source"
+    request_id = uuid.uuid4().hex
+    body = json.dumps(
+        {"task_id": task_id, "media_id": media_id},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    headers = build_signature_headers(
+        settings.SAAS_INTERNAL_SIGNING_KEY,
+        "fb_connector",
+        request_id,
+        "POST",
+        path,
+        body,
+        task_id,
+    )
+    headers["Content-Type"] = "application/json"
+    callback = f"{settings.SAAS_CALLBACK_BASE_URL.rstrip('/')}{path}"
+    try:
+        response = requests.post(
+            callback,
+            data=body,
+            headers=headers,
+            timeout=settings.FB_CONNECTOR_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        refreshed = payload.get("url") if isinstance(payload, dict) else None
+        if not refreshed:
+            raise RuntimeError("SaaS 素材刷新接口未返回 url")
+        logger.info(
+            "[ConnectorMedia] source URL refreshed task_id=%s media_id=%s expires_in=%s",
+            task_id,
+            media_id,
+            payload.get("expires_in", ""),
+        )
+        return refreshed
+    except Exception as exc:
+        logger.warning(
+            "[ConnectorMedia] source URL refresh failed task_id=%s media_id=%s error=%s; fallback to stored URL",
+            task_id,
+            media_id,
+            exc,
+        )
+        return source_url
 
 
 @shared_task(name="fb_connector.recover_stale_media_tasks")
@@ -33,6 +105,7 @@ def recover_stale_media_tasks(limit: int = 100):
                 ConnectorMediaTask.updated_at < cutoff,
             )
             .order_by(ConnectorMediaTask.updated_at.asc())
+            .with_for_update(skip_locked=True)
             .limit(limit)
             .all()
         )
@@ -273,11 +346,210 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
     finally:
         session.close()
 
+
+def _persist_media_progress(session, row, **values):
+    """提交可恢复的上传检查点，避免 Worker 重启后丢失 Meta 会话和 offset。"""
+    for key, value in values.items():
+        if value is not None:
+            setattr(row, key, value)
+    row.updated_at = datetime.utcnow()
+    session.commit()
+
+
+def _as_int(value, default=None):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _upload_video_resumable(service, account_id: str, file_path: str | None, row, session) -> dict:
+    """执行 Meta start → transfer → finish → processing 轮询流程。"""
+    total_bytes = os.path.getsize(file_path) if file_path else _as_int(row.total_bytes)
+    if not total_bytes:
+        raise RuntimeError("无法确定视频素材大小，不能恢复 Meta 分片上传")
+    if row.total_bytes and row.total_bytes != total_bytes:
+        raise RuntimeError(
+            f"素材大小在重试期间发生变化: expected={row.total_bytes} actual={total_bytes}"
+        )
+    if row.phase not in {"META_PROCESSING", "READY"} and not file_path:
+        raise RuntimeError(
+            f"Meta 分片任务处于 {row.phase or 'UNKNOWN'} 阶段，但本地素材文件不存在"
+        )
+    _persist_media_progress(
+        session,
+        row,
+        total_bytes=total_bytes,
+        uploaded_bytes=_as_int(row.uploaded_bytes, 0),
+    )
+
+    upload_session_id = row.upload_session_id
+    video_id = row.meta_video_id
+    if not upload_session_id or not video_id:
+        if not file_path:
+            raise RuntimeError(
+                "Meta 转码轮询任务缺少上传会话或视频 ID，且本地素材已清理，无法恢复"
+            )
+        _persist_media_progress(session, row, phase="STARTING", status="UPLOADING")
+        started = service.start_video_upload(account_id, total_bytes)
+        upload_session_id = started.get("upload_session_id")
+        video_id = started.get("video_id") or started.get("id")
+        start_offset = _as_int(started.get("start_offset"), 0)
+        end_offset = _as_int(started.get("end_offset"))
+        if not upload_session_id or not video_id:
+            raise RuntimeError(f"Meta 分片上传 start 响应缺少会话或视频 ID: {started}")
+        if end_offset is None or end_offset <= start_offset:
+            end_offset = min(
+                total_bytes,
+                start_offset + settings.FB_VIDEO_CHUNK_MAX_BYTES,
+            )
+        _persist_media_progress(
+            session,
+            row,
+            phase="TRANSFERRING",
+            status="UPLOADING",
+            upload_session_id=upload_session_id,
+            meta_video_id=video_id,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            uploaded_bytes=start_offset,
+        )
+
+    start_offset = _as_int(row.start_offset, _as_int(row.uploaded_bytes, 0)) or 0
+    end_offset = _as_int(row.end_offset)
+    if end_offset is None or end_offset <= start_offset:
+        end_offset = min(
+            total_bytes,
+            start_offset + settings.FB_VIDEO_CHUNK_MAX_BYTES,
+        )
+
+    while start_offset < total_bytes:
+        end_offset = min(
+            max(end_offset, start_offset + 1),
+            total_bytes,
+            start_offset + settings.FB_VIDEO_CHUNK_MAX_BYTES,
+        )
+        result = service.transfer_video_chunk(
+            account_id,
+            file_path,
+            upload_session_id,
+            start_offset,
+            end_offset,
+        )
+        next_start = _as_int(result.get("start_offset"), end_offset)
+        next_end = _as_int(result.get("end_offset"))
+        if next_start <= start_offset or next_start > total_bytes:
+            raise RuntimeError(
+                f"Meta 分片上传 offset 未前进: current={start_offset} "
+                f"next={next_start} response={result}"
+            )
+        if next_end is None or next_end <= next_start:
+            next_end = min(
+                total_bytes,
+                next_start + settings.FB_VIDEO_CHUNK_MAX_BYTES,
+            )
+        start_offset = next_start
+        end_offset = next_end
+        _persist_media_progress(
+            session,
+            row,
+            phase="TRANSFERRING",
+            status="UPLOADING",
+            start_offset=start_offset,
+            end_offset=end_offset,
+            uploaded_bytes=start_offset,
+        )
+        logger.info(
+            "[ConnectorMedia] transfer task_id=%s start_offset=%s end_offset=%s "
+            "uploaded_bytes=%s total_bytes=%s",
+            row.task_id,
+            start_offset,
+            end_offset,
+            start_offset,
+            total_bytes,
+        )
+
+    if row.phase not in {"META_PROCESSING", "READY"}:
+        _persist_media_progress(session, row, phase="FINISHING", status="UPLOADING")
+        finished = service.finish_video_upload(account_id, upload_session_id)
+        video_id = finished.get("video_id") or finished.get("id") or video_id
+        _persist_media_progress(
+            session,
+            row,
+            phase="META_PROCESSING",
+            status="UPLOADING",
+            meta_video_id=video_id,
+            uploaded_bytes=total_bytes,
+        )
+        logger.info(
+            "[ConnectorMedia] finish task_id=%s upload_session_id=%s meta_video_id=%s",
+            row.task_id,
+            upload_session_id,
+            video_id,
+        )
+        if file_path:
+            try:
+                os.unlink(file_path)
+                logger.info(
+                    "[ConnectorMedia] local source cleaned task_id=%s path=%s",
+                    row.task_id,
+                    file_path,
+                )
+            except OSError as exc:
+                logger.warning(
+                    "[ConnectorMedia] local source cleanup failed task_id=%s path=%s error=%s",
+                    row.task_id,
+                    file_path,
+                    exc,
+                )
+
+    if row.phase == "READY" and row.status == "SUCCESS":
+        return {"video_id": video_id or row.meta_asset_id}
+
+    deadline = time.monotonic() + settings.FB_VIDEO_PROCESSING_TIMEOUT
+    while True:
+        status_result = service.get_video_status(video_id)
+        meta_status = str(status_result.get("status") or "unknown").lower()
+        logger.info(
+            "[ConnectorMedia] processing task_id=%s meta_video_id=%s status=%s",
+            row.task_id,
+            video_id,
+            meta_status,
+        )
+        if meta_status in {"ready", "success", "completed", "complete"}:
+            _persist_media_progress(
+                session,
+                row,
+                phase="READY",
+                status="SUCCESS",
+                meta_asset_id=video_id,
+                meta_video_id=video_id,
+                uploaded_bytes=total_bytes,
+                start_offset=total_bytes,
+                end_offset=total_bytes,
+            )
+            return {"video_id": video_id}
+        if meta_status in {"error", "failed", "failure", "rejected"}:
+            raise RuntimeError(
+                f"Meta 视频转码失败: video_id={video_id} status={meta_status}"
+            )
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"Meta 视频转码轮询超时: video_id={video_id} "
+                f"last_status={meta_status}"
+            )
+        row.updated_at = datetime.utcnow()
+        session.commit()
+        time.sleep(settings.FB_VIDEO_STATUS_POLL_INTERVAL)
+
+
 @shared_task(bind=True, name="fb_connector.upload_media", max_retries=3, default_retry_delay=30)
 def upload_media_task(self, task_id: str, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, idempotency_key: str):
     """海外执行素材下载和 Meta 上传；生产环境应将结果写入 Connector 任务表并回调 SaaS。"""
     temp_path = None
     row = None
+    account_lock = None
+    account_lock_acquired = False
     from fb_connector.models import ConnectorMediaTask, connector_session_factory
 
     parsed_source = urlparse(source_url)
@@ -297,52 +569,149 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
         row = session.get(ConnectorMediaTask, task_id)
         if not row:
             raise RuntimeError("上传任务不存在")
-        row.status = "UPLOADING"; session.commit()
-        logger.info("[ConnectorMedia] status=UPLOADING task_id=%s", task_id)
-        # 防止把超大文件一次性读入内存，视频上传使用流式写入。
-        logger.info(
-            "[ConnectorMedia] download start task_id=%s connect_timeout=%ss read_timeout=%ss",
-            task_id,
-            settings.FB_VIDEO_CONNECT_TIMEOUT,
-            settings.FB_VIDEO_UPLOAD_TIMEOUT,
-        )
-        bytes_written = 0
-        with requests.get(
-            source_url,
-            stream=True,
-            timeout=(settings.FB_VIDEO_CONNECT_TIMEOUT, settings.FB_VIDEO_UPLOAD_TIMEOUT),
-        ) as response:
-            logger.info(
-                "[ConnectorMedia] download response task_id=%s status=%s content_length=%s",
-                task_id,
-                response.status_code,
-                response.headers.get("Content-Length"),
+        account_id = row.account_id or account_id
+        account_lock = _media_account_lock(account_id)
+        account_lock_acquired = account_lock.acquire(blocking=False)
+        if not account_lock_acquired:
+            raise RuntimeError(
+                f"广告账户已有其他素材上传任务运行中: account_id={account_id}"
             )
-            response.raise_for_status()
-            suffix = ".mp4" if asset_type == "video" else ".bin"
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as target:
-                temp_path = target.name
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        target.write(chunk)
-                        bytes_written += len(chunk)
         logger.info(
-            "[ConnectorMedia] download complete task_id=%s bytes=%s temp_path=%s",
+            "[ConnectorMedia] account lock acquired task_id=%s account_id=%s",
             task_id,
-            bytes_written,
-            temp_path,
+            account_id,
         )
+        if row.status == "SUCCESS" and row.meta_asset_id:
+            logger.info(
+                "[ConnectorMedia] already success task_id=%s meta_asset_id=%s",
+                task_id,
+                row.meta_asset_id,
+            )
+            return {
+                "status": "SUCCESS",
+                "media_id": media_id,
+                "idempotency_key": idempotency_key,
+                "meta_asset_id": row.meta_asset_id,
+            }
+        row.status = "UPLOADING"
+        row.phase = row.phase if row.phase and row.phase not in {"QUEUED", "FAILED"} else "DOWNLOADING"
+        row.error_message = None
+        session.commit()
+        logger.info(
+            "[ConnectorMedia] status=UPLOADING task_id=%s phase=%s",
+            task_id,
+            row.phase,
+        )
+        source_required = asset_type != "video" or row.phase not in {"META_PROCESSING", "READY"}
+        if source_required:
+            source_url = _refresh_source_url(
+                task_id,
+                media_id,
+                row.source_url or source_url,
+            )
+            if source_url != row.source_url:
+                row.source_url = source_url
+                session.commit()
+        bytes_written = _as_int(row.total_bytes, 0) or 0
+        if source_required:
+            # 防止把超大文件一次性读入内存，视频上传使用流式写入。
+            logger.info(
+                "[ConnectorMedia] download start task_id=%s connect_timeout=%ss read_timeout=%ss",
+                task_id,
+                settings.FB_VIDEO_CONNECT_TIMEOUT,
+                settings.FB_VIDEO_UPLOAD_TIMEOUT,
+            )
+            os.makedirs(settings.CONNECTOR_MEDIA_TEMP_DIR, exist_ok=True)
+            bytes_written = 0
+            with requests.get(
+                source_url,
+                stream=True,
+                timeout=(settings.FB_VIDEO_CONNECT_TIMEOUT, settings.FB_VIDEO_UPLOAD_TIMEOUT),
+            ) as response:
+                logger.info(
+                    "[ConnectorMedia] download response task_id=%s status=%s content_length=%s",
+                    task_id,
+                    response.status_code,
+                    response.headers.get("Content-Length"),
+                )
+                response.raise_for_status()
+                content_length = _as_int(response.headers.get("Content-Length"))
+                if (
+                    asset_type == "video"
+                    and content_length is not None
+                    and content_length > settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES
+                ):
+                    raise RuntimeError(
+                        "视频素材超过 Connector 本地临时磁盘保护上限: "
+                        f"size={content_length} max={settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES}"
+                    )
+                suffix = ".mp4" if asset_type == "video" else ".bin"
+                with tempfile.NamedTemporaryFile(
+                    delete=False,
+                    suffix=suffix,
+                    dir=settings.CONNECTOR_MEDIA_TEMP_DIR,
+                ) as target:
+                    temp_path = target.name
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            target.write(chunk)
+                            bytes_written += len(chunk)
+                            if (
+                                asset_type == "video"
+                                and bytes_written > settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES
+                            ):
+                                raise RuntimeError(
+                                    "视频素材超过 Connector 本地临时磁盘保护上限: "
+                                    f"size>{settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES}"
+                                )
+            logger.info(
+                "[ConnectorMedia] download complete task_id=%s bytes=%s temp_path=%s",
+                task_id,
+                bytes_written,
+                temp_path,
+            )
+            if asset_type == "video":
+                _persist_media_progress(
+                    session,
+                    row,
+                    total_bytes=bytes_written,
+                    phase=row.phase if row.phase not in {"QUEUED", "DOWNLOADING", "FAILED"} else "STARTING",
+                    status="UPLOADING",
+                )
+            else:
+                _persist_media_progress(session, row, phase="UPLOADING", status="UPLOADING")
+        else:
+            logger.info(
+                "[ConnectorMedia] skip source download task_id=%s phase=%s "
+                "reason=meta_processing_already_started",
+                task_id,
+                row.phase,
+            )
         logger.info("[ConnectorMedia] credential lookup start task_id=%s credential_id=%s", task_id, credential_id)
         token = DatabaseCredentialVault().get_access_token(credential_id)
         logger.info("[ConnectorMedia] meta upload start task_id=%s account_id=%s asset_type=%s", task_id, account_id, asset_type)
-        result = MetaAdsService(MetaClient(access_token=token)).upload_video(account_id, temp_path) if asset_type == "video" else MetaAdsService(MetaClient(access_token=token)).upload_image(account_id, temp_path)
-        meta_asset_id = result.get("video_id") if asset_type == "video" else result.get("hash")
-        row.status = "SUCCESS"; row.meta_asset_id = meta_asset_id; session.commit()
+        service = MetaAdsService(MetaClient(access_token=token))
+        if asset_type == "video":
+            result = _upload_video_resumable(service, account_id, temp_path, row, session)
+            meta_asset_id = result.get("video_id")
+        else:
+            result = service.upload_image(account_id, temp_path)
+            meta_asset_id = result.get("hash")
+            _persist_media_progress(
+                session,
+                row,
+                phase="READY",
+                status="SUCCESS",
+                meta_asset_id=meta_asset_id,
+            )
         logger.info(
-            "[ConnectorMedia] success task_id=%s media_id=%s meta_asset_id=%s",
+            "[ConnectorMedia] success task_id=%s media_id=%s meta_asset_id=%s phase=%s uploaded_bytes=%s total_bytes=%s",
             task_id,
             media_id,
             meta_asset_id,
+            row.phase,
+            row.uploaded_bytes,
+            row.total_bytes,
         )
         return {"status": "SUCCESS", "media_id": media_id, "idempotency_key": idempotency_key, "meta_asset_id": meta_asset_id}
     except Exception as exc:
@@ -376,6 +745,20 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 os.unlink(temp_path)
             except OSError:
                 pass
+        if account_lock is not None and account_lock_acquired:
+            try:
+                account_lock.release()
+                logger.info(
+                    "[ConnectorMedia] account lock released task_id=%s account_id=%s",
+                    task_id,
+                    account_id,
+                )
+            except LockError:
+                logger.warning(
+                    "[ConnectorMedia] account lock release skipped task_id=%s account_id=%s",
+                    task_id,
+                    account_id,
+                )
 
 
 @shared_task(name="fb_connector.recover_stale_delivery_tasks")
@@ -395,6 +778,7 @@ def recover_stale_delivery_tasks(limit: int = 100):
                 ConnectorDeliveryTask.updated_at < cutoff,
             )
             .order_by(ConnectorDeliveryTask.updated_at.asc())
+            .with_for_update(skip_locked=True)
             .limit(limit)
             .all()
         )

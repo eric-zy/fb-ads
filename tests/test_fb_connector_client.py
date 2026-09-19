@@ -54,3 +54,26 @@ def test_client_deploy_campaign_uses_deploy_endpoint(monkeypatch):
     assert result["status"] == "QUEUED"
     assert captured["method"] == "POST"
     assert captured["url"].endswith("/internal/meta/campaigns/deploy")
+
+
+def test_client_insights_uses_report_timeout(monkeypatch):
+    captured = {}
+
+    class Response:
+        status_code = 200
+        headers = {}
+
+        def json(self):
+            return {"items": []}
+
+    def fake_request(method, url, **kwargs):
+        captured.update(method=method, url=url, kwargs=kwargs)
+        return Response()
+
+    monkeypatch.setattr("services.fb_connector_client.requests.request", fake_request)
+    monkeypatch.setattr("services.fb_connector_client.settings.FB_CONNECTOR_REPORT_TIMEOUT", 301)
+    client = FBConnectorClient(base_url="https://connector.test", signing_key="secret")
+
+    assert client.get_insights("act_1", "credential-1") == {"items": []}
+    assert captured["kwargs"]["timeout"] == 301
+    assert captured["url"].endswith("/internal/meta/reports/insights")

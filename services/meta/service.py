@@ -11,6 +11,7 @@
    Batch API 不能替代 Rate Limiting（设计文档第 25 / 26 节）。
 """
 import json
+import os
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -450,6 +451,85 @@ class MetaAdsService:
             return {"video_id": video_id}
 
         return self._execute(_do, f"upload_video(act={act})", account_id=account_id)
+
+    def start_video_upload(self, account_id: str, file_size: int) -> Dict[str, Any]:
+        """创建 Meta advideos 分片上传会话。"""
+        act = self.client.normalize_account_id(account_id)
+        return self._execute(
+            lambda: self.client._post(
+                f"{act}/advideos",
+                {"upload_phase": "start", "file_size": file_size},
+                timeout=settings.FB_VIDEO_UPLOAD_TIMEOUT,
+                url_override="https://graph-video.facebook.com",
+            ),
+            f"upload_video_start(act={act})",
+            account_id=account_id,
+        )
+
+    def transfer_video_chunk(
+        self,
+        account_id: str,
+        file_path: str,
+        upload_session_id: str,
+        start_offset: int,
+        end_offset: int,
+    ) -> Dict[str, Any]:
+        """按 Meta 返回的 offset 上传单个视频分片。"""
+        act = self.client.normalize_account_id(account_id)
+        length = max(0, end_offset - start_offset)
+        if not length:
+            raise MetaApiError("Meta 返回空的视频分片范围", category=ErrorCategory.UNKNOWN)
+        with open(file_path, "rb") as video_file:
+            video_file.seek(start_offset)
+            chunk = video_file.read(length)
+        if len(chunk) != length:
+            raise MetaApiError(
+                f"视频分片读取长度不一致: expected={length} actual={len(chunk)}",
+                category=ErrorCategory.TEMPORARY,
+            )
+        filename = os.path.basename(file_path)
+        return self._execute(
+            lambda: self.client._post(
+                f"{act}/advideos",
+                {
+                    "upload_phase": "transfer",
+                    "upload_session_id": upload_session_id,
+                    "start_offset": start_offset,
+                },
+                files={"video_file_chunk": (filename, chunk, "application/octet-stream")},
+                timeout=settings.FB_VIDEO_UPLOAD_TIMEOUT,
+                url_override="https://graph-video.facebook.com",
+            ),
+            f"upload_video_transfer(act={act},offset={start_offset})",
+            account_id=account_id,
+        )
+
+    def finish_video_upload(self, account_id: str, upload_session_id: str) -> Dict[str, Any]:
+        """结束 Meta advideos 分片上传。"""
+        act = self.client.normalize_account_id(account_id)
+        return self._execute(
+            lambda: self.client._post(
+                f"{act}/advideos",
+                {"upload_phase": "finish", "upload_session_id": upload_session_id},
+                timeout=settings.FB_VIDEO_UPLOAD_TIMEOUT,
+                url_override="https://graph-video.facebook.com",
+            ),
+            f"upload_video_finish(act={act})",
+            account_id=account_id,
+        )
+
+    def get_video_status(self, video_id: str) -> Dict[str, Any]:
+        """读取 Meta 视频转码状态并归一化为 processing/ready/error。"""
+        raw = self._execute(
+            lambda: self.client._get(str(video_id), {"fields": "status"}),
+            f"get_video_status(video={video_id})",
+        )
+        status = raw.get("status") if isinstance(raw, dict) else raw
+        if isinstance(status, dict):
+            value = status.get("video_status") or status.get("status") or "unknown"
+        else:
+            value = status or "unknown"
+        return {"status": str(value).lower(), "raw": raw}
 
     def verify_account_under_bm(
         self, business_id: str, target_account_id: str

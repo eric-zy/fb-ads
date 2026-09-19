@@ -40,6 +40,7 @@ class FBConnectorClient:
         *,
         request_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
+        timeout: int | float | None = None,
     ) -> dict[str, Any]:
         body = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         rid = request_id or uuid.uuid4().hex
@@ -68,7 +69,7 @@ class FBConnectorClient:
                 f"{self.base_url}{path}",
                 data=body,
                 headers=headers,
-                timeout=settings.FB_CONNECTOR_TIMEOUT,
+                timeout=timeout if timeout is not None else settings.FB_CONNECTOR_TIMEOUT,
             )
             elapsed_ms = round((time.monotonic() - started) * 1000, 1)
             remote_request_id = getattr(response, "headers", {}).get("X-Request-Id")
@@ -230,4 +231,10 @@ class FBConnectorClient:
         payload: dict[str, Any] = {"account_id": account_id, "credential_id": credential_id, "days": days, "level": level}
         if since and until:
             payload.update({"since": since, "until": until})
-        return self._request("POST", "/internal/meta/reports/insights", payload, request_id=request_id)
+        return self._request(
+            "POST",
+            "/internal/meta/reports/insights",
+            payload,
+            request_id=request_id,
+            timeout=settings.FB_CONNECTOR_REPORT_TIMEOUT,
+        )

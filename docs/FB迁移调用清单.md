@@ -208,7 +208,7 @@ CONNECTOR_SERVICE_TOKEN
 - [x] 已新增 `fb_connector/alembic.ini` 和独立迁移环境。
 - [x] 已新增 Connector 初始迁移 `0001_connector_initial`。
 - [ ] 部署时需使用 Connector 专用 Alembic，不再执行国内 `migrations/versions/0021-0023`。
-- [x] 已新增 `deploy/docker-compose.connector-prod.yml`，包含独立 DB、Redis、API、Worker、Beat。
+- [x] 已新增 `deploy/docker-compose.connector-prod.yml`，包含独立 DB、Redis、API、通用 Worker、Media Worker、Beat。
 - [x] 已新增 `deploy/fb-connector-deploy.sh`，支持配置检查、迁移、启动和安全清理碎片缓存。
 - [x] 已补齐海外 `/internal/meta/oauth/callback`，回调只跳转 opaque credential_id。
 - [x] Insights 回调已改用原始请求体验签，再进行 JSON 解析。

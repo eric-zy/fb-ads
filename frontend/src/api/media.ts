@@ -123,7 +123,7 @@ export interface UploadSessionResponse {
   upload_session_id?: string
   object_key?: string
   upload?: { url: string; method: 'PUT'; headers?: Record<string, string> }
-  binding_id?: string
+  binding_id?: string | null
   binding?: MetaAssetBinding
   task_id?: string | null
 }
@@ -131,7 +131,7 @@ export interface UploadSessionResponse {
 export interface UploadResult {
   data: MediaItem
   duplicate?: boolean
-  binding_id?: string
+  binding_id?: string | null
   task_id?: string | null
 }
 

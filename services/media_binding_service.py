@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Iterable
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from models import AdAccount, CreativeAsset, MetaAssetBinding
@@ -77,14 +78,57 @@ def queue_pending_asset_bindings(
     bindings: Iterable[MetaAssetBinding],
     *,
     retry_failed: bool = True,
+    db: Session,
 ) -> list[dict[str, str]]:
-    """派发尚未完成的绑定；失败绑定只在显式重试时重新派发。"""
+    """原子认领再派发绑定，避免并发投放重复创建上传任务。"""
     from tasks.media_tasks import upload_asset_task
 
-    queued = []
+    candidates: list[str] = []
     for binding in bindings:
         allowed_statuses = {"PENDING", "FAILED", "EXPIRED"} if retry_failed else {"PENDING"}
-        if binding.status in allowed_statuses and not binding.meta_asset_id:
-            task = upload_asset_task.delay(binding.id)
-            queued.append({"binding_id": binding.id, "task_id": task.id})
+        if binding.status not in allowed_statuses or binding.meta_asset_id:
+            continue
+        claimed = db.execute(
+            update(MetaAssetBinding)
+            .where(
+                MetaAssetBinding.id == binding.id,
+                MetaAssetBinding.status.in_(allowed_statuses),
+                MetaAssetBinding.meta_asset_id.is_(None),
+            )
+            .values(
+                status="PROCESSING",
+                processing_status="QUEUED",
+                error_message=None,
+                error_code=None,
+                updated_at=datetime.utcnow(),
+            )
+        )
+        if claimed.rowcount == 1:
+            binding.status = "PROCESSING"
+            binding.processing_status = "QUEUED"
+            binding.error_message = None
+            binding.error_code = None
+            candidates.append(binding.id)
+
+    # 必须在 Celery 入队前提交认领状态，否则另一个事务仍会看到 PENDING。
+    if candidates:
+        db.commit()
+
+    queued = []
+    for binding_id in candidates:
+        try:
+            task = upload_asset_task.delay(binding_id)
+            queued.append({"binding_id": binding_id, "task_id": task.id})
+        except Exception as exc:
+            db.rollback()
+            failed = db.query(MetaAssetBinding).filter(
+                MetaAssetBinding.id == binding_id
+            ).first()
+            if failed and failed.status == "PROCESSING" and not failed.meta_asset_id:
+                failed.status = "PENDING"
+                failed.processing_status = "QUEUED"
+                failed.error_code = "QUEUE_FAILED"
+                failed.error_message = str(exc)[:1000]
+                db.commit()
+            raise
     return queued

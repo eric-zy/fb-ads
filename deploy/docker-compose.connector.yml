@@ -17,9 +17,25 @@ services:
       dockerfile: fb_connector/Dockerfile
     image: fbads-connector:latest
     restart: unless-stopped
-    command: celery -A fb_connector.celery_app worker --loglevel=info --concurrency=2
+    command: celery -A fb_connector.celery_app worker --loglevel=info --concurrency=2 --prefetch-multiplier=1 -Q connector_general,connector_campaign,connector_insights,connector_maintenance -n general@%h
     env_file:
       - fb-connector.env
+    networks: [fbnet]
+
+  fb-connector-media-worker:
+    build:
+      context: ..
+      dockerfile: fb_connector/Dockerfile
+    image: fbads-connector:latest
+    restart: unless-stopped
+    command: celery -A fb_connector.celery_app worker --loglevel=info --concurrency=1 --prefetch-multiplier=1 --max-tasks-per-child=1 -Q connector_media -n media@%h
+    env_file:
+      - fb-connector.env
+    environment:
+      TMPDIR: /tmp/fb-connector-media
+      CONNECTOR_MEDIA_TEMP_DIR: /tmp/fb-connector-media
+    tmpfs:
+      - /tmp/fb-connector-media:rw,size=3g,mode=1777
     networks: [fbnet]
 
 networks:

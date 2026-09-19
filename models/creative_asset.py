@@ -6,10 +6,10 @@ from core.tenant import TenantMixin
 
 
 class CreativeAsset(TenantMixin, Base):
-    """素材库：上传的图片 / 视频，用于批量发布时引用
+    """租户共享素材库：上传的图片 / 视频，用于跨账户、跨平台投放时引用。
 
-    上传后会调用 Facebook API 拿到 image_hash / video_id，
-    真实发布创意时无需重新上传，直接引用即可。
+    原始文件只保存一份；具体广告账户的平台素材 ID记录在
+    MetaAssetBinding 中，真实发布创意时无需重复上传。
     """
 
     __tablename__ = "creative_assets"

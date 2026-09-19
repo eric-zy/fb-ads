@@ -15,6 +15,8 @@ from services.storage import AliyunOSSStorage
 from services.media_processing import image_dimensions, video_metadata, generate_video_cover, generate_thumbnail
 from services.credential_resolver import CredentialResolver
 from services.fb_connector_client import FBConnectorClient, FBConnectorError
+from services.media_binding_service import queue_pending_asset_bindings
+from config.settings import settings
 
 
 @shared_task(bind=True, name="media.delete_oss_asset", max_retries=5, default_retry_delay=60)
@@ -99,8 +101,7 @@ def process_oss_asset_task(self, asset_id: str, force: bool = False):
             MetaAssetBinding.status == "PENDING",
             MetaAssetBinding.meta_asset_id.is_(None),
         ).all()
-        for binding in pending_bindings:
-            upload_asset_task.delay(binding.id)
+        queue_pending_asset_bindings(pending_bindings, db=db)
         return {"status": "ready", "asset_id": asset_id, "width": asset.width, "height": asset.height}
     except Exception as exc:
         db.rollback()
@@ -193,7 +194,12 @@ def upload_asset_task(self, binding_id: str):
         db.close()
 
 
-@shared_task(bind=True, name="media.poll_connector_upload", max_retries=20, default_retry_delay=15)
+@shared_task(
+    bind=True,
+    name="media.poll_connector_upload",
+    max_retries=settings.CONNECTOR_MEDIA_POLL_MAX_RETRIES,
+    default_retry_delay=15,
+)
 @tenant_task(lambda self, binding_id: resolve_tenant_of(MetaAssetBinding, binding_id))
 def poll_connector_media_task(self, binding_id: str):
     db = SessionLocal()
@@ -207,13 +213,35 @@ def poll_connector_media_task(self, binding_id: str):
         result = FBConnectorClient().media_upload_status(binding.connector_task_id)
         value = str(result.get("status") or "").upper()
         logger.info(
-            "[MediaUploadPoll] connector status binding_id=%s connector_task_id=%s status=%s",
+            "[MediaUploadPoll] connector status binding_id=%s connector_task_id=%s "
+            "status=%s phase=%s progress=%s uploaded_bytes=%s total_bytes=%s",
             binding_id,
             binding.connector_task_id,
             value or "EMPTY",
+            result.get("phase") or "",
+            result.get("progress", ""),
+            result.get("uploaded_bytes", ""),
+            result.get("total_bytes", ""),
         )
         if value in {"SUCCESS", "READY", "COMPLETED"}:
-            binding.meta_asset_id = result.get("meta_asset_id")
+            meta_asset_id = result.get("meta_asset_id")
+            if not meta_asset_id:
+                binding.status = "FAILED"
+                binding.processing_status = "FAILED"
+                binding.error_code = "CONNECTOR_MEDIA_ID_MISSING"
+                binding.error_message = "Connector 已返回成功，但未返回 Meta 素材 ID"
+                db.commit()
+                logger.error(
+                    "[MediaUploadPoll] success without meta_asset_id binding_id=%s connector_task_id=%s",
+                    binding_id,
+                    binding.connector_task_id,
+                )
+                return {
+                    "status": "failed",
+                    "binding_id": binding_id,
+                    "error": binding.error_message,
+                }
+            binding.meta_asset_id = meta_asset_id
             binding.status = "READY"
             binding.processing_status = "READY"
             binding.last_verified_at = datetime.utcnow()

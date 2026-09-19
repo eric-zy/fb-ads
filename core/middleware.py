@@ -34,6 +34,11 @@ class AuthEnforcementMiddleware(BaseHTTPMiddleware):
         "/api/v1/auth/logout",
         # Meta 浏览器回调不携带本系统 Bearer Token；身份与租户由短时签名 state 校验。
         "/api/v1/meta-auth/callback",
+        # Connector 使用 HMAC 服务签名，不携带 SaaS JWT；具体路由仍会
+        # 校验 X-Signature / X-Timestamp / X-Request-Id。
+        "/api/v1/internal/fb-connector/credential-status",
+        "/api/v1/internal/fb-connector/insights",
+        "/api/v1/internal/fb-connector/media-source",
         "/health",
         "/api/v1/public/locale",
     }

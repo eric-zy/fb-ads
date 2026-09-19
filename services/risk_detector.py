@@ -15,6 +15,7 @@ class RiskDetector:
     def __init__(self, db: Session):
         self.db = db
         self.ads_manager = AdsManager(db)
+        self.spend_check_error: Optional[str] = None
     
     def check_daily_spend_anomaly(self, account_id: str) -> Optional[Tuple[int, int]]:
         """检查每日花费异常
@@ -28,6 +29,7 @@ class RiskDetector:
             (今日花费, 日限额) 或 None
         """
         try:
+            self.spend_check_error = None
             account = resolve_ad_account(self.db, account_id)
             if not account:
                 return None
@@ -44,6 +46,7 @@ class RiskDetector:
             
         except Exception as e:
             logger.error(f"Failed to check daily spend anomaly: {str(e)}")
+            self.spend_check_error = str(e)
             return None
     
     def check_quality_score_anomaly(self, account_id: str) -> List[str]:
@@ -154,7 +157,7 @@ class RiskDetector:
             self.db.rollback()
             return False
     
-    def execute_risk_actions(self, account_id: str) -> Dict[str, int]:
+    def execute_risk_actions(self, account_id: str) -> Dict[str, object]:
         """执行风险缓解行动
 
         Args:
@@ -179,6 +182,9 @@ class RiskDetector:
 
             # 检查日花费异常
             spend_anomaly = self.check_daily_spend_anomaly(account_key)
+            if self.spend_check_error:
+                result["spend_check_status"] = "FAILED"
+                result["spend_check_error"] = self.spend_check_error[:500]
             if spend_anomaly:
                 today_spend, daily_limit = spend_anomaly
                 paused = self.ads_manager.pause_low_performance_campaigns(account_key)

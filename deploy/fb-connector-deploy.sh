@@ -50,8 +50,9 @@ echo "[connector] starting database and redis..."
 echo "[connector] running independent connector migrations..."
 "${compose[@]}" run --rm fb-connector alembic -c fb_connector/alembic.ini upgrade head
 
-echo "[connector] starting connector API, worker and beat..."
-"${compose[@]}" up -d --force-recreate fb-connector fb-connector-worker fb-connector-beat
+echo "[connector] starting connector API, general worker, media worker and beat..."
+"${compose[@]}" up -d --force-recreate \
+  fb-connector fb-connector-worker fb-connector-media-worker fb-connector-beat
 
 echo "[connector] checking service status..."
 "${compose[@]}" ps

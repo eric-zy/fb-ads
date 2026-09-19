@@ -18,7 +18,7 @@ CUTOVER_CHECK_PASSED
 
 - [ ] 所有租户已切换到 Connector 模式。
 - [ ] OAuth 回调已改为海外域名。
-- [ ] 海外 Connector API、Worker、Beat 正常。
+- [ ] 海外 Connector API、通用 Worker、Media Worker、Beat 正常，且 Media Worker 监听 `connector_media` 队列。
 - [ ] 海外 Connector 数据库已执行 `alembic -c fb_connector/alembic.ini upgrade head`。
 - [ ] 海外使用 `deploy/docker-compose.connector-prod.yml` 独立部署，不依赖国内 Compose。
 - [ ] 本地验证可使用 `CONNECTOR_ENV_FILE=fb-connector.env.example`；生产必须使用 `fb-connector.env`。

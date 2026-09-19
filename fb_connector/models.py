@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, DateTime, JSON, String, Text, create_engine
+from sqlalchemy import Column, DateTime, Integer, JSON, String, Text, create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from config.settings import settings
 
@@ -32,6 +32,13 @@ class ConnectorMediaTask(ConnectorBase):
     asset_type = Column(String(16))
     source_url = Column(Text)
     status = Column(String(32), nullable=False, default="QUEUED")
+    phase = Column(String(32), nullable=True, default="QUEUED")
+    total_bytes = Column(Integer, nullable=True)
+    uploaded_bytes = Column(Integer, nullable=True, default=0)
+    upload_session_id = Column(String(128), nullable=True)
+    meta_video_id = Column(String(128), nullable=True)
+    start_offset = Column(Integer, nullable=True)
+    end_offset = Column(Integer, nullable=True)
     meta_asset_id = Column(String(128))
     error_message = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

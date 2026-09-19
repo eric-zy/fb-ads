@@ -9,7 +9,7 @@
             <p class="page-desc">统一管理图片与视频素材，发布广告时可直接复用。</p>
           </div>
           <div class="header-actions">
-            <el-select v-model="uploadAccountId" class="upload-account" placeholder="上传目标账户" filterable>
+            <el-select v-model="uploadAccountId" class="upload-account" placeholder="上传后同步账户（可选）" filterable clearable>
               <el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} (${account.account_id})`" :value="account.id" />
             </el-select>
             <el-upload
@@ -340,15 +340,18 @@ const onSelect = async (file: any) => {
     ElMessage.warning(validation)
     return
   }
-  if (!uploadAccountId.value) {
-    ElMessage.warning('请先选择上传目标广告账户')
-    return
-  }
   if (uploading.value) return
   uploading.value = true
   try {
-    const res = await mediaApi.upload(raw, { account_id: uploadAccountId.value, group_id: filterGroup.value || undefined })
-    ElMessage.success(res.duplicate ? `文件已存在，已关联当前广告账户：${res.data.name}` : `已上传：${res.data.name}`)
+    const res = await mediaApi.upload(raw, {
+      account_id: uploadAccountId.value || undefined,
+      group_id: filterGroup.value || undefined,
+    })
+    ElMessage.success(
+      res.duplicate
+        ? (uploadAccountId.value ? '文件已存在，已关联当前广告账户：' : '文件已存在，已复用共享素材：') + res.data.name
+        : (uploadAccountId.value ? '已上传并提交账户同步：' : '已上传到共享素材库：') + res.data.name,
+    )
     await load()
     if (res.data.status === 'PROCESSING' || res.data.processing_status === 'PROCESSING') {
       await waitForAsset(res.data.id)
@@ -590,7 +593,6 @@ onMounted(async () => {
   try {
     const { data } = await accountApi.list({ page: 1, page_size: 100 })
     accounts.value = data || []
-    if (accounts.value.length === 1) uploadAccountId.value = accounts.value[0].id
   } catch (e: any) {
     accounts.value = []
     ElMessage.error(String(e?.response?.data?.detail || e?.message || '广告账户加载失败，请先检查账户授权'))

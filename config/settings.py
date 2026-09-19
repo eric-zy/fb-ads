@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     ).lower() == "true"
     FB_CONNECTOR_BASE_URL: str = os.getenv("FB_CONNECTOR_BASE_URL", "")
     FB_CONNECTOR_TIMEOUT: int = int(os.getenv("FB_CONNECTOR_TIMEOUT", "30"))
+    # Insights 可能因 Meta 限流等待，并且海外端会同时处理多个账户；
+    # 不与普通 Connector 请求共用 30 秒短超时。
+    FB_CONNECTOR_REPORT_TIMEOUT: int = int(os.getenv("FB_CONNECTOR_REPORT_TIMEOUT", "300"))
     FB_CONNECTOR_SIGNING_KEY: str = os.getenv("FB_CONNECTOR_SIGNING_KEY", "")
     CONNECTOR_SERVICE_TOKEN: str = os.getenv("CONNECTOR_SERVICE_TOKEN", "")
     SAAS_CALLBACK_BASE_URL: str = os.getenv("SAAS_CALLBACK_BASE_URL", "")
@@ -54,11 +57,32 @@ class Settings(BaseSettings):
     # 可通过环境变量覆盖，格式为秒；默认 15 分钟，适合 200MB 内素材。
     FB_VIDEO_CONNECT_TIMEOUT: int = int(os.getenv("FB_VIDEO_CONNECT_TIMEOUT", "30"))
     FB_VIDEO_UPLOAD_TIMEOUT: int = int(os.getenv("FB_VIDEO_UPLOAD_TIMEOUT", "900"))
+    # Meta advideos resumable upload：实际 offset 由 Meta 返回，以下仅限制单片读取大小。
+    FB_VIDEO_CHUNK_MAX_BYTES: int = int(os.getenv("FB_VIDEO_CHUNK_MAX_BYTES", str(10 * 1024 * 1024)))
+    FB_VIDEO_PROCESSING_TIMEOUT: int = int(os.getenv("FB_VIDEO_PROCESSING_TIMEOUT", "900"))
+    FB_VIDEO_STATUS_POLL_INTERVAL: int = int(os.getenv("FB_VIDEO_STATUS_POLL_INTERVAL", "15"))
+    # 无海外 OSS 时，Connector 只在本地临时目录落盘一个素材；
+    # 生产环境通过独立 media worker + tmpfs 限制并发和磁盘占用。
+    CONNECTOR_MEDIA_TEMP_DIR: str = os.getenv("CONNECTOR_MEDIA_TEMP_DIR", "/tmp/fb-connector-media")
+    CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES: int = int(
+        os.getenv("CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES", str(1024 * 1024 * 1024))
+    )
+    # 即使未来横向扩展多个 media worker，同一广告账户仍只允许一个素材上传流程。
+    CONNECTOR_MEDIA_ACCOUNT_LOCK_TTL: int = int(
+        os.getenv("CONNECTOR_MEDIA_ACCOUNT_LOCK_TTL", "3600")
+    )
     # 超过该时间仍处于 UPLOADING 的 Connector 媒体任务视为孤儿任务，
     # 允许下一次幂等请求或定时恢复任务重新入队。
     CONNECTOR_MEDIA_STALE_SECONDS: int = int(os.getenv("CONNECTOR_MEDIA_STALE_SECONDS", "1800"))
+    # 海外视频上传允许 15 分钟；国内轮询必须覆盖该窗口并留出网络抖动余量。
+    CONNECTOR_MEDIA_POLL_MAX_RETRIES: int = int(os.getenv("CONNECTOR_MEDIA_POLL_MAX_RETRIES", "80"))
     # 国内 Worker 的硬限制为 30 分钟，恢复阈值略留缓冲，避免重复派发仍在执行的任务。
     ASYNC_TASK_STALE_SECONDS: int = int(os.getenv("ASYNC_TASK_STALE_SECONDS", "2100"))
+    # 海外完整投放创建可能包含多个 Meta 请求；国内轮询窗口必须覆盖恢复阈值，
+    # 避免国内先判失败而海外任务仍在执行。
+    FB_CONNECTOR_DELIVERY_POLL_MAX_RETRIES: int = int(
+        os.getenv("FB_CONNECTOR_DELIVERY_POLL_MAX_RETRIES", "140")
+    )
     FB_API_RETRY_COUNT: int = 3
     
     # ========== 数据库配置 ==========
@@ -200,6 +224,7 @@ class Settings(BaseSettings):
             required = {
                 "FB_CONNECTOR_ENABLED": self.FB_CONNECTOR_ENABLED,
                 "FB_CONNECTOR_BASE_URL": self.FB_CONNECTOR_BASE_URL,
+                "FB_CONNECTOR_REPORT_TIMEOUT": self.FB_CONNECTOR_REPORT_TIMEOUT,
                 "FB_CONNECTOR_SIGNING_KEY": self.FB_CONNECTOR_SIGNING_KEY,
                 "CONNECTOR_SERVICE_TOKEN": self.CONNECTOR_SERVICE_TOKEN,
                 "SAAS_CALLBACK_BASE_URL": self.SAAS_CALLBACK_BASE_URL,
