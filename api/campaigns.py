@@ -411,28 +411,32 @@ def campaign_action(
             raise HTTPException(status_code=400, detail="不支持的同步对象类型")
         rows = _scope(db.query(model), model, current_user).filter(model.id.in_(req.ids)).all()
         if object_type == "CAMPAIGN":
-            account_ids = [row.ad_account_id for row in rows if _can_see_account(visible, row.ad_account_id)]
+            visible_rows = [row for row in rows if _can_see_account(visible, row.ad_account_id)]
+            account_ids = [row.ad_account_id for row in visible_rows]
         elif object_type == "ADSET":
-            account_ids = [row.campaign_instance.ad_account_id for row in rows if _can_see_account(visible, row.campaign_instance.ad_account_id)]
+            visible_rows = [row for row in rows if _can_see_account(visible, row.campaign_instance.ad_account_id)]
+            account_ids = [row.campaign_instance.ad_account_id for row in visible_rows]
         else:
-            account_ids = [row.adset_instance.campaign_instance.ad_account_id for row in rows if _can_see_account(visible, row.adset_instance.campaign_instance.ad_account_id)]
+            visible_rows = [row for row in rows if _can_see_account(visible, row.adset_instance.campaign_instance.ad_account_id)]
+            account_ids = [row.adset_instance.campaign_instance.ad_account_id for row in visible_rows]
         account_ids = sorted(set(account_ids))
         if not account_ids:
             raise HTTPException(status_code=404, detail="未找到可同步的投放对象")
+        object_ids = [row.id for row in visible_rows]
         tasks = [sync_delivery_objects_task.delay(account_id) for account_id in account_ids]
         for task in tasks:
-            db.add(AsyncTaskRecord(task_id=task.id, task_type="META_SYNC", object_type=object_type, object_ids=req.ids, created_by=current_user.id))
+            db.add(AsyncTaskRecord(task_id=task.id, task_type="META_SYNC", object_type=object_type, object_ids=object_ids, created_by=current_user.id))
         db.commit()
         record_audit(
             db,
             action="SYNC_DELIVERY_OBJECTS",
             resource_type=object_type.lower(),
-            resource_id=rows[0].id if rows else None,
+            resource_id=object_ids[0] if object_ids else None,
             user_id=current_user.id,
-            request_data={"object_type": object_type, "object_ids": req.ids, "account_ids": account_ids},
+            request_data={"object_type": object_type, "object_ids": object_ids, "account_ids": account_ids},
             response_data={"status": "QUEUED", "task_ids": [task.id for task in tasks]},
         )
-        return {"status": "QUEUED", "task_ids": [task.id for task in tasks], "account_ids": account_ids, "object_type": object_type, "object_ids": req.ids}
+        return {"status": "QUEUED", "task_ids": [task.id for task in tasks], "account_ids": account_ids, "object_type": object_type, "object_ids": object_ids}
     action_type = action_map.get(action)
     if not action_type:
         raise HTTPException(status_code=400, detail="不支持的操作")
