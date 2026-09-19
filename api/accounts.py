@@ -373,7 +373,7 @@ def list_accounts(
 @router.get("/available-for-deployment", response_model=dict)
 def list_available_for_deployment(
     business_id: Optional[str] = Query(None, description="按归属 BM 过滤"),
-    allow_paused_debug: bool = Query(False, description="仅允许返回可用于 PAUSED 调试的账户"),
+    allow_paused_debug: bool = Query(False, description="兼容旧参数；不参与用户支付状态判定"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):

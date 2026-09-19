@@ -190,7 +190,7 @@
             <el-option
               v-for="a in accounts"
               :key="a.id"
-              :label="`${a.account_name || a.account_id} (${a.account_id}) · 支付 ${a.payment_status || 'UNKNOWN'}`"
+              :label="`${a.account_name || a.account_id} (${a.account_id})`"
               :value="a.id"
             />
           </el-select>
@@ -207,15 +207,15 @@
             <el-radio value="ACTIVE">立即启用</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-alert v-if="form.status === 'PAUSED'" type="info" :closable="false" show-icon>
-          暂停（调试）允许选择未配置支付方式的账户，但不会开始投放；切换为立即启用后，系统只接受支付状态为 AVAILABLE 的账户。
+        <el-alert type="info" :closable="false" show-icon>
+          账单状态仅作信息展示，不参与投放账户筛选；系统将校验账户状态、Meta 状态、授权凭据和 Facebook Page 权限，最终结果以 Meta 响应为准。
         </el-alert>
         <el-table v-if="selectedAccountRows.length" :data="selectedAccountRows" size="small" style="margin-bottom: 12px">
           <el-table-column prop="account_name" label="账户" show-overflow-tooltip />
           <el-table-column prop="account_id" label="Account ID" show-overflow-tooltip />
-          <el-table-column label="支付状态" width="140">
+          <el-table-column label="账单状态（仅展示）" width="160">
             <template #default="{ row }">
-              <el-tag :type="row.payment_status === 'AVAILABLE' ? 'success' : form.status === 'PAUSED' ? 'warning' : 'danger'" size="small">
+              <el-tag :type="row.payment_status === 'AVAILABLE' ? 'success' : 'info'" size="small">
                 {{ row.payment_status || 'UNKNOWN' }}
               </el-tag>
             </template>
@@ -259,7 +259,7 @@
           <el-table :data="selectedAccountRows" size="small" style="margin-top: 12px">
             <el-table-column prop="account_name" label="账户" show-overflow-tooltip />
             <el-table-column prop="account_id" label="Account ID" show-overflow-tooltip />
-            <el-table-column prop="payment_status" label="支付状态" width="140" />
+            <el-table-column prop="payment_status" label="账单状态（仅展示）" width="160" />
             <el-table-column prop="business.name" label="归属 BM" show-overflow-tooltip />
             <el-table-column v-if="preflightBlockedAccounts.length" label="预检结果" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">

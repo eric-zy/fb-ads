@@ -223,7 +223,7 @@ class JobService:
 
         params = params or {}
         requested_status = params.get("status", InstanceStatus.PAUSED.value)
-        # PAUSED 仅允许创建调试对象；ACTIVE 仍必须通过完整支付校验。
+        # 投放账户资格由 AdAccountService 统一判断；用户支付状态不参与拦截。
         ad_account_ids, rejected = AdAccountService(self.db).filter_available_ids(
             ad_account_ids,
             user_id=created_by,

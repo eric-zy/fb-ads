@@ -12,6 +12,8 @@
     AND AdAccount.system_status = ACTIVE
     AND Connector 凭据已绑定
     AND Meta 侧账户状态允许投放
+
+说明：payment_status 仅作为同步后的账单信息展示，不参与投放资格判定。
 """
 from typing import Dict, List, Optional, Tuple
 
@@ -41,6 +43,10 @@ class AdAccountService:
     # ------------------------------------------------------------------
     def check_available(self, account: AdAccount, *, allow_paused_debug: bool = False) -> Tuple[bool, str]:
         """判断单个账户是否可参与批量投放
+
+        ``allow_paused_debug`` 保留用于兼容旧调用方，但不再影响判定。
+        用户支付状态不是本系统的投放前置条件；实际投放失败由 Meta 返回结果
+        和任务重试/失败记录处理。
 
         Returns:
             (是否可用, 原因)。可用时原因为 "ok"。
@@ -72,24 +78,6 @@ class AdAccountService:
         if meta_status not in {"1", "ACTIVE"}:
             return False, f"Meta 侧状态未知或不可投放：{account.account_status}"
 
-        # 发布安全门：PAUSED 只表示创建后不投放，不能用来绕过 Meta
-        # 的账单/付款资格检查。只有同步确认 AVAILABLE 才允许进入可投放池。
-        # UNKNOWN 也必须阻断，避免支付状态尚未同步时误创建广告对象。
-        payment_status = (account.payment_status or "UNKNOWN").upper()
-        if payment_status != "AVAILABLE" and not allow_paused_debug:
-            payment_messages = {
-                "UNKNOWN": "尚未确认广告账户付款状态，请先同步账户",
-                "MISSING": "广告账户未配置付款方式，请检查 BM 账单与付款",
-                "PAST_DUE": "广告账户存在欠费，请先处理 BM 账单",
-                "RESTRICTED": "广告账户付款受限，请检查 BM 账单与账户风控",
-            }
-            return False, account.payment_error_message or payment_messages.get(
-                payment_status,
-                f"广告账户付款状态不可用：{account.payment_status}",
-            )
-
-        if payment_status != "AVAILABLE":
-            return True, "PAUSED 调试发布：未校验付款状态"
         return True, "ok"
 
     # ------------------------------------------------------------------
