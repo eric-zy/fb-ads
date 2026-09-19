@@ -39,6 +39,8 @@ class AuthEnforcementMiddleware(BaseHTTPMiddleware):
         "/api/v1/internal/fb-connector/credential-status",
         "/api/v1/internal/fb-connector/insights",
         "/api/v1/internal/fb-connector/media-source",
+        "/api/v1/internal/fb-connector/media-status",
+        "/api/v1/internal/fb-connector/delivery-status",
         "/health",
         "/api/v1/public/locale",
     }

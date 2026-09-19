@@ -108,11 +108,12 @@ QUEUED → RUNNING → CAMPAIGN_CREATED → ADSETS_CREATED
 
 ## 5. 回调接口
 
-海外任务完成后回调国内：
+海外任务状态通过 HMAC 回调国内，终态回调后国内会立即触发统一收敛；国内原有状态轮询保留为降级兜底：
 
-`POST {SAAS_CALLBACK_BASE_URL}/internal/connector/campaign-callback`
+- `POST {SAAS_CALLBACK_BASE_URL}/api/v1/internal/fb-connector/delivery-status`
+- `POST {SAAS_CALLBACK_BASE_URL}/api/v1/internal/fb-connector/media-status`
 
-回调 body 使用上述状态结构，并增加 `event_id`、`occurred_at`。回调使用 `SAAS_INTERNAL_SIGNING_KEY` 做 HMAC 签名，携带 `X-Request-Id`、`X-Timestamp`、`X-Signature`。国内按 `event_id` 幂等消费，验签失败或时间戳超出允许窗口直接拒绝。
+回调携带 `X-Request-Id`、`X-Timestamp`、`X-Signature`、`X-Idempotency-Key`。签名覆盖 HTTP 方法、路径、时间戳、原始 body 摘要和幂等键。国内按 Connector task ID 更新对应投放子项或账户级素材绑定；未知任务返回 200 并记录告警，避免历史任务清理后触发无限重试。回调事件先写入 Connector 的 `connector_callback_events` outbox，失败按指数退避重试；回调失败不影响海外 Meta 执行，轮询和 Beat 恢复任务负责兜底。
 
 ## 6. 国内映射
 
@@ -133,7 +134,7 @@ Connector 返回的 Meta ID 映射到本地：
 - 网络超时、Meta 429、5xx：`retryable=true`，按步骤重试。
 - 已创建对象再次重试：使用 `client_key` 和幂等键查询/复用，禁止重复创建。
 - 后续节点失败：保留已创建对象 ID，状态为 `FAILED`，由补偿任务按策略清理或人工处理。
-- 国内回调失败不影响海外任务最终状态，Connector 按指数退避重试回调。
+- 国内回调失败不影响海外任务最终状态，Connector 通过 outbox 和 Beat 按指数退避重试回调。
 
 ## 8. Builder 改造约束
 

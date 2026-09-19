@@ -144,3 +144,5 @@ def test_connector_tasks_are_isolated_by_queue():
         routes["fb_connector.recover_stale_media_tasks"]["queue"]
         == "connector_maintenance"
     )
+    assert routes["fb_connector.retry_saas_callbacks"]["queue"] == "connector_maintenance"
+    assert "retry-saas-callbacks" in celery_app.conf.beat_schedule

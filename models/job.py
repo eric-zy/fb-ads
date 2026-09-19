@@ -114,6 +114,8 @@ class CampaignJobItem(TenantMixin, Base):
     meta_campaign_id = Column(String(128))
     adset_ids = Column(JSON, comment="Meta AdSet ID 列表")
     ad_ids = Column(JSON, comment="Meta Ad ID 列表")
+    # 海外 Connector 的稳定任务 ID；回调和轮询均通过此字段定位子任务。
+    connector_task_id = Column(String(64), index=True, nullable=True)
 
     # 请求/响应留痕，便于排查与审计
     request_payload = Column(JSON)
@@ -146,6 +148,7 @@ class CampaignJobItem(TenantMixin, Base):
             "meta_campaign_id": self.meta_campaign_id,
             "adset_ids": self.adset_ids,
             "ad_ids": self.ad_ids,
+            "connector_task_id": self.connector_task_id,
             "error_code": self.error_code,
             "error_message": self.error_message,
             "error_category": self.error_category,

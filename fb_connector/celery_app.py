@@ -14,6 +14,7 @@ celery_app.conf.update(
         "fb_connector.create_campaign": {"queue": "connector_campaign"},
         "fb_connector.recover_stale_media_tasks": {"queue": "connector_maintenance"},
         "fb_connector.recover_stale_delivery_tasks": {"queue": "connector_maintenance"},
+        "fb_connector.retry_saas_callbacks": {"queue": "connector_maintenance"},
     },
     worker_prefetch_multiplier=1,
     task_track_started=True,
@@ -26,6 +27,10 @@ celery_app.conf.update(
         "recover-stale-delivery-tasks": {
             "task": "fb_connector.recover_stale_delivery_tasks",
             "schedule": 300,
+        },
+        "retry-saas-callbacks": {
+            "task": "fb_connector.retry_saas_callbacks",
+            "schedule": 30,
         },
     },
 )

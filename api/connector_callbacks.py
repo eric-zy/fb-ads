@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from config.settings import settings
 from core.database import get_db
 from core.logger import logger
-from models import AdAccount, CreativeAsset, MetaAccount, MetaPage
+from models import AdAccount, CampaignJobItem, CreativeAsset, MetaAccount, MetaAssetBinding, MetaPage
 from core.tenant import bypass_tenant
 from services.storage.aliyun_oss import AliyunOSSStorage
 from services.request_signer import verify_request
@@ -28,6 +28,244 @@ class CredentialStatusCallback(BaseModel):
 class MediaSourceRequest(BaseModel):
     task_id: str = Field(..., min_length=1, max_length=64)
     media_id: str = Field(..., min_length=1, max_length=64)
+
+
+class MediaStatusCallback(BaseModel):
+    event: str = Field(default="media.status", max_length=64)
+    task_id: str = Field(..., min_length=1, max_length=64)
+    media_id: str = Field(..., min_length=1, max_length=64)
+    account_id: str | None = Field(default=None, max_length=64)
+    status: str = Field(..., min_length=1, max_length=32)
+    phase: str | None = Field(default=None, max_length=32)
+    meta_asset_id: str | None = Field(default=None, max_length=128)
+    uploaded_bytes: int | None = Field(default=None, ge=0)
+    total_bytes: int | None = Field(default=None, ge=0)
+    error_code: str | None = Field(default=None, max_length=128)
+    error_message: str | None = Field(default=None, max_length=1000)
+
+
+class DeliveryStatusCallback(BaseModel):
+    event: str = Field(default="delivery.status", max_length=64)
+    task_id: str = Field(..., min_length=1, max_length=64)
+    source_task_id: str | None = Field(default=None, max_length=64)
+    account_id: str | None = Field(default=None, max_length=64)
+    status: str = Field(..., min_length=1, max_length=32)
+    step: str | None = Field(default=None, max_length=32)
+    campaign_id: str | None = Field(default=None, max_length=128)
+    objects: dict | None = None
+    error_code: str | None = Field(default=None, max_length=128)
+    error_message: str | None = Field(default=None, max_length=1000)
+
+
+def _verify_callback_signature(request: Request, path: str, body: bytes) -> None:
+    """所有 Connector 状态回调统一使用原始 body 验签，避免重序列化差异。"""
+    if not settings.SAAS_INTERNAL_SIGNING_KEY:
+        raise HTTPException(status_code=503, detail="SaaS 回调签名密钥未配置")
+    headers = {
+        "X-Signature": request.headers.get("X-Signature", ""),
+        "X-Timestamp": request.headers.get("X-Timestamp", ""),
+        "X-Request-Id": request.headers.get("X-Request-Id", ""),
+        "X-Idempotency-Key": request.headers.get("X-Idempotency-Key", ""),
+    }
+    if not verify_request(settings.SAAS_INTERNAL_SIGNING_KEY, headers, "POST", path, body):
+        raise HTTPException(status_code=401, detail="invalid connector signature")
+
+
+@router.post("/media-status")
+async def media_status_callback(request: Request, db: Session = Depends(get_db)):
+    """接收海外素材状态，直接更新账户级绑定；国内轮询仅作为兜底。"""
+    body = await request.body()
+    path = "/api/v1/internal/fb-connector/media-status"
+    _verify_callback_signature(request, path, body)
+    payload = MediaStatusCallback.model_validate_json(body)
+    if payload.event != "media.status":
+        raise HTTPException(status_code=400, detail="invalid media callback event")
+    value = payload.status.upper()
+    request_id = request.headers.get("X-Request-Id")
+
+    with bypass_tenant():
+        binding = (
+            db.query(MetaAssetBinding)
+            .filter(MetaAssetBinding.connector_task_id == payload.task_id)
+            .first()
+        )
+        asset = (
+            db.query(CreativeAsset).filter(CreativeAsset.id == payload.media_id).first()
+            if binding
+            else None
+        )
+    if not binding:
+        # 任务可能已被人工清理；签名正确时返回 200，避免 Connector 无意义重试。
+        logger.warning(
+            "[ConnectorCallback] media task not found task_id=%s media_id=%s request_id=%s",
+            payload.task_id,
+            payload.media_id,
+            request_id,
+        )
+        return {"accepted": False, "reason": "unknown_task", "task_id": payload.task_id}
+    if binding.asset_id != payload.media_id:
+        logger.warning(
+            "[ConnectorCallback] media task mismatch task_id=%s expected_media_id=%s actual_media_id=%s",
+            payload.task_id,
+            binding.asset_id,
+            payload.media_id,
+        )
+        return {"accepted": False, "reason": "media_mismatch", "task_id": payload.task_id}
+
+    error_code = payload.error_code or "CONNECTOR_MEDIA_UPLOAD"
+    error_message = payload.error_message or "Connector 素材上传失败"
+    if binding.status == "READY" and value in {"FAILED", "ERROR"}:
+        return {
+            "accepted": True,
+            "task_id": payload.task_id,
+            "media_id": payload.media_id,
+            "status": binding.status,
+            "meta_asset_id": binding.meta_asset_id,
+            "stale": True,
+            "request_id": request_id,
+        }
+    if value in {"SUCCESS", "READY", "COMPLETED"}:
+        if not payload.meta_asset_id:
+            value = "FAILED"
+            error_code = payload.error_code or "CONNECTOR_MEDIA_ID_MISSING"
+            error_message = payload.error_message or "Connector 成功回调缺少 Meta 素材 ID"
+        else:
+            binding.meta_asset_id = payload.meta_asset_id
+            binding.status = "READY"
+            binding.processing_status = "READY"
+            binding.error_code = None
+            binding.error_message = None
+            binding.last_verified_at = datetime.utcnow()
+            binding.uploaded_at = binding.uploaded_at or datetime.utcnow()
+            if asset:
+                asset.status = "READY"
+    if value in {"FAILED", "ERROR"}:
+        binding.status = "FAILED"
+        binding.processing_status = "FAILED"
+        binding.error_code = error_code
+        binding.error_message = error_message
+    elif value not in {"SUCCESS", "READY", "COMPLETED"}:
+        # 回调乱序时不允许 READY 回退到处理中。
+        if binding.status != "READY":
+            binding.status = "PROCESSING"
+            binding.processing_status = "UPLOADING"
+            if payload.error_code:
+                binding.error_code = payload.error_code
+            if payload.error_message:
+                binding.error_message = payload.error_message
+
+    db.commit()
+    logger.info(
+        "[ConnectorCallback] media status updated task_id=%s media_id=%s status=%s binding_status=%s request_id=%s",
+        payload.task_id,
+        payload.media_id,
+        payload.status,
+        binding.status,
+        request_id,
+    )
+    return {
+        "accepted": True,
+        "task_id": payload.task_id,
+        "media_id": payload.media_id,
+        "status": binding.status,
+        "meta_asset_id": binding.meta_asset_id,
+        "request_id": request_id,
+    }
+
+
+@router.post("/delivery-status")
+async def delivery_status_callback(request: Request, db: Session = Depends(get_db)):
+    """接收海外完整投放任务状态，并触发国内统一收敛逻辑。"""
+    body = await request.body()
+    path = "/api/v1/internal/fb-connector/delivery-status"
+    _verify_callback_signature(request, path, body)
+    payload = DeliveryStatusCallback.model_validate_json(body)
+    if payload.event != "delivery.status":
+        raise HTTPException(status_code=400, detail="invalid delivery callback event")
+    value = payload.status.upper()
+    request_id = request.headers.get("X-Request-Id")
+
+    with bypass_tenant():
+        item = (
+            db.query(CampaignJobItem)
+            .filter(CampaignJobItem.connector_task_id == payload.task_id)
+            .first()
+        )
+        # 兼容迁移前已创建、只在 response_payload 中保存 Connector ID 的历史任务。
+        if not item:
+            for candidate in (
+                db.query(CampaignJobItem)
+                .filter(CampaignJobItem.status.in_(["PENDING", "RUNNING"]))
+                .all()
+            ):
+                connector = (candidate.response_payload or {}).get("connector") or {}
+                if connector.get("connector_task_id") == payload.task_id:
+                    item = candidate
+                    break
+    if not item:
+        logger.warning(
+            "[ConnectorCallback] delivery task not found task_id=%s request_id=%s",
+            payload.task_id,
+            request_id,
+        )
+        return {"accepted": False, "reason": "unknown_task", "task_id": payload.task_id}
+    with bypass_tenant():
+        account = db.query(AdAccount).filter(AdAccount.id == item.ad_account_id).first()
+    if payload.account_id and (not account or account.account_id != payload.account_id):
+        logger.warning(
+            "[ConnectorCallback] delivery account mismatch task_id=%s job_item_id=%s",
+            payload.task_id,
+            item.id,
+        )
+        return {"accepted": False, "reason": "account_mismatch", "task_id": payload.task_id}
+
+    connector_status = payload.model_dump(exclude_none=True)
+    connector_status.update(
+        {
+            "source": "callback",
+            "received_at": datetime.utcnow().isoformat(),
+            "request_id": request_id,
+        }
+    )
+    response_payload = dict(item.response_payload or {})
+    response_payload["connector_status"] = connector_status
+    item.response_payload = response_payload
+    if not item.connector_task_id:
+        item.connector_task_id = payload.task_id
+    db.commit()
+
+    reconciled = False
+    if value in {"SUCCESS", "FAILED", "ERROR"} and item.status not in {"SUCCESS", "FAILED"}:
+        try:
+            from tasks.campaign_tasks import poll_connector_deployment_task
+
+            poll_connector_deployment_task.delay(item.id)
+            reconciled = True
+        except Exception as exc:
+            # 回调已成功落库，后续定时轮询仍可兜底；不能因入队异常返回 5xx 造成重复风暴。
+            logger.exception(
+                "[ConnectorCallback] delivery reconcile enqueue failed task_id=%s job_item_id=%s error=%s",
+                payload.task_id,
+                item.id,
+                exc,
+            )
+    logger.info(
+        "[ConnectorCallback] delivery status updated task_id=%s job_item_id=%s status=%s step=%s reconciled=%s request_id=%s",
+        payload.task_id,
+        item.id,
+        payload.status,
+        payload.step or "",
+        reconciled,
+        request_id,
+    )
+    return {
+        "accepted": True,
+        "task_id": payload.task_id,
+        "job_item_id": item.id,
+        "status": payload.status,
+        "reconciled": reconciled,
+        "request_id": request_id,
+    }
 
 @router.post("/credential-status")
 async def credential_status_callback(

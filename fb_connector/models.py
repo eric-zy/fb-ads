@@ -59,5 +59,25 @@ class ConnectorDeliveryTask(ConnectorBase):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
+
+class ConnectorCallbackEvent(ConnectorBase):
+    """Connector → SaaS 的可靠回调事件 outbox。"""
+
+    __tablename__ = "connector_callback_events"
+
+    event_id = Column(String(64), primary_key=True)
+    task_id = Column(String(64), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False)
+    callback_path = Column(String(255), nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    payload = Column(JSON, nullable=False)
+    status = Column(String(32), nullable=False, default="PENDING", index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_retry_at = Column(DateTime, nullable=True, index=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    sent_at = Column(DateTime, nullable=True)
+
 def connector_session_factory():
     return SessionLocal()

@@ -74,6 +74,15 @@ class Settings(BaseSettings):
     # 超过该时间仍处于 UPLOADING 的 Connector 媒体任务视为孤儿任务，
     # 允许下一次幂等请求或定时恢复任务重新入队。
     CONNECTOR_MEDIA_STALE_SECONDS: int = int(os.getenv("CONNECTOR_MEDIA_STALE_SECONDS", "1800"))
+    CONNECTOR_CALLBACK_RETRY_BASE_SECONDS: int = int(
+        os.getenv("CONNECTOR_CALLBACK_RETRY_BASE_SECONDS", "15")
+    )
+    CONNECTOR_CALLBACK_RETRY_MAX_SECONDS: int = int(
+        os.getenv("CONNECTOR_CALLBACK_RETRY_MAX_SECONDS", "3600")
+    )
+    CONNECTOR_CALLBACK_STALE_SECONDS: int = int(
+        os.getenv("CONNECTOR_CALLBACK_STALE_SECONDS", "600")
+    )
     # 海外视频上传允许 15 分钟；国内轮询必须覆盖该窗口并留出网络抖动余量。
     CONNECTOR_MEDIA_POLL_MAX_RETRIES: int = int(os.getenv("CONNECTOR_MEDIA_POLL_MAX_RETRIES", "80"))
     # 国内 Worker 的硬限制为 30 分钟，恢复阈值略留缓冲，避免重复派发仍在执行的任务。

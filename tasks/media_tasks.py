@@ -210,6 +210,11 @@ def poll_connector_media_task(self, binding_id: str):
         asset = db.query(CreativeAsset).filter(CreativeAsset.id == binding.asset_id).first() if binding else None
         if not binding or not binding.connector_task_id:
             return {"status": "done"}
+        # Connector 回调已经落库时，直接采用国内状态，避免再发起一次远端轮询。
+        if binding.status == "READY" and binding.meta_asset_id:
+            return {"status": "success", "binding_id": binding_id, "meta_asset_id": binding.meta_asset_id, "source": "callback"}
+        if binding.status == "FAILED":
+            return {"status": "failed", "binding_id": binding_id, "error": binding.error_message, "source": "callback"}
         result = FBConnectorClient().media_upload_status(binding.connector_task_id)
         value = str(result.get("status") or "").upper()
         logger.info(

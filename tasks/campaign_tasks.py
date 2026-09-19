@@ -61,8 +61,22 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
         connector = (item.response_payload or {}).get("connector") or {}
         remote_id = connector.get("connector_task_id")
         if not remote_id:
+            remote_id = item.connector_task_id
+        if not remote_id:
             raise RuntimeError("缺少海外任务 ID")
-        result = FBConnectorClient().deploy_status(remote_id)
+        callback_result = (item.response_payload or {}).get("connector_status") or {}
+        callback_received_at = callback_result.get("received_at")
+        use_callback = False
+        if callback_result.get("source") == "callback" and callback_received_at:
+            try:
+                received_at = datetime.fromisoformat(callback_received_at)
+                use_callback = (datetime.utcnow() - received_at).total_seconds() <= max(
+                    settings.FB_CONNECTOR_TIMEOUT * 2,
+                    60,
+                )
+            except (TypeError, ValueError):
+                use_callback = False
+        result = callback_result if use_callback else FBConnectorClient().deploy_status(remote_id)
         status = result.get("status")
         logger.info(
             "[CampaignPoll] connector status job_item_id=%s connector_task_id=%s status=%s",
@@ -74,7 +88,7 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
         if status in {"QUEUED", "RETRY", "RUNNING", "CAMPAIGN_CREATED", "ADSETS_CREATED", "CREATIVES_CREATED"}:
             db.commit()
             raise self.retry()
-        if status == "FAILED":
+        if status in {"FAILED", "ERROR"}:
             cleanup = None
             try:
                 credential_id = ((item.response_payload or {}).get("protocol") or {}).get("credential_id")
@@ -579,6 +593,7 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             )
             result = FBConnectorClient().deploy_campaign(protocol_payload, idempotency_key=protocol_payload["idempotency_key"])
             item.status = JobItemStatus.RUNNING.value
+            item.connector_task_id = result.get("connector_task_id")
             item.response_payload = {"connector": result, "protocol": protocol_payload}
             db.commit()
             poll_connector_deployment_task.apply_async(args=[job_item_id], countdown=5)

@@ -144,7 +144,7 @@ CONNECTOR_SERVICE_TOKEN
 - [x] 已新增海外素材上传任务接口 `/internal/meta/media/upload`。
 - [x] 上传接口只接收 HTTP(S) `source_url`、素材类型、账户 ID 和幂等键。
 - [x] 国内 Client 已要求素材上传必须提供幂等键。
-- [ ] 待 Connector Worker 实现下载、Meta 上传、状态回调和结果落库。
+- [x] Connector Worker 已实现下载、Meta 上传、状态持久化和本地文件清理。
 - [x] 已新增 Connector Celery Worker，支持流式下载素材并调用 Meta 图片/视频上传。
 - [x] 上传任务使用 `credential_id` 获取海外密文凭据，不向 SaaS 返回 Token。
 - [x] 国内 Client 上传请求已增加 `credential_id`。
@@ -152,21 +152,23 @@ CONNECTOR_SERVICE_TOKEN
 - [x] 已增加 `connector_media_tasks` 任务表和幂等键唯一约束。
 - [x] 已增加上传任务状态查询接口 `/internal/meta/media/upload/{task_id}`。
 - [x] Worker 已持久化 QUEUED/UPLOADING/SUCCESS/FAILED 状态。
-- [ ] SaaS 状态回调待下一阶段统一接入任务回调总线。
+- [x] 已接入 `/api/v1/internal/fb-connector/media-status` 签名回调；回调直接更新 `MetaAssetBinding`，轮询保留为兜底。
+- [x] Connector 回调已写入 `connector_callback_events` outbox，失败按指数退避重试，Beat 每 30 秒恢复投递。
 
 ## T09 执行记录
 
 - [x] 已新增海外投放入口 `/internal/meta/campaigns/create`。
 - [x] 投放请求要求 `credential_id`、广告账户、业务任务 ID 和幂等键。
 - [x] 国内 Client 已强制投放请求提供幂等键。
-- [ ] 待 Connector Worker 实现 Campaign/AdSet/Ad 分步创建、补偿和状态回调。
+- [x] Connector Worker 已实现 Campaign/AdSet/Creative/Ad 分步创建和失败留痕。
 - [x] 已新增 Connector 投放 Worker，按 Campaign → AdSet → Creative → Ad 顺序执行。
 - [x] 投放失败会保留已创建对象 ID 到异常信息，避免无审计的自动误删。
-- [ ] 待补充投放任务状态表、幂等持久化和 SaaS 回调。
+- [x] 已增加 `connector_delivery_tasks` 任务状态表、幂等持久化和状态查询。
 - [x] 已增加 `connector_delivery_tasks` 任务状态表和幂等键约束。
 - [x] 已增加投放状态查询 `/internal/meta/campaigns/create/{connector_task_id}`。
 - [x] Worker 已持久化 CAMPAIGN/ADSET/AD/DONE 执行阶段。
-- [ ] 待统一接入 SaaS 投放状态回调。
+- [x] 已接入 `/api/v1/internal/fb-connector/delivery-status` 签名回调；终态回调触发国内投放子项收敛，轮询保留为兜底。
+- [x] Connector 回调事件使用稳定 `event_id` 和原始 body 签名，重复投递不会重复创建 Meta 对象。
 
 ## T10 执行记录
 

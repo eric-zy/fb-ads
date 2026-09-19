@@ -2,6 +2,7 @@ import os
 import tempfile
 import json
 import time
+import hashlib
 from urllib.parse import urlparse
 
 from celery import shared_task
@@ -10,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta
 from redis import Redis
 from redis.exceptions import LockError
+from sqlalchemy import or_
 
 from core.logger import logger
 from services.request_signer import build_signature_headers
@@ -29,6 +31,214 @@ def _media_account_lock(account_id: str):
     return redis_client.lock(
         f"fb_connector:media_account:{account_id}",
         timeout=settings.CONNECTOR_MEDIA_ACCOUNT_LOCK_TTL,
+    )
+
+
+def _deliver_callback_event(session, event) -> bool:
+    """发送一条已落库的回调事件；失败时写入退避时间，不影响业务任务。"""
+    if event.status == "SENT":
+        return True
+    now = datetime.utcnow()
+    event.attempt_count = (event.attempt_count or 0) + 1
+    event.status = "SENDING"
+    event.updated_at = now
+    session.commit()
+
+    body = json.dumps(event.payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    headers = build_signature_headers(
+        settings.SAAS_INTERNAL_SIGNING_KEY,
+        "fb_connector",
+        event.event_id,
+        "POST",
+        event.callback_path,
+        body,
+        event.idempotency_key,
+    )
+    headers["Content-Type"] = "application/json"
+    callback = f"{settings.SAAS_CALLBACK_BASE_URL.rstrip('/')}{event.callback_path}"
+    try:
+        response = requests.post(
+            callback,
+            data=body,
+            headers=headers,
+            timeout=min(settings.FB_CONNECTOR_TIMEOUT, 10),
+        )
+        response.raise_for_status()
+        event.status = "SENT"
+        event.sent_at = datetime.utcnow()
+        event.next_retry_at = None
+        event.last_error = None
+        event.updated_at = datetime.utcnow()
+        session.commit()
+        logger.info(
+            "[ConnectorCallback] sent path=%s event_id=%s status=%s task_id=%s attempt=%s",
+            event.callback_path,
+            event.event_id,
+            response.status_code,
+            event.task_id,
+            event.attempt_count,
+        )
+        return True
+    except Exception as exc:
+        delay = min(
+            settings.CONNECTOR_CALLBACK_RETRY_MAX_SECONDS,
+            settings.CONNECTOR_CALLBACK_RETRY_BASE_SECONDS
+            * (2 ** min(max(event.attempt_count - 1, 0), 8)),
+        )
+        event.status = "RETRY"
+        event.next_retry_at = datetime.utcnow() + timedelta(seconds=delay)
+        event.last_error = str(exc)[:1000]
+        event.updated_at = datetime.utcnow()
+        session.commit()
+        logger.warning(
+            "[ConnectorCallback] send failed path=%s event_id=%s task_id=%s attempt=%s retry_in=%ss error=%s",
+            event.callback_path,
+            event.event_id,
+            event.task_id,
+            event.attempt_count,
+            delay,
+            exc,
+        )
+        return False
+
+
+def _notify_saas_status(path: str, payload: dict, idempotency_key: str) -> bool:
+    """先写入 Connector outbox，再尽快发送；回调失败不阻断 Meta 任务。"""
+    if not settings.SAAS_CALLBACK_BASE_URL or not settings.SAAS_INTERNAL_SIGNING_KEY:
+        return False
+    from fb_connector.models import ConnectorCallbackEvent, connector_session_factory
+
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    # 同一任务同一状态和同一 payload 使用稳定事件 ID，网络重试不会制造业务重复。
+    request_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"fb-connector:{path}:{idempotency_key}:{hashlib.sha256(body).hexdigest()}",
+    ).hex
+    session = connector_session_factory()
+    try:
+        event = session.get(ConnectorCallbackEvent, request_id)
+        if not event:
+            event = ConnectorCallbackEvent(
+                event_id=request_id,
+                task_id=str(payload.get("task_id") or "unknown"),
+                event_type=str(payload.get("event") or "connector.status"),
+                callback_path=path,
+                idempotency_key=idempotency_key,
+                payload=payload,
+                status="PENDING",
+                next_retry_at=None,
+            )
+            session.add(event)
+            try:
+                session.commit()
+            except Exception:
+                # 并发 Worker 可能同时产生同一状态事件；唯一 event_id 保证只保留一条。
+                session.rollback()
+                event = session.get(ConnectorCallbackEvent, request_id)
+                if not event:
+                    raise
+        return _deliver_callback_event(session, event)
+    except Exception as exc:
+        logger.warning(
+            "[ConnectorCallback] outbox failed path=%s event_id=%s task_id=%s error=%s",
+            path,
+            request_id,
+            payload.get("task_id"),
+            exc,
+        )
+        return False
+    finally:
+        session.close()
+
+
+@shared_task(name="fb_connector.retry_saas_callbacks")
+def retry_saas_callbacks(limit: int = 100):
+    """定时投递失败回调，并恢复 Worker 中断时遗留的 SENDING 事件。"""
+    from fb_connector.models import ConnectorCallbackEvent, connector_session_factory
+
+    session = connector_session_factory()
+    now = datetime.utcnow()
+    recovered = 0
+    sent = 0
+    failed = 0
+    try:
+        stale_cutoff = now - timedelta(seconds=settings.CONNECTOR_CALLBACK_STALE_SECONDS)
+        stale = (
+            session.query(ConnectorCallbackEvent)
+            .filter(
+                ConnectorCallbackEvent.status == "SENDING",
+                ConnectorCallbackEvent.updated_at < stale_cutoff,
+            )
+            .with_for_update(skip_locked=True)
+            .limit(limit)
+            .all()
+        )
+        for event in stale:
+            event.status = "RETRY"
+            event.next_retry_at = now
+            event.last_error = event.last_error or "回调发送进程中断，自动恢复"
+            event.updated_at = now
+            recovered += 1
+        session.commit()
+
+        due = (
+            session.query(ConnectorCallbackEvent)
+            .filter(
+                ConnectorCallbackEvent.status.in_(["PENDING", "RETRY"]),
+                or_(
+                    ConnectorCallbackEvent.next_retry_at.is_(None),
+                    ConnectorCallbackEvent.next_retry_at <= now,
+                ),
+            )
+            .order_by(ConnectorCallbackEvent.created_at.asc())
+            .with_for_update(skip_locked=True)
+            .limit(limit)
+            .all()
+        )
+        for event in due:
+            if _deliver_callback_event(session, event):
+                sent += 1
+            else:
+                failed += 1
+        return {"recovered": recovered, "sent": sent, "failed": failed}
+    finally:
+        session.close()
+
+
+def _notify_media_status(row, *, media_id: str, account_id: str) -> bool:
+    return _notify_saas_status(
+        "/api/v1/internal/fb-connector/media-status",
+        {
+            "event": "media.status",
+            "task_id": row.task_id,
+            "media_id": media_id,
+            "account_id": account_id,
+            "status": row.status,
+            "phase": row.phase,
+            "meta_asset_id": row.meta_asset_id,
+            "uploaded_bytes": row.uploaded_bytes,
+            "total_bytes": row.total_bytes,
+            "error_message": row.error_message,
+        },
+        row.idempotency_key,
+    )
+
+
+def _notify_delivery_status(row, *, source_task_id: str | None = None) -> bool:
+    return _notify_saas_status(
+        "/api/v1/internal/fb-connector/delivery-status",
+        {
+            "event": "delivery.status",
+            "task_id": row.task_id,
+            "source_task_id": source_task_id or row.source_task_id,
+            "account_id": row.account_id,
+            "status": row.status,
+            "step": row.step,
+            "campaign_id": row.campaign_id,
+            "objects": row.objects or {},
+            "error_message": row.error_message,
+        },
+        row.idempotency_key,
     )
 
 
@@ -219,8 +429,10 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
         payload = row.request_payload or payload
         if row.status == "SUCCESS" and row.campaign_id:
             logger.info("[ConnectorCampaign] already success connector_task_id=%s campaign_id=%s", connector_task_id, row.campaign_id)
+            _notify_delivery_status(row)
             return {"status": "SUCCESS", "connector_task_id": connector_task_id, "campaign_id": row.campaign_id, "objects": row.objects or {}, "idempotency_key": idempotency_key}
         row.status = "RUNNING"; row.step = row.step if row.step != "QUEUED" else "CAMPAIGN"; session.commit()
+        _notify_delivery_status(row)
         logger.info("[ConnectorCampaign] status=RUNNING connector_task_id=%s step=%s", connector_task_id, row.step)
         token = DatabaseCredentialVault().get_access_token(credential_id)
         service = MetaAdsService(MetaClient(access_token=token))
@@ -326,6 +538,7 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
 
         row.objects = object_map
         row.status = "SUCCESS"; row.step = "DONE"; session.commit()
+        _notify_delivery_status(row)
         logger.info("[ConnectorCampaign] success connector_task_id=%s campaign_id=%s", connector_task_id, campaign_id)
         return {"status": "SUCCESS", "connector_task_id": connector_task_id, "campaign_id": campaign_id, "objects": object_map, "adset_ids": adset_ids, "ad_ids": ad_ids, "idempotency_key": idempotency_key}
     except Exception as exc:
@@ -339,6 +552,7 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
             row.status = "RETRY" if will_retry else "FAILED"
             row.error_message = f"已创建对象={created}: {exc}"[:1000]
             session.commit()
+            _notify_delivery_status(row)
             logger.info("[ConnectorCampaign] status=%s connector_task_id=%s error=%s", row.status, connector_task_id, row.error_message)
         if auth_failed:
             raise
@@ -587,6 +801,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 task_id,
                 row.meta_asset_id,
             )
+            _notify_media_status(row, media_id=media_id, account_id=account_id)
             return {
                 "status": "SUCCESS",
                 "media_id": media_id,
@@ -597,6 +812,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
         row.phase = row.phase if row.phase and row.phase not in {"QUEUED", "FAILED"} else "DOWNLOADING"
         row.error_message = None
         session.commit()
+        _notify_media_status(row, media_id=media_id, account_id=account_id)
         logger.info(
             "[ConnectorMedia] status=UPLOADING task_id=%s phase=%s",
             task_id,
@@ -713,6 +929,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
             row.uploaded_bytes,
             row.total_bytes,
         )
+        _notify_media_status(row, media_id=media_id, account_id=account_id)
         return {"status": "SUCCESS", "media_id": media_id, "idempotency_key": idempotency_key, "meta_asset_id": meta_asset_id}
     except Exception as exc:
         auth_failed = report_meta_auth_failure(credential_id, exc)
@@ -730,6 +947,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
             row.status = "RETRY" if will_retry else "FAILED"
             row.error_message = str(exc)[:1000]
             session.commit()
+            _notify_media_status(row, media_id=media_id, account_id=account_id)
             logger.info(
                 "[ConnectorMedia] status=%s task_id=%s error=%s",
                 row.status,
