@@ -747,17 +747,14 @@ const submit = async () => {
   submitting.value = true
   try {
     syncAccessBusinessDefaults()
-    // 素材是按广告账户生成 Meta 映射的；先创建映射占位，再提交创建任务。
-    // 真正的上传由后端异步投放任务处理，避免前端等待多个账户上传。
+    // 素材是按广告账户生成 Meta 映射的；绑定占位和上传由后端投放任务
+    // 幂等处理。不要在提交 Job 前调用 /prepare：素材仍在 OSS 处理时，
+    // 该接口会返回 409，导致真正的 campaign-create 请求永远不会发出。
+    // 后端 create_campaign_for_account 会负责创建绑定、派发上传并等待素材就绪。
     const creatives = selectedTemplate.value?.creative_config_json?.creatives || directConfig.value?.creatives
     const assetIds = Array.isArray(creatives)
       ? [...new Set(creatives.map((item: any) => item?.asset_id).filter(Boolean))]
       : []
-    if (assetIds.length) {
-      const prepared = await Promise.all(assetIds.map(assetId => mediaApi.prepare(String(assetId), form.ad_account_ids)))
-      assetBindings.value = prepared.flatMap(response => response.data.bindings)
-      pollAssetBindings(assetIds.map(String))
-    }
     const { data } = await jobsApi.createCampaign({
       template_id: form.template_id || undefined,
       inline_config: form.publish_mode === 'DIRECT' ? directConfig.value || undefined : undefined,
@@ -776,6 +773,7 @@ const submit = async () => {
     ElMessage.success(`任务已提交：${data.job_id}（${data.source === 'DIRECT' ? '直接配置' : '模板'}，共 ${data.total_accounts} 个账户）`)
     const { data: job } = await jobsApi.get(data.job_id)
     currentJob.value = job
+    if (assetIds.length) pollAssetBindings(assetIds.map(String))
     startPolling(data.job_id)
     await loadJobs()
   } catch (e: any) {

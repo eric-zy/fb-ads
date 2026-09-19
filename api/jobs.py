@@ -28,7 +28,7 @@ def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
         return {"id": user_id, "username": "已删除用户", "email": None}
     return {"id": user.id, "username": user.username, "email": user.email}
 from core.enums import TemplateStatus
-from services.job_service import JobService
+from services.job_service import JobDispatchError, JobService
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["Job Center"])
 
@@ -231,6 +231,8 @@ def _submit(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except JobDispatchError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     return {
         "job_id": job.id,
@@ -261,8 +263,14 @@ def create_campaign_batch(
     current_user=Depends(require_permission("job:create")),
 ):
     """批量创建 Campaign / AdSet / Ad（异步）"""
+    logger.info(
+        "[JobAPI] campaign-create received accounts=%s template_id=%s source=%s",
+        len(req.ad_account_ids),
+        req.template_id or "DIRECT",
+        req.source or ("TEMPLATE" if req.template_id else "DIRECT"),
+    )
     template_id = _ensure_template(db, req, effective_tenant_id(current_user))
-    return _submit(
+    result = _submit(
         db,
         template_id=template_id,
         ad_account_ids=req.ad_account_ids,
@@ -277,6 +285,13 @@ def create_campaign_batch(
         },
         created_by=current_user,
     )
+    logger.info(
+        "[JobAPI] campaign-create submitted job_id=%s accounts=%s status=%s",
+        result["job_id"],
+        result["total_accounts"],
+        result["status"],
+    )
+    return result
 
 
 # ==================== 定时投放（Job + Celery eta） ====================
@@ -335,7 +350,10 @@ def dispatch_job_now(
     owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == effective_tenant_id(current_user)).first()
     if not owned:
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
-    job = JobService(db).dispatch_now(job_id)
+    try:
+        job = JobService(db).dispatch_now(job_id)
+    except JobDispatchError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     return job.to_dict()

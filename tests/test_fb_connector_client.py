@@ -23,3 +23,34 @@ def test_client_builds_signed_request(monkeypatch):
     assert captured["kwargs"]["headers"]["X-Service-Name"] == "saas"
     assert captured["kwargs"]["headers"]["X-Idempotency-Key"] == "idem-1"
     assert captured["url"].endswith("/internal/meta/campaigns/create")
+
+
+def test_client_deploy_campaign_uses_deploy_endpoint(monkeypatch):
+    captured = {}
+
+    class Response:
+        status_code = 202
+
+        def json(self):
+            return {"status": "QUEUED", "connector_task_id": "remote-1"}
+
+    def fake_request(method, url, **kwargs):
+        captured.update(method=method, url=url, kwargs=kwargs)
+        return Response()
+
+    monkeypatch.setattr("services.fb_connector_client.requests.request", fake_request)
+    client = FBConnectorClient(base_url="https://connector.test", signing_key="secret")
+    result = client.deploy_campaign(
+        {
+            "task_id": "task-1",
+            "credential_id": "credential-1",
+            "account_id": "account-1",
+            "campaign": {"name": "demo"},
+            "adsets": [],
+        },
+        idempotency_key="deploy-task-1",
+    )
+
+    assert result["status"] == "QUEUED"
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/internal/meta/campaigns/deploy")

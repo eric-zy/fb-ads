@@ -374,6 +374,13 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             return {"error": "job item not found"}
 
         job_id = item.job_id
+        logger.info(
+            "[JobItem %s] start account=%s action=%s status=%s",
+            job_item_id,
+            item.ad_account_id,
+            item.job.action_type if item.job else "UNKNOWN",
+            item.status,
+        )
         # 幂等：已成功则直接跳过（原则四：Retry ≠ Duplicate）
         if item.status == JobItemStatus.SUCCESS.value:
             return {"skipped": True, "reason": "already success"}
@@ -439,12 +446,45 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
 
         # Connector 模式只在国内生成协议并投递海外任务，国内不读取 FB Token。
         ref = CredentialResolver(db).for_account(item.ad_account_id)
+        logger.info(
+            "[JobItem %s] credential mode=%s connector_credential=%s",
+            job_item_id,
+            ref.mode,
+            bool(ref.credential_id),
+        )
         if ref.mode == "connector":
             # XMP 式按需同步：模板只引用共享素材 asset_id，第一次投放到
             # 当前账户时才建立账户级绑定并异步上传。
-            bindings = ensure_asset_bindings(db, usage_asset_ids, [item.ad_account_id])
+            # 投放轮询不能自动重置 FAILED 绑定，否则上传失败会被反复排队，
+            # 最终只显示一个无关的 30 分钟超时。
+            bindings = ensure_asset_bindings(
+                db,
+                usage_asset_ids,
+                [item.ad_account_id],
+                reset_failed=False,
+            )
             db.commit()
-            queued_bindings = queue_pending_asset_bindings(bindings)
+            failed_bindings = [
+                row for row in bindings
+                if row.status in {"FAILED", "EXPIRED"} and not row.meta_asset_id
+            ]
+            if failed_bindings:
+                failed_details = "; ".join(
+                    f"{row.asset_id}: {row.error_message or row.error_code or '未知错误'}"
+                    for row in failed_bindings
+                )
+                message = f"素材同步失败，请先重试素材绑定: {failed_details}"
+                _mark_item_failed(
+                    db,
+                    job_item_id,
+                    "MATERIAL_SYNC_FAILED",
+                    message,
+                    ErrorCategory.TEMPORARY,
+                )
+                db.commit()
+                return {"error": "material sync failed", "asset_ids": [row.asset_id for row in failed_bindings]}
+
+            queued_bindings = queue_pending_asset_bindings(bindings, retry_failed=False)
             ready_bindings = [
                 row for row in bindings
                 if row.status == "READY" and row.meta_asset_id
@@ -501,6 +541,12 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 "account_id": account.account_id,
                 "idempotency_key": f"deploy:{job_item_id}:v1",
             })
+            logger.info(
+                "[JobItem %s] dispatch connector deploy account=%s idempotency_key=%s",
+                job_item_id,
+                account.account_id,
+                protocol_payload["idempotency_key"],
+            )
             result = FBConnectorClient().deploy_campaign(protocol_payload, idempotency_key=protocol_payload["idempotency_key"])
             item.status = JobItemStatus.RUNNING.value
             item.response_payload = {"connector": result, "protocol": protocol_payload}

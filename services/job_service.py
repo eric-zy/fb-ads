@@ -33,6 +33,10 @@ from tasks.campaign_tasks import (
 )
 
 
+class JobDispatchError(RuntimeError):
+    """Celery 编排任务未能入队，且本地 Job 已明确落失败。"""
+
+
 def _new_id() -> str:
     return uuid.uuid4().hex
 
@@ -66,6 +70,33 @@ class JobService:
 
     def __init__(self, db: Session):
         self.db = db
+
+    def _mark_dispatch_failed(self, job_id: str, exc: Exception) -> str:
+        """把已落库但未成功入队的 Job 收敛到明确失败状态。"""
+        message = f"Celery 任务入队失败: {exc}"[:1000]
+        self.db.rollback()
+        job = self.db.query(CampaignJob).filter(CampaignJob.id == job_id).first()
+        if job:
+            job.status = JobStatus.FAILED.value
+            job.error_message = message
+            job.finished_at = datetime.utcnow()
+            self.db.query(CampaignJobItem).filter(
+                CampaignJobItem.job_id == job_id,
+                CampaignJobItem.status.in_([
+                    JobItemStatus.PENDING.value,
+                    JobItemStatus.RUNNING.value,
+                ]),
+            ).update(
+                {
+                    CampaignJobItem.status: JobItemStatus.FAILED.value,
+                    CampaignJobItem.error_code: "TASK_ENQUEUE_FAILED",
+                    CampaignJobItem.error_message: message,
+                    CampaignJobItem.error_category: "TEMPORARY",
+                },
+                synchronize_session=False,
+            )
+            self.db.commit()
+        return message
 
     # ------------------------------------------------------------------
     # 投放前置校验
@@ -314,21 +345,28 @@ class JobService:
         self.db.refresh(job)
 
         # 异步派发：HTTP 请求到此结束，不等待 Meta API
-        if is_scheduled:
-            # 定时执行：由 Celery 的 eta 机制延迟投递，到点后才会真正执行
-            async_result = execute_campaign_job.apply_async(args=[job.id], eta=scheduled_at)
-            job.celery_task_id = async_result.id
-            self.db.commit()
-            logger.info(
-                f"[JobService] 创建定时任务 {job.id} 计划执行于 {scheduled_at.isoformat()} "
-                f"账户数={len(ad_account_ids)} celery_task={async_result.id}"
-            )
-        else:
-            execute_campaign_job.delay(job.id)
-            logger.info(
-                f"[JobService] 创建任务 {job.id} action={action_value} "
-                f"账户数={len(ad_account_ids)}"
-            )
+        try:
+            if is_scheduled:
+                # 定时执行：由 Celery 的 eta 机制延迟投递，到点后才会真正执行
+                async_result = execute_campaign_job.apply_async(args=[job.id], eta=scheduled_at)
+                job.celery_task_id = async_result.id
+                self.db.commit()
+                logger.info(
+                    f"[JobService] 创建定时任务 {job.id} 计划执行于 {scheduled_at.isoformat()} "
+                    f"账户数={len(ad_account_ids)} celery_task={async_result.id}"
+                )
+            else:
+                async_result = execute_campaign_job.delay(job.id)
+                job.celery_task_id = async_result.id
+                self.db.commit()
+                logger.info(
+                    f"[JobService] 创建任务 {job.id} action={action_value} "
+                    f"账户数={len(ad_account_ids)} celery_task={async_result.id}"
+                )
+        except Exception as exc:
+            message = self._mark_dispatch_failed(job.id, exc)
+            logger.exception("[JobService] 任务 %s 入队失败", job.id)
+            raise JobDispatchError(message) from exc
         return job
 
     # ------------------------------------------------------------------
@@ -447,6 +485,13 @@ class JobService:
         job.status = JobStatus.PENDING.value
         self.db.commit()
 
-        execute_campaign_job.delay(job.id)
-        logger.info(f"[JobService] 定时任务 {job_id} 已提前执行")
+        try:
+            async_result = execute_campaign_job.delay(job.id)
+            job.celery_task_id = async_result.id
+            self.db.commit()
+        except Exception as exc:
+            message = self._mark_dispatch_failed(job.id, exc)
+            logger.exception("[JobService] 定时任务 %s 提前执行入队失败", job.id)
+            raise JobDispatchError(message) from exc
+        logger.info(f"[JobService] 定时任务 {job_id} 已提前执行 celery_task={async_result.id}")
         return job

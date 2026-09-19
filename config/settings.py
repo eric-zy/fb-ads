@@ -12,7 +12,12 @@ class Settings(BaseSettings):
     # saas：国内业务服务；fb_connector：海外 Meta 接入服务。
     APP_ROLE: str = os.getenv("APP_ROLE", "saas")
     FB_ACCESS_MODE: str = os.getenv("FB_ACCESS_MODE", "direct")
-    FB_CONNECTOR_ENABLED: bool = os.getenv("FB_CONNECTOR_ENABLED", "false").lower() == "true"
+    # connector 模式默认启用 Connector，避免只配置 FB_ACCESS_MODE 后，
+    # 投放任务运行到 FBConnectorClient 才失败为“FB Connector 未启用”。
+    FB_CONNECTOR_ENABLED: bool = os.getenv(
+        "FB_CONNECTOR_ENABLED",
+        "true" if FB_ACCESS_MODE == "connector" else "false",
+    ).lower() == "true"
     FB_CONNECTOR_BASE_URL: str = os.getenv("FB_CONNECTOR_BASE_URL", "")
     FB_CONNECTOR_TIMEOUT: int = int(os.getenv("FB_CONNECTOR_TIMEOUT", "30"))
     FB_CONNECTOR_SIGNING_KEY: str = os.getenv("FB_CONNECTOR_SIGNING_KEY", "")
@@ -188,6 +193,7 @@ class Settings(BaseSettings):
                 raise ValueError(f"FB Connector 缺少配置: {', '.join(missing)}")
         if role == "saas" and self.FB_ACCESS_MODE == "connector":
             required = {
+                "FB_CONNECTOR_ENABLED": self.FB_CONNECTOR_ENABLED,
                 "FB_CONNECTOR_BASE_URL": self.FB_CONNECTOR_BASE_URL,
                 "FB_CONNECTOR_SIGNING_KEY": self.FB_CONNECTOR_SIGNING_KEY,
                 "CONNECTOR_SERVICE_TOKEN": self.CONNECTOR_SERVICE_TOKEN,

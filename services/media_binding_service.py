@@ -18,8 +18,14 @@ def ensure_asset_bindings(
     db: Session,
     asset_ids: Iterable[str],
     ad_account_ids: Iterable[str],
+    *,
+    reset_failed: bool = True,
 ) -> list[MetaAssetBinding]:
-    """为指定账户幂等建立素材绑定，不调用外部平台。"""
+    """为指定账户幂等建立素材绑定，不调用外部平台。
+
+    素材库的显式“重新同步”允许重置失败绑定；投放链路则不应在每次
+    轮询时自动重置，否则会掩盖真实失败原因并重复派发上传任务。
+    """
     asset_ids = list(dict.fromkeys(str(value) for value in asset_ids if value))
     account_ids = list(dict.fromkeys(str(value) for value in ad_account_ids if value))
     if not asset_ids or not account_ids:
@@ -56,7 +62,7 @@ def ensure_asset_bindings(
                     status="PENDING",
                 )
                 db.add(binding)
-            elif binding.status in ("FAILED", "EXPIRED"):
+            elif reset_failed and binding.status in ("FAILED", "EXPIRED"):
                 binding.status = "PENDING"
                 binding.error_message = None
                 binding.error_code = None
@@ -67,13 +73,18 @@ def ensure_asset_bindings(
     return bindings
 
 
-def queue_pending_asset_bindings(bindings: Iterable[MetaAssetBinding]) -> list[dict[str, str]]:
-    """派发尚未完成的绑定；READY/进行中的绑定保持幂等。"""
+def queue_pending_asset_bindings(
+    bindings: Iterable[MetaAssetBinding],
+    *,
+    retry_failed: bool = True,
+) -> list[dict[str, str]]:
+    """派发尚未完成的绑定；失败绑定只在显式重试时重新派发。"""
     from tasks.media_tasks import upload_asset_task
 
     queued = []
     for binding in bindings:
-        if binding.status in ("PENDING", "FAILED", "EXPIRED") and not binding.meta_asset_id:
+        allowed_statuses = {"PENDING", "FAILED", "EXPIRED"} if retry_failed else {"PENDING"}
+        if binding.status in allowed_statuses and not binding.meta_asset_id:
             task = upload_asset_task.delay(binding.id)
             queued.append({"binding_id": binding.id, "task_id": task.id})
     return queued
