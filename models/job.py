@@ -21,7 +21,7 @@ class CampaignJob(TenantMixin, Base):
     template_id = Column(String(50), ForeignKey("campaign_templates.id"), nullable=True, index=True)
 
     action_type = Column(String(32), default=ActionType.CREATE.value,
-                         comment="CREATE / PAUSE / ENABLE / ARCHIVE / UPDATE_BUDGET / SYNC")
+                         comment="CREATE / PAUSE / ENABLE / ARCHIVE / DELETE / RESTORE / UPDATE_BUDGET / SYNC")
     status = Column(String(32), default=JobStatus.PENDING.value, index=True)
 
     total_accounts = Column(Integer, default=0)

@@ -737,7 +737,7 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
             db.commit()
             return {"error": "no instance"}
 
-        if action in (ActionType.PAUSE.value, ActionType.ARCHIVE.value):
+        if action in (ActionType.PAUSE.value, ActionType.ARCHIVE.value, ActionType.DELETE.value, ActionType.RESTORE.value):
             connector.update_object(
                 "CAMPAIGN",
                 instance.meta_campaign_id,
@@ -745,10 +745,16 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 {"status": "PAUSED"},
                 idempotency_key=f"{action}:campaign:{instance.meta_campaign_id}",
             )
-            instance.status = InstanceStatus.ARCHIVED.value if action == ActionType.ARCHIVE.value else InstanceStatus.PAUSED.value
+            instance.status = (
+                InstanceStatus.DELETED.value if action == ActionType.DELETE.value
+                else InstanceStatus.ARCHIVED.value if action == ActionType.ARCHIVE.value
+                else InstanceStatus.PAUSED.value
+            )
             instance.meta_status = InstanceStatus.PAUSED.value
             instance.desired_status = instance.status
-            instance.archived_at = datetime.utcnow() if action == ActionType.ARCHIVE.value else None
+            now = datetime.utcnow()
+            instance.archived_at = now if action == ActionType.ARCHIVE.value else None
+            instance.deleted_at = now if action == ActionType.DELETE.value else None
             instance.last_synced_at = datetime.utcnow()
         elif action == ActionType.ENABLE.value:
             connector.update_object(
@@ -762,6 +768,7 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
             instance.meta_status = InstanceStatus.ACTIVE.value
             instance.desired_status = InstanceStatus.ACTIVE.value
             instance.archived_at = None
+            instance.deleted_at = None
             instance.last_synced_at = datetime.utcnow()
         elif action == ActionType.UPDATE_BUDGET.value:
             budget = params.get("budget_override")

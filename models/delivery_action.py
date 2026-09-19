@@ -15,7 +15,7 @@ class DeliveryAction(TenantMixin, Base):
     object_type = Column(String(20), nullable=False)  # CAMPAIGN / ADSET / AD
     object_id = Column(String(50), nullable=False, index=True)
     account_id = Column(String(50), nullable=False, index=True)
-    action = Column(String(20), nullable=False)  # PAUSE / ENABLE / ARCHIVE
+    action = Column(String(20), nullable=False)  # PAUSE / ENABLE / ARCHIVE / DELETE / RESTORE
     requested_by = Column(String(50), nullable=False, index=True)
     status = Column(String(20), nullable=False, default="REQUESTED")
     idempotency_key = Column(String(128), nullable=False, unique=True)

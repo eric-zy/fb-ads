@@ -272,27 +272,60 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
         campaigns = db.query(CampaignInstance).filter(CampaignInstance.ad_account_id == account.id).all()
         # 每个账户只拉取一次，避免按 Campaign / AdSet 重复请求 Meta API。
         sync_errors = []
+        campaign_fetch_ok = True
         try:
             remote_campaigns = FBConnectorClient().list_campaigns(
                 account.account_id, ref.credential_id
             ).get("campaigns", [])
         except Exception as exc:
             logger.warning(f"[meta_sync] 账户 {account.id} Campaign 拉取失败: {exc}")
+            campaign_fetch_ok = False
             remote_campaigns = []
             sync_errors.append({"type": "CAMPAIGN", "error": str(exc)})
         remote_campaign_by_id = {str(item.get("id")): item for item in remote_campaigns}
         remote_adsets_by_campaign = {}
         remote_ads_by_adset = {}
         updated = 0
+
+        def sync_instance_state(instance, remote, object_type: str, object_id: str) -> int:
+            """同步远端状态，同时保留本地归档/删除语义并记录漂移。"""
+            now = datetime.utcnow()
+            if remote is None:
+                instance.meta_status = "NOT_FOUND"
+                instance.last_synced_at = now
+                if instance.last_error != "REMOTE_NOT_FOUND":
+                    sync_errors.append({
+                        "type": object_type,
+                        "object_id": object_id,
+                        "error": "REMOTE_NOT_FOUND",
+                    })
+                instance.last_error = "REMOTE_NOT_FOUND"
+                return 0
+
+            remote_status = remote.get("status") or remote.get("effective_status")
+            instance.meta_status = remote.get("effective_status") or remote_status
+            if instance.status not in {"ARCHIVED", "DELETED"}:
+                instance.status = remote_status or instance.status
+            instance.last_synced_at = now
+
+            expected_remote = instance.desired_status
+            if expected_remote in {"ARCHIVED", "DELETED"}:
+                expected_remote = "PAUSED"
+            drift = bool(expected_remote and remote_status and remote_status != expected_remote)
+            next_error = f"REMOTE_STATUS_DRIFT:{remote_status}" if drift else None
+            if next_error and next_error != instance.last_error:
+                sync_errors.append({
+                    "type": object_type,
+                    "object_id": object_id,
+                    "error": next_error,
+                })
+            instance.last_error = next_error
+            return 1
+
         for campaign in campaigns:
             remote = remote_campaign_by_id.get(str(campaign.meta_campaign_id))
-            if remote:
-                campaign.meta_status = remote.get("effective_status") or remote.get("status")
-                remote_status = remote.get("status") or campaign.meta_status
-                if campaign.status != "ARCHIVED":
-                    campaign.status = remote_status or campaign.status
-                campaign.last_synced_at = datetime.utcnow()
-                updated += 1
+            if campaign_fetch_ok and campaign.meta_campaign_id:
+                updated += sync_instance_state(campaign, remote, "CAMPAIGN", str(campaign.id))
             for adset in campaign.adsets:
                 if adset.meta_adset_id:
                     campaign_key = str(campaign.meta_campaign_id)
@@ -303,16 +336,13 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                             ).get("adsets", [])
                         except Exception as exc:
                             logger.warning(f"[meta_sync] Campaign {campaign_key} AdSet 拉取失败: {exc}")
-                            remote_adsets_by_campaign[campaign_key] = []
+                            remote_adsets_by_campaign[campaign_key] = None
                             sync_errors.append({"type": "ADSET", "parent_id": campaign_key, "error": str(exc)})
-                    remote_set_by_id = {str(item.get("id")): item for item in remote_adsets_by_campaign[campaign_key]}
-                    remote_set = remote_set_by_id.get(str(adset.meta_adset_id))
-                    if remote_set:
-                        adset.meta_status = remote_set.get("effective_status") or remote_set.get("status")
-                        if adset.status != "ARCHIVED":
-                            adset.status = remote_set.get("status") or adset.meta_status or adset.status
-                        adset.last_synced_at = datetime.utcnow()
-                        updated += 1
+                    remote_sets = remote_adsets_by_campaign[campaign_key]
+                    if remote_sets is not None:
+                        remote_set_by_id = {str(item.get("id")): item for item in remote_sets}
+                        remote_set = remote_set_by_id.get(str(adset.meta_adset_id))
+                        updated += sync_instance_state(adset, remote_set, "ADSET", str(adset.id))
                 for ad in adset.ads:
                     if ad.meta_ad_id:
                         adset_key = str(adset.meta_adset_id)
@@ -323,29 +353,38 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                                 ).get("ads", [])
                             except Exception as exc:
                                 logger.warning(f"[meta_sync] AdSet {adset_key} Ad 拉取失败: {exc}")
-                                remote_ads_by_adset[adset_key] = []
+                                remote_ads_by_adset[adset_key] = None
                                 sync_errors.append({"type": "AD", "parent_id": adset_key, "error": str(exc)})
-                        remote_ad_by_id = {str(item.get("id")): item for item in remote_ads_by_adset[adset_key]}
-                        remote_ad = remote_ad_by_id.get(str(ad.meta_ad_id))
-                        if remote_ad:
-                            ad.meta_status = remote_ad.get("effective_status") or remote_ad.get("status")
-                            if ad.status != "ARCHIVED":
-                                ad.status = remote_ad.get("status") or ad.meta_status or ad.status
-                            ad.last_synced_at = datetime.utcnow()
-                            updated += 1
+                        remote_ads = remote_ads_by_adset[adset_key]
+                        if remote_ads is not None:
+                            remote_ad_by_id = {str(item.get("id")): item for item in remote_ads}
+                            remote_ad = remote_ad_by_id.get(str(ad.meta_ad_id))
+                            updated += sync_instance_state(ad, remote_ad, "AD", str(ad.id))
         db.commit()
         if sync_errors:
-            db.add(SyncAlert(id=uuid.uuid4().hex, tenant_id=account.tenant_id, ad_account_id=account.id,
-                             alert_type="DELIVERY_SYNC", title="Meta 投放状态同步异常",
-                             message=str(sync_errors[:20])))
+            alert_message = str(sync_errors[:20])
+            alert = db.query(SyncAlert).filter(
+                SyncAlert.tenant_id == account.tenant_id,
+                SyncAlert.ad_account_id == account.id,
+                SyncAlert.alert_type == "DELIVERY_SYNC",
+                SyncAlert.is_resolved.is_(False),
+            ).first()
+            is_new_alert = alert is None
+            if alert:
+                alert.message = alert_message
+            else:
+                db.add(SyncAlert(id=uuid.uuid4().hex, tenant_id=account.tenant_id, ad_account_id=account.id,
+                                 alert_type="DELIVERY_SYNC", title="Meta 投放状态同步异常",
+                                 message=alert_message))
             db.commit()
-            try:
-                NotificationService().notify_all(
-                    "Meta 投放状态同步异常",
-                    f"广告账户 {account.account_id} 同步存在 {len(sync_errors)} 项异常：{sync_errors[0].get('error', '未知错误')}",
-                )
-            except Exception:
-                logger.exception("[meta_sync] 投放状态同步告警发送失败")
+            if is_new_alert:
+                try:
+                    NotificationService().notify_all(
+                        "Meta 投放状态同步异常",
+                        f"广告账户 {account.account_id} 同步存在 {len(sync_errors)} 项异常：{sync_errors[0].get('error', '未知错误')}",
+                    )
+                except Exception:
+                    logger.exception("[meta_sync] 投放状态同步告警发送失败")
         return {
             "status": "partial_success" if sync_errors else "success",
             "account_id": account.id,
@@ -404,8 +443,12 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
         if not account:
             return {"status": "failed", "error": "广告账户不存在"}
         ref = CredentialResolver(db).for_account(account.id)
-        remote_status = "PAUSED" if action in {"PAUSE", "ARCHIVE"} else "ACTIVE"
-        desired_status = "ARCHIVED" if action == "ARCHIVE" else remote_status
+        remote_status = "PAUSED" if action in {"PAUSE", "ARCHIVE", "DELETE", "RESTORE"} else "ACTIVE"
+        desired_status = (
+            "DELETED" if action == "DELETE"
+            else "ARCHIVED" if action == "ARCHIVE"
+            else remote_status
+        )
         action_row = db.query(DeliveryAction).filter(DeliveryAction.id == action_record_id).first() if action_record_id else None
         if action_row:
             action_row.status = "RUNNING"
@@ -425,7 +468,9 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
             obj.meta_status = remote_status
             obj.status = desired_status
             obj.desired_status = desired_status
-            obj.archived_at = datetime.utcnow() if action == "ARCHIVE" else None
+            now = datetime.utcnow()
+            obj.archived_at = now if action == "ARCHIVE" else None
+            obj.deleted_at = now if action == "DELETE" else None
             obj.last_action_id = action_record_id
             obj.last_synced_at = datetime.utcnow()
         elif object_type == "AD":
@@ -442,7 +487,9 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
             obj.meta_status = remote_status
             obj.status = desired_status
             obj.desired_status = desired_status
-            obj.archived_at = datetime.utcnow() if action == "ARCHIVE" else None
+            now = datetime.utcnow()
+            obj.archived_at = now if action == "ARCHIVE" else None
+            obj.deleted_at = now if action == "DELETE" else None
             obj.last_action_id = action_record_id
             obj.last_synced_at = datetime.utcnow()
         else:

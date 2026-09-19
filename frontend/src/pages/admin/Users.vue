@@ -105,6 +105,8 @@
             <el-checkbox label="campaign:pause">暂停广告</el-checkbox>
             <el-checkbox label="campaign:enable">启用广告</el-checkbox>
             <el-checkbox label="campaign:archive">归档广告</el-checkbox>
+            <el-checkbox label="campaign:delete">移除广告记录</el-checkbox>
+            <el-checkbox label="campaign:restore">恢复广告记录</el-checkbox>
             <el-checkbox label="campaign:update_budget">修改预算</el-checkbox>
             <el-checkbox label="campaign:sync">同步 Meta 状态</el-checkbox>
             <el-checkbox label="insight:read">查看报表</el-checkbox>

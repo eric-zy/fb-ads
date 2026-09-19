@@ -40,6 +40,8 @@ class ActionType(str, Enum):
     UPDATE_BUDGET = "UPDATE_BUDGET"
     UPDATE_TARGETING = "UPDATE_TARGETING"
     ARCHIVE = "ARCHIVE"
+    DELETE = "DELETE"
+    RESTORE = "RESTORE"
     SYNC = "SYNC"
 
 
