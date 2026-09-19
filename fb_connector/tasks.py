@@ -14,11 +14,13 @@ from redis.exceptions import LockError
 from sqlalchemy import or_
 
 from core.logger import logger
+from core.enums import ErrorCategory
 from services.request_signer import build_signature_headers
 
 from config.settings import settings
 from fb_connector.credential_store import DatabaseCredentialVault, report_meta_auth_failure
 from services.meta import MetaAdsService, MetaClient
+from services.meta.errors import MetaApiError
 
 
 def _media_account_lock(account_id: str):
@@ -32,6 +34,11 @@ def _media_account_lock(account_id: str):
         f"fb_connector:media_account:{account_id}",
         timeout=settings.CONNECTOR_MEDIA_ACCOUNT_LOCK_TTL,
     )
+
+
+def _connector_error_retryable(exc: Exception, auth_failed: bool = False) -> bool:
+    """Only retry transport/rate-limit errors; validation errors are terminal."""
+    return not auth_failed and (not isinstance(exc, MetaApiError) or exc.retryable)
 
 
 def _deliver_callback_event(session, event) -> bool:
@@ -402,7 +409,7 @@ def fetch_insights_task(self, credential_id: str, account_id: str, days: int = 1
     except Exception as exc:
         auth_failed = report_meta_auth_failure(credential_id, exc)
         logger.exception("[ConnectorInsights] failed request_id=%s account_id=%s error=%s", request_id, account_id, exc)
-        if auth_failed:
+        if not _connector_error_retryable(exc, auth_failed):
             raise
         raise self.retry(exc=exc)
 
@@ -548,13 +555,13 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
         session.rollback()
         row = row or session.get(ConnectorDeliveryTask, connector_task_id)
         if row:
-            will_retry = retries < self.max_retries
+            will_retry = retries < self.max_retries and _connector_error_retryable(exc, auth_failed)
             row.status = "RETRY" if will_retry else "FAILED"
             row.error_message = f"已创建对象={created}: {exc}"[:1000]
             session.commit()
             _notify_delivery_status(row)
             logger.info("[ConnectorCampaign] status=%s connector_task_id=%s error=%s", row.status, connector_task_id, row.error_message)
-        if auth_failed:
+        if not _connector_error_retryable(exc, auth_failed):
             raise
         raise self.retry(exc=RuntimeError(f"投放步骤失败，已创建对象={created}: {exc}"))
     finally:
@@ -575,6 +582,31 @@ def _as_int(value, default=None):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+_IMAGE_UPLOAD_FORMATS = {
+    ".jpg": (".jpg", "image/jpeg"),
+    ".jpeg": (".jpeg", "image/jpeg"),
+    ".png": (".png", "image/png"),
+    ".gif": (".gif", "image/gif"),
+}
+
+
+def _image_upload_format(source_url: str, content_type: str | None = None) -> tuple[str, str]:
+    """Return a Meta-compatible image suffix and MIME type."""
+    source_suffix = os.path.splitext(urlparse(source_url).path)[1].lower()
+    if source_suffix in _IMAGE_UPLOAD_FORMATS:
+        return _IMAGE_UPLOAD_FORMATS[source_suffix]
+
+    normalized_type = (content_type or "").split(";", 1)[0].strip().lower()
+    for suffix, mime_type in _IMAGE_UPLOAD_FORMATS.values():
+        if normalized_type == mime_type or (mime_type == "image/jpeg" and normalized_type == "image/jpg"):
+            return suffix, mime_type
+
+    raise MetaApiError(
+        f"无法识别图片格式: suffix={source_suffix or '<none>'} content_type={normalized_type or '<none>'}",
+        category=ErrorCategory.VALIDATION,
+    )
 
 
 def _upload_video_resumable(service, account_id: str, file_path: str | None, row, session) -> dict:
@@ -764,6 +796,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
     row = None
     account_lock = None
     account_lock_acquired = False
+    image_content_type = None
     from fb_connector.models import ConnectorMediaTask, connector_session_factory
 
     parsed_source = urlparse(source_url)
@@ -861,7 +894,13 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                         "视频素材超过 Connector 本地临时磁盘保护上限: "
                         f"size={content_length} max={settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES}"
                     )
-                suffix = ".mp4" if asset_type == "video" else ".bin"
+                if asset_type == "video":
+                    suffix = ".mp4"
+                else:
+                    suffix, image_content_type = _image_upload_format(
+                        source_url,
+                        response.headers.get("Content-Type"),
+                    )
                 with tempfile.NamedTemporaryFile(
                     delete=False,
                     suffix=suffix,
@@ -911,7 +950,11 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
             result = _upload_video_resumable(service, account_id, temp_path, row, session)
             meta_asset_id = result.get("video_id")
         else:
-            result = service.upload_image(account_id, temp_path)
+            result = service.upload_image(
+                account_id,
+                temp_path,
+                content_type=image_content_type,
+            )
             meta_asset_id = result.get("hash")
             _persist_media_progress(
                 session,
@@ -943,7 +986,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
         session.rollback()
         row = row or session.get(ConnectorMediaTask, task_id)
         if row:
-            will_retry = retries < self.max_retries
+            will_retry = retries < self.max_retries and _connector_error_retryable(exc, auth_failed)
             row.status = "RETRY" if will_retry else "FAILED"
             row.error_message = str(exc)[:1000]
             session.commit()
@@ -954,7 +997,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 task_id,
                 row.error_message,
             )
-        if auth_failed:
+        if not _connector_error_retryable(exc, auth_failed):
             raise
         raise self.retry(exc=exc)
     finally:

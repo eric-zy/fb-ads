@@ -11,6 +11,7 @@
    Batch API 不能替代 Rate Limiting（设计文档第 25 / 26 节）。
 """
 import json
+import mimetypes
 import os
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -413,16 +414,30 @@ class MetaAdsService:
 
         return self._execute(_do, f"update_ad({ad_id})")
 
-    def upload_image(self, account_id: str, file_path: str) -> Dict[str, Any]:
+    def upload_image(
+        self,
+        account_id: str,
+        file_path: str,
+        *,
+        filename: str | None = None,
+        content_type: str | None = None,
+    ) -> Dict[str, Any]:
         """上传图片素材，返回 image_hash"""
         act = self.client.normalize_account_id(account_id)
 
         def _do():
             with open(file_path, "rb") as image_file:
+                upload_filename = filename or os.path.basename(file_path)
+                upload_content_type = content_type or mimetypes.guess_type(upload_filename)[0]
+                if not upload_content_type or not upload_content_type.startswith("image/"):
+                    raise MetaApiError(
+                        f"无法识别图片 MIME 类型: filename={upload_filename}",
+                        category=ErrorCategory.VALIDATION,
+                    )
                 result = self.client._post(
                     f"{act}/adimages",
                     {},
-                    files={"filename": image_file},
+                    files={"filename": (upload_filename, image_file, upload_content_type)},
                 )
             images = result.get("images") or {}
             first = next(iter(images.values()), {})

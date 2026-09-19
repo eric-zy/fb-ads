@@ -90,8 +90,7 @@ import {
 } from '@element-plus/icons-vue'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { useLocale } from '@/stores/localeStore'
-import { campaignsApi } from '@/api/campaigns'
-import { jobsApi } from '@/api/jobs'
+import { workbenchApi } from '@/api/reports'
 
 const router = useRouter()
 const route = useRoute()
@@ -113,15 +112,16 @@ const activeMenu = computed(() => {
 const handleMenuSelect = (key: string) => router.push(`/dashboard/${key}`)
 const handleAccountChange = (accountId: string) => {
   accountStore.selectAccount(accountId || '')
+  void refreshNotificationCount()
   ElMessage.success(accountId ? '广告账户已切换' : '已切换为全部可见账户')
 }
 const refreshNotificationCount = async () => {
   try {
-    const [{ data: alerts }, { data: jobs }] = await Promise.all([
-      campaignsApi.alerts(100),
-      jobsApi.list({ limit: 100 }),
-    ])
-    notificationCount.value = alerts.length + jobs.filter(job => ['FAILED', 'PARTIAL_SUCCESS'].includes(job.status)).length
+    const { data } = await workbenchApi.notifications(
+      { account_id: accountStore.selectedAccountId || undefined },
+      { skipErrorMessage: true },
+    )
+    notificationCount.value = data.total
   } catch {
     notificationCount.value = 0
   }

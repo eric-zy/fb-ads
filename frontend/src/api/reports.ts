@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import type { AxiosRequestConfig } from 'axios'
 
 export const reportsApi = {
   accountOverview: (params?: { start_date?: string; end_date?: string }) =>
@@ -29,12 +30,24 @@ export interface WorkbenchSummary {
     role: string
     selected_account_id?: string | null
     account_count: number
-    accounts: Array<{ id: string; name: string; currency: string; system_status: string }>
+    accounts: Array<{
+      id: string
+      name: string
+      currency: string
+      system_status: string
+      freshness: { status: 'FRESH' | 'STALE' | 'NEVER'; latest_synced_at?: string | null; age_hours?: number | null }
+    }>
   }
   range: { start_date: string; end_date: string }
-  freshness: { status: 'FRESH' | 'STALE' | 'NEVER'; latest_synced_at?: string | null; age_hours?: number | null }
+  freshness: {
+    status: 'FRESH' | 'STALE' | 'NEVER'
+    latest_synced_at?: string | null
+    age_hours?: number | null
+    account_count: number
+    stale_account_count: number
+    never_synced_account_count: number
+  }
   kpis: {
-    currency_totals: WorkbenchCurrencyTotal[]
     active_campaigns: number
     total_campaigns: number
     average_ctr: number
@@ -52,7 +65,19 @@ export interface WorkbenchSummary {
   alerts: Array<{ id: string; ad_account_id?: string; alert_type: string; title: string; message: string; created_at?: string }>
 }
 
+export interface WorkbenchNotifications {
+  alerts: number
+  failed_jobs: number
+  total: number
+}
+
 export const workbenchApi = {
-  summary: (params?: { account_id?: string; start_date?: string; end_date?: string }) =>
-    request.get<WorkbenchSummary>('/api/v1/workbench/summary', { params }),
+  summary: (
+    params?: { account_id?: string; start_date?: string; end_date?: string },
+    config?: Pick<AxiosRequestConfig, 'signal' | 'skipErrorMessage'>,
+  ) => request.get<WorkbenchSummary>('/api/v1/workbench/summary', { params, ...config }),
+  notifications: (
+    params?: { account_id?: string },
+    config?: Pick<AxiosRequestConfig, 'signal' | 'skipErrorMessage'>,
+  ) => request.get<WorkbenchNotifications>('/api/v1/workbench/notifications', { params, ...config }),
 }

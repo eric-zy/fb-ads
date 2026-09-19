@@ -54,6 +54,22 @@ def _freshness(timestamp: Optional[datetime]) -> dict:
     }
 
 
+def _accounts_in_scope(db: Session, current_user, tenant_id: Optional[str], account_id: Optional[str] = None):
+    """返回当前用户可见的账户；account_id 只能进一步缩小范围。"""
+    visible_ids = accessible_account_ids(db, current_user)
+    account_query = _scope(db.query(AdAccount), AdAccount, current_user, tenant_id)
+    if visible_ids is not None:
+        account_query = account_query.filter(AdAccount.id.in_(visible_ids or {"__no_accounts__"}))
+    if account_id:
+        if visible_ids is not None and account_id not in visible_ids:
+            raise HTTPException(status_code=404, detail="广告账户不存在或无权访问")
+        account_query = account_query.filter(AdAccount.id == account_id)
+    accounts = account_query.order_by(AdAccount.account_name.asc(), AdAccount.id.asc()).all()
+    if account_id and not accounts:
+        raise HTTPException(status_code=404, detail="广告账户不存在或无权访问")
+    return accounts
+
+
 @router.get("/summary")
 def workbench_summary(
     account_id: Optional[str] = None,
@@ -71,18 +87,7 @@ def workbench_summary(
         raise HTTPException(status_code=400, detail="工作台时间范围不能超过 90 天")
 
     tenant_id = effective_tenant_id(current_user)
-    visible_ids = accessible_account_ids(db, current_user)
-
-    account_query = _scope(db.query(AdAccount), AdAccount, current_user, tenant_id)
-    if visible_ids is not None:
-        account_query = account_query.filter(AdAccount.id.in_(visible_ids or {"__no_accounts__"}))
-    if account_id:
-        if visible_ids is not None and account_id not in visible_ids:
-            raise HTTPException(status_code=404, detail="广告账户不存在或无权访问")
-        account_query = account_query.filter(AdAccount.id == account_id)
-    accounts = account_query.order_by(AdAccount.account_name.asc(), AdAccount.id.asc()).all()
-    if account_id and not accounts:
-        raise HTTPException(status_code=404, detail="广告账户不存在或无权访问")
+    accounts = _accounts_in_scope(db, current_user, tenant_id, account_id)
 
     account_ids = [account.id for account in accounts]
     account_map = {account.id: account for account in accounts}
@@ -117,6 +122,7 @@ def workbench_summary(
     trend = defaultdict(lambda: defaultdict(float))
     latest_synced_at = None
     total_impressions = total_clicks = 0
+    account_latest_synced_at = {account.id: account.last_synced_at for account in accounts}
 
     for row in insight_rows:
         account = account_map.get(row.account_id)
@@ -138,6 +144,11 @@ def workbench_summary(
         total_clicks += int(row.clicks or 0)
         if row.latest_synced_at and (not latest_synced_at or row.latest_synced_at > latest_synced_at):
             latest_synced_at = row.latest_synced_at
+        if row.latest_synced_at and (
+            not account_latest_synced_at.get(row.account_id)
+            or row.latest_synced_at > account_latest_synced_at[row.account_id]
+        ):
+            account_latest_synced_at[row.account_id] = row.latest_synced_at
 
     if not latest_synced_at:
         account_sync_times = [row.last_synced_at for row in accounts if row.last_synced_at]
@@ -191,9 +202,21 @@ def workbench_summary(
     ).group_by(CampaignJob.status).all()
     job_status = {str(status): int(count) for status, count in job_status_rows}
 
+    recent_jobs = job_query.order_by(CampaignJob.created_at.desc()).limit(8).all()
+    recent_job_ids = [job.id for job in recent_jobs]
+    recent_items = db.query(CampaignJobItem).filter(
+        CampaignJobItem.job_id.in_(recent_job_ids or ["__no_jobs__"]),
+        CampaignJobItem.ad_account_id.in_(account_ids or empty_ids),
+    )
+    if tenant_id:
+        recent_items = recent_items.filter(CampaignJobItem.tenant_id == tenant_id)
+    items_by_job = defaultdict(list)
+    for item in recent_items.all():
+        items_by_job[item.job_id].append(item)
+
     recent_tasks = []
-    for job in job_query.order_by(CampaignJob.created_at.desc()).limit(8).all():
-        items = [item for item in job.items if item.ad_account_id in account_ids]
+    for job in recent_jobs:
+        items = items_by_job[job.id]
         if not items:
             continue
         recent_tasks.append({
@@ -214,16 +237,36 @@ def workbench_summary(
     open_alert_count = alert_query.count()
     alerts = [row.to_dict() for row in alert_query.order_by(SyncAlert.created_at.desc()).limit(8).all()]
 
+    account_freshness = {
+        account.id: _freshness(account_latest_synced_at.get(account.id))
+        for account in accounts
+    }
+    never_synced_count = sum(item["status"] == "NEVER" for item in account_freshness.values())
+    stale_count = sum(item["status"] == "STALE" for item in account_freshness.values())
+    if not accounts or never_synced_count == len(accounts):
+        freshness_status = "NEVER"
+    elif stale_count or never_synced_count:
+        freshness_status = "STALE"
+    else:
+        freshness_status = "FRESH"
+    freshness = {
+        **_freshness(latest_synced_at),
+        "status": freshness_status,
+        "account_count": len(accounts),
+        "stale_account_count": stale_count,
+        "never_synced_account_count": never_synced_count,
+    }
+
     visible_accounts = [
         {
             "id": account.id,
             "name": account.account_name or account.account_id,
             "currency": (account.currency or "USD").upper(),
             "system_status": account.system_status,
+            "freshness": account_freshness[account.id],
         }
         for account in accounts
     ]
-    freshness = _freshness(latest_synced_at)
     return {
         "scope": {
             "tenant_id": tenant_id,
@@ -235,7 +278,6 @@ def workbench_summary(
         "range": {"start_date": start.isoformat(), "end_date": end.isoformat()},
         "freshness": freshness,
         "kpis": {
-            "currency_totals": currency_totals,
             "active_campaigns": campaign_status.get("ACTIVE", 0),
             "total_campaigns": sum(count for status, count in campaign_status.items() if status != "DELETED"),
             "average_ctr": round(total_clicks / total_impressions * 100, 4) if total_impressions else 0,
@@ -254,4 +296,35 @@ def workbench_summary(
         "trend": trend_rows,
         "recent_tasks": recent_tasks,
         "alerts": alerts,
+    }
+
+
+@router.get("/notifications")
+def workbench_notifications(
+    account_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
+    """返回顶部通知徽标所需的轻量统计，避免重复加载完整告警和任务列表。"""
+    tenant_id = effective_tenant_id(current_user)
+    accounts = _accounts_in_scope(db, current_user, tenant_id, account_id)
+    account_ids = [account.id for account in accounts]
+    empty_ids = ["__no_visible_accounts__"]
+
+    alert_query = _scope(db.query(SyncAlert), SyncAlert, current_user, tenant_id).filter(
+        SyncAlert.is_resolved.is_(False),
+        SyncAlert.ad_account_id.in_(account_ids or empty_ids),
+    )
+    job_query = _scope(db.query(CampaignJob), CampaignJob, current_user, tenant_id).join(
+        CampaignJobItem, CampaignJobItem.job_id == CampaignJob.id,
+    ).filter(
+        CampaignJobItem.ad_account_id.in_(account_ids or empty_ids),
+        CampaignJob.status.in_(_FAILED_JOB_STATUSES),
+    ).distinct()
+    alert_count = alert_query.count()
+    failed_job_count = job_query.with_entities(func.count(func.distinct(CampaignJob.id))).scalar() or 0
+    return {
+        "alerts": alert_count,
+        "failed_jobs": int(failed_job_count),
+        "total": alert_count + int(failed_job_count),
     }

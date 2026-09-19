@@ -1,6 +1,6 @@
 """工作台聚合接口：验证按用户可见广告账户隔离。"""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -103,3 +103,65 @@ def test_workbench_summary_rejects_unassigned_account(db):
         workbench_summary(account_id=account.id, db=db, current_user=user)
 
     assert error.value.status_code == 404
+
+
+def test_workbench_summary_keeps_currency_totals_separate_and_reports_partial_staleness(db):
+    user = User(
+        id="workbench-user-3",
+        tenant_id="test_tenant",
+        email="workbench-3@test.local",
+        username="workbench-user-3",
+        hashed_password="unused",
+        role="user",
+        permissions=[],
+        is_active=True,
+    )
+    usd = AdAccount(
+        id="workbench-usd",
+        tenant_id="test_tenant",
+        account_id="act_usd",
+        account_name="美元账户",
+        currency="USD",
+    )
+    cny = AdAccount(
+        id="workbench-cny",
+        tenant_id="test_tenant",
+        account_id="act_cny",
+        account_name="人民币账户",
+        currency="CNY",
+    )
+    db.add_all([user, usd, cny])
+    db.add_all([
+        UserAccount(id="workbench-assignment-usd", tenant_id="test_tenant", user_id=user.id, account_id=usd.id, assignment_status="ACTIVE"),
+        UserAccount(id="workbench-assignment-cny", tenant_id="test_tenant", user_id=user.id, account_id=cny.id, assignment_status="ACTIVE"),
+        AccountInsight(
+            id="workbench-insight-usd",
+            tenant_id="test_tenant",
+            ad_account_id=usd.id,
+            date=date.today(),
+            spend=1000,
+            impressions=100,
+            clicks=10,
+            synced_at=datetime.utcnow(),
+        ),
+        AccountInsight(
+            id="workbench-insight-cny",
+            tenant_id="test_tenant",
+            ad_account_id=cny.id,
+            date=date.today(),
+            spend=2000,
+            impressions=200,
+            clicks=20,
+            synced_at=datetime.utcnow() - timedelta(hours=4),
+        ),
+    ])
+    db.commit()
+
+    payload = workbench_summary(db=db, current_user=user)
+
+    totals = {item["currency"]: item["spend"] for item in payload["currency_totals"]}
+    assert totals == {"CNY": 20.0, "USD": 10.0}
+    assert payload["freshness"]["status"] == "STALE"
+    assert payload["freshness"]["stale_account_count"] == 1
+    account_statuses = {item["id"]: item["freshness"]["status"] for item in payload["scope"]["accounts"]}
+    assert account_statuses == {usd.id: "FRESH", cny.id: "STALE"}
