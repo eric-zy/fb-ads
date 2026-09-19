@@ -7,6 +7,7 @@
 每个账户一个子任务，独立成状态（原则三）；失败只影响自己（第 30 节）；
 幂等由 campaign_instances 的唯一约束保证，Retry ≠ Duplicate（原则四）。
 """
+import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
