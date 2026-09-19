@@ -50,8 +50,13 @@ echo "[deploy] 数据库迁移完成。"
 # 数据库结构确认后再切换 API/Worker/Beat，避免出现 ORM 已更新而表结构未更新的窗口。
 "${compose[@]}" up -d --force-recreate api celery-worker celery-beat nginx
 
-# 仅清理不再被容器使用的旧镜像和构建缓存，不触碰任何 Volume。
-docker image prune -f
-docker builder prune -f
+# 默认保留镜像和 BuildKit 缓存，避免下一次部署重新下载 Debian/Python 依赖。
+# 确需清理时显式执行：PRUNE_DOCKER_CACHE=1 ./deploy.sh
+if [[ "${PRUNE_DOCKER_CACHE:-0}" == "1" ]]; then
+  docker image prune -f
+  docker builder prune -f
+else
+  echo "[deploy] 保留 Docker 镜像/构建缓存；如需清理请设置 PRUNE_DOCKER_CACHE=1"
+fi
 
 docker system df
