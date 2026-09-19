@@ -23,6 +23,18 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  css: {
+    // Vite 4 仍通过 Sass legacy render API 编译 SCSS；Sass 1.77+ 会打印
+    // legacy-js-api 弃用提示。保持当前构建链稳定，待升级 Vite 后切换 modern API。
+    preprocessorOptions: {
+      scss: {
+        silenceDeprecations: ['legacy-js-api'],
+      },
+      sass: {
+        silenceDeprecations: ['legacy-js-api'],
+      },
+    },
+  },
   build: {
     cssCodeSplit: true,
     sourcemap: false,
