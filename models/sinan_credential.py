@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, String, Text, DateTime
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, UniqueConstraint
 from core.database import Base
 from core.tenant import TenantMixin
 from core.security import encrypt_token, decrypt_token, mask_token
@@ -7,6 +7,9 @@ from core.security import encrypt_token, decrypt_token, mask_token
 class SinanCredential(TenantMixin, Base):
     __tablename__ = 'sinan_credentials'
     id = Column(String(50), primary_key=True, index=True)
+    # 司南账号按登录用户隔离；tenant_id 只用于租户级行级隔离。
+    # nullable 兼容迁移前已经存在的租户级旧记录。
+    user_id = Column(String(50), ForeignKey('users.id', ondelete='CASCADE'), nullable=True, index=True)
     base_url = Column(String(255), nullable=False, default='https://api.sinan-partner.com')
     app_id = Column(String(64), nullable=False)
     account_encrypted = Column(Text, nullable=False)
@@ -19,6 +22,9 @@ class SinanCredential(TenantMixin, Base):
     last_verified_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __table_args__ = (
+        UniqueConstraint('tenant_id', 'user_id', name='uq_sinan_credentials_tenant_user'),
+    )
     def set_account(self, v): self.account_encrypted = encrypt_token(v)
     def set_password(self, v): self.password_encrypted = encrypt_token(v)
     def get_account(self): return decrypt_token(self.account_encrypted)

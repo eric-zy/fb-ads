@@ -5,7 +5,7 @@ import time
 import hashlib
 from urllib.parse import urlparse
 
-from celery import shared_task
+from fb_connector.celery_app import celery_app
 import requests
 import uuid
 from datetime import datetime, timedelta
@@ -151,7 +151,7 @@ def _notify_saas_status(path: str, payload: dict, idempotency_key: str) -> bool:
         session.close()
 
 
-@shared_task(name="fb_connector.retry_saas_callbacks")
+@celery_app.task(name="fb_connector.retry_saas_callbacks")
 def retry_saas_callbacks(limit: int = 100):
     """定时投递失败回调，并恢复 Worker 中断时遗留的 SENDING 事件。"""
     from fb_connector.models import ConnectorCallbackEvent, connector_session_factory
@@ -298,7 +298,7 @@ def _refresh_source_url(task_id: str, media_id: str, source_url: str) -> str:
         return source_url
 
 
-@shared_task(name="fb_connector.recover_stale_media_tasks")
+@celery_app.task(name="fb_connector.recover_stale_media_tasks")
 def recover_stale_media_tasks(limit: int = 100):
     """恢复 Worker 重启或强制终止后遗留的媒体上传任务。"""
     from fb_connector.models import ConnectorMediaTask, connector_session_factory
@@ -356,7 +356,7 @@ def recover_stale_media_tasks(limit: int = 100):
     finally:
         session.close()
 
-@shared_task(bind=True, name="fb_connector.fetch_insights", max_retries=3, default_retry_delay=60)
+@celery_app.task(bind=True, name="fb_connector.fetch_insights", max_retries=3, default_retry_delay=60)
 def fetch_insights_task(self, credential_id: str, account_id: str, days: int = 1):
     """海外拉取 Insights，并将结果签名回调 SaaS。"""
     # Celery 重试必须复用同一 request_id，SaaS 回调才能幂等去重。
@@ -406,7 +406,7 @@ def fetch_insights_task(self, credential_id: str, account_id: str, days: int = 1
             raise
         raise self.retry(exc=exc)
 
-@shared_task(bind=True, name="fb_connector.create_campaign", max_retries=2, default_retry_delay=30)
+@celery_app.task(bind=True, name="fb_connector.create_campaign", max_retries=2, default_retry_delay=30)
 def create_campaign_task(self, connector_task_id: str, credential_id: str, account_id: str, payload: dict, idempotency_key: str):
     """按 Campaign → AdSet → Creative → Ad 顺序执行 Meta 写操作。"""
     created = []
@@ -757,7 +757,7 @@ def _upload_video_resumable(service, account_id: str, file_path: str | None, row
         time.sleep(settings.FB_VIDEO_STATUS_POLL_INTERVAL)
 
 
-@shared_task(bind=True, name="fb_connector.upload_media", max_retries=3, default_retry_delay=30)
+@celery_app.task(bind=True, name="fb_connector.upload_media", max_retries=3, default_retry_delay=30)
 def upload_media_task(self, task_id: str, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, idempotency_key: str):
     """海外执行素材下载和 Meta 上传；生产环境应将结果写入 Connector 任务表并回调 SaaS。"""
     temp_path = None
@@ -979,7 +979,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 )
 
 
-@shared_task(name="fb_connector.recover_stale_delivery_tasks")
+@celery_app.task(name="fb_connector.recover_stale_delivery_tasks")
 def recover_stale_delivery_tasks(limit: int = 100):
     """恢复海外投放 Worker 重启后遗留的 RUNNING/RETRY 任务。"""
     from fb_connector.models import ConnectorDeliveryTask, connector_session_factory

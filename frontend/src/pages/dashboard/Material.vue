@@ -393,8 +393,8 @@ const validateMediaFile = (file: File): Promise<string | null> => new Promise(re
   const isImage = file.type.startsWith('image/')
   const isVideo = file.type.startsWith('video/')
   if (!isImage && !isVideo) return resolve('仅支持图片或视频文件')
-  const maxBytes = isImage ? 30 * 1024 * 1024 : 200 * 1024 * 1024
-  if (file.size > maxBytes) return resolve(`文件不能超过 ${isImage ? '30MB' : '200MB'}`)
+  const maxBytes = isImage ? 30 * 1024 * 1024 : 1024 * 1024 * 1024
+  if (file.size > maxBytes) return resolve(`文件不能超过 ${isImage ? '30MB' : '1GB'}`)
 
   if (isImage) {
     const image = new Image()

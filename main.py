@@ -40,6 +40,7 @@ from api import templates as templates_api
 from api import jobs as jobs_api
 from api import campaigns as campaigns_api
 from api import reports as reports_api
+from api import workbench as workbench_api
 from api import sinan_integration as sinan_api
 from api import connector_callbacks as connector_callbacks_api
 from api import connector_callbacks_insights as connector_callbacks_insights_api
@@ -192,6 +193,7 @@ app.include_router(templates_api.router)
 app.include_router(jobs_api.router)
 app.include_router(campaigns_api.router)
 app.include_router(reports_api.router)
+app.include_router(workbench_api.router)
 app.include_router(sinan_api.router)
 app.include_router(connector_callbacks_api.router)
 app.include_router(connector_callbacks_insights_api.router)

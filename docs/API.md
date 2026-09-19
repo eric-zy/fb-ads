@@ -854,7 +854,7 @@ AND Meta 侧账户状态允许投放
 
 - 图片：jpg / jpeg / png / gif / webp
 - 视频：mp4 / mov / avi / mkv / webm
-- 单文件上限 200MB
+- 单文件上限 1GB（图片前端校验仍限制为 30MB）
 
 ### GET /api/v1/media
 

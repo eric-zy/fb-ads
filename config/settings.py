@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = os.getenv("FRONTEND_BASE_URL", "http://localhost:3000")
     FB_API_TIMEOUT: int = 30
     # 视频上传会持续写入请求体，不能复用普通 Graph API 的短超时。
-    # 可通过环境变量覆盖，格式为秒；默认 15 分钟，适合 200MB 内素材。
+    # 可通过环境变量覆盖，格式为秒；默认 15 分钟，适合 1GB 内素材。
     FB_VIDEO_CONNECT_TIMEOUT: int = int(os.getenv("FB_VIDEO_CONNECT_TIMEOUT", "30"))
     FB_VIDEO_UPLOAD_TIMEOUT: int = int(os.getenv("FB_VIDEO_UPLOAD_TIMEOUT", "900"))
     # Meta advideos resumable upload：实际 offset 由 Meta 返回，以下仅限制单片读取大小。
@@ -150,7 +150,7 @@ class Settings(BaseSettings):
     )
 
     # ========== 素材上传配置 ==========
-    MAX_UPLOAD_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", str(200 * 1024 * 1024)))  # 200MB
+    MAX_UPLOAD_SIZE: int = int(os.getenv("MAX_UPLOAD_SIZE", str(1024 * 1024 * 1024)))  # 1GB
     MEDIA_STORAGE_PROVIDER: str = os.getenv("MEDIA_STORAGE_PROVIDER", "oss").lower()
     OSS_REGION: str = os.getenv("ADS_OSS_REGION", os.getenv("OSS_REGION", ""))
     OSS_ENDPOINT: str = os.getenv("ADS_OSS_ENDPOINT", os.getenv("OSS_ENDPOINT", "")) or (

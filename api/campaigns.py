@@ -12,7 +12,7 @@ from core.auth import get_current_active_user
 from core.audit import record_audit
 from core.database import get_db
 from core.enums import ActionType
-from models import AdSetInstance, AdInstance, CampaignInstance, AsyncTaskRecord, DeliveryAction, SyncAlert, User
+from models import AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, AsyncTaskRecord, DeliveryAction, SyncAlert, User
 from services.job_service import JobService
 from services.account_access import accessible_account_ids
 from tasks.meta_sync_tasks import sync_delivery_objects_task, update_delivery_object_task
@@ -351,6 +351,32 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
                 job_item = item.to_dict()
                 job_item["publisher"] = _publisher_info(db, job.created_by)
                 break
+    recent_jobs = (
+        db.query(CampaignJob, CampaignJobItem)
+        .join(CampaignJobItem, CampaignJobItem.job_id == CampaignJob.id)
+        .filter(
+            CampaignJob.tenant_id == campaign.tenant_id,
+            CampaignJob.template_id == campaign.template_id,
+            CampaignJobItem.ad_account_id == campaign.ad_account_id,
+        )
+        .order_by(CampaignJob.created_at.desc())
+        .limit(30)
+        .all()
+    )
+    recent_actions = []
+    for job, item in recent_jobs:
+        connector_status = (item.response_payload or {}).get("connector_status") or {}
+        recent_actions.append({
+            "job_id": job.id,
+            "job_item_id": item.id,
+            "action": job.action_type,
+            "status": item.status,
+            "remote_status": connector_status.get("status") or campaign.meta_status,
+            "error_code": item.error_code,
+            "error_message": item.error_message,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        })
     return {
         "campaign": campaign.to_dict(),
         "account": {
@@ -372,6 +398,7 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
         ],
         "job_item": job_item,
         "publisher": job_item.get("publisher") if job_item else None,
+        "recent_actions": recent_actions,
     }
 
 @router.get("/adsets/{adset_id}/ads")

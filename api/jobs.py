@@ -36,6 +36,16 @@ from services.job_service import JobDispatchError, JobService
 router = APIRouter(prefix="/api/v1/jobs", tags=["Job Center"])
 
 
+def _scope_jobs(query, current_user):
+    """限制 Job Center 到当前生效租户；平台管理员未切租户时可跨租户审计。"""
+    tenant_id = effective_tenant_id(current_user)
+    if tenant_id:
+        return query.filter(CampaignJob.tenant_id == tenant_id)
+    if getattr(current_user, "is_platform_admin", lambda: False)():
+        return query
+    raise HTTPException(status_code=403, detail="当前账号未绑定租户")
+
+
 # ==================== 请求模型 ====================
 
 class CampaignCreateRequest(BaseModel):
@@ -534,7 +544,10 @@ def list_jobs(
     current_user=Depends(get_current_active_user),
 ):
     """任务列表"""
-    jobs = JobService(db).list_jobs(limit=limit, status=status)
+    query = _scope_jobs(db.query(CampaignJob), current_user)
+    if status:
+        query = query.filter(CampaignJob.status == status)
+    jobs = query.order_by(CampaignJob.created_at.desc()).limit(limit).all()
     visible = accessible_account_ids(db, current_user)
     result = []
     for job in jobs:
@@ -558,7 +571,7 @@ def get_job(
     current_user=Depends(get_current_active_user),
 ):
     """任务详情（前端轮询进度：成功 / 失败 / 执行中各多少）"""
-    owned = db.query(CampaignJob).filter(CampaignJob.id == job_id, CampaignJob.tenant_id == effective_tenant_id(current_user)).first()
+    owned = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == job_id).first()
     if not owned:
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     visible = accessible_account_ids(db, current_user)
@@ -583,7 +596,7 @@ def retry_job(
     current_user=Depends(require_permission("job:retry")),
 ):
     """只重跑失败的子项（设计文档第 30 节）"""
-    job = db.query(CampaignJob).filter(CampaignJob.id == job_id).first()
+    job = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")
     visible = accessible_account_ids(db, current_user)
@@ -602,7 +615,7 @@ def cancel_job(
     current_user=Depends(require_permission("job:cancel")),
 ):
     """取消任务"""
-    existing = db.query(CampaignJob).filter(CampaignJob.id == job_id).first()
+    existing = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == job_id).first()
     if not existing:
         raise HTTPException(status_code=404, detail="任务不存在")
     visible = accessible_account_ids(db, current_user)

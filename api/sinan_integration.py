@@ -4,7 +4,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from core.auth import require_admin
+from core.auth import get_current_active_user
 from core.tenant import effective_tenant_id
 from core.database import get_db
 from models import SinanCredential, User
@@ -18,7 +18,11 @@ class ConfigRequest(BaseModel):
     password: str
 
 def _row(db, user):
-    return db.query(SinanCredential).filter(SinanCredential.tenant_id == effective_tenant_id(user)).first()
+    query = db.query(SinanCredential).filter(SinanCredential.user_id == user.id)
+    tenant_id = effective_tenant_id(user)
+    if tenant_id:
+        query = query.filter(SinanCredential.tenant_id == tenant_id)
+    return query.first()
 
 async def _login(row):
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
@@ -56,7 +60,7 @@ def _find_promotion_menu_id(nodes):
     return None
 
 @router.get('/status')
-def status(db: Session = Depends(get_db), user: User = Depends(require_admin)):
+def status(db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
     row = _row(db, user); return row.to_dict() if row else {'configured': False, 'verified': False}
 
 def _client(db, user):
@@ -65,7 +69,7 @@ def _client(db, user):
     return SinanClient(row.base_url, row.app_id, row.get_access_token(), row.get_refresh_token(), row.menu_id)
 
 @router.post('/promotions/query')
-async def promotions_query(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+async def promotions_query(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
     try:
         return (await _client(db, user).promotion_list(payload.get('page', 1), payload.get('page_size', 20))).get('data', {})
     except HTTPException: raise
@@ -73,11 +77,11 @@ async def promotions_query(payload: dict, db: Session = Depends(get_db), user: U
         raise HTTPException(502, f'司南推广链查询失败：{exc}')
 
 @router.get('/promotions/{promotion_id}')
-async def promotion_detail(promotion_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+async def promotion_detail(promotion_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
     return (await _client(db, user).promotion_detail(promotion_id)).get('data', {})
 
 @router.post('/content/search')
-async def content_search(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+async def content_search(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
     return (await _client(db, user).content_list(payload.get('content_type', 'SHORT_VIDEO'), payload.get('keyword', ''), payload.get('page', 1), payload.get('page_size', 20))).get('data', {})
 
 async def _sinan_data(db, user, fn):
@@ -86,32 +90,33 @@ async def _sinan_data(db, user, fn):
     except Exception as exc: raise HTTPException(502, f'司南接口调用失败：{exc}')
 
 @router.get('/apps')
-async def apps(db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.app_tree())
+async def apps(db: Session = Depends(get_db), user: User = Depends(get_current_active_user)): return await _sinan_data(db, user, lambda c: c.app_tree())
 @router.get('/filter-options')
-async def filter_options(db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.filter_options())
+async def filter_options(db: Session = Depends(get_db), user: User = Depends(get_current_active_user)): return await _sinan_data(db, user, lambda c: c.filter_options())
 @router.get('/pixels/{real_app_id}')
-async def pixels(real_app_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.pixels(1, real_app_id))
+async def pixels(real_app_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)): return await _sinan_data(db, user, lambda c: c.pixels(1, real_app_id))
 @router.get('/recharge-templates/{real_app_id}')
-async def recharge_templates(real_app_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.recharge_templates(real_app_id))
+async def recharge_templates(real_app_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)): return await _sinan_data(db, user, lambda c: c.recharge_templates(real_app_id))
 @router.get('/return-rules')
-async def return_rules(db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.return_rules())
+async def return_rules(db: Session = Depends(get_db), user: User = Depends(get_current_active_user)): return await _sinan_data(db, user, lambda c: c.return_rules())
 @router.get('/price')
-async def default_price(drama_id: str, real_app_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.default_price(drama_id, real_app_id))
+async def default_price(drama_id: str, real_app_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)): return await _sinan_data(db, user, lambda c: c.default_price(drama_id, real_app_id))
 @router.get('/chapters/{drama_id}')
-async def chapters(drama_id: str, db: Session = Depends(get_db), user: User = Depends(require_admin)): return await _sinan_data(db, user, lambda c: c.chapters(drama_id))
+async def chapters(drama_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)): return await _sinan_data(db, user, lambda c: c.chapters(drama_id))
 
 @router.post('/promotions/create')
-async def create_promotion(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+async def create_promotion(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
     return await _sinan_data(db, user, lambda c: c.create_promotion(payload))
 
 @router.post('/promotions/update')
-async def update_promotion(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+async def update_promotion(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
     return await _sinan_data(db, user, lambda c: c.update_promotion(payload))
 
 @router.post('/config')
-async def save_config(payload: ConfigRequest, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+async def save_config(payload: ConfigRequest, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
     row = _row(db, user) or SinanCredential(id=uuid.uuid4().hex)
     row.base_url, row.app_id = payload.base_url, payload.app_id
+    row.user_id = user.id
     row.set_account(payload.account); row.set_password(payload.password); row.status = 'VERIFYING'
     if not row.tenant_id: row.tenant_id = effective_tenant_id(user)
     db.add(row)
@@ -120,7 +125,7 @@ async def save_config(payload: ConfigRequest, db: Session = Depends(get_db), use
     db.commit(); return row.to_dict()
 
 @router.post('/test-login')
-async def test_login(db: Session = Depends(get_db), user: User = Depends(require_admin)):
+async def test_login(db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
     row = _row(db, user)
     if not row: raise HTTPException(404, '请先配置司南账号')
     try: await _login(row)

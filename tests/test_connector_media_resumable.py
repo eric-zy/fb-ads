@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from config.settings import settings
 from fb_connector.celery_app import celery_app
-from fb_connector.tasks import _upload_video_resumable
+from fb_connector.tasks import _upload_video_resumable, upload_media_task
 
 
 class FakeSession:
@@ -137,6 +137,21 @@ def test_processing_retry_does_not_need_local_source_file(monkeypatch):
 def test_connector_tasks_are_isolated_by_queue():
     routes = celery_app.conf.task_routes
 
+    # API processes import tasks directly, so task decorators must bind to the
+    # Connector app rather than Celery's implicit default app/``celery`` queue.
+    assert upload_media_task.app is celery_app
+    assert upload_media_task.app.conf.task_default_queue == "connector_general"
+    assert all(
+        celery_app.tasks[name].app is celery_app
+        for name in (
+            "fb_connector.upload_media",
+            "fb_connector.create_campaign",
+            "fb_connector.fetch_insights",
+            "fb_connector.recover_stale_media_tasks",
+            "fb_connector.recover_stale_delivery_tasks",
+            "fb_connector.retry_saas_callbacks",
+        )
+    )
     assert routes["fb_connector.upload_media"]["queue"] == "connector_media"
     assert routes["fb_connector.create_campaign"]["queue"] == "connector_campaign"
     assert routes["fb_connector.fetch_insights"]["queue"] == "connector_insights"

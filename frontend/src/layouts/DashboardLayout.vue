@@ -90,6 +90,8 @@ import {
 } from '@element-plus/icons-vue'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { useLocale } from '@/stores/localeStore'
+import { campaignsApi } from '@/api/campaigns'
+import { jobsApi } from '@/api/jobs'
 
 const router = useRouter()
 const route = useRoute()
@@ -100,7 +102,8 @@ const sinanVerified = ref(false)
 const { t, isZh } = useLocale()
 const canSeeAccountsMenu = computed(() => userStore.isAdmin || userStore.isManager || userStore.hasPermission('ad_account:read'))
 const canSeeSettings = computed(() => userStore.isAdmin || userStore.hasPermission('settings:read'))
-const canManageSinan = computed(() => userStore.isAdmin || userStore.hasPermission('sinan:manage'))
+// 每个登录账号维护自己的司南配置，配置入口对所有登录用户开放。
+const canManageSinan = computed(() => !!userStore.user)
 
 const activeMenu = computed(() => {
   const path = route.path.split('/').pop()
@@ -109,12 +112,25 @@ const activeMenu = computed(() => {
 
 const handleMenuSelect = (key: string) => router.push(`/dashboard/${key}`)
 const handleAccountChange = (accountId: string) => {
-  if (accountId) {
-    accountStore.selectAccount(accountId)
-    ElMessage.success('广告账户已切换')
+  accountStore.selectAccount(accountId || '')
+  ElMessage.success(accountId ? '广告账户已切换' : '已切换为全部可见账户')
+}
+const refreshNotificationCount = async () => {
+  try {
+    const [{ data: alerts }, { data: jobs }] = await Promise.all([
+      campaignsApi.alerts(100),
+      jobsApi.list({ limit: 100 }),
+    ])
+    notificationCount.value = alerts.length + jobs.filter(job => ['FAILED', 'PARTIAL_SUCCESS'].includes(job.status)).length
+  } catch {
+    notificationCount.value = 0
   }
 }
-const showNotifications = () => ElMessage.info('您没有新通知')
+const showNotifications = async () => {
+  await refreshNotificationCount()
+  if (!notificationCount.value) ElMessage.info('暂无未处理告警或失败任务')
+  else ElMessage.warning(`有 ${notificationCount.value} 条待处理事项，请到工作台或任务中心查看`)
+}
 const goToSettings = () => router.push('/dashboard/settings')
 const handleLogout = async () => {
   await userStore.logout()
@@ -125,6 +141,7 @@ const handleLogout = async () => {
 onMounted(async () => {
   try { sinanVerified.value = !!(await sinanApi.status()).data.verified } catch { sinanVerified.value = false }
   if (userStore.user && !accountStore.accounts.length) await accountStore.fetchAccounts(userStore.user.id)
+  await refreshNotificationCount()
 })
 </script>
 

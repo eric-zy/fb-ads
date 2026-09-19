@@ -260,7 +260,7 @@ server {
     ssl_certificate     /etc/letsencrypt/live/your-domain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
 
-    client_max_body_size 200m;
+    client_max_body_size 1g;
 
     location / {
         root /usr/share/nginx/html;
@@ -393,7 +393,7 @@ docker compose exec api python cli.py create-admin --email admin@your-domain.com
 ```
 
 ### Q4：上传文件 413 Request Entity Too Large
-nginx 限制。确认 `deploy/nginx/nginx.conf` 有 `client_max_body_size 200m;`（已配），与后端 `MAX_UPLOAD_SIZE` 一致。
+nginx 限制。确认 `deploy/nginx/nginx.conf` 有 `client_max_body_size 1g;`（已配），与后端 `MAX_UPLOAD_SIZE` 一致。
 
 ### Q5：风控页接口 429
 限流命中。Redis 限流计数器可清除：

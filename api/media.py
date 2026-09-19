@@ -31,7 +31,7 @@ router = APIRouter(prefix="/api/v1/media", tags=["素材库"])
 
 ALLOWED_IMAGE = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 ALLOWED_VIDEO = {"video/mp4", "video/quicktime", "video/x-matroska", "video/webm"}
-MAX_SIZE = getattr(settings, "MAX_UPLOAD_SIZE", 200 * 1024 * 1024)
+MAX_SIZE = getattr(settings, "MAX_UPLOAD_SIZE", 1024 * 1024 * 1024)
 
 
 class MediaItem(BaseModel):

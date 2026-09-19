@@ -27,11 +27,13 @@ export const useAccountStore = defineStore('account', () => {
     try {
       const response = await request.get(`/api/v1/users/${userId}/accounts`)
       accounts.value = response.data.accounts || []
-      
-      // 自动选择第一个账户
-      if (accounts.value.length > 0 && !selectedAccountId.value) {
-        selectedAccountId.value = accounts.value[0].id
-      }
+
+      // 只恢复仍然属于当前用户可见范围的账户；旧 localStorage 值不能越权。
+      const saved = localStorage.getItem('selected_account_id')
+      const currentIsVisible = accounts.value.some(a => a.id === selectedAccountId.value)
+      const savedIsVisible = accounts.value.some(a => a.id === saved)
+      if (saved && savedIsVisible) selectedAccountId.value = saved
+      else if (!currentIsVisible) selectedAccountId.value = accounts.value[0]?.id || ''
     } catch (error) {
       console.error('Fetch accounts error:', error)
     } finally {
@@ -42,7 +44,8 @@ export const useAccountStore = defineStore('account', () => {
   // 选择账户
   const selectAccount = (accountId: string) => {
     selectedAccountId.value = accountId
-    localStorage.setItem('selected_account_id', accountId)
+    if (accountId) localStorage.setItem('selected_account_id', accountId)
+    else localStorage.removeItem('selected_account_id')
   }
 
   // 恢复选中账户

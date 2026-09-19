@@ -68,7 +68,7 @@
     </el-card>
 
     <!-- 新建/编辑弹窗 -->
-    <el-dialog v-model="showForm" :title="form.id ? '编辑用户' : '新建用户'" width="440px" destroy-on-close>
+    <el-dialog v-model="showForm" :title="form.id ? '编辑用户' : '新建用户'" width="900px" top="5vh" destroy-on-close>
       <el-form :model="form" label-width="80px">
         <el-form-item label="用户名">
           <el-input v-model="form.username" placeholder="3-64 个字符，不含空格" />
@@ -93,24 +93,9 @@
             <el-option v-for="role in roles" :key="role.id" :label="role.name" :value="role.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="权限">
-          <el-checkbox-group v-model="form.permissions">
-            <el-checkbox label="meta_asset:manage">Meta 资产</el-checkbox>
-            <el-checkbox label="ad_account:read">查看账户</el-checkbox>
-            <el-checkbox label="ad_account:manage">管理账户</el-checkbox>
-            <el-checkbox label="job:create">创建投放</el-checkbox>
-            <el-checkbox label="job:retry">重试任务</el-checkbox>
-            <el-checkbox label="job:cancel">取消任务</el-checkbox>
-            <el-checkbox label="campaign:read">查看已发布广告</el-checkbox>
-            <el-checkbox label="campaign:pause">暂停广告</el-checkbox>
-            <el-checkbox label="campaign:enable">启用广告</el-checkbox>
-            <el-checkbox label="campaign:archive">归档广告</el-checkbox>
-            <el-checkbox label="campaign:delete">移除广告记录</el-checkbox>
-            <el-checkbox label="campaign:restore">恢复广告记录</el-checkbox>
-            <el-checkbox label="campaign:update_budget">修改预算</el-checkbox>
-            <el-checkbox label="campaign:sync">同步 Meta 状态</el-checkbox>
-            <el-checkbox label="insight:read">查看报表</el-checkbox>
-          </el-checkbox-group>
+        <el-form-item label="直接授权">
+          <PermissionSelector v-model="userPermissions" />
+          <p class="permission-help">角色模板权限会自动合并；这里配置的是只对该用户生效的额外权限。</p>
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="form.is_active" />
@@ -144,6 +129,7 @@ import { Plus, Search } from '@element-plus/icons-vue'
 import { userApi, tenantApi, type AdminUser, type TenantItem } from '../../api/admin'
 import { roleApi } from '../../api/admin'
 import { useUserStore } from '../../stores/userStore'
+import PermissionSelector from '@/components/PermissionSelector.vue'
 
 const users = ref<AdminUser[]>([])
 const loading = ref(false)
@@ -164,6 +150,10 @@ const roles = ref<any[]>([])
 const tenants = ref<TenantItem[]>([])
 const userStore = useUserStore()
 const isPlatformAdmin = computed(() => userStore.isPlatformAdmin)
+const userPermissions = computed<string[]>({
+  get: () => form.value.permissions || [],
+  set: permissions => { form.value.permissions = permissions },
+})
 const permissionDefaults = [] as string[]
 
 let timer: number | undefined
@@ -294,5 +284,10 @@ onMounted(async () => {
 }
 .status-dot.off {
   background: var(--text-secondary);
+}
+.permission-help {
+  margin: 8px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 </style>
