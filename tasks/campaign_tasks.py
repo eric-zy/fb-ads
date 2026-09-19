@@ -300,7 +300,7 @@ def _mark_item_failed(
 # ----------------------------------------------------------------------
 # Job 编排
 # ----------------------------------------------------------------------
-@shared_task(bind=True, name="campaign.execute_job")
+@shared_task(bind=True, name="campaign.execute_job", max_retries=2, default_retry_delay=30)
 @tenant_task(lambda self, job_id: resolve_tenant_of(CampaignJob, job_id))
 def execute_campaign_job(self, job_id: str) -> Dict[str, Any]:
     """Job 编排：把子项分派到队列，不在此处循环调用 Meta API
@@ -344,16 +344,28 @@ def execute_campaign_job(self, job_id: str) -> Dict[str, Any]:
         db.commit()
 
         is_create = job.action_type == ActionType.CREATE.value
+        dispatch_failures = 0
         for item in items:
-            if is_create:
-                create_campaign_for_account.delay(item.id)
-            else:
-                apply_action_for_account.delay(item.id)
+            try:
+                if is_create:
+                    create_campaign_for_account.delay(item.id)
+                else:
+                    apply_action_for_account.delay(item.id)
+            except Exception as exc:
+                dispatch_failures += 1
+                db.rollback()
+                failed_item = db.query(CampaignJobItem).filter(CampaignJobItem.id == item.id).first()
+                if failed_item:
+                    failed_item.mark_failed("TASK_ENQUEUE_FAILED", f"子任务入队失败: {exc}", ErrorCategory.TEMPORARY)
+                    db.commit()
+                logger.exception("[Job %s] 子任务入队失败 job_item_id=%s", job_id, item.id)
+
+        _finalize_job_if_done(db, job_id)
 
         logger.info(
-            f"[Job {job_id}] action={job.action_type} 已分派 {len(items)} 个子任务"
+            f"[Job {job_id}] action={job.action_type} 已分派 {len(items) - dispatch_failures} 个子任务，失败 {dispatch_failures} 个"
         )
-        return {"job_id": job_id, "dispatched": len(items)}
+        return {"job_id": job_id, "dispatched": len(items) - dispatch_failures, "failed": dispatch_failures}
     finally:
         db.close()
 
@@ -814,13 +826,25 @@ def retry_failed_job_items(self, job_id: str) -> Dict[str, Any]:
         db.commit()
 
         is_create = job.action_type == ActionType.CREATE.value
+        dispatch_failures = 0
         for item in failed_items:
-            if is_create:
-                create_campaign_for_account.delay(item.id)
-            else:
-                apply_action_for_account.delay(item.id)
+            try:
+                if is_create:
+                    create_campaign_for_account.delay(item.id)
+                else:
+                    apply_action_for_account.delay(item.id)
+            except Exception as exc:
+                dispatch_failures += 1
+                db.rollback()
+                failed_item = db.query(CampaignJobItem).filter(CampaignJobItem.id == item.id).first()
+                if failed_item:
+                    failed_item.mark_failed("TASK_ENQUEUE_FAILED", f"重试子任务入队失败: {exc}", ErrorCategory.TEMPORARY)
+                    db.commit()
+                logger.exception("[Job %s] 重试子任务入队失败 job_item_id=%s", job_id, item.id)
 
-        logger.info(f"[Job {job_id}] 重跑 {len(failed_items)} 个失败子项")
-        return {"job_id": job_id, "retried": len(failed_items)}
+        _finalize_job_if_done(db, job_id)
+
+        logger.info(f"[Job {job_id}] 重跑 {len(failed_items) - dispatch_failures} 个失败子项，失败 {dispatch_failures} 个")
+        return {"job_id": job_id, "retried": len(failed_items) - dispatch_failures, "failed": dispatch_failures}
     finally:
         db.close()

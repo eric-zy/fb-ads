@@ -1,9 +1,11 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from datetime import datetime, timedelta
 import uuid
 from fb_connector.models import ConnectorDeliveryTask, connector_session_factory
 from fb_connector.credential_store import report_meta_auth_failure
 from core.logger import logger
+from config.settings import settings
 
 router = APIRouter(prefix="/internal/meta/campaigns", tags=["Meta Delivery"])
 
@@ -37,6 +39,17 @@ class ParentRequest(BaseModel):
 class CleanupRequest(BaseModel):
     connector_task_id: str = Field(..., min_length=1, max_length=50)
     credential_id: str = Field(..., min_length=1, max_length=50)
+
+
+def _delivery_task_is_stale(row: ConnectorDeliveryTask, now: datetime | None = None) -> bool:
+    if row.status not in {"QUEUED", "RUNNING", "RETRY"}:
+        return False
+    timestamp = row.updated_at or row.created_at
+    if not timestamp:
+        return True
+    return (now or datetime.utcnow()) - timestamp >= timedelta(
+        seconds=settings.CONNECTOR_MEDIA_STALE_SECONDS
+    )
 
 @router.post("/cleanup")
 async def cleanup_deployment(payload: CleanupRequest):
@@ -173,12 +186,43 @@ async def pause_campaign(payload: CampaignPauseRequest):
 @router.post("/create", status_code=202)
 async def create_campaign(payload: CampaignCreateRequest):
     session = connector_session_factory()
+    connector_task_id = None
+    requeued_stale = False
     try:
-        old = session.query(ConnectorDeliveryTask).filter(ConnectorDeliveryTask.idempotency_key == payload.idempotency_key).first()
+        old = (
+            session.query(ConnectorDeliveryTask)
+            .filter(ConnectorDeliveryTask.idempotency_key == payload.idempotency_key)
+            .with_for_update()
+            .first()
+        )
         if old:
-            return {"status": old.status, "connector_task_id": old.task_id, "task_id": payload.task_id, "idempotency_key": old.idempotency_key}
-        connector_task_id = uuid.uuid4().hex
-        session.add(ConnectorDeliveryTask(task_id=connector_task_id, idempotency_key=payload.idempotency_key, status="QUEUED", step="QUEUED")); session.commit()
+            if old.status == "SUCCESS":
+                return {"status": old.status, "connector_task_id": old.task_id, "task_id": payload.task_id, "idempotency_key": old.idempotency_key}
+            if old.status != "FAILED" and not _delivery_task_is_stale(old):
+                return {"status": old.status, "connector_task_id": old.task_id, "task_id": payload.task_id, "idempotency_key": old.idempotency_key}
+            connector_task_id = old.task_id
+            old.source_task_id = payload.task_id
+            old.credential_id = payload.credential_id
+            old.account_id = payload.account_id
+            old.request_payload = payload.payload
+            old.status = "QUEUED"
+            old.step = old.step or "QUEUED"
+            old.error_message = None
+            old.updated_at = datetime.utcnow()
+            requeued_stale = True
+        else:
+            connector_task_id = uuid.uuid4().hex
+            session.add(ConnectorDeliveryTask(
+                task_id=connector_task_id,
+                idempotency_key=payload.idempotency_key,
+                source_task_id=payload.task_id,
+                credential_id=payload.credential_id,
+                account_id=payload.account_id,
+                request_payload=payload.payload,
+                status="QUEUED",
+                step="QUEUED",
+            ))
+        session.commit()
     finally:
         session.close()
     from fb_connector.tasks import create_campaign_task
@@ -197,7 +241,8 @@ async def create_campaign(payload: CampaignCreateRequest):
         logger.exception("[ConnectorCampaignAPI] enqueue failed connector_task_id=%s task_id=%s", connector_task_id, payload.task_id)
         raise HTTPException(status_code=503, detail="投放任务暂时无法入队") from exc
     logger.info(
-        "[ConnectorCampaignAPI] queued connector_task_id=%s celery_task_id=%s task_id=%s account_id=%s",
+        "[ConnectorCampaignAPI] %s connector_task_id=%s celery_task_id=%s task_id=%s account_id=%s",
+        "requeued stale delivery task" if requeued_stale else "queued",
         connector_task_id,
         async_result.id,
         payload.task_id,

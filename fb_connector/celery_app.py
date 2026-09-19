@@ -8,4 +8,14 @@ celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     include=["fb_connector.tasks"],
+    beat_schedule={
+        "recover-stale-media-tasks": {
+            "task": "fb_connector.recover_stale_media_tasks",
+            "schedule": 300,
+        },
+        "recover-stale-delivery-tasks": {
+            "task": "fb_connector.recover_stale_delivery_tasks",
+            "schedule": 300,
+        },
+    },
 )

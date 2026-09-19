@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # 可通过环境变量覆盖，格式为秒；默认 15 分钟，适合 200MB 内素材。
     FB_VIDEO_CONNECT_TIMEOUT: int = int(os.getenv("FB_VIDEO_CONNECT_TIMEOUT", "30"))
     FB_VIDEO_UPLOAD_TIMEOUT: int = int(os.getenv("FB_VIDEO_UPLOAD_TIMEOUT", "900"))
+    # 超过该时间仍处于 UPLOADING 的 Connector 媒体任务视为孤儿任务，
+    # 允许下一次幂等请求或定时恢复任务重新入队。
+    CONNECTOR_MEDIA_STALE_SECONDS: int = int(os.getenv("CONNECTOR_MEDIA_STALE_SECONDS", "1800"))
+    # 国内 Worker 的硬限制为 30 分钟，恢复阈值略留缓冲，避免重复派发仍在执行的任务。
+    ASYNC_TASK_STALE_SECONDS: int = int(os.getenv("ASYNC_TASK_STALE_SECONDS", "2100"))
     FB_API_RETRY_COUNT: int = 3
     
     # ========== 数据库配置 ==========

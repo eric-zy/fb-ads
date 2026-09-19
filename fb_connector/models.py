@@ -26,6 +26,11 @@ class ConnectorMediaTask(ConnectorBase):
     task_id = Column(String(50), primary_key=True)
     media_id = Column(String(64), nullable=False, index=True)
     idempotency_key = Column(String(128), nullable=False, unique=True)
+    # 保存完整入参，Worker 重启后才能恢复丢失的 Celery 消息。
+    credential_id = Column(String(50))
+    account_id = Column(String(64))
+    asset_type = Column(String(16))
+    source_url = Column(Text)
     status = Column(String(32), nullable=False, default="QUEUED")
     meta_asset_id = Column(String(128))
     error_message = Column(Text)
@@ -36,6 +41,10 @@ class ConnectorDeliveryTask(ConnectorBase):
     __tablename__ = "connector_delivery_tasks"
     task_id = Column(String(50), primary_key=True)
     idempotency_key = Column(String(128), nullable=False, unique=True)
+    source_task_id = Column(String(64))
+    credential_id = Column(String(50))
+    account_id = Column(String(64))
+    request_payload = Column(JSON)
     status = Column(String(32), nullable=False, default="QUEUED")
     step = Column(String(32), nullable=False, default="QUEUED")
     campaign_id = Column(String(128)); error_message = Column(Text)

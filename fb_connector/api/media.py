@@ -1,9 +1,11 @@
 """Connector 素材上传任务入口。文件内容不经过国内 API 转发。"""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from datetime import datetime, timedelta
 import uuid
 from fb_connector.models import ConnectorMediaTask, connector_session_factory
 from core.logger import logger
+from config.settings import settings
 from urllib.parse import urlparse
 import ipaddress
 import socket
@@ -18,6 +20,17 @@ class MediaUploadRequest(BaseModel):
     source_url: str = Field(..., min_length=1, max_length=2048)
     idempotency_key: str = Field(..., min_length=8, max_length=128)
 
+
+def _media_task_is_stale(row: ConnectorMediaTask, now: datetime | None = None) -> bool:
+    """判断媒体任务是否已超过恢复阈值。"""
+    if row.status not in {"QUEUED", "UPLOADING", "RETRY"}:
+        return False
+    timestamp = row.updated_at or row.created_at
+    if not timestamp:
+        return True
+    current = now or datetime.utcnow()
+    return current - timestamp >= timedelta(seconds=settings.CONNECTOR_MEDIA_STALE_SECONDS)
+
 @router.post("/upload", status_code=202)
 async def upload_media(payload: MediaUploadRequest):
     """创建海外上传任务，实际下载和 Meta 上传由 Connector Worker 执行。"""
@@ -31,12 +44,45 @@ async def upload_media(payload: MediaUploadRequest):
     except socket.gaierror as exc:
         raise HTTPException(status_code=400, detail="source_url 域名无法解析") from exc
     session = connector_session_factory()
+    task_id = None
+    requeued_stale = False
     try:
-        old = session.query(ConnectorMediaTask).filter(ConnectorMediaTask.idempotency_key == payload.idempotency_key).first()
+        old = (
+            session.query(ConnectorMediaTask)
+            .filter(ConnectorMediaTask.idempotency_key == payload.idempotency_key)
+            .with_for_update()
+            .first()
+        )
         if old:
-            return {"status": old.status, "task_id": old.task_id, "media_id": old.media_id, "idempotency_key": old.idempotency_key}
-        task_id = uuid.uuid4().hex
-        session.add(ConnectorMediaTask(task_id=task_id, media_id=payload.media_id, idempotency_key=payload.idempotency_key, status="QUEUED"))
+            if old.status == "SUCCESS":
+                return {"status": old.status, "task_id": old.task_id, "media_id": old.media_id, "idempotency_key": old.idempotency_key}
+            # 正常的 QUEUED/UPLOADING 任务保持幂等；只有超时孤儿任务，
+            # 或已明确失败的任务，才允许同一业务请求重新入队。
+            if old.status != "FAILED" and not _media_task_is_stale(old):
+                return {"status": old.status, "task_id": old.task_id, "media_id": old.media_id, "idempotency_key": old.idempotency_key}
+            task_id = old.task_id
+            old.media_id = payload.media_id
+            old.credential_id = payload.credential_id
+            old.account_id = payload.account_id
+            old.asset_type = payload.asset_type
+            old.source_url = payload.source_url
+            old.status = "QUEUED"
+            old.meta_asset_id = None
+            old.error_message = None
+            old.updated_at = datetime.utcnow()
+            requeued_stale = True
+        else:
+            task_id = uuid.uuid4().hex
+            session.add(ConnectorMediaTask(
+                task_id=task_id,
+                media_id=payload.media_id,
+                idempotency_key=payload.idempotency_key,
+                credential_id=payload.credential_id,
+                account_id=payload.account_id,
+                asset_type=payload.asset_type,
+                source_url=payload.source_url,
+                status="QUEUED",
+            ))
         session.commit()
     finally:
         session.close()
@@ -56,7 +102,8 @@ async def upload_media(payload: MediaUploadRequest):
         logger.exception("[ConnectorMediaAPI] enqueue failed task_id=%s media_id=%s", task_id, payload.media_id)
         raise HTTPException(status_code=503, detail="素材上传任务暂时无法入队") from exc
     logger.info(
-        "[ConnectorMediaAPI] queued task_id=%s celery_task_id=%s media_id=%s account_id=%s asset_type=%s",
+        "[ConnectorMediaAPI] %s task_id=%s celery_task_id=%s media_id=%s account_id=%s asset_type=%s",
+        "requeued stale media task" if requeued_stale else "queued",
         task_id,
         async_result.id,
         payload.media_id,

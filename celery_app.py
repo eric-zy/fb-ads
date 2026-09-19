@@ -97,6 +97,10 @@ celery_app.conf.beat_schedule = {
         "schedule": crontab(minute="*/15"),
         "args": (3,),
     },
+    "recover-stale-domestic-work": {
+        "task": "maintenance.recover_stale_domestic_work",
+        "schedule": crontab(minute="*/5"),
+    },
 }
 
 # 自动发现任务
@@ -131,6 +135,7 @@ for _task_module in (
     "tasks.media_tasks",  # 异步 Meta 素材上传与视频处理
     "tasks.assignment_tasks",  # 广告账户分配关系维护
     "tasks.media_usage_tasks",  # 素材使用按日汇总
+    "tasks.recovery_tasks",  # Worker 重启后的孤儿任务恢复
 ):
     try:
         __import__(_task_module)

@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from celery import shared_task
 import requests
 import uuid
+from datetime import datetime, timedelta
 
 from core.logger import logger
 from services.request_signer import build_signature_headers
@@ -13,6 +14,64 @@ from services.request_signer import build_signature_headers
 from config.settings import settings
 from fb_connector.credential_store import DatabaseCredentialVault, report_meta_auth_failure
 from services.meta import MetaAdsService, MetaClient
+
+
+@shared_task(name="fb_connector.recover_stale_media_tasks")
+def recover_stale_media_tasks(limit: int = 100):
+    """恢复 Worker 重启或强制终止后遗留的媒体上传任务。"""
+    from fb_connector.models import ConnectorMediaTask, connector_session_factory
+
+    cutoff = datetime.utcnow() - timedelta(seconds=settings.CONNECTOR_MEDIA_STALE_SECONDS)
+    session = connector_session_factory()
+    recovered = 0
+    skipped = 0
+    try:
+        rows = (
+            session.query(ConnectorMediaTask)
+            .filter(
+                ConnectorMediaTask.status.in_(("QUEUED", "UPLOADING", "RETRY")),
+                ConnectorMediaTask.updated_at < cutoff,
+            )
+            .order_by(ConnectorMediaTask.updated_at.asc())
+            .limit(limit)
+            .all()
+        )
+        for row in rows:
+            if not row.credential_id or not row.account_id or not row.asset_type or not row.source_url:
+                skipped += 1
+                logger.warning(
+                    "[ConnectorMediaRecovery] skip task_id=%s reason=missing_payload status=%s",
+                    row.task_id,
+                    row.status,
+                )
+                continue
+            row.status = "QUEUED"
+            row.error_message = None
+            row.updated_at = datetime.utcnow()
+            session.commit()
+            try:
+                upload_media_task.delay(
+                    row.task_id,
+                    row.media_id,
+                    row.credential_id,
+                    row.account_id,
+                    row.asset_type,
+                    row.source_url,
+                    row.idempotency_key,
+                )
+                recovered += 1
+                logger.warning("[ConnectorMediaRecovery] requeued task_id=%s", row.task_id)
+            except Exception as exc:
+                session.rollback()
+                row = session.get(ConnectorMediaTask, row.task_id)
+                if row:
+                    row.status = "FAILED"
+                    row.error_message = f"恢复任务入队失败: {exc}"[:1000]
+                    session.commit()
+                logger.exception("[ConnectorMediaRecovery] enqueue failed task_id=%s", row.task_id)
+        return {"recovered": recovered, "skipped": skipped}
+    finally:
+        session.close()
 
 @shared_task(bind=True, name="fb_connector.fetch_insights", max_retries=3, default_retry_delay=60)
 def fetch_insights_task(self, credential_id: str, account_id: str, days: int = 1):
@@ -82,6 +141,9 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
         row = session.get(ConnectorDeliveryTask, connector_task_id)
         if not row:
             raise RuntimeError("投放任务不存在")
+        credential_id = row.credential_id or credential_id
+        account_id = row.account_id or account_id
+        payload = row.request_payload or payload
         if row.status == "SUCCESS" and row.campaign_id:
             logger.info("[ConnectorCampaign] already success connector_task_id=%s campaign_id=%s", connector_task_id, row.campaign_id)
             return {"status": "SUCCESS", "connector_task_id": connector_task_id, "campaign_id": row.campaign_id, "objects": row.objects or {}, "idempotency_key": idempotency_key}
@@ -314,4 +376,59 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 os.unlink(temp_path)
             except OSError:
                 pass
+
+
+@shared_task(name="fb_connector.recover_stale_delivery_tasks")
+def recover_stale_delivery_tasks(limit: int = 100):
+    """恢复海外投放 Worker 重启后遗留的 RUNNING/RETRY 任务。"""
+    from fb_connector.models import ConnectorDeliveryTask, connector_session_factory
+
+    cutoff = datetime.utcnow() - timedelta(seconds=settings.CONNECTOR_MEDIA_STALE_SECONDS)
+    session = connector_session_factory()
+    recovered = 0
+    skipped = 0
+    try:
+        rows = (
+            session.query(ConnectorDeliveryTask)
+            .filter(
+                ConnectorDeliveryTask.status.in_(("QUEUED", "RUNNING", "RETRY")),
+                ConnectorDeliveryTask.updated_at < cutoff,
+            )
+            .order_by(ConnectorDeliveryTask.updated_at.asc())
+            .limit(limit)
+            .all()
+        )
+        for row in rows:
+            if not row.credential_id or not row.account_id or not row.request_payload:
+                skipped += 1
+                logger.warning(
+                    "[ConnectorDeliveryRecovery] skip connector_task_id=%s reason=missing_payload status=%s",
+                    row.task_id,
+                    row.status,
+                )
+                continue
+            row.status = "QUEUED"
+            row.error_message = None
+            row.updated_at = datetime.utcnow()
+            session.commit()
+            try:
+                create_campaign_task.delay(
+                    row.task_id,
+                    row.credential_id,
+                    row.account_id,
+                    row.request_payload,
+                    row.idempotency_key,
+                )
+                recovered += 1
+                logger.warning("[ConnectorDeliveryRecovery] requeued connector_task_id=%s", row.task_id)
+            except Exception as exc:
+                session.rollback()
+                row = session.get(ConnectorDeliveryTask, row.task_id)
+                if row:
+                    row.status = "FAILED"
+                    row.error_message = f"恢复任务入队失败: {exc}"[:1000]
+                    session.commit()
+                logger.exception("[ConnectorDeliveryRecovery] enqueue failed connector_task_id=%s", row.task_id)
+        return {"recovered": recovered, "skipped": skipped}
+    finally:
         session.close()
