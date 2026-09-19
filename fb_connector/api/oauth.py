@@ -9,10 +9,21 @@ from urllib.parse import urlencode
 from pydantic import BaseModel, Field
 
 from services.meta.oauth_service import MetaOAuthError, MetaOAuthService
+from core.logger import logger
 from fb_connector.credential_store import DatabaseCredentialVault
 
 
 router = APIRouter(prefix="/internal/meta/oauth", tags=["Meta OAuth"])
+
+
+def _report_oauth_auth_failure(credential_id: str, error: Exception) -> None:
+    if getattr(error, "auth_failure", False):
+        DatabaseCredentialVault().mark_status_and_notify(
+            credential_id,
+            status="INVALID",
+            error_code=str(getattr(error, "code", "") or "")[:128] or None,
+            error_message=str(error)[:1000],
+        )
 
 
 def _safe_return_base(state: str, fallback: str) -> str:
@@ -48,6 +59,7 @@ class CompleteRequest(BaseModel):
 @router.post("/authorize")
 async def authorize(payload: AuthorizeRequest):
     """生成 Meta 授权地址；state 由国内 SaaS 生成并透传，不在 Connector 重新生成。"""
+    logger.info("[ConnectorOAuth] authorize start")
     try:
         return {
             "authorization_url": MetaOAuthService().authorization_url(payload.state),
@@ -55,12 +67,14 @@ async def authorize(payload: AuthorizeRequest):
             "expires_in": 600,
         }
     except MetaOAuthError as exc:
+        logger.exception("[ConnectorOAuth] authorize failed")
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/exchange")
 async def exchange(payload: ExchangeRequest):
     """在海外交换并加密保存 Token，仅返回 opaque credential_id。"""
+    logger.info("[ConnectorOAuth] exchange start scopes=%s", len(payload.scopes or []))
     try:
         oauth = MetaOAuthService()
         token = oauth.exchange_code(payload.code)
@@ -80,6 +94,7 @@ async def sdk_config():
 
 @router.post("/sdk-login")
 async def sdk_login(payload: SDKLoginRequest):
+    logger.info("[ConnectorOAuth] sdk-login start")
     try:
         from config.settings import settings
         oauth = MetaOAuthService()
@@ -89,36 +104,47 @@ async def sdk_login(payload: SDKLoginRequest):
         credential_id = DatabaseCredentialVault().save_oauth_result(access_token=token["access_token"], meta_user_id=token.get("meta_user_id"), expires_at=token.get("expires_at"), scopes=scopes)
         return {"credential_id": credential_id, "expires_in": 600, "meta_user_id": token.get("meta_user_id")}
     except (MetaOAuthError, KeyError, ValueError) as exc:
+        logger.warning("[ConnectorOAuth] sdk-login failed error=%s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/businesses")
 async def oauth_businesses(payload: CredentialRequest):
+    logger.info("[ConnectorOAuth] businesses start credential_id=%s", payload.credential_id)
     try:
         token = DatabaseCredentialVault().get_access_token(payload.credential_id)
         return {"credential_id": payload.credential_id, "businesses": MetaOAuthService().get_businesses(token)}
     except (MetaOAuthError, KeyError) as exc:
+        _report_oauth_auth_failure(payload.credential_id, exc)
+        logger.warning("[ConnectorOAuth] businesses failed credential_id=%s error=%s", payload.credential_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/ad-accounts")
 async def oauth_ad_accounts(payload: CredentialRequest):
+    logger.info("[ConnectorOAuth] ad-accounts start credential_id=%s", payload.credential_id)
     try:
         token = DatabaseCredentialVault().get_access_token(payload.credential_id)
         return {"credential_id": payload.credential_id, "accounts": MetaOAuthService().get_ad_accounts(token)}
     except (MetaOAuthError, KeyError) as exc:
+        _report_oauth_auth_failure(payload.credential_id, exc)
+        logger.warning("[ConnectorOAuth] ad-accounts failed credential_id=%s error=%s", payload.credential_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/complete")
 async def oauth_complete(payload: CompleteRequest):
+    logger.info("[ConnectorOAuth] complete start credential_id=%s business_id=%s", payload.credential_id, payload.business_id)
     try:
         token = DatabaseCredentialVault().get_access_token(payload.credential_id)
         business = MetaOAuthService().verify_business_access(token, payload.business_id.strip())
         return {"credential_id": payload.credential_id, "business": business}
     except (MetaOAuthError, KeyError, ValueError) as exc:
+        _report_oauth_auth_failure(payload.credential_id, exc)
+        logger.warning("[ConnectorOAuth] complete failed credential_id=%s business_id=%s error=%s", payload.credential_id, payload.business_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.get("/callback")
 async def callback(state: str = Query(...), code: str | None = Query(None), error: str | None = Query(None), error_description: str | None = Query(None)):
     """Meta 回调入口：海外交换并落库，浏览器只得到 opaque credential_id。"""
+    logger.info("[ConnectorOAuth] callback received has_code=%s has_error=%s", bool(code), bool(error))
     redirect_base = __import__("os").getenv("SAAS_CALLBACK_BASE_URL", "").rstrip("/")
     redirect_base = _safe_return_base(state, redirect_base)
     if error or not code:

@@ -80,10 +80,12 @@ class MetaAdsService:
         last_err: Optional[MetaApiError] = None
 
         for attempt in range(self.max_retries + 1):
+            logger.info("[MetaAdsService] start description=%s attempt=%s", description, attempt + 1)
             self._throttle(account_id)
             try:
                 result = fn()
                 self._count_call(account_id)
+                logger.info("[MetaAdsService] success description=%s attempt=%s", description, attempt + 1)
                 return result
             except MetaApiError as e:
                 last_err = e
@@ -255,7 +257,7 @@ class MetaAdsService:
 
             rows: List[Dict[str, Any]] = []
             after = None
-            for _ in range(20):
+            for page_index in range(20):
                 page_params = dict(request_params)
                 page_params["limit"] = min(int(page_params.get("limit", 500)), 500)
                 if after:
@@ -266,7 +268,14 @@ class MetaAdsService:
                         params={**page_params, "access_token": self.client.access_token},
                         timeout=settings.FB_API_TIMEOUT,
                     )
+                    logger.info(
+                        "[MetaAPI] GET insights path=%s status=%s page=%s",
+                        f"{act}/insights",
+                        response.status_code,
+                        page_index + 1,
+                    )
                 except (requests.Timeout, requests.ConnectionError) as exc:
+                    logger.exception("[MetaAPI] GET insights transport error account=%s", act)
                     raise MetaApiError(str(exc), category=ErrorCategory.TEMPORARY)
 
                 try:
@@ -287,6 +296,7 @@ class MetaAdsService:
                         fbtrace_id=error.get("fbtrace_id"),
                     )
                 rows.extend(payload.get("data", []) if isinstance(payload, dict) else [])
+                logger.info("[MetaAPI] GET insights page complete account=%s rows=%s", act, len(rows))
                 after = ((payload.get("paging") or {}).get("cursors") or {}).get("after")
                 if not after:
                     break

@@ -3,8 +3,9 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
-from fb_connector.credential_store import DatabaseCredentialVault
+from fb_connector.credential_store import DatabaseCredentialVault, report_meta_auth_failure
 from services.meta import MetaAdsService, MetaClient
+from core.logger import logger
 
 router = APIRouter(prefix="/internal/meta/reports", tags=["Meta Reports"])
 
@@ -47,6 +48,13 @@ class InsightsRequest(BaseModel):
 
 @router.post("/insights")
 async def insights(payload: InsightsRequest):
+    logger.info(
+        "[ConnectorInsightsAPI] start account_id=%s credential_id=%s days=%s level=%s",
+        payload.account_id,
+        payload.credential_id,
+        payload.days,
+        payload.level,
+    )
     try:
         token = DatabaseCredentialVault().get_access_token(payload.credential_id)
         params = {"level": payload.level}
@@ -55,8 +63,12 @@ async def insights(payload: InsightsRequest):
         else:
             params["date_preset"] = f"last_{payload.days}d"
         rows = MetaAdsService(MetaClient(access_token=token)).get_insights(payload.account_id, params)
+        logger.info("[ConnectorInsightsAPI] success account_id=%s rows=%s", payload.account_id, len(rows))
         return {"account_id": payload.account_id, "days": payload.days, "level": payload.level, "items": rows}
     except KeyError as exc:
+        logger.warning("[ConnectorInsightsAPI] credential failed credential_id=%s error=%s", payload.credential_id, exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorInsightsAPI] failed account_id=%s credential_id=%s", payload.account_id, payload.credential_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc

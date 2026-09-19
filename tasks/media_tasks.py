@@ -8,6 +8,7 @@ from datetime import datetime
 from celery import shared_task
 from celery.exceptions import Retry
 from core.database import SessionLocal
+from core.logger import logger
 from core.tenant import resolve_tenant_of, tenant_task
 from models import CreativeAsset, MetaAssetBinding, AdAccount
 from services.storage import AliyunOSSStorage
@@ -118,7 +119,9 @@ def process_oss_asset_task(self, asset_id: str, force: bool = False):
 @tenant_task(lambda self, binding_id: resolve_tenant_of(MetaAssetBinding, binding_id))
 def upload_asset_task(self, binding_id: str):
     db = SessionLocal()
+    retries = self.request.retries
     try:
+        logger.info("[MediaUpload] start binding_id=%s retry=%s", binding_id, retries)
         binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
         asset = db.query(CreativeAsset).filter(CreativeAsset.id == binding.asset_id).first() if binding else None
         account = db.query(AdAccount).filter(AdAccount.id == binding.ad_account_id).first() if binding else None
@@ -149,6 +152,12 @@ def upload_asset_task(self, binding_id: str):
             idempotency_key=binding.id,
         )
         binding.connector_task_id = result.get("task_id")
+        logger.info(
+            "[MediaUpload] connector queued binding_id=%s connector_task_id=%s status=%s",
+            binding_id,
+            binding.connector_task_id,
+            result.get("status"),
+        )
         binding.status = "PROCESSING"
         binding.processing_status = "UPLOADING"
         binding.uploaded_at = datetime.utcnow()
@@ -167,10 +176,18 @@ def upload_asset_task(self, binding_id: str):
         if binding_id:
             binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
             if binding:
-                binding.status = "FAILED"
+                will_retry = retries < self.max_retries
+                binding.status = "PENDING" if will_retry else "FAILED"
                 binding.error_message = str(exc)[:1000]
                 binding.error_code = type(exc).__name__
                 db.commit()
+                logger.warning(
+                    "[MediaUpload] status=%s binding_id=%s retry=%s error=%s",
+                    binding.status,
+                    binding_id,
+                    retries,
+                    binding.error_message,
+                )
         raise self.retry(exc=exc)
     finally:
         db.close()
@@ -180,13 +197,21 @@ def upload_asset_task(self, binding_id: str):
 @tenant_task(lambda self, binding_id: resolve_tenant_of(MetaAssetBinding, binding_id))
 def poll_connector_media_task(self, binding_id: str):
     db = SessionLocal()
+    retries = self.request.retries
     try:
+        logger.info("[MediaUploadPoll] start binding_id=%s retry=%s", binding_id, retries)
         binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
         asset = db.query(CreativeAsset).filter(CreativeAsset.id == binding.asset_id).first() if binding else None
         if not binding or not binding.connector_task_id:
             return {"status": "done"}
         result = FBConnectorClient().media_upload_status(binding.connector_task_id)
         value = str(result.get("status") or "").upper()
+        logger.info(
+            "[MediaUploadPoll] connector status binding_id=%s connector_task_id=%s status=%s",
+            binding_id,
+            binding.connector_task_id,
+            value or "EMPTY",
+        )
         if value in {"SUCCESS", "READY", "COMPLETED"}:
             binding.meta_asset_id = result.get("meta_asset_id")
             binding.status = "READY"
@@ -195,6 +220,7 @@ def poll_connector_media_task(self, binding_id: str):
             if asset:
                 asset.status = "READY"
             db.commit()
+            logger.info("[MediaUploadPoll] success binding_id=%s meta_asset_id=%s", binding_id, binding.meta_asset_id)
             return {"status": "ready", "binding_id": binding_id, "meta_asset_id": binding.meta_asset_id}
         if value in {"FAILED", "ERROR"}:
             binding.status = "FAILED"
@@ -202,8 +228,20 @@ def poll_connector_media_task(self, binding_id: str):
             binding.error_code = "CONNECTOR_MEDIA_UPLOAD"
             binding.error_message = result.get("error_message") or "Connector 素材上传失败"
             db.commit()
+            logger.warning("[MediaUploadPoll] failed binding_id=%s error=%s", binding_id, binding.error_message)
             return {"status": "failed", "binding_id": binding_id, "error": binding.error_message}
-        raise self.retry()
+        if retries >= self.max_retries:
+            db.rollback()
+            binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
+            if binding:
+                binding.status = "FAILED"
+                binding.processing_status = "FAILED"
+                binding.error_code = "CONNECTOR_MEDIA_POLL_TIMEOUT"
+                binding.error_message = f"Connector 素材任务超过最大轮询次数，最后状态: {value or 'EMPTY'}"
+                db.commit()
+            logger.error("[MediaUploadPoll] exhausted binding_id=%s last_status=%s", binding_id, value or "EMPTY")
+            return {"status": "failed", "binding_id": binding_id, "error": "Connector 素材任务轮询超时"}
+        raise self.retry(exc=RuntimeError(f"Connector 素材任务仍未完成: {value or 'EMPTY'}"))
     except Retry:
         raise
     except FBConnectorError as exc:
@@ -216,10 +254,33 @@ def poll_connector_media_task(self, binding_id: str):
                 binding.error_code = f"CONNECTOR_HTTP_{exc.status_code}"
                 binding.error_message = str(exc)[:1000]
                 db.commit()
+                logger.warning("[MediaUploadPoll] http failed binding_id=%s status_code=%s error=%s", binding_id, exc.status_code, str(exc))
+            return {"status": "failed", "binding_id": binding_id, "error": str(exc)}
+        if retries >= self.max_retries:
+            db.rollback()
+            binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
+            if binding:
+                binding.status = "FAILED"
+                binding.processing_status = "FAILED"
+                binding.error_code = f"CONNECTOR_HTTP_{exc.status_code or 'ERROR'}"
+                binding.error_message = str(exc)[:1000]
+                db.commit()
+            logger.error("[MediaUploadPoll] retry exhausted binding_id=%s error=%s", binding_id, exc)
             return {"status": "failed", "binding_id": binding_id, "error": str(exc)}
         raise self.retry(exc=exc)
     except Exception as exc:
         db.rollback()
+        if retries >= self.max_retries:
+            binding = db.query(MetaAssetBinding).filter(MetaAssetBinding.id == binding_id).first()
+            if binding:
+                binding.status = "FAILED"
+                binding.processing_status = "FAILED"
+                binding.error_code = type(exc).__name__
+                binding.error_message = str(exc)[:1000]
+                db.commit()
+            logger.exception("[MediaUploadPoll] retry exhausted binding_id=%s", binding_id)
+            return {"status": "failed", "binding_id": binding_id, "error": str(exc)}
+        logger.warning("[MediaUploadPoll] retry binding_id=%s retry=%s error=%s", binding_id, retries, exc)
         raise self.retry(exc=exc)
     finally:
         db.close()

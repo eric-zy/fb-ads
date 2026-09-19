@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     FB_API_TIMEOUT: int = 30
     # 视频上传会持续写入请求体，不能复用普通 Graph API 的短超时。
     # 可通过环境变量覆盖，格式为秒；默认 15 分钟，适合 200MB 内素材。
+    FB_VIDEO_CONNECT_TIMEOUT: int = int(os.getenv("FB_VIDEO_CONNECT_TIMEOUT", "30"))
     FB_VIDEO_UPLOAD_TIMEOUT: int = int(os.getenv("FB_VIDEO_UPLOAD_TIMEOUT", "900"))
     FB_API_RETRY_COUNT: int = 3
     

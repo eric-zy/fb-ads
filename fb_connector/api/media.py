@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 import uuid
 from fb_connector.models import ConnectorMediaTask, connector_session_factory
+from core.logger import logger
 from urllib.parse import urlparse
 import ipaddress
 import socket
@@ -40,7 +41,28 @@ async def upload_media(payload: MediaUploadRequest):
     finally:
         session.close()
     from fb_connector.tasks import upload_media_task
-    upload_media_task.delay(task_id, payload.media_id, payload.credential_id, payload.account_id, payload.asset_type, payload.source_url, payload.idempotency_key)
+    try:
+        async_result = upload_media_task.delay(task_id, payload.media_id, payload.credential_id, payload.account_id, payload.asset_type, payload.source_url, payload.idempotency_key)
+    except Exception as exc:
+        failed_session = connector_session_factory()
+        try:
+            row = failed_session.get(ConnectorMediaTask, task_id)
+            if row:
+                row.status = "FAILED"
+                row.error_message = f"Worker 任务入队失败: {exc}"[:1000]
+                failed_session.commit()
+        finally:
+            failed_session.close()
+        logger.exception("[ConnectorMediaAPI] enqueue failed task_id=%s media_id=%s", task_id, payload.media_id)
+        raise HTTPException(status_code=503, detail="素材上传任务暂时无法入队") from exc
+    logger.info(
+        "[ConnectorMediaAPI] queued task_id=%s celery_task_id=%s media_id=%s account_id=%s asset_type=%s",
+        task_id,
+        async_result.id,
+        payload.media_id,
+        payload.account_id,
+        payload.asset_type,
+    )
     return {"status": "QUEUED", "task_id": task_id, "media_id": payload.media_id, "idempotency_key": payload.idempotency_key}
 
 @router.get("/upload/{task_id}")
@@ -50,6 +72,7 @@ async def upload_status(task_id: str):
         row = session.get(ConnectorMediaTask, task_id)
         if not row:
             raise HTTPException(status_code=404, detail="上传任务不存在")
+        logger.info("[ConnectorMediaAPI] status task_id=%s status=%s", task_id, row.status)
         return {"task_id": row.task_id, "media_id": row.media_id, "status": row.status, "meta_asset_id": row.meta_asset_id, "error_message": row.error_message}
     finally:
         session.close()

@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from celery import shared_task
+from celery.exceptions import Retry
 from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
@@ -44,7 +45,9 @@ _ACTIVE_ITEM_STATUSES = [JobItemStatus.PENDING.value, JobItemStatus.RUNNING.valu
 def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
     """轮询海外部署结果，并将最终 Meta ID 回写国内任务项。"""
     db = SessionLocal()
+    retries = self.request.retries
     try:
+        logger.info("[CampaignPoll] start job_item_id=%s retry=%s", job_item_id, retries)
         item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
         if not item:
             return {"status": "failed", "error": "任务项不存在"}
@@ -56,8 +59,14 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
             raise RuntimeError("缺少海外任务 ID")
         result = FBConnectorClient().deploy_status(remote_id)
         status = result.get("status")
+        logger.info(
+            "[CampaignPoll] connector status job_item_id=%s connector_task_id=%s status=%s",
+            job_item_id,
+            remote_id,
+            status or "EMPTY",
+        )
         item.response_payload = {**(item.response_payload or {}), "connector_status": result}
-        if status in {"QUEUED", "RUNNING", "CAMPAIGN_CREATED", "ADSETS_CREATED", "CREATIVES_CREATED"}:
+        if status in {"QUEUED", "RETRY", "RUNNING", "CAMPAIGN_CREATED", "ADSETS_CREATED", "CREATIVES_CREATED"}:
             db.commit()
             raise self.retry()
         if status == "FAILED":
@@ -86,6 +95,18 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
             _finalize_job_if_done(db, item.job_id)
             db.commit()
             return {"status": "failed", "job_item_id": job_item_id}
+        if status != "SUCCESS":
+            message = f"Connector 返回未知投放状态: {status or 'EMPTY'}"
+            if retries >= self.max_retries:
+                item.mark_failed("CONNECTOR_INVALID_STATUS", message, ErrorCategory.UNKNOWN)
+                db.commit()
+                _finalize_job_if_done(db, item.job_id)
+                db.commit()
+                logger.error("[CampaignPoll] exhausted job_item_id=%s error=%s", job_item_id, message)
+                return {"status": "failed", "job_item_id": job_item_id, "error": message}
+            db.commit()
+            logger.warning("[CampaignPoll] retry job_item_id=%s error=%s", job_item_id, message)
+            raise self.retry(exc=RuntimeError(message))
         item.status = JobItemStatus.SUCCESS.value
         item.meta_campaign_id = result.get("campaign_id")
         objects = result.get("objects") or {}
@@ -123,7 +144,23 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
         db.commit()
         _finalize_job_if_done(db, item.job_id)
         db.commit()
+        logger.info("[CampaignPoll] success job_item_id=%s meta_campaign_id=%s", job_item_id, item.meta_campaign_id)
         return {"status": "success", "job_item_id": job_item_id, "meta_campaign_id": item.meta_campaign_id}
+    except Retry:
+        raise
+    except Exception as exc:
+        db.rollback()
+        if retries >= self.max_retries:
+            item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
+            if item:
+                item.mark_failed("CONNECTOR_POLL_FAILED", str(exc)[:1000], ErrorCategory.TEMPORARY)
+                db.commit()
+                _finalize_job_if_done(db, item.job_id)
+                db.commit()
+            logger.exception("[CampaignPoll] exhausted job_item_id=%s", job_item_id)
+            return {"status": "failed", "job_item_id": job_item_id, "error": str(exc)}
+        logger.warning("[CampaignPoll] retry job_item_id=%s retry=%s error=%s", job_item_id, retries, exc)
+        raise self.retry(exc=exc)
     finally:
         db.close()
 

@@ -12,9 +12,29 @@ from typing import Optional
 from models import AdAccount, Campaign, MetaAccount, SystemStatus
 from services.publish_frequency_validator import PublishFrequencyValidator
 from services.rate_limit import RateLimitManager
+from core.middleware import RateLimitMiddleware
 
 # 独立的测试账户标识，避免与真实账户/其他用例互相干扰
 RL_ACCOUNT = "act_unittest_rate_limit"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/accounts/available-for-deployment",
+        "/api/v1/accounts/bulk",
+        "/api/v1/accounts/sync",
+    ],
+)
+def test_collection_account_routes_are_not_mapped_to_pseudo_account(path):
+    """集合接口不能把 action 名称当作账户 ID 参与限流。"""
+    assert RateLimitMiddleware._account_id_from_path(path) is None
+
+
+def test_account_resource_route_extracts_real_account_id():
+    assert RateLimitMiddleware._account_id_from_path(
+        "/api/v1/accounts/acc-123/freeze"
+    ) == "acc-123"
 
 
 @pytest.fixture

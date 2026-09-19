@@ -119,6 +119,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         "/rate-limit-status",
     )
 
+    # 这些是账户集合级接口，不存在可用于限流的单一账户 ID；如果直接取
+    # 路径第 5 段，会把 available-for-deployment、bulk、sync 当成账户名，
+    # 导致所有测试/请求共享同一个伪账户计数器并被误返回 429。
+    COLLECTION_ACTIONS = {"available-for-deployment", "bulk", "sync"}
+
+    @classmethod
+    def _account_id_from_path(cls, path: str) -> str | None:
+        parts = path.strip("/").split("/")
+        if len(parts) < 4 or parts[:3] != ["api", "v1", "accounts"]:
+            return None
+        account_id = parts[3]
+        if not account_id or account_id in cls.COLLECTION_ACTIONS:
+            return None
+        return account_id
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path
 
@@ -130,12 +145,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if any(path.endswith(suffix) for suffix in self.EXEMPT_SUFFIXES):
             return await call_next(request)
 
-        # 从路径中提取account_id
-        path_parts = path.split("/")
-        if len(path_parts) < 5:
+        # 只对真实账户资源限流；集合级接口没有单一账户上下文。
+        account_id = self._account_id_from_path(path)
+        if not account_id:
             return await call_next(request)
-
-        account_id = path_parts[4]
 
         # 检查速率限制
         rate_limiter = RateLimitManager(account_id)

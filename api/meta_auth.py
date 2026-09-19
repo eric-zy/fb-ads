@@ -299,7 +299,12 @@ def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session =
             db.commit()
             page_sync = {"status": "SKIPPED", "count": 0, "page_ids": []}
             try:
-                page_sync = {"status": "SUCCESS", **sync_connector_pages(db, effective_tenant_id(current_user), payload.credential_id)}
+                page_sync = {"status": "SUCCESS", **sync_connector_pages(
+                    db,
+                    effective_tenant_id(current_user),
+                    payload.credential_id,
+                    allow_rebind=True,
+                )}
                 db.commit()
             except FBConnectorError as exc:
                 db.rollback()
@@ -451,7 +456,12 @@ def oauth_complete(payload: OAuthCompleteRequest, db: Session = Depends(get_db),
             db.commit()
             page_sync = {"status": "SKIPPED", "count": 0, "page_ids": []}
             try:
-                page_sync = {"status": "SUCCESS", **sync_connector_pages(db, effective_tenant_id(current_user), payload.credential_id)}
+                page_sync = {"status": "SUCCESS", **sync_connector_pages(
+                    db,
+                    effective_tenant_id(current_user),
+                    payload.credential_id,
+                    allow_rebind=True,
+                )}
                 db.commit()
             except FBConnectorError as exc:
                 db.rollback()

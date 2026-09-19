@@ -63,7 +63,8 @@ class AdAccountService:
 
         # 3) 只认海外 Connector 凭据引用，不回退到国内凭据表或全局 Token。
         connector_credential_id = (
-            business.connector_credential_id if business else account.connector_credential_id
+            account.connector_credential_id
+            or (business.connector_credential_id if business else None)
         )
         if not connector_credential_id:
             return False, "账号未绑定海外 Connector 凭据"
@@ -113,7 +114,8 @@ class AdAccountService:
 
             business: Optional[MetaAccount] = account.business
             connector_credential_id = (
-                business.connector_credential_id if business else account.connector_credential_id
+                account.connector_credential_id
+                or (business.connector_credential_id if business else None)
             )
 
             item = {

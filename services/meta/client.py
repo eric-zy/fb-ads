@@ -100,11 +100,13 @@ class MetaClient:
                 if isinstance(value, (dict, list)):
                     request_params[key] = json.dumps(value, separators=(",", ":"))
             request_params["access_token"] = self.access_token
+            logger.info("[MetaAPI] GET path=%s param_keys=%s", path, sorted(k for k in request_params if k != "access_token"))
             response = requests.get(
                 f"https://graph.facebook.com/{settings.FB_API_VERSION}/{path.lstrip('/')}",
                 params=request_params,
                 timeout=settings.FB_API_TIMEOUT,
             )
+            logger.info("[MetaAPI] GET response path=%s status=%s", path, response.status_code)
             payload = response.json()
             error = payload.get("error") if isinstance(payload, dict) else None
             if response.status_code >= 400 or error:
@@ -119,12 +121,15 @@ class MetaClient:
                     http_status=response.status_code,
                     fbtrace_id=error.get("fbtrace_id"),
                 )
+            logger.info("[MetaAPI] GET success path=%s keys=%s", path, list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__)
             return payload
         except MetaApiError:
             raise
         except (requests.Timeout, requests.ConnectionError) as exc:
+            logger.exception("[MetaAPI] GET transport error path=%s", path)
             raise MetaApiError(str(exc), category=ErrorCategory.TEMPORARY)
         except Exception as exc:
+            logger.exception("[MetaAPI] GET unexpected error path=%s", path)
             raise classify_facebook_error(exc)
 
     def _post(
@@ -183,22 +188,27 @@ class MetaClient:
     def _delete(self, path: str) -> dict:
         """删除 Meta 对象（仅用于投放失败补偿，不作为业务删除入口）。"""
         try:
+            logger.info("[MetaAPI] DELETE path=%s", path)
             response = requests.delete(
                 f"https://graph.facebook.com/{settings.FB_API_VERSION}/{path.lstrip('/')}",
                 params={"access_token": self.access_token},
                 timeout=settings.FB_API_TIMEOUT,
             )
+            logger.info("[MetaAPI] DELETE response path=%s status=%s", path, response.status_code)
             payload = response.json()
             error = payload.get("error") if isinstance(payload, dict) else None
             if response.status_code >= 400 or error:
                 error = error or {}
                 raise MetaApiError(error.get("message", f"Graph API HTTP {response.status_code}"), category=classify(error.get("code"), error.get("error_subcode"), response.status_code))
+            logger.info("[MetaAPI] DELETE success path=%s", path)
             return payload
         except MetaApiError:
             raise
         except (requests.Timeout, requests.ConnectionError) as exc:
+            logger.exception("[MetaAPI] DELETE transport error path=%s", path)
             raise MetaApiError(str(exc), category=ErrorCategory.TEMPORARY)
         except Exception as exc:
+            logger.exception("[MetaAPI] DELETE unexpected error path=%s", path)
             raise classify_facebook_error(exc)
 
     def get_business(self, business_id: str) -> dict:

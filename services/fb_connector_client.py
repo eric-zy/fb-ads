@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from typing import Any, Optional
 
 import requests
 
 from config.settings import settings
+from core.logger import logger
 from services.request_signer import build_signature_headers
 
 
@@ -52,6 +54,14 @@ class FBConnectorClient:
         )
         headers["Content-Type"] = "application/json"
         headers["Authorization"] = f"Bearer {settings.CONNECTOR_SERVICE_TOKEN}"
+        started = time.monotonic()
+        logger.info(
+            "[FBConnector] request start request_id=%s method=%s path=%s idempotent=%s",
+            rid,
+            method.upper(),
+            path,
+            bool(idempotency_key),
+        )
         try:
             response = requests.request(
                 method,
@@ -60,17 +70,43 @@ class FBConnectorClient:
                 headers=headers,
                 timeout=settings.FB_CONNECTOR_TIMEOUT,
             )
+            elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+            remote_request_id = getattr(response, "headers", {}).get("X-Request-Id")
+            logger.info(
+                "[FBConnector] response request_id=%s remote_request_id=%s method=%s path=%s status=%s elapsed_ms=%s",
+                rid,
+                remote_request_id,
+                method.upper(),
+                path,
+                response.status_code,
+                elapsed_ms,
+            )
             try:
                 result = response.json()
             except ValueError:
                 result = {"detail": response.text[:500]}
             if response.status_code >= 400:
                 detail = result.get("detail", "FB Connector 请求失败") if isinstance(result, dict) else "FB Connector 请求失败"
+                logger.warning(
+                    "[FBConnector] request failed request_id=%s method=%s path=%s status=%s detail=%s",
+                    rid,
+                    method.upper(),
+                    path,
+                    response.status_code,
+                    str(detail)[:300],
+                )
                 raise FBConnectorError(str(detail), status_code=response.status_code, request_id=rid)
             return result if isinstance(result, dict) else {"data": result}
         except FBConnectorError:
             raise
         except requests.RequestException as exc:
+            logger.exception(
+                "[FBConnector] transport error request_id=%s method=%s path=%s elapsed_ms=%s",
+                rid,
+                method.upper(),
+                path,
+                round((time.monotonic() - started) * 1000, 1),
+            )
             raise FBConnectorError(f"FB Connector 不可用: {exc}", request_id=rid) from exc
 
     def authorize(self, state: str, *, request_id: str | None = None) -> dict[str, Any]:

@@ -16,7 +16,10 @@ from services.meta.errors import MetaApiError
 
 
 class MetaOAuthError(Exception):
-    pass
+    def __init__(self, message: str, *, auth_failure: bool = False, code: int | None = None):
+        super().__init__(message)
+        self.auth_failure = auth_failure
+        self.code = code
 
 
 class MetaOAuthService:
@@ -54,7 +57,9 @@ class MetaOAuthService:
         if response.status_code >= 400 or data.get("error"):
             error = data.get("error") or {}
             message = error.get("message") or f"HTTP {response.status_code}"
-            raise MetaOAuthError(f"Meta OAuth 授权失败: {message}")
+            code = error.get("code")
+            auth_failure = response.status_code == 401 or code in {190, 102, 104, 460, 463, 467}
+            raise MetaOAuthError(f"Meta OAuth 授权失败: {message}", auth_failure=auth_failure, code=code)
         return data
 
     def exchange_code(self, code: str) -> Dict[str, Any]:
@@ -197,5 +202,9 @@ class MetaOAuthService:
             return MetaClient(access_token=access_token).get_business(business_id)
         except MetaApiError as exc:
             if exc.category in {ErrorCategory.AUTH, ErrorCategory.PERMISSION}:
-                raise MetaOAuthError(f"授权账号无权访问该 BM: {exc}") from exc
+                raise MetaOAuthError(
+                    f"授权账号无权访问该 BM: {exc}",
+                    auth_failure=exc.category == ErrorCategory.AUTH,
+                    code=exc.code,
+                ) from exc
             raise MetaOAuthError(f"读取 BM 信息失败: {exc}") from exc

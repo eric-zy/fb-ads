@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import uuid
 import hmac
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -70,6 +71,9 @@ def _service_secret() -> str:
 @app.middleware("http")
 async def service_auth_middleware(request: Request, call_next):
     """保护 /internal 路由；健康检查允许负载均衡探针访问。"""
+    started = time.monotonic()
+    request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    request.state.request_id = request_id
     # Meta 浏览器回调不会携带内部服务签名；安全性由 OAuth state
     # 校验和授权码交换保证，因此必须允许该公开回调进入路由。
     public_internal_paths = {
@@ -92,10 +96,38 @@ async def service_auth_middleware(request: Request, call_next):
         if service_name != "saas" or not token_ok or not verify_request(
             _service_secret(), request.headers, request.method, request.url.path, body
         ):
-            return JSONResponse(status_code=401, content={"detail": "invalid service signature"})
-        request.state.request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
-    response = await call_next(request)
-    response.headers["X-Request-Id"] = getattr(request.state, "request_id", uuid.uuid4().hex)
+            logger.warning(
+                "[ConnectorHTTP] rejected request_id=%s method=%s path=%s reason=invalid_service_signature",
+                request_id,
+                request.method,
+                request.url.path,
+            )
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "invalid service signature", "request_id": request_id},
+                headers={"X-Request-Id": request_id},
+            )
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "[ConnectorHTTP] unhandled request_id=%s method=%s path=%s elapsed_ms=%s",
+            request_id,
+            request.method,
+            request.url.path,
+            round((time.monotonic() - started) * 1000, 1),
+        )
+        raise
+    elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+    response.headers["X-Request-Id"] = request_id
+    logger.info(
+        "[ConnectorHTTP] completed request_id=%s method=%s path=%s status=%s elapsed_ms=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
     return response
 
 

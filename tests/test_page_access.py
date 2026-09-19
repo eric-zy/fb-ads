@@ -39,6 +39,15 @@ def test_connector_page_access_rejects_different_credentials():
     assert error == "页面与广告账户不属于同一个 Connector 授权凭据"
 
 
+def test_account_level_connector_credential_takes_precedence_over_business():
+    account = _account(connector_credential_id="connector-account")
+
+    assert page_account_access_error(
+        _page(connector_credential_id="connector-account"),
+        account,
+    ) is None
+
+
 def test_oauth_page_access_still_uses_connection_id():
     page = _page(connector_credential_id=None, connection_id="connection-1")
     account = _account(
@@ -47,3 +56,17 @@ def test_oauth_page_access_still_uses_connection_id():
     )
 
     assert page_account_access_error(page, account) is None
+
+
+def test_connector_page_access_rejects_expired_page_credential():
+    error = page_account_access_error(_page(status="EXPIRED"), _account())
+
+    assert error == "Facebook Page 的 Connector 凭据状态为 EXPIRED，请重新授权或同步"
+
+
+def test_connector_page_access_rejects_invalid_account_credential():
+    account = _account(capabilities={"connector_credential_status": "INVALID"})
+
+    error = page_account_access_error(_page(), account)
+
+    assert error == "广告账户的 Connector 凭据状态为 INVALID，请重新授权或同步"

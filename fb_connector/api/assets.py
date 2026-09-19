@@ -2,7 +2,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from fb_connector.credential_store import DatabaseCredentialVault
+from fb_connector.credential_store import DatabaseCredentialVault, report_meta_auth_failure
+from core.logger import logger
 from services.meta import MetaClient
 
 router = APIRouter(prefix="/internal/meta", tags=["Meta Assets"])
@@ -24,25 +25,40 @@ def _client(credential_id: str) -> MetaClient:
 
 @router.post("/business/verify")
 async def verify_business(payload: BusinessRequest):
+    logger.info("[ConnectorAssets] verify business start credential_id=%s business_id=%s", payload.credential_id, payload.business_id)
     try:
-        return _client(payload.credential_id).get_business(payload.business_id)
+        result = _client(payload.credential_id).get_business(payload.business_id)
+        logger.info("[ConnectorAssets] verify business success business_id=%s", payload.business_id)
+        return result
     except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorAssets] verify business failed business_id=%s", payload.business_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/accounts/sync")
 async def sync_accounts(payload: BusinessRequest):
+    logger.info("[ConnectorAssets] sync accounts start credential_id=%s business_id=%s", payload.credential_id, payload.business_id)
     try:
-        return {"business_id": payload.business_id, "accounts": _client(payload.credential_id).get_ad_accounts(payload.business_id)}
+        accounts = _client(payload.credential_id).get_ad_accounts(payload.business_id)
+        logger.info("[ConnectorAssets] sync accounts success business_id=%s count=%s", payload.business_id, len(accounts))
+        return {"business_id": payload.business_id, "accounts": accounts}
     except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorAssets] sync accounts failed business_id=%s", payload.business_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/business/verify-account")
 async def verify_account(payload: AccountVerifyRequest):
+    logger.info("[ConnectorAssets] verify account start credential_id=%s account_id=%s", payload.credential_id, payload.account_id)
     try:
         client = _client(payload.credential_id)
         account = client.get_ad_account(payload.account_id)
-        return {"ok": str(account.get("id", "")).replace("act_", "") == str(payload.account_id).replace("act_", ""), "account": account, "business_id": payload.business_id}
+        result = {"ok": str(account.get("id", "")).replace("act_", "") == str(payload.account_id).replace("act_", ""), "account": account, "business_id": payload.business_id}
+        logger.info("[ConnectorAssets] verify account success account_id=%s", payload.account_id)
+        return result
     except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorAssets] verify account failed account_id=%s", payload.account_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/pages/sync")
@@ -50,6 +66,7 @@ async def sync_pages(payload: CredentialRequest):
     # PageService 的同步需要国内 MetaAccount/数据库上下文；Connector 只负责
     # 使用托管的 User Token 拉取 Page 元数据，不返回 Page Access Token。
     try:
+        logger.info("[ConnectorAssets] sync pages start credential_id=%s", payload.credential_id)
         client = _client(payload.credential_id)
         params = {"fields": "id,name,category,tasks", "limit": 100}
         pages = []
@@ -62,6 +79,9 @@ async def sync_pages(payload: CredentialRequest):
             if not after:
                 break
             params["after"] = after
+        logger.info("[ConnectorAssets] sync pages success credential_id=%s count=%s", payload.credential_id, len(pages))
         return {"credential_id": payload.credential_id, "pages": pages}
     except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorAssets] sync pages failed credential_id=%s", payload.credential_id)
         raise HTTPException(status_code=400, detail=str(exc)) from exc

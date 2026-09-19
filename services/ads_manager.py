@@ -244,8 +244,9 @@ class AdsManager:
         try:
             insights = self._account_insights(account, start_date, end_date, "account")
         except Exception as e:
-            logger.error(f"[AdsManager] 拉取洞察失败 {account.account_id}: {e}")
-            return 0
+            logger.exception(f"[AdsManager] 拉取洞察失败 {account.account_id}: {e}")
+            self.db.rollback()
+            raise
 
         if not insights:
             return 0

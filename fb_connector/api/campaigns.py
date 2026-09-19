@@ -2,6 +2,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 import uuid
 from fb_connector.models import ConnectorDeliveryTask, connector_session_factory
+from fb_connector.credential_store import report_meta_auth_failure
+from core.logger import logger
 
 router = APIRouter(prefix="/internal/meta/campaigns", tags=["Meta Delivery"])
 
@@ -59,8 +61,16 @@ async def cleanup_deployment(payload: CleanupRequest):
             try:
                 service.delete_object(object_id)
             except Exception as exc:
+                if report_meta_auth_failure(payload.credential_id, exc):
+                    raise
                 errors.append({"id": object_id, "error": str(exc)})
         return {"status": "SUCCESS" if not errors else "PARTIAL", "deleted": [x for x in ids if x not in {e["id"] for e in errors}], "errors": errors}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorCampaignAPI] cleanup failed connector_task_id=%s", payload.connector_task_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         session.close()
 
@@ -84,54 +94,81 @@ def _meta_service(credential_id: str):
 
 @router.post("/adsets")
 async def list_adsets(payload: ParentRequest):
-    return {"parent_id": payload.parent_id, "adsets": _meta_service(payload.credential_id).list_adsets(payload.parent_id)}
+    try:
+        return {"parent_id": payload.parent_id, "adsets": _meta_service(payload.credential_id).list_adsets(payload.parent_id)}
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorCampaignAPI] list adsets failed parent_id=%s", payload.parent_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/ads")
 async def list_ads(payload: ParentRequest):
-    return {"parent_id": payload.parent_id, "ads": _meta_service(payload.credential_id).list_ads(payload.parent_id)}
+    try:
+        return {"parent_id": payload.parent_id, "ads": _meta_service(payload.credential_id).list_ads(payload.parent_id)}
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorCampaignAPI] list ads failed parent_id=%s", payload.parent_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/update-object")
 async def update_object(payload: ObjectRequest):
-    service = _meta_service(payload.credential_id)
-    fields = payload.fields
-    if set(fields) - {"status", "daily_budget"}:
-        raise HTTPException(status_code=400, detail="只允许更新 status 或 daily_budget")
-    if "status" in fields and fields["status"] not in {"ACTIVE", "PAUSED"}:
-        raise HTTPException(status_code=400, detail="status 必须为 ACTIVE 或 PAUSED")
-    if "daily_budget" in fields:
-        try:
-            fields["daily_budget"] = int(fields["daily_budget"])
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="daily_budget 必须为整数分")
-        if fields["daily_budget"] <= 0:
-            raise HTTPException(status_code=400, detail="daily_budget 必须为正数")
-    if payload.object_type == "CAMPAIGN":
-        result = service.update_campaign(payload.object_id, fields)
-    elif payload.object_type == "ADSET":
-        result = service.update_adset(payload.object_id, fields)
-    else:
+    try:
+        service = _meta_service(payload.credential_id)
+        fields = payload.fields
+        if set(fields) - {"status", "daily_budget"}:
+            raise HTTPException(status_code=400, detail="只允许更新 status 或 daily_budget")
+        if "status" in fields and fields["status"] not in {"ACTIVE", "PAUSED"}:
+            raise HTTPException(status_code=400, detail="status 必须为 ACTIVE 或 PAUSED")
         if "daily_budget" in fields:
-            raise HTTPException(status_code=400, detail="广告不支持更新 daily_budget")
-        result = service.update_ad(payload.object_id, fields)
-    return {"object_type": payload.object_type, "object_id": payload.object_id, "fields": fields, "result": result, "idempotency_key": payload.idempotency_key}
+            try:
+                fields["daily_budget"] = int(fields["daily_budget"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="daily_budget 必须为整数分")
+            if fields["daily_budget"] <= 0:
+                raise HTTPException(status_code=400, detail="daily_budget 必须为正数")
+        if payload.object_type == "CAMPAIGN":
+            result = service.update_campaign(payload.object_id, fields)
+        elif payload.object_type == "ADSET":
+            result = service.update_adset(payload.object_id, fields)
+        else:
+            if "daily_budget" in fields:
+                raise HTTPException(status_code=400, detail="广告不支持更新 daily_budget")
+            result = service.update_ad(payload.object_id, fields)
+        return {"object_type": payload.object_type, "object_id": payload.object_id, "fields": fields, "result": result, "idempotency_key": payload.idempotency_key}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorCampaignAPI] update object failed object_id=%s", payload.object_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/list")
 async def list_campaigns(payload: CampaignListRequest):
-    from fb_connector.credential_store import DatabaseCredentialVault
-    token = DatabaseCredentialVault().get_access_token(payload.credential_id)
-    from services.meta.service import MetaAdsService
-    from services.fb_client import MetaClient
-    campaigns = MetaAdsService(MetaClient(access_token=token)).list_campaigns(payload.account_id)
-    return {"account_id": payload.account_id, "credential_id": payload.credential_id, "campaigns": campaigns}
+    try:
+        from fb_connector.credential_store import DatabaseCredentialVault
+        token = DatabaseCredentialVault().get_access_token(payload.credential_id)
+        from services.meta.service import MetaAdsService
+        from services.fb_client import MetaClient
+        campaigns = MetaAdsService(MetaClient(access_token=token)).list_campaigns(payload.account_id)
+        return {"account_id": payload.account_id, "credential_id": payload.credential_id, "campaigns": campaigns}
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorCampaignAPI] list campaigns failed account_id=%s", payload.account_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/pause")
 async def pause_campaign(payload: CampaignPauseRequest):
-    from fb_connector.credential_store import DatabaseCredentialVault
-    from services.meta.service import MetaAdsService
-    from services.fb_client import MetaClient
-    token = DatabaseCredentialVault().get_access_token(payload.credential_id)
-    result = MetaAdsService(MetaClient(access_token=token)).pause_campaign(payload.campaign_id)
-    return {"campaign_id": payload.campaign_id, "credential_id": payload.credential_id, "result": result, "idempotency_key": payload.idempotency_key}
+    try:
+        from fb_connector.credential_store import DatabaseCredentialVault
+        from services.meta.service import MetaAdsService
+        from services.fb_client import MetaClient
+        token = DatabaseCredentialVault().get_access_token(payload.credential_id)
+        result = MetaAdsService(MetaClient(access_token=token)).pause_campaign(payload.campaign_id)
+        return {"campaign_id": payload.campaign_id, "credential_id": payload.credential_id, "result": result, "idempotency_key": payload.idempotency_key}
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorCampaignAPI] pause campaign failed campaign_id=%s", payload.campaign_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/create", status_code=202)
 async def create_campaign(payload: CampaignCreateRequest):
@@ -145,7 +182,27 @@ async def create_campaign(payload: CampaignCreateRequest):
     finally:
         session.close()
     from fb_connector.tasks import create_campaign_task
-    create_campaign_task.delay(connector_task_id, payload.credential_id, payload.account_id, payload.payload, payload.idempotency_key)
+    try:
+        async_result = create_campaign_task.delay(connector_task_id, payload.credential_id, payload.account_id, payload.payload, payload.idempotency_key)
+    except Exception as exc:
+        failed_session = connector_session_factory()
+        try:
+            row = failed_session.get(ConnectorDeliveryTask, connector_task_id)
+            if row:
+                row.status = "FAILED"
+                row.error_message = f"Worker 任务入队失败: {exc}"[:1000]
+                failed_session.commit()
+        finally:
+            failed_session.close()
+        logger.exception("[ConnectorCampaignAPI] enqueue failed connector_task_id=%s task_id=%s", connector_task_id, payload.task_id)
+        raise HTTPException(status_code=503, detail="投放任务暂时无法入队") from exc
+    logger.info(
+        "[ConnectorCampaignAPI] queued connector_task_id=%s celery_task_id=%s task_id=%s account_id=%s",
+        connector_task_id,
+        async_result.id,
+        payload.task_id,
+        payload.account_id,
+    )
     return {"status": "QUEUED", "connector_task_id": connector_task_id, "task_id": payload.task_id, "idempotency_key": payload.idempotency_key}
 
 @router.get("/create/{connector_task_id}")
@@ -154,5 +211,6 @@ async def delivery_status(connector_task_id: str):
     try:
         row = session.get(ConnectorDeliveryTask, connector_task_id)
         if not row: return {"status": "NOT_FOUND", "connector_task_id": connector_task_id}
+        logger.info("[ConnectorCampaignAPI] status connector_task_id=%s status=%s step=%s", connector_task_id, row.status, row.step)
         return {"status": row.status, "step": row.step, "connector_task_id": row.task_id, "campaign_id": row.campaign_id, "objects": row.objects or {}, "error_message": row.error_message}
     finally: session.close()

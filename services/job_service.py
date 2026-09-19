@@ -105,9 +105,26 @@ class JobService:
             user_id=created_by,
             allow_paused_debug=status == InstanceStatus.PAUSED.value,
         )
+        page = self.db.query(MetaPage).filter(
+            MetaPage.page_id == page_id, MetaPage.status == "ACTIVE"
+        ).first() if page_id else None
+        if page:
+            compatible = []
+            for account_pk in available:
+                account = self.db.query(AdAccount).filter(AdAccount.id == account_pk).first()
+                reason = page_account_access_error(page, account) if account else "账户不存在"
+                if reason:
+                    rejected.append({"account_id": account_pk, "reason": reason})
+                else:
+                    compatible.append(account_pk)
+            available = compatible
+
+        # Page/账户授权校验完成后再检查素材，避免已被剔除的账户同时出现
+        # ASSET_SYNC_PENDING，给前端返回互相矛盾的预检结果。
         asset_ids = [str(item.get("asset_id")) for item in creatives if item.get("asset_id")]
         waiting_by_account = {}
-        if asset_ids and available:
+        # 页面无效时不继续计算素材状态，避免同时返回页面错误和素材待同步。
+        if page and asset_ids and available:
             ready_bindings = self.db.query(MetaAssetBinding.ad_account_id, MetaAssetBinding.asset_id).filter(
                 MetaAssetBinding.ad_account_id.in_(available),
                 MetaAssetBinding.asset_id.in_(asset_ids),
@@ -129,19 +146,6 @@ class JobService:
                     "message": f"{len(missing_accounts)} 个账户的素材将在投放前自动同步",
                     "items": missing_accounts,
                 })
-        page = self.db.query(MetaPage).filter(
-            MetaPage.page_id == page_id, MetaPage.status == "ACTIVE"
-        ).first() if page_id else None
-        if page:
-            compatible = []
-            for account_pk in available:
-                account = self.db.query(AdAccount).filter(AdAccount.id == account_pk).first()
-                reason = page_account_access_error(page, account) if account else "账户不存在"
-                if reason:
-                    rejected.append({"account_id": account_pk, "reason": reason})
-                else:
-                    compatible.append(account_pk)
-            available = compatible
 
         account_results = [
             {

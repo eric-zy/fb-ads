@@ -92,9 +92,22 @@ def sync_all_pages(
 
     has_success = any(item["status"] == "SUCCESS" and item.get("count", 0) > 0 for item in results)
     has_failure = any(item["status"] == "FAILED" for item in results)
+    conflicts = [
+        {"tenant_id": item["tenant_id"], **conflict}
+        for item in results
+        for conflict in item.get("conflicts", [])
+    ]
+    has_conflicts = bool(conflicts)
+    status = (
+        "FAILED" if has_failure and not has_success and not has_conflicts
+        else "PARTIAL_SUCCESS" if has_failure or has_conflicts
+        else "SUCCESS"
+    )
     return {
-        "status": "FAILED" if has_failure and not has_success else ("PARTIAL_SUCCESS" if has_failure else "SUCCESS"),
+        "status": status,
         "count": sum(item.get("count", 0) for item in results),
+        "conflict_count": len(conflicts),
+        "conflicts": conflicts,
         "results": results,
     }
 
@@ -137,7 +150,9 @@ def sync_pages(
             raise HTTPException(status_code=404, detail="Connector 凭据不存在或不属于当前租户")
         try:
             with tenant_scope(owner.tenant_id):
-                result = sync_connector_pages(db, owner.tenant_id, credential_id)
+                result = sync_connector_pages(
+                    db, owner.tenant_id, credential_id, allow_rebind=True
+                )
                 db.commit()
             return {"task_id": None, "status": "SUCCESS", **result}
         except FBConnectorError as exc:
