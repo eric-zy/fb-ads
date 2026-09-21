@@ -18,6 +18,7 @@ class MetaAssetBinding(TenantMixin, Base):
     asset_id = Column(String(50), nullable=False, index=True)
     ad_account_id = Column(String(50), nullable=False, index=True)
     meta_asset_id = Column(String(255), nullable=True)
+    meta_thumbnail_hash = Column(String(255), nullable=True, comment="视频创意使用的 Meta 封面 image_hash")
     connector_task_id = Column(String(100), nullable=True, index=True)
     meta_asset_type = Column(String(20), nullable=False)
     status = Column(String(20), default="PENDING", nullable=False)
@@ -36,6 +37,7 @@ class MetaAssetBinding(TenantMixin, Base):
             "asset_id": self.asset_id,
             "ad_account_id": self.ad_account_id,
             "meta_asset_id": self.meta_asset_id,
+            "meta_thumbnail_hash": self.meta_thumbnail_hash,
             "connector_task_id": self.connector_task_id,
             "meta_asset_type": self.meta_asset_type,
             "status": self.status,

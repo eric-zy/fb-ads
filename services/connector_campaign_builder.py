@@ -27,7 +27,12 @@ class _PayloadService:
         return {"id": "${ad.id}", **params}
 
 
-def _resolve_asset_refs(config: dict[str, Any], asset_bindings: dict[str, str]) -> dict[str, Any]:
+def _resolve_asset_refs(
+    config: dict[str, Any],
+    asset_bindings: dict[str, str],
+    asset_types: dict[str, str] | None = None,
+    asset_thumbnail_hashes: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """把素材库 asset_id 解析为当前广告账户的 Meta 素材 ID。
 
     素材绑定是按广告账户保存的，不能把某个账户的 video_id/image_hash
@@ -35,16 +40,34 @@ def _resolve_asset_refs(config: dict[str, Any], asset_bindings: dict[str, str]) 
     投放时由调用方传入当前账户的 READY 绑定。
     """
     resolved = copy.deepcopy(config or {})
+    asset_types = {str(key): str(value).lower() for key, value in (asset_types or {}).items() if value}
+    asset_thumbnail_hashes = {
+        str(key): str(value) for key, value in (asset_thumbnail_hashes or {}).items() if value
+    }
 
     def resolve_one(item: dict[str, Any]) -> None:
         asset_id = item.get("asset_id")
         meta_asset_id = asset_bindings.get(str(asset_id)) if asset_id else None
+        asset_type = str(
+            item.get("asset_type")
+            or asset_types.get(str(asset_id))
+            or ("video" if item.get("video_id") else "image")
+        ).lower()
+        if asset_type not in {"image", "video"}:
+            raise ValueError(f"不支持的素材类型: {asset_type}")
+        item["asset_type"] = asset_type
         if not meta_asset_id:
             return
-        if str(item.get("asset_type") or "image").lower() == "video":
+        if asset_type == "video":
             item["video_id"] = meta_asset_id
+            thumbnail_hash = asset_thumbnail_hashes.get(str(asset_id)) if asset_id else None
+            if thumbnail_hash:
+                item["thumbnail_hash"] = thumbnail_hash
+            # 防止旧模板残留 image_hash，导致视频被组装成 link_data。
+            item.pop("image_hash", None)
         else:
             item["image_hash"] = meta_asset_id
+            item.pop("video_id", None)
 
     resolve_one(resolved)
     for card in resolved.get("carousel_cards") or []:
@@ -57,6 +80,8 @@ def build_connector_payload(template: Any, meta_account_id: str, *, budget_overr
                             status: str = "PAUSED", campaign_name: str | None = None,
                             adset_name: str | None = None,
                             asset_bindings: dict[str, str] | None = None,
+                            asset_types: dict[str, str] | None = None,
+                            asset_thumbnail_hashes: dict[str, str] | None = None,
                             existing_campaign_id: str | None = None,
                             existing_ad_group_id: str | None = None,
                             copy_ad_group: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -67,7 +92,13 @@ def build_connector_payload(template: Any, meta_account_id: str, *, budget_overr
         # 便于协议审计和无复用模式使用同一套 payload 结构。
         campaign["existing_id"] = existing_campaign_id
     asset_bindings = {str(key): str(value) for key, value in (asset_bindings or {}).items() if value}
-    creative_config = _resolve_asset_refs(template.creative_config_json or {}, asset_bindings)
+    asset_types = {str(key): str(value).lower() for key, value in (asset_types or {}).items() if value}
+    creative_config = _resolve_asset_refs(
+        template.creative_config_json or {},
+        asset_bindings,
+        asset_types,
+        asset_thumbnail_hashes,
+    )
     delivery = creative_config.get("delivery") or {}
     adset_configs = creative_config.get("adsets") or [{}]
     logical = []
@@ -109,7 +140,12 @@ def build_connector_payload(template: Any, meta_account_id: str, *, budget_overr
             adset["existing_id"] = existing_ad_group_id
         adset["creatives"] = []
         for cindex, cfg in enumerate(creatives, 1):
-            resolved_cfg = _resolve_asset_refs(cfg, asset_bindings)
+            resolved_cfg = _resolve_asset_refs(
+                cfg,
+                asset_bindings,
+                asset_types,
+                asset_thumbnail_hashes,
+            )
             creative = CreativeBuilder(service, meta_account_id, resolved_cfg,
                                        page_id=config.get("page_id") or creative_config.get("page_id"),
                                        name=f"{template.name} G{index} C{cindex}").build_params()

@@ -14,6 +14,32 @@
         </div>
       </template>
 
+      <el-alert
+        v-if="editSource"
+        type="warning"
+        :closable="false"
+        show-icon
+        title="编辑后重投"
+        style="margin-bottom: 16px"
+      >
+        当前基于任务 {{ editSource.source_job_id }} 创建修订版，仅默认选择原任务失败账户；原任务不会被修改。
+        <span v-if="editSource.errors.length">最近失败原因：{{ editSource.errors[0].message }}</span>
+      </el-alert>
+
+      <div v-if="editSource" class="revision-toolbar">
+        <div>
+          <el-tag size="small" type="info">修订草稿 v{{ revisionRecord?.version || (editSource.revision_no + 1) }}</el-tag>
+          <el-tag v-if="revisionRecord" size="small" :type="revisionRecord.status === 'READY' ? 'success' : revisionRecord.status === 'SUBMITTED' ? 'warning' : 'info'" style="margin-left: 6px">
+            {{ revisionRecord.status }}
+          </el-tag>
+          <span class="tip-inline">已记录 {{ revisionRecord?.diff?.length || 0 }} 项变更{{ revisionSaving ? '，保存中' : revisionDirty ? '，自动保存中' : '，已保存' }}</span>
+        </div>
+        <div>
+          <el-button v-if="revisionRecord?.diff?.length" link type="primary" @click="revisionDiffVisible = true">查看变更</el-button>
+          <el-button size="small" type="primary" plain :loading="revisionSaving" :disabled="!revisionDirty" @click="saveRevisionDraft()">保存草稿</el-button>
+        </div>
+      </div>
+
       <el-steps :active="activeStep" finish-status="success" simple class="publish-steps">
         <el-step title="选择投放方式" />
         <el-step title="广告系列与广告组" />
@@ -446,11 +472,23 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <el-dialog v-model="revisionDiffVisible" title="修订变更" width="760px">
+      <el-table :data="revisionRecord?.diff || []" size="small" border max-height="420">
+        <el-table-column prop="path" label="配置项" width="220" show-overflow-tooltip />
+        <el-table-column label="原值" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ formatRevisionValue(row.before) }}</template>
+        </el-table-column>
+        <el-table-column label="修改后" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ formatRevisionValue(row.after) }}</template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { accountApi, type DeployableAccount } from '@/api/admin'
@@ -464,6 +502,8 @@ import {
   jobsApi,
   isFinalStatus,
   type CampaignJob,
+  type CampaignJobRevision,
+  type JobEditSource,
 } from '@/api/jobs'
 
 const router = useRouter()
@@ -472,6 +512,13 @@ const templates = ref<CampaignTemplate[]>([])
 const accounts = ref<DeployableAccount[]>([])
 const jobs = ref<CampaignJob[]>([])
 const currentJob = ref<CampaignJob | null>(null)
+const editSource = ref<JobEditSource | null>(null)
+const editRevisionId = ref<string | null>(null)
+const revisionRecord = ref<CampaignJobRevision | null>(null)
+const revisionSaving = ref(false)
+const revisionDirty = ref(false)
+const revisionDiffVisible = ref(false)
+let restoringRevision = false
 
 const loadingTemplates = ref(false)
 const loadingAccounts = ref(false)
@@ -496,6 +543,8 @@ const existingAdGroupSyncError = reactive<Record<string, string>>({})
 
 let pollTimer: number | null = null
 let assetPollTimer: number | null = null
+let revisionSaveTimer: number | null = null
+let revisionSavePromise: Promise<void> | null = null
 
 const form = reactive({
   publish_mode: 'TEMPLATE' as 'TEMPLATE' | 'DIRECT',
@@ -553,10 +602,14 @@ const templateSelectWidth = computed(() => {
 const directConfig = computed<Record<string, any> | null>(() => {
   if (form.publish_mode !== 'DIRECT') return null
   const creatives = directForm.creatives.map(({ key, ...creative }) => {
-    const merged = { ...creative, ...sharedCreative }
+    const asset = mediaAssets.value.find(item => item.id === creative.asset_id)
+    // 保留单个创意覆盖值；公共配置只作为空值回退。
+    const merged = { ...sharedCreative, ...creative }
     for (const field of ['primary_text', 'headline', 'description', 'cta', 'landing_url']) {
       if (creative[field] === '' || creative[field] == null) merged[field] = sharedCreative[field]
     }
+    // 后端不能仅凭 Meta 素材 ID 判断视频/图片；必须把素材类型随协议传递。
+    if (asset?.asset_type) merged.asset_type = asset.asset_type
     return merged
   })
   return {
@@ -573,6 +626,139 @@ const directConfig = computed<Record<string, any> | null>(() => {
       bid_amount: adset.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? undefined : adset.bid_amount, creatives })),
   }
 })
+
+const applyEditInlineConfig = (config: Record<string, any>) => {
+  directForm.name = config.name || directForm.name
+  directForm.objective = config.objective || directForm.objective
+  directForm.page_id = config.page_id || directForm.page_id
+  directForm.daily_budget = Number(config.daily_budget || directForm.daily_budget)
+  directForm.optimization_goal = config.optimization_goal || directForm.optimization_goal
+  directForm.billing_event = config.billing_event || directForm.billing_event
+  directForm.bid_strategy = config.bid_strategy || directForm.bid_strategy
+  creativeFormat.value = config.creative_format || 'MULTI_AD'
+  if (config.delivery) Object.assign(delivery, config.delivery)
+  const firstCreative = (config.creatives || [])[0] || {}
+  for (const key of ['primary_text', 'headline', 'description', 'cta', 'landing_url']) {
+    if (firstCreative[key] != null) (sharedCreative as any)[key] = firstCreative[key]
+  }
+  const adsets = Array.isArray(config.adsets) && config.adsets.length ? config.adsets : []
+  directForm.adsets.splice(0, directForm.adsets.length, ...adsets.map((item: any, index: number) => {
+    const targeting = item.targeting || {}
+    const countries = targeting.geo_locations?.countries || []
+    return {
+      key: `edit-adset-${Date.now()}-${index}`,
+      name: item.name || `广告组 ${index + 1}`,
+      budget: Number(item.budget || directForm.daily_budget),
+      country: Array.isArray(countries) ? countries.join(',') : String(countries || 'US'),
+      age_min: Number(targeting.age_min || 18),
+      age_max: Number(targeting.age_max || 65),
+      publisher_platforms: item.placement?.publisher_platforms || ['facebook'],
+      optimization_goal: item.optimization_goal || directForm.optimization_goal,
+      billing_event: item.billing_event || directForm.billing_event,
+      bid_strategy: item.bid_strategy || directForm.bid_strategy,
+      bid_amount: Number(item.bid_amount || 1),
+    }
+  }))
+  if (!directForm.adsets.length) addDirectAdset()
+  const creatives = Array.isArray(config.creatives) ? config.creatives : []
+  directForm.creatives.splice(0, directForm.creatives.length, ...creatives.map((item: any, index: number) => ({
+    key: `edit-creative-${Date.now()}-${index}`,
+    asset_id: item.asset_id || '',
+    primary_text: item.primary_text || '',
+    headline: item.headline || '',
+    description: item.description || '',
+    cta: item.cta || 'LEARN_MORE',
+    landing_url: item.landing_url || '',
+  })))
+  if (!directForm.creatives.length) addDirectCreative()
+}
+const revisionSnapshot = computed<Record<string, any>>(() => ({
+  template_id: form.publish_mode === 'TEMPLATE' ? form.template_id || null : null,
+  source: form.publish_mode,
+  inline_config: form.publish_mode === 'DIRECT' ? directConfig.value : null,
+  ad_account_ids: [...form.ad_account_ids],
+  budget_override: form.budget_override || null,
+  status: form.status,
+  sinan_promotion_id: form.sinan_promotion_id || null,
+  access_business_ids: { ...accessBusinessIds },
+  ad_group_mode: adGroupMode.value,
+  ad_group_selections: adGroupSelectionsPayload.value,
+}))
+
+const formatRevisionValue = (value: any) => {
+  if (value === undefined || value === null || value === '') return '-'
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
+}
+
+const applyRevisionSnapshot = async (revision: CampaignJobRevision) => {
+  const current = revision.snapshot?.current
+  if (!current || typeof current !== 'object') return
+  const source = String(current.source || '').toUpperCase()
+  form.publish_mode = source === 'DIRECT' ? 'DIRECT' : 'TEMPLATE'
+  await nextTick()
+  if (source === 'DIRECT' && current.inline_config) {
+    applyEditInlineConfig(current.inline_config)
+  } else if (current.template_id) {
+    form.template_id = current.template_id
+  }
+  if (Array.isArray(current.ad_account_ids)) form.ad_account_ids = [...current.ad_account_ids]
+  form.budget_override = Number(current.budget_override || 0)
+  form.status = current.status || 'PAUSED'
+  form.sinan_promotion_id = current.sinan_promotion_id || ''
+  adGroupMode.value = (current.ad_group_mode || 'NEW') as 'NEW' | 'EXISTING' | 'COPY'
+  Object.keys(accessBusinessIds).forEach(id => delete accessBusinessIds[id])
+  Object.assign(accessBusinessIds, current.access_business_ids || {})
+  Object.keys(existingAdGroupSelections).forEach(id => delete existingAdGroupSelections[id])
+  for (const [accountId, selection] of Object.entries(current.ad_group_selections || {})) {
+    if ((selection as any)?.ad_group_id) existingAdGroupSelections[accountId] = (selection as any).ad_group_id
+  }
+}
+
+const saveRevisionDraft = async (silent = false) => {
+  if (!editRevisionId.value) return
+  if (revisionSavePromise) return revisionSavePromise
+  const task = (async () => {
+    const snapshot = revisionSnapshot.value
+    const snapshotKey = JSON.stringify(snapshot)
+    revisionSaving.value = true
+    try {
+      const { data } = await jobsApi.updateRevision(editRevisionId.value!, {
+        snapshot,
+        account_ids: [...form.ad_account_ids],
+      })
+      revisionRecord.value = data
+      if (JSON.stringify(revisionSnapshot.value) === snapshotKey) revisionDirty.value = false
+      if (!silent) ElMessage.success('修订草稿已保存')
+    } finally {
+      revisionSaving.value = false
+    }
+  })()
+  revisionSavePromise = task
+  try {
+    await task
+  } finally {
+    if (revisionSavePromise === task) revisionSavePromise = null
+  }
+}
+
+const scheduleRevisionAutosave = () => {
+  if (revisionSaveTimer !== null) window.clearTimeout(revisionSaveTimer)
+  if (!editRevisionId.value || restoringRevision) return
+  revisionSaveTimer = window.setTimeout(() => {
+    revisionSaveTimer = null
+    saveRevisionDraft(true).catch(() => undefined)
+  }, 800)
+}
+
+const flushRevisionDraft = async () => {
+  if (revisionSaveTimer !== null) {
+    window.clearTimeout(revisionSaveTimer)
+    revisionSaveTimer = null
+  }
+  if (editRevisionId.value && revisionDirty.value) await saveRevisionDraft(true)
+}
+
 const templateReady = computed(() => form.publish_mode === 'DIRECT'
   ? !!directConfig.value?.page_id
   : !!selectedTemplate.value?.creative_config_json?.page_id)
@@ -739,6 +925,42 @@ const syncAccessBusinessDefaults = () => {
   }
   for (const id of Object.keys(accessBusinessIds)) {
     if (!form.ad_account_ids.includes(id)) delete accessBusinessIds[id]
+  }
+}
+
+const loadEditSource = async (jobId: string, revisionId?: string) => {
+  try {
+    const { data } = await jobsApi.getEditSource(jobId)
+    const { data: revision } = revisionId
+      ? await jobsApi.getRevision(revisionId)
+      : await jobsApi.createRevision(jobId, { account_ids: data.ad_account_ids })
+    if (revision.base_job_id !== jobId) throw new Error('修订草稿与来源任务不一致')
+    restoringRevision = true
+    editSource.value = data
+    editRevisionId.value = revision.id
+    revisionRecord.value = revision
+    form.ad_account_ids = data.ad_account_ids || []
+    form.status = data.status || 'PAUSED'
+    form.budget_override = Number(data.budget_override || 0)
+    form.sinan_promotion_id = data.sinan_promotion_id || ''
+    adGroupMode.value = (data.ad_group_mode || 'NEW') as 'NEW' | 'EXISTING' | 'COPY'
+    Object.assign(accessBusinessIds, data.access_business_ids || {})
+    if (data.source === 'DIRECT' && data.inline_config) {
+      form.publish_mode = 'DIRECT'
+      applyEditInlineConfig(data.inline_config)
+    } else {
+      form.publish_mode = 'TEMPLATE'
+      await nextTick()
+      form.template_id = data.template_id || ''
+    }
+    await applyRevisionSnapshot(revision)
+    await nextTick()
+    revisionDirty.value = false
+    restoringRevision = false
+    ElMessage.info(`已加载任务失败配置，修复后将生成新的修订任务（来源 ${jobId}）`)
+  } catch {
+    restoringRevision = false
+    ElMessage.error('无法加载原任务配置，请从任务详情重新进入编辑')
   }
 }
 
@@ -934,7 +1156,11 @@ const submit = async () => {
       ad_group_selections: adGroupSelectionsPayload.value,
       preview_id: preflightResult.value.preview_id,
       snapshot_hash: preflightResult.value.snapshot_hash,
-      idempotency_key: `publish:${preflightResult.value.preview_id}`,
+      idempotency_key: editSource.value
+        ? `edit:${editSource.value.source_job_id}:${preflightResult.value.preview_id}`
+        : `publish:${preflightResult.value.preview_id}`,
+      source_job_id: editSource.value?.source_job_id,
+      revision_id: editRevisionId.value || undefined,
     })
     if (data.rejected_accounts?.length) {
       ElMessage.warning(`有 ${data.rejected_accounts.length} 个账号未进入任务，请检查账号状态`)
@@ -956,6 +1182,7 @@ const runPreflight = async () => {
   if (form.publish_mode === 'TEMPLATE' && !form.template_id || form.publish_mode === 'DIRECT' && !directConfig.value || !form.ad_account_ids.length) return
   preflighting.value = true
   try {
+    await flushRevisionDraft()
     if (form.publish_mode === 'DIRECT' && form.save_as_template && !form.template_id && directConfig.value) {
       const firstAdset = directConfig.value.adsets?.[0] || {}
       const { data: saved } = await templatesApi.create({
@@ -978,9 +1205,14 @@ const runPreflight = async () => {
       ElMessage.success(`已保存投放模板：${saved.name}`)
     }
     syncAccessBusinessDefaults()
-    const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id || undefined, inline_config: form.publish_mode === 'DIRECT' ? directConfig.value || undefined : undefined, template_name: form.template_name || undefined, save_as_template: form.save_as_template, source: form.publish_mode, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined, access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined, ad_group_mode: adGroupMode.value, ad_group_selections: adGroupSelectionsPayload.value })
+    const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id || undefined, inline_config: form.publish_mode === 'DIRECT' ? directConfig.value || undefined : undefined, template_name: form.template_name || undefined, save_as_template: form.save_as_template, source: form.publish_mode, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined, access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined, ad_group_mode: adGroupMode.value, ad_group_selections: adGroupSelectionsPayload.value, source_job_id: editSource.value?.source_job_id, revision_id: editRevisionId.value || undefined })
     if (data.template_id && form.publish_mode === 'DIRECT') form.template_id = data.template_id
     preflightResult.value = data
+    if (editRevisionId.value && data.passed) {
+      const { data: revision } = await jobsApi.getRevision(editRevisionId.value)
+      revisionRecord.value = revision
+      revisionDirty.value = false
+    }
     if (!data.passed) ElMessage.error('预检未通过，请处理阻断项')
   } finally { preflighting.value = false }
 }
@@ -1010,6 +1242,12 @@ watch(() => form.ad_account_ids.slice(), ids => {
 watch(() => form.save_as_template, enabled => {
   if (!enabled) form.template_name = ''
 })
+watch([form, directForm, sharedCreative, delivery, accessBusinessIds, existingAdGroupSelections, adGroupMode, creativeFormat], () => {
+  if (editRevisionId.value && !restoringRevision) {
+    revisionDirty.value = true
+    scheduleRevisionAutosave()
+  }
+}, { deep: true })
 
 const missingAssetAccounts = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['ASSET_SYNC_PENDING', 'ACCOUNTS_REJECTED'].includes(item.code) && item.items?.some((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步')))
 const preflightBlockedAccounts = computed(() => (preflightResult.value?.warnings || []).flatMap((item: any) => item.items || []))
@@ -1069,10 +1307,14 @@ onMounted(() => {
   loadJobs()
   const presetAccounts = String(route.query.account_ids || '').split(',').filter(Boolean)
   if (presetAccounts.length) form.ad_account_ids = presetAccounts
+  const sourceJobId = String(route.query.source_job_id || '')
+  const revisionId = String(route.query.revision_id || '')
+  if (sourceJobId) loadEditSource(sourceJobId, revisionId || undefined)
 })
 
 onUnmounted(() => {
   if (assetPollTimer !== null) window.clearInterval(assetPollTimer)
+  if (revisionSaveTimer !== null) window.clearTimeout(revisionSaveTimer)
 })
 
 onUnmounted(stopPolling)
@@ -1090,6 +1332,7 @@ onUnmounted(stopPolling)
 }
 .tip { color: #909399; font-size: 12px; margin-top: 4px; }
 .tip-inline { color: #909399; font-size: 12px; margin-left: 10px; }
+.revision-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -4px 0 16px; padding: 10px 12px; border: 1px solid #d9ecff; border-radius: 6px; background: #f4f9ff; }
 .page-sync-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; color: #909399; font-size: 12px; line-height: 1.5; }
 .publish-steps { margin: 6px 0 28px; }
 .publish-form { max-width: 920px; }

@@ -18,6 +18,10 @@ class CampaignJob(TenantMixin, Base):
     __tablename__ = "campaign_jobs"
 
     id = Column(String(50), primary_key=True, index=True)
+    parent_job_id = Column(String(50), ForeignKey("campaign_jobs.id"), nullable=True, index=True,
+                            comment="编辑后重投所基于的原任务")
+    revision_no = Column(Integer, default=1, nullable=False, comment="同一任务链的修订版本")
+    edit_mode = Column(String(32), nullable=True, comment="EDIT_REPUBLISH / EXACT_RETRY / COPY")
     template_id = Column(String(50), ForeignKey("campaign_templates.id"), nullable=True, index=True)
 
     action_type = Column(String(32), default=ActionType.CREATE.value,
@@ -50,6 +54,14 @@ class CampaignJob(TenantMixin, Base):
 
     template = relationship("CampaignTemplate", back_populates="jobs")
     items = relationship("CampaignJobItem", back_populates="job", cascade="all, delete-orphan")
+    parent_job = relationship("CampaignJob", remote_side=[id], back_populates="revisions")
+    revisions = relationship("CampaignJob", back_populates="parent_job", foreign_keys=[parent_job_id])
+    draft_revisions = relationship(
+        "CampaignJobRevision",
+        foreign_keys="CampaignJobRevision.base_job_id",
+        back_populates="base_job",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         # Job Center 列表页固定按 (租户, 时间倒序) + 状态过滤
@@ -60,6 +72,9 @@ class CampaignJob(TenantMixin, Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "parent_job_id": self.parent_job_id,
+            "revision_no": self.revision_no,
+            "edit_mode": self.edit_mode,
             "tenant_id": self.tenant_id,
             "template_id": self.template_id,
             "action_type": self.action_type,

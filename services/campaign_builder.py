@@ -277,11 +277,18 @@ class CreativeBuilder:
         elif asset_type == "video":
             if not cfg.get("video_id"):
                 raise ValueError("视频创意缺少已上传到目标广告账户的 video_id")
+            thumbnail_hash = cfg.get("thumbnail_hash") or cfg.get("image_hash")
+            if not thumbnail_hash and not cfg.get("thumbnail_url"):
+                raise ValueError("视频创意缺少 Meta 缩略图，请先完成视频封面同步")
             media_data: Dict[str, Any] = {
                 "video_id": cfg.get("video_id"),
                 "title": cfg.get("headline", ""),
                 "message": cfg.get("primary_text", ""),
             }
+            if thumbnail_hash:
+                media_data["image_hash"] = thumbnail_hash
+            elif cfg.get("thumbnail_url"):
+                media_data["image_url"] = cfg["thumbnail_url"]
             if cfg.get("description"):
                 media_data["link_description"] = cfg["description"]
             if cfg.get("landing_url"):

@@ -20,7 +20,7 @@ from core.database import get_db
 from core.enums import ActionType, InstanceStatus
 from core.logger import logger
 from core.tenant import effective_tenant_id
-from models import AdGroup, Campaign, CampaignInstance, CampaignTemplate, CampaignJob, CampaignJobItem, PublishPreview, User
+from models import AdGroup, Campaign, CampaignInstance, CampaignTemplate, CampaignJob, CampaignJobItem, CampaignJobRevision, PublishPreview, User
 from services.account_access import accessible_account_ids
 
 def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
@@ -41,6 +41,15 @@ def _scope_jobs(query, current_user):
     tenant_id = effective_tenant_id(current_user)
     if tenant_id:
         return query.filter(CampaignJob.tenant_id == tenant_id)
+    if getattr(current_user, "is_platform_admin", lambda: False)():
+        return query
+    raise HTTPException(status_code=403, detail="当前账号未绑定租户")
+
+
+def _scope_revisions(query, current_user):
+    tenant_id = effective_tenant_id(current_user)
+    if tenant_id:
+        return query.filter(CampaignJobRevision.tenant_id == tenant_id)
     if getattr(current_user, "is_platform_admin", lambda: False)():
         return query
     raise HTTPException(status_code=403, detail="当前账号未绑定租户")
@@ -69,9 +78,22 @@ class CampaignCreateRequest(BaseModel):
     preview_id: Optional[str] = Field(None, description="发布前预览快照 ID")
     snapshot_hash: Optional[str] = Field(None, description="发布前预览快照哈希")
     idempotency_key: Optional[str] = Field(None, max_length=128, description="客户端幂等键")
+    source_job_id: Optional[str] = Field(None, description="编辑后重投所基于的原任务")
+    revision_id: Optional[str] = Field(None, description="编辑后重投的修订草稿")
 
 class CampaignPreflightRequest(CampaignCreateRequest):
     pass
+
+
+class RevisionCreateRequest(BaseModel):
+    account_ids: Optional[List[str]] = None
+    edit_reason: Optional[str] = Field(None, max_length=1000)
+
+
+class RevisionUpdateRequest(BaseModel):
+    snapshot: dict
+    account_ids: Optional[List[str]] = None
+    edit_reason: Optional[str] = Field(None, max_length=1000)
 
 
 def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optional[str] = None) -> str:
@@ -237,6 +259,8 @@ def _submit(
     params: dict,
     created_by,
     scheduled_at: Optional[datetime] = None,
+    parent_job_id: Optional[str] = None,
+    edit_mode: Optional[str] = None,
 ) -> dict:
     """统一提交入口：建 Job → 派发 → 立即返回"""
     service = JobService(db)
@@ -248,6 +272,8 @@ def _submit(
             params=params,
             created_by=getattr(created_by, "id", None),
             scheduled_at=scheduled_at,
+            parent_job_id=parent_job_id,
+            edit_mode=edit_mode,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -263,6 +289,9 @@ def _submit(
         "scheduled_at": job.scheduled_at.isoformat() if job.scheduled_at else None,
         "rejected_accounts": (job.params or {}).get("rejected_accounts", []),
         "preview_id": job.preview_id,
+        "parent_job_id": job.parent_job_id,
+        "revision_no": job.revision_no,
+        "edit_mode": job.edit_mode,
     }
 
 
@@ -270,6 +299,19 @@ def _canonical_hash(payload: dict) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
+
+
+def _diff_values(before, after, path=""):
+    """生成前端可读的配置差异；列表按整体比较，避免误报索引移动。"""
+    if isinstance(before, dict) and isinstance(after, dict):
+        result = []
+        for key in sorted(set(before) | set(after)):
+            child = f"{path}.{key}" if path else key
+            result.extend(_diff_values(before.get(key), after.get(key), child))
+        return result
+    if before != after:
+        return [{"path": path, "before": before, "after": after}]
+    return []
 
 
 def _create_preview(
@@ -290,6 +332,8 @@ def _create_preview(
         "access_business_ids": req.access_business_ids or {},
         "ad_group_mode": req.ad_group_mode,
         "ad_group_selections": req.ad_group_selections or {},
+        "source_job_id": req.source_job_id,
+        "revision_id": req.revision_id,
     }
     snapshot_hash = _canonical_hash({"request": request_snapshot, "result": result})
     preview = PublishPreview(
@@ -340,6 +384,12 @@ def _validate_preview_for_submit(
         raise HTTPException(status_code=403, detail="提交账户权限已变化，请重新选择账户")
     if req.template_id and req.template_id != preview.template_id:
         raise HTTPException(status_code=409, detail="提交模板与预览模板不一致")
+    expected_source_job_id = (preview.request_snapshot or {}).get("source_job_id")
+    if (req.source_job_id or None) != (expected_source_job_id or None):
+        raise HTTPException(status_code=409, detail="提交来源任务与预览不一致，请重新执行预览")
+    expected_revision_id = (preview.request_snapshot or {}).get("revision_id")
+    if (req.revision_id or None) != (expected_revision_id or None):
+        raise HTTPException(status_code=409, detail="提交修订草稿与预览不一致，请重新执行预览")
     expected_mode = (preview.request_snapshot or {}).get("ad_group_mode", "NEW")
     expected_selections = (preview.request_snapshot or {}).get("ad_group_selections", {}) or {}
     if req.ad_group_mode != expected_mode or (req.ad_group_selections or {}) != expected_selections:
@@ -400,6 +450,18 @@ def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_
         result["preview_id"] = preview.id
         result["snapshot_hash"] = preview.snapshot_hash
         result["expires_at"] = preview.expires_at.isoformat()
+        if req.revision_id:
+            revision = _scope_revisions(db.query(CampaignJobRevision), current_user).filter(
+                CampaignJobRevision.id == req.revision_id
+            ).first()
+            if not revision or revision.base_job_id != req.source_job_id:
+                raise HTTPException(status_code=409, detail="修订草稿与来源任务不一致")
+            base = (revision.snapshot or {}).get("base", {})
+            revision.snapshot = {"base": base, "current": preview.request_snapshot}
+            revision.diff = _diff_values(base, preview.request_snapshot)
+            revision.validation_result = result
+            revision.status = "READY"
+            db.commit()
     return result
 
 @router.post("/campaign-create")
@@ -417,6 +479,24 @@ def create_campaign_batch(
     )
     preview = _validate_preview_for_submit(db, req, current_user)
     template_id = _ensure_template(db, req, effective_tenant_id(current_user))
+    parent_job_id = None
+    edit_mode = None
+    if req.source_job_id:
+        parent = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == req.source_job_id).first()
+        if not parent:
+            raise HTTPException(status_code=404, detail="来源任务不存在或无权访问")
+        if parent.action_type != ActionType.CREATE.value:
+            raise HTTPException(status_code=400, detail="只有广告创建任务支持编辑后重投")
+        parent_job_id = parent.id
+        edit_mode = "EDIT_REPUBLISH"
+        if req.revision_id:
+            revision = _scope_revisions(db.query(CampaignJobRevision), current_user).filter(
+                CampaignJobRevision.id == req.revision_id
+            ).first()
+            if not revision or revision.base_job_id != parent_job_id:
+                raise HTTPException(status_code=409, detail="修订草稿与来源任务不一致")
+            if revision.status != "READY":
+                raise HTTPException(status_code=409, detail="修订草稿尚未通过预检")
     result = _submit(
         db,
         template_id=template_id,
@@ -432,13 +512,27 @@ def create_campaign_batch(
             "source": req.source or ("TEMPLATE" if req.template_id else "DIRECT"),
             "save_as_template": req.save_as_template,
             "_preview_id": preview.id,
-            "_idempotency_key": req.idempotency_key or f"publish:{preview.id}",
+            "_idempotency_key": req.idempotency_key or (
+                f"edit:{parent_job_id}:{preview.id}" if parent_job_id else f"publish:{preview.id}"
+            ),
+            "source_job_id": parent_job_id,
+            "edit_mode": edit_mode,
+            "revision_id": req.revision_id,
         },
         created_by=current_user,
+        parent_job_id=parent_job_id,
+        edit_mode=edit_mode,
     )
     preview.status = "SUBMITTED"
     preview.submitted_at = datetime.utcnow()
     preview.submitted_job_id = result["job_id"]
+    if req.revision_id:
+        revision = _scope_revisions(db.query(CampaignJobRevision), current_user).filter(
+            CampaignJobRevision.id == req.revision_id
+        ).first()
+        if revision:
+            revision.status = "SUBMITTED"
+            revision.published_job_id = result["job_id"]
     db.commit()
     logger.info(
         "[JobAPI] campaign-create submitted job_id=%s accounts=%s status=%s",
@@ -586,6 +680,194 @@ def enable_batch(
 
 
 # ==================== 任务查询与控制 ====================
+
+@router.get("/{job_id}/edit-source")
+def get_edit_source(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("job:create")),
+):
+    """返回编辑后重投所需的原始配置；原任务只读，不修改其快照。"""
+    job = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+    if job.action_type != ActionType.CREATE.value:
+        raise HTTPException(status_code=400, detail="只有广告创建任务支持编辑后重投")
+    visible = accessible_account_ids(db, current_user)
+    if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
+        raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+
+    failed_items = [item for item in job.items if item.status == "FAILED"]
+    selected_items = failed_items or list(job.items)
+    if visible is not None:
+        selected_items = [item for item in selected_items if item.ad_account_id in visible]
+    template = db.query(CampaignTemplate).filter(CampaignTemplate.id == job.template_id).first()
+    if not template:
+        raise HTTPException(status_code=409, detail="原任务引用的投放配置已不存在，无法编辑")
+
+    params = job.params or {}
+    source = str(params.get("source") or "TEMPLATE").upper()
+    inline_config = None
+    if source == "DIRECT":
+        config = template.creative_config_json or {}
+        inline_config = {
+            "name": template.name,
+            "objective": template.objective,
+            "buying_type": template.buying_type,
+            "is_adset_budget_sharing_enabled": template.is_adset_budget_sharing_enabled,
+            "special_ad_categories": template.special_ad_categories or [],
+            "budget_type": template.budget_type,
+            "daily_budget": template.daily_budget,
+            "lifetime_budget": template.lifetime_budget,
+            "bid_strategy": template.bid_strategy,
+            "optimization_goal": template.optimization_goal,
+            "billing_event": template.billing_event,
+            **config,
+        }
+
+    errors = []
+    for item in failed_items:
+        if item.error_code or item.error_message:
+            errors.append({
+                "account_id": item.ad_account_id,
+                "code": item.error_code,
+                "message": item.error_message,
+                "category": item.error_category,
+            })
+    return {
+        "source_job_id": job.id,
+        "revision_no": job.revision_no,
+        "source": source,
+        "template_id": job.template_id if source != "DIRECT" else None,
+        "inline_config": inline_config,
+        "budget_override": params.get("budget_override"),
+        "status": params.get("status", "PAUSED"),
+        "sinan_promotion_id": params.get("sinan_promotion_id"),
+        "access_business_ids": params.get("access_business_ids") or {},
+        "ad_group_mode": params.get("ad_group_mode", "NEW"),
+        "ad_group_selections": params.get("ad_group_selections") or {},
+        "ad_account_ids": [item.ad_account_id for item in selected_items],
+        "failed_account_ids": [item.ad_account_id for item in failed_items],
+        "errors": errors,
+        "template": template.to_dict(),
+    }
+
+
+@router.post("/{job_id}/revisions")
+def create_job_revision(
+    job_id: str,
+    req: RevisionCreateRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("job:create")),
+):
+    """创建或恢复一个编辑草稿；同一用户同一来源任务只保留一个未提交草稿。"""
+    source = get_edit_source(job_id, db, current_user)
+    active = (
+        db.query(CampaignJobRevision)
+        .filter(
+            CampaignJobRevision.base_job_id == job_id,
+            CampaignJobRevision.created_by == current_user.id,
+            CampaignJobRevision.status.in_(["DRAFT", "READY", "INVALID"]),
+        )
+        .order_by(CampaignJobRevision.version.desc())
+        .first()
+    )
+    if active:
+        return active.to_dict()
+    job = db.query(CampaignJob).filter(CampaignJob.id == job_id).first()
+    latest = (
+        db.query(CampaignJobRevision.version)
+        .filter(CampaignJobRevision.base_job_id == job_id)
+        .order_by(CampaignJobRevision.version.desc())
+        .first()
+    )
+    revision = CampaignJobRevision(
+        id=uuid.uuid4().hex,
+        tenant_id=job.tenant_id,
+        base_job_id=job_id,
+        template_id=job.template_id,
+        version=(latest[0] + 1) if latest else 1,
+        status="DRAFT",
+        source=source["source"],
+        account_ids=req.account_ids or source["ad_account_ids"],
+        snapshot={"base": source, "current": source},
+        diff=[],
+        edit_reason=req.edit_reason,
+        created_by=current_user.id,
+    )
+    db.add(revision)
+    db.commit()
+    db.refresh(revision)
+    return revision.to_dict()
+
+
+@router.get("/{job_id}/revisions")
+def list_job_revisions(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("job:create")),
+):
+    get_edit_source(job_id, db, current_user)
+    return [row.to_dict() for row in db.query(CampaignJobRevision).filter(
+        CampaignJobRevision.base_job_id == job_id
+    ).order_by(CampaignJobRevision.version.desc()).all()]
+
+
+@router.get("/revisions/{revision_id}")
+def get_job_revision(
+    revision_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("job:create")),
+):
+    row = _scope_revisions(db.query(CampaignJobRevision), current_user).filter(CampaignJobRevision.id == revision_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="修订草稿不存在或无权访问")
+    return row.to_dict()
+
+
+@router.patch("/revisions/{revision_id}")
+def update_job_revision(
+    revision_id: str,
+    req: RevisionUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("job:create")),
+):
+    row = _scope_revisions(db.query(CampaignJobRevision), current_user).filter(CampaignJobRevision.id == revision_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="修订草稿不存在或无权访问")
+    if row.status not in {"DRAFT", "READY", "INVALID"}:
+        raise HTTPException(status_code=409, detail="该修订草稿已提交，不能继续修改")
+    base = (row.snapshot or {}).get("base", {})
+    row.snapshot = {"base": base, "current": req.snapshot}
+    row.diff = _diff_values(base, req.snapshot)
+    if req.account_ids is not None:
+        row.account_ids = req.account_ids
+    if req.edit_reason is not None:
+        row.edit_reason = req.edit_reason
+    row.status = "DRAFT"
+    row.validation_result = None
+    db.commit()
+    db.refresh(row)
+    return row.to_dict()
+
+
+@router.post("/revisions/{revision_id}/discard")
+def discard_job_revision(
+    revision_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("job:create")),
+):
+    row = _scope_revisions(db.query(CampaignJobRevision), current_user).filter(
+        CampaignJobRevision.id == revision_id
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="修订草稿不存在或无权访问")
+    if row.status not in {"DRAFT", "READY", "INVALID"}:
+        raise HTTPException(status_code=409, detail="该修订草稿已提交或已放弃，不能重复操作")
+    row.status = "DISCARDED"
+    db.commit()
+    db.refresh(row)
+    return row.to_dict()
 
 @router.get("")
 def list_jobs(

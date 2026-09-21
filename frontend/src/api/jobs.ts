@@ -39,6 +39,9 @@ export interface CampaignJob {
   created_at: string | null
   started_at: string | null
   finished_at: string | null
+  parent_job_id?: string | null
+  revision_no?: number
+  edit_mode?: string | null
   items?: CampaignJobItem[]
 }
 
@@ -80,6 +83,43 @@ export interface CreateCampaignPayload {
   preview_id?: string
   snapshot_hash?: string
   idempotency_key?: string
+  source_job_id?: string
+  revision_id?: string
+}
+
+export interface JobEditSource {
+  source_job_id: string
+  revision_no: number
+  source: 'TEMPLATE' | 'DIRECT' | string
+  template_id?: string | null
+  inline_config?: Record<string, any> | null
+  budget_override?: number | null
+  status?: string
+  sinan_promotion_id?: string | null
+  access_business_ids?: Record<string, string>
+  ad_group_mode?: 'NEW' | 'EXISTING' | 'COPY' | string
+  ad_group_selections?: Record<string, any>
+  ad_account_ids: string[]
+  failed_account_ids: string[]
+  revision_id?: string | null
+  errors: Array<{ account_id: string; code?: string | null; message?: string | null; category?: string | null }>
+}
+
+export interface CampaignJobRevision {
+  id: string
+  base_job_id: string
+  published_job_id?: string | null
+  template_id?: string | null
+  version: number
+  status: string
+  source?: string | null
+  account_ids: string[]
+  snapshot?: Record<string, any> | null
+  diff: Array<{ path: string; before: any; after: any }>
+  validation_result?: Record<string, any> | null
+  edit_reason?: string | null
+  created_at?: string | null
+  updated_at?: string | null
 }
 
 export interface TemplateActionPayload {
@@ -131,6 +171,15 @@ export const jobsApi = {
     request.get<CampaignJob[]>('/api/v1/jobs', { params }),
 
   get: (id: string) => request.get<CampaignJob>(`/api/v1/jobs/${id}`),
+  getEditSource: (id: string) => request.get<JobEditSource>(`/api/v1/jobs/${id}/edit-source`),
+  listRevisions: (id: string) => request.get<CampaignJobRevision[]>(`/api/v1/jobs/${id}/revisions`),
+  createRevision: (id: string, data?: { account_ids?: string[]; edit_reason?: string }) =>
+    request.post<CampaignJobRevision>(`/api/v1/jobs/${id}/revisions`, data || {}),
+  getRevision: (id: string) => request.get<CampaignJobRevision>(`/api/v1/jobs/revisions/${id}`),
+  updateRevision: (id: string, data: { snapshot: Record<string, any>; account_ids?: string[]; edit_reason?: string }) =>
+    request.patch<CampaignJobRevision>(`/api/v1/jobs/revisions/${id}`, data),
+  discardRevision: (id: string) =>
+    request.post<CampaignJobRevision>(`/api/v1/jobs/revisions/${id}/discard`),
 
   retry: (id: string) => request.post(`/api/v1/jobs/${id}/retry`),
 

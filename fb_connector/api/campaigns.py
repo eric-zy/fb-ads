@@ -201,6 +201,22 @@ async def create_campaign(payload: CampaignCreateRequest):
             if old.status != "FAILED" and not _delivery_task_is_stale(old):
                 return {"status": old.status, "connector_task_id": old.task_id, "task_id": payload.task_id, "idempotency_key": old.idempotency_key}
             connector_task_id = old.task_id
+            # 失败任务重试时允许修复后的协议重新创建 Creative/Ad。
+            # Campaign/AdSet 仍保留，避免重复创建；如果协议已变化，旧的
+            # Creative/Ad 引用可能对应错误的素材结构（例如把视频当成图片），
+            # 必须清掉，否则 worker 会继续复用旧对象。
+            payload_changed = (old.request_payload or {}) != (payload.payload or {})
+            if old.status == "FAILED" and payload_changed:
+                objects = dict(old.objects or {})
+                objects["creatives"] = []
+                objects["ads"] = []
+                old.objects = objects
+                logger.info(
+                    "[ConnectorCampaignAPI] reset stale creative/ad objects "
+                    "connector_task_id=%s task_id=%s",
+                    old.task_id,
+                    payload.task_id,
+                )
             old.source_task_id = payload.task_id
             old.credential_id = payload.credential_id
             old.account_id = payload.account_id

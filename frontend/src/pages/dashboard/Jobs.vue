@@ -61,9 +61,17 @@
         </el-table-column>
         <el-table-column prop="created_at" label="创建时间" width="180" show-overflow-tooltip />
         <el-table-column label="发布人" width="150" show-overflow-tooltip><template #default="{ row }">{{ row.publisher?.username || row.publisher?.email || row.created_by || '-' }}</template></el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="viewDetail(row.id)">详情</el-button>
+            <el-button
+              v-if="canEditRepublish && row.action_type === 'CREATE' && ['FAILED', 'PARTIAL_SUCCESS'].includes(row.status)"
+              link
+              type="success"
+              @click="editRepublish(row)"
+            >
+              编辑后重投
+            </el-button>
             <el-button
               v-if="canRetry"
               link
@@ -86,6 +94,10 @@
       <el-descriptions :column="3" border size="small" style="margin-bottom: 16px">
         <el-descriptions-item label="Job ID">{{ currentJob?.id }}</el-descriptions-item>
         <el-descriptions-item label="动作">{{ currentJob?.action_type }}</el-descriptions-item>
+        <el-descriptions-item label="修订版本">
+          v{{ currentJob?.revision_no || 1 }}{{ currentJob?.edit_mode === 'EDIT_REPUBLISH' ? '（编辑重投）' : '' }}
+        </el-descriptions-item>
+        <el-descriptions-item label="来源任务">{{ currentJob?.parent_job_id || '-' }}</el-descriptions-item>
         <el-descriptions-item label="状态">
           <el-tag :type="statusTagType(currentJob?.status || '')" size="small">
             {{ currentJob?.status }}
@@ -107,6 +119,43 @@
         :closable="false"
         style="margin-bottom: 12px"
       />
+
+      <el-divider content-position="left">修订历史</el-divider>
+      <el-table :data="revisions" v-loading="revisionsLoading" size="small" border style="margin-bottom: 16px">
+        <el-table-column prop="version" label="版本" width="80">
+          <template #default="{ row }">v{{ row.version }}</template>
+        </el-table-column>
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tag :type="statusTagType(row.status)" size="small">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="变更" width="80">
+          <template #default="{ row }">{{ row.diff?.length || 0 }} 项</template>
+        </el-table-column>
+        <el-table-column prop="published_job_id" label="提交任务" show-overflow-tooltip />
+        <el-table-column prop="updated_at" label="更新时间" width="180" show-overflow-tooltip />
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="canEditRepublish && ['DRAFT', 'READY', 'INVALID'].includes(row.status) && currentJob"
+              link
+              type="primary"
+              @click="continueRevision(row)"
+            >
+              继续编辑
+            </el-button>
+            <el-button
+              v-if="canEditRepublish && ['DRAFT', 'READY', 'INVALID'].includes(row.status)"
+              link
+              type="danger"
+              @click="discardRevision(row)"
+            >
+              放弃
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
 
       <el-table :data="currentJob?.items || []" size="small" max-height="380">
         <el-table-column prop="ad_account_id" label="广告账户" show-overflow-tooltip />
@@ -149,6 +198,13 @@
       <template #footer>
         <el-button @click="detailVisible = false">关闭</el-button>
         <el-button
+          v-if="currentJob && canEditRepublish && currentJob.action_type === 'CREATE' && ['FAILED', 'PARTIAL_SUCCESS'].includes(currentJob.status)"
+          type="success"
+          @click="detailVisible = false; editRepublish(currentJob)"
+        >
+          编辑后重投
+        </el-button>
+        <el-button
           type="warning"
           :disabled="!currentJob?.failed_count"
           @click="currentJob && handleRetry(currentJob)"
@@ -162,12 +218,14 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   jobsApi,
   isFinalStatus,
   type CampaignJob,
+  type CampaignJobRevision,
 } from '@/api/jobs'
 import { useUserStore } from '@/stores/userStore'
 
@@ -175,11 +233,15 @@ const jobs = ref<CampaignJob[]>([])
 const currentJob = ref<CampaignJob | null>(null)
 const loading = ref(false)
 const detailVisible = ref(false)
+const revisions = ref<CampaignJobRevision[]>([])
+const revisionsLoading = ref(false)
 const statusFilter = ref('')
 const autoRefresh = ref(true)
 const userStore = useUserStore()
+const router = useRouter()
 const canRetry = computed(() => userStore.isAdmin || userStore.hasPermission('job:retry'))
 const canCancel = computed(() => userStore.isAdmin || userStore.hasPermission('job:cancel'))
+const canEditRepublish = computed(() => userStore.isAdmin || userStore.hasPermission('job:create'))
 
 let timer: number | null = null
 
@@ -204,6 +266,11 @@ const statusTagType = (status: string) =>
     PARTIAL_SUCCESS: 'warning',
     FAILED: 'danger',
     CANCELLED: 'info',
+    DRAFT: 'info',
+    READY: 'success',
+    INVALID: 'danger',
+    SUBMITTED: 'warning',
+    DISCARDED: 'info',
   }[status] || 'info')
 
 const itemTagType = (status: string) =>
@@ -230,11 +297,53 @@ const loadJobs = async () => {
   }
 }
 
+const loadRevisions = async (jobId: string) => {
+  revisionsLoading.value = true
+  try {
+    const { data } = await jobsApi.listRevisions(jobId)
+    revisions.value = data
+  } catch {
+    revisions.value = []
+  } finally {
+    revisionsLoading.value = false
+  }
+}
+
 const viewDetail = async (id: string) => {
   const { data } = await jobsApi.get(id)
   currentJob.value = data
+  await loadRevisions(id)
   detailVisible.value = true
   if (!isFinal(data.status)) startTimer()
+}
+
+const editRepublish = (row: CampaignJob) => {
+  router.push({ path: '/dashboard/batch-publish', query: { source_job_id: row.id } })
+}
+
+const continueRevision = (revision: CampaignJobRevision) => {
+  if (!currentJob.value) return
+  detailVisible.value = false
+  router.push({
+    path: '/dashboard/batch-publish',
+    query: { source_job_id: currentJob.value.id, revision_id: revision.id },
+  })
+}
+
+const discardRevision = async (revision: CampaignJobRevision) => {
+  try {
+    await ElMessageBox.confirm(
+      `确认放弃修订 v${revision.version}？该版本会保留审计记录，但不能继续编辑。`,
+      '放弃修订',
+      { type: 'warning', confirmButtonText: '确认放弃', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+
+  await jobsApi.discardRevision(revision.id)
+  ElMessage.success('修订已放弃')
+  if (currentJob.value) await loadRevisions(currentJob.value.id)
 }
 
 const handleRetry = async (row: CampaignJob) => {

@@ -67,9 +67,53 @@ def test_build_connector_payload_resolves_account_scoped_video_binding():
         },
     )
 
-    payload = build_connector_payload(template, "act_1", asset_bindings={"asset-1": "video-1"})
+    payload = build_connector_payload(
+        template,
+        "act_1",
+        asset_bindings={"asset-1": "video-1"},
+        asset_thumbnail_hashes={"asset-1": "cover-1"},
+    )
     creative = payload["adsets"][0]["creatives"][0]
     assert creative["object_story_spec"]["video_data"]["video_id"] == "video-1"
+    assert creative["object_story_spec"]["video_data"]["image_hash"] == "cover-1"
+
+
+def test_build_connector_payload_uses_binding_asset_type_when_template_omits_it():
+    template = SimpleNamespace(
+        name="Video Demo",
+        objective="TRAFFIC",
+        special_ad_categories=[],
+        is_adset_budget_sharing_enabled=False,
+        buying_type="AUCTION",
+        budget_type="DAILY",
+        daily_budget=10,
+        lifetime_budget=None,
+        billing_event="IMPRESSIONS",
+        optimization_goal="LINK_CLICKS",
+        targeting_json={"geo_locations": {"countries": ["US"]}},
+        placement_json={},
+        bid_strategy=None,
+        creative_config_json={
+            "page_id": "page-1",
+            "creatives": [{
+                "asset_id": "asset-1",
+                "primary_text": "hello",
+                "landing_url": "https://example.com",
+            }],
+        },
+    )
+
+    try:
+        build_connector_payload(
+            template,
+            "act_1",
+            asset_bindings={"asset-1": "video-1"},
+            asset_types={"asset-1": "video"},
+        )
+    except ValueError as exc:
+        assert "缩略图" in str(exc)
+    else:
+        raise AssertionError("缺少视频缩略图时应阻止创建广告创意")
 
 
 def test_build_connector_payload_copies_adset_config_without_reusing_meta_ids():

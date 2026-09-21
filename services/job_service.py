@@ -302,6 +302,8 @@ class JobService:
         params: Optional[Dict[str, Any]] = None,
         created_by: Optional[str] = None,
         scheduled_at: Optional[datetime] = None,
+        parent_job_id: Optional[str] = None,
+        edit_mode: Optional[str] = None,
     ) -> CampaignJob:
         """创建批量任务并派发到队列（立即返回，不阻塞 HTTP）
 
@@ -319,6 +321,22 @@ class JobService:
             raise ValueError(f"投放模板不存在: {template_id}")
         if not ad_account_ids:
             raise ValueError("请至少选择一个广告账户")
+
+        parent_job = None
+        revision_no = 1
+        if parent_job_id:
+            parent_job = self.db.query(CampaignJob).filter(CampaignJob.id == parent_job_id).first()
+            if not parent_job:
+                raise ValueError("来源任务不存在")
+            if parent_job.tenant_id != template.tenant_id:
+                raise ValueError("来源任务与当前租户不一致")
+            revision_no = (self.db.query(CampaignJob).filter(
+                CampaignJob.parent_job_id == parent_job.id
+            ).count() + 2) if parent_job.parent_job_id is None else (
+                self.db.query(CampaignJob).filter(
+                    (CampaignJob.id == parent_job.id) | (CampaignJob.parent_job_id == parent_job.parent_job_id)
+                ).count() + 1
+            )
 
         # XMP 式投放前置校验：模板引用的 Page 必须属于当前租户且仍有效。
         page_id = (template.creative_config_json or {}).get("page_id")
@@ -403,6 +421,9 @@ class JobService:
 
         job = CampaignJob(
             id=_new_id(),
+            parent_job_id=parent_job_id,
+            revision_no=revision_no,
+            edit_mode=edit_mode,
             template_id=template_id,
             action_type=action_value,
             status=JobStatus.QUEUED.value if is_scheduled else JobStatus.PENDING.value,

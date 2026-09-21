@@ -36,6 +36,7 @@ from models.meta_page import MetaPage
 from models.meta_connection import MetaConnection
 # Job Center（设计文档第 17 节）
 from models.job import CampaignJob, CampaignJobItem
+from models.job_revision import CampaignJobRevision
 # 审计日志（设计文档第 41.3 节）
 from models.audit_log import AuditLog
 from models.sync_alert import SyncAlert
@@ -93,6 +94,7 @@ __all__ = [
     'MetaConnection',
     'CampaignJob',
     'CampaignJobItem',
+    'CampaignJobRevision',
     'AuditLog',
     'MetaSyncLog',
     'SyncType',

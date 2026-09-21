@@ -38,6 +38,7 @@ class MediaStatusCallback(BaseModel):
     status: str = Field(..., min_length=1, max_length=32)
     phase: str | None = Field(default=None, max_length=32)
     meta_asset_id: str | None = Field(default=None, max_length=128)
+    meta_thumbnail_hash: str | None = Field(default=None, max_length=255)
     uploaded_bytes: int | None = Field(default=None, ge=0)
     total_bytes: int | None = Field(default=None, ge=0)
     error_code: str | None = Field(default=None, max_length=128)
@@ -121,6 +122,7 @@ async def media_status_callback(request: Request, db: Session = Depends(get_db))
             "media_id": payload.media_id,
             "status": binding.status,
             "meta_asset_id": binding.meta_asset_id,
+            "meta_thumbnail_hash": binding.meta_thumbnail_hash,
             "stale": True,
             "request_id": request_id,
         }
@@ -131,6 +133,8 @@ async def media_status_callback(request: Request, db: Session = Depends(get_db))
             error_message = payload.error_message or "Connector 成功回调缺少 Meta 素材 ID"
         else:
             binding.meta_asset_id = payload.meta_asset_id
+            if payload.meta_thumbnail_hash:
+                binding.meta_thumbnail_hash = payload.meta_thumbnail_hash
             binding.status = "READY"
             binding.processing_status = "READY"
             binding.error_code = None
@@ -169,6 +173,7 @@ async def media_status_callback(request: Request, db: Session = Depends(get_db))
         "media_id": payload.media_id,
         "status": binding.status,
         "meta_asset_id": binding.meta_asset_id,
+        "meta_thumbnail_hash": binding.meta_thumbnail_hash,
         "request_id": request_id,
     }
 
@@ -377,5 +382,10 @@ async def media_source_callback(
         "task_id": payload.task_id,
         "media_id": payload.media_id,
         "url": url,
+        "cover_url": (
+            AliyunOSSStorage().download_url(asset.cover_key or asset.thumbnail_key)
+            if asset.cover_key or asset.thumbnail_key
+            else None
+        ),
         "expires_in": settings.OSS_DOWNLOAD_EXPIRE_SECONDS,
     }

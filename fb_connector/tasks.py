@@ -223,6 +223,7 @@ def _notify_media_status(row, *, media_id: str, account_id: str) -> bool:
             "status": row.status,
             "phase": row.phase,
             "meta_asset_id": row.meta_asset_id,
+            "meta_thumbnail_hash": row.meta_thumbnail_hash,
             "uploaded_bytes": row.uploaded_bytes,
             "total_bytes": row.total_bytes,
             "error_message": row.error_message,
@@ -305,6 +306,93 @@ def _refresh_source_url(task_id: str, media_id: str, source_url: str) -> str:
         return source_url
 
 
+def _refresh_cover_url(task_id: str, media_id: str, cover_url: str) -> str:
+    """刷新视频封面签名 URL；刷新失败时回退到任务中保存的 URL。"""
+    if not settings.SAAS_CALLBACK_BASE_URL or not settings.SAAS_INTERNAL_SIGNING_KEY:
+        return cover_url
+
+    path = "/api/v1/internal/fb-connector/media-source"
+    request_id = uuid.uuid4().hex
+    body = json.dumps(
+        {"task_id": task_id, "media_id": media_id},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    headers = build_signature_headers(
+        settings.SAAS_INTERNAL_SIGNING_KEY,
+        "fb_connector",
+        request_id,
+        "POST",
+        path,
+        body,
+        task_id,
+    )
+    headers["Content-Type"] = "application/json"
+    callback = f"{settings.SAAS_CALLBACK_BASE_URL.rstrip('/')}{path}"
+    try:
+        response = requests.post(
+            callback,
+            data=body,
+            headers=headers,
+            timeout=settings.FB_CONNECTOR_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        refreshed = payload.get("cover_url") if isinstance(payload, dict) else None
+        if not refreshed:
+            raise RuntimeError("SaaS 素材刷新接口未返回 cover_url")
+        logger.info(
+            "[ConnectorMedia] cover URL refreshed task_id=%s media_id=%s expires_in=%s",
+            task_id,
+            media_id,
+            payload.get("expires_in", ""),
+        )
+        return refreshed
+    except Exception as exc:
+        logger.warning(
+            "[ConnectorMedia] cover URL refresh failed task_id=%s media_id=%s error=%s; fallback to stored URL",
+            task_id,
+            media_id,
+            exc,
+        )
+        return cover_url
+
+
+def _download_cover_file(task_id: str, media_id: str, cover_url: str) -> str:
+    """下载视频封面到临时文件，限制大小避免封面 URL 被滥用占满磁盘。"""
+    os.makedirs(settings.CONNECTOR_MEDIA_TEMP_DIR, exist_ok=True)
+    with requests.get(
+        cover_url,
+        stream=True,
+        timeout=(settings.FB_VIDEO_CONNECT_TIMEOUT, settings.FB_VIDEO_UPLOAD_TIMEOUT),
+    ) as response:
+        response.raise_for_status()
+        content_length = _as_int(response.headers.get("Content-Length"))
+        if content_length is not None and content_length > settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES:
+            raise RuntimeError("视频封面超过 Connector 本地临时磁盘保护上限")
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".jpg",
+            dir=settings.CONNECTOR_MEDIA_TEMP_DIR,
+        ) as target:
+            path = target.name
+            written = 0
+            for chunk in response.iter_content(chunk_size=256 * 1024):
+                if chunk:
+                    written += len(chunk)
+                    if written > settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES:
+                        raise RuntimeError("视频封面超过 Connector 本地临时磁盘保护上限")
+                    target.write(chunk)
+    logger.info(
+        "[ConnectorMedia] cover download complete task_id=%s media_id=%s bytes=%s path=%s",
+        task_id,
+        media_id,
+        written,
+        path,
+    )
+    return path
+
+
 @celery_app.task(name="fb_connector.recover_stale_media_tasks")
 def recover_stale_media_tasks(limit: int = 100):
     """恢复 Worker 重启或强制终止后遗留的媒体上传任务。"""
@@ -349,6 +437,7 @@ def recover_stale_media_tasks(limit: int = 100):
                     row.source_url,
                     row.idempotency_key,
                     row.expected_md5,
+                    row.cover_url,
                 )
                 recovered += 1
                 logger.warning("[ConnectorMediaRecovery] requeued task_id=%s", row.task_id)
@@ -898,9 +987,10 @@ def _upload_video_resumable(service, account_id: str, file_path: str | None, row
 
 
 @celery_app.task(bind=True, name="fb_connector.upload_media", max_retries=3, default_retry_delay=30)
-def upload_media_task(self, task_id: str, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, idempotency_key: str, expected_md5: str | None = None):
+def upload_media_task(self, task_id: str, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, idempotency_key: str, expected_md5: str | None = None, cover_url: str | None = None):
     """海外执行素材下载和 Meta 上传；生产环境应将结果写入 Connector 任务表并回调 SaaS。"""
     temp_path = None
+    cover_path = None
     row = None
     account_lock = None
     account_lock_acquired = False
@@ -925,6 +1015,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
         if not row:
             raise RuntimeError("上传任务不存在")
         expected_md5 = (row.expected_md5 or expected_md5 or "").lower() or None
+        cover_url = row.cover_url or cover_url
         if expected_md5 and (len(expected_md5) != 32 or any(char not in "0123456789abcdef" for char in expected_md5)):
             raise MetaApiError("素材 MD5 格式无效", category=ErrorCategory.VALIDATION)
         _prune_media_cache()
@@ -940,7 +1031,9 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
             task_id,
             account_id,
         )
-        if row.status == "SUCCESS" and row.meta_asset_id:
+        if row.status == "SUCCESS" and row.meta_asset_id and (
+            asset_type != "video" or row.meta_thumbnail_hash
+        ):
             logger.info(
                 "[ConnectorMedia] already success task_id=%s meta_asset_id=%s",
                 task_id,
@@ -952,6 +1045,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 "media_id": media_id,
                 "idempotency_key": idempotency_key,
                 "meta_asset_id": row.meta_asset_id,
+                "meta_thumbnail_hash": row.meta_thumbnail_hash,
             }
         row.status = "UPLOADING"
         row.phase = row.phase if row.phase and row.phase not in {"QUEUED", "FAILED"} else "DOWNLOADING"
@@ -1105,6 +1199,28 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 keep_file=cache_reused,
             )
             meta_asset_id = result.get("video_id")
+            if not row.meta_thumbnail_hash:
+                if not cover_url:
+                    raise MetaApiError(
+                        "视频上传成功但缺少封面 URL",
+                        category=ErrorCategory.VALIDATION,
+                    )
+                cover_url = _refresh_cover_url(task_id, media_id, cover_url)
+                cover_path = _download_cover_file(task_id, media_id, cover_url)
+                thumbnail_result = service.upload_image(
+                    account_id,
+                    cover_path,
+                    filename=f"{media_id}-cover.jpg",
+                    content_type="image/jpeg",
+                )
+                _persist_media_progress(
+                    session,
+                    row,
+                    meta_asset_id=meta_asset_id,
+                    meta_thumbnail_hash=thumbnail_result.get("hash"),
+                    phase="READY",
+                    status="SUCCESS",
+                )
         else:
             result = service.upload_image(
                 account_id,
@@ -1119,17 +1235,25 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 status="SUCCESS",
                 meta_asset_id=meta_asset_id,
             )
+        meta_thumbnail_hash = row.meta_thumbnail_hash
         logger.info(
-            "[ConnectorMedia] success task_id=%s media_id=%s meta_asset_id=%s phase=%s uploaded_bytes=%s total_bytes=%s",
+            "[ConnectorMedia] success task_id=%s media_id=%s meta_asset_id=%s meta_thumbnail_hash=%s phase=%s uploaded_bytes=%s total_bytes=%s",
             task_id,
             media_id,
             meta_asset_id,
+            meta_thumbnail_hash,
             row.phase,
             row.uploaded_bytes,
             row.total_bytes,
         )
         _notify_media_status(row, media_id=media_id, account_id=account_id)
-        return {"status": "SUCCESS", "media_id": media_id, "idempotency_key": idempotency_key, "meta_asset_id": meta_asset_id}
+        return {
+            "status": "SUCCESS",
+            "media_id": media_id,
+            "idempotency_key": idempotency_key,
+            "meta_asset_id": meta_asset_id,
+            "meta_thumbnail_hash": meta_thumbnail_hash,
+        }
     except Exception as exc:
         auth_failed = report_meta_auth_failure(credential_id, exc)
         logger.exception(
@@ -1160,6 +1284,11 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
         if temp_path and not cache_reused:
             try:
                 os.unlink(temp_path)
+            except OSError:
+                pass
+        if cover_path:
+            try:
+                os.unlink(cover_path)
             except OSError:
                 pass
         if account_lock is not None and account_lock_acquired:

@@ -602,6 +602,31 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 if row.status == "READY" and row.meta_asset_id
             ]
             asset_bindings = {row.asset_id: row.meta_asset_id for row in ready_bindings}
+            asset_types = {row.asset_id: row.meta_asset_type for row in ready_bindings if row.meta_asset_type}
+            asset_thumbnail_hashes = {
+                row.asset_id: row.meta_thumbnail_hash
+                for row in ready_bindings
+                if row.meta_asset_type == "video" and row.meta_thumbnail_hash
+            }
+            missing_video_thumbnails = sorted(
+                row.asset_id
+                for row in ready_bindings
+                if row.meta_asset_type == "video" and not row.meta_thumbnail_hash
+            )
+            if missing_video_thumbnails:
+                message = (
+                    "视频素材已上传但封面未同步到 Meta，请重试素材同步后再投放: "
+                    + ", ".join(missing_video_thumbnails)
+                )
+                _mark_item_failed(
+                    db,
+                    job_item_id,
+                    "VIDEO_THUMBNAIL_MISSING",
+                    message,
+                    ErrorCategory.TEMPORARY,
+                )
+                db.commit()
+                return {"error": "video thumbnail missing", "asset_ids": missing_video_thumbnails}
             missing_assets = sorted(set(usage_asset_ids) - set(asset_bindings))
             if missing_assets:
                 payload = item.response_payload if isinstance(item.response_payload, dict) else {}
@@ -646,6 +671,8 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 status=status, campaign_name=sinan.get("campaign_name"),
                 adset_name=sinan.get("adset_name"),
                 asset_bindings=asset_bindings,
+                asset_types=asset_types,
+                asset_thumbnail_hashes=asset_thumbnail_hashes,
                 existing_campaign_id=(reuse_context or {}).get("campaign_id"),
                 existing_ad_group_id=(reuse_context or {}).get("ad_group_id"),
                 copy_ad_group=copy_context,

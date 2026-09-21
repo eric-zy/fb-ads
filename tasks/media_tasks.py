@@ -128,7 +128,11 @@ def upload_asset_task(self, binding_id: str):
         account = db.query(AdAccount).filter(AdAccount.id == binding.ad_account_id).first() if binding else None
         if not binding or not asset or not account:
             raise RuntimeError("素材映射或广告账户不存在")
-        if binding.status == "READY" and binding.meta_asset_id:
+        if (
+            binding.status == "READY"
+            and binding.meta_asset_id
+            and (not asset or asset.asset_type != "video" or binding.meta_thumbnail_hash)
+        ):
             return {"status": "success", "binding_id": binding_id, "meta_asset_id": binding.meta_asset_id}
         if asset.storage_status != "READY" or asset.processing_status != "READY" or not asset.object_key:
             binding.status = "PENDING"
@@ -144,12 +148,16 @@ def upload_asset_task(self, binding_id: str):
         if ref.mode != "connector":
             raise RuntimeError("当前素材上传只支持海外 Connector")
         source_url = AliyunOSSStorage().download_url(asset.object_key)
+        cover_url = None
+        if asset.asset_type == "video" and (asset.cover_key or asset.thumbnail_key):
+            cover_url = AliyunOSSStorage().download_url(asset.cover_key or asset.thumbnail_key)
         result = FBConnectorClient().upload_media(
             asset.id,
             ref.credential_id,
             account.account_id,
             asset.asset_type,
             source_url,
+            cover_url=cover_url,
             expected_md5=asset.md5,
             idempotency_key=binding.id,
         )
@@ -212,7 +220,11 @@ def poll_connector_media_task(self, binding_id: str):
         if not binding or not binding.connector_task_id:
             return {"status": "done"}
         # Connector 回调已经落库时，直接采用国内状态，避免再发起一次远端轮询。
-        if binding.status == "READY" and binding.meta_asset_id:
+        if (
+            binding.status == "READY"
+            and binding.meta_asset_id
+            and (not asset or asset.asset_type != "video" or binding.meta_thumbnail_hash)
+        ):
             return {"status": "success", "binding_id": binding_id, "meta_asset_id": binding.meta_asset_id, "source": "callback"}
         if binding.status == "FAILED":
             return {"status": "failed", "binding_id": binding_id, "error": binding.error_message, "source": "callback"}
@@ -231,6 +243,7 @@ def poll_connector_media_task(self, binding_id: str):
         )
         if value in {"SUCCESS", "READY", "COMPLETED"}:
             meta_asset_id = result.get("meta_asset_id")
+            meta_thumbnail_hash = result.get("meta_thumbnail_hash")
             if not meta_asset_id:
                 binding.status = "FAILED"
                 binding.processing_status = "FAILED"
@@ -247,7 +260,22 @@ def poll_connector_media_task(self, binding_id: str):
                     "binding_id": binding_id,
                     "error": binding.error_message,
                 }
+            if asset and asset.asset_type == "video" and not meta_thumbnail_hash:
+                binding.meta_asset_id = meta_asset_id
+                binding.status = "PENDING"
+                binding.processing_status = "UPLOADING"
+                binding.error_code = "VIDEO_THUMBNAIL_MISSING"
+                binding.error_message = "视频已上传但 Meta 封面缺失，正在补传封面"
+                db.commit()
+                upload_asset_task.delay(binding_id)
+                return {
+                    "status": "waiting_thumbnail",
+                    "binding_id": binding_id,
+                    "meta_asset_id": meta_asset_id,
+                }
             binding.meta_asset_id = meta_asset_id
+            if meta_thumbnail_hash:
+                binding.meta_thumbnail_hash = meta_thumbnail_hash
             binding.status = "READY"
             binding.processing_status = "READY"
             binding.last_verified_at = datetime.utcnow()

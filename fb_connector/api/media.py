@@ -18,6 +18,7 @@ class MediaUploadRequest(BaseModel):
     account_id: str = Field(..., min_length=1, max_length=64)
     asset_type: str = Field(..., pattern="^(image|video)$")
     source_url: str = Field(..., min_length=1, max_length=2048)
+    cover_url: str | None = Field(default=None, max_length=2048)
     expected_md5: str | None = Field(default=None, min_length=32, max_length=32, pattern=r"^[0-9a-fA-F]{32}$")
     idempotency_key: str = Field(..., min_length=8, max_length=128)
 
@@ -32,18 +33,30 @@ def _media_task_is_stale(row: ConnectorMediaTask, now: datetime | None = None) -
     current = now or datetime.utcnow()
     return current - timestamp >= timedelta(seconds=settings.CONNECTOR_MEDIA_STALE_SECONDS)
 
+
+def _validate_remote_url(value: str | None, field_name: str) -> None:
+    if not value:
+        return
+    parsed = urlparse(value)
+    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+        raise HTTPException(status_code=400, detail=f"{field_name} 必须是 HTTP(S) 地址")
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, None)
+        if any(
+            ipaddress.ip_address(item[4][0]).is_private
+            or ipaddress.ip_address(item[4][0]).is_loopback
+            or ipaddress.ip_address(item[4][0]).is_link_local
+            for item in addresses
+        ):
+            raise HTTPException(status_code=400, detail=f"{field_name} 不允许指向内网地址")
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail=f"{field_name} 域名无法解析") from exc
+
 @router.post("/upload", status_code=202)
 async def upload_media(payload: MediaUploadRequest):
     """创建海外上传任务，实际下载和 Meta 上传由 Connector Worker 执行。"""
-    parsed = urlparse(payload.source_url)
-    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
-        raise HTTPException(status_code=400, detail="source_url 必须是 HTTP(S) 地址")
-    try:
-        addresses = socket.getaddrinfo(parsed.hostname, None)
-        if any(ipaddress.ip_address(item[4][0]).is_private or ipaddress.ip_address(item[4][0]).is_loopback or ipaddress.ip_address(item[4][0]).is_link_local for item in addresses):
-            raise HTTPException(status_code=400, detail="source_url 不允许指向内网地址")
-    except socket.gaierror as exc:
-        raise HTTPException(status_code=400, detail="source_url 域名无法解析") from exc
+    _validate_remote_url(payload.source_url, "source_url")
+    _validate_remote_url(payload.cover_url, "cover_url")
     session = connector_session_factory()
     task_id = None
     requeued_stale = False
@@ -55,11 +68,14 @@ async def upload_media(payload: MediaUploadRequest):
             .first()
         )
         if old:
-            if old.status == "SUCCESS":
+            if old.status == "SUCCESS" and not (
+                payload.asset_type == "video" and not old.meta_thumbnail_hash
+            ):
                 return {"status": old.status, "task_id": old.task_id, "media_id": old.media_id, "idempotency_key": old.idempotency_key}
             # 正常的 QUEUED/UPLOADING 任务保持幂等；只有超时孤儿任务，
             # 或已明确失败的任务，才允许同一业务请求重新入队。
-            if old.status != "FAILED" and not _media_task_is_stale(old):
+            thumbnail_repair = payload.asset_type == "video" and not old.meta_thumbnail_hash
+            if old.status != "FAILED" and not _media_task_is_stale(old) and not thumbnail_repair:
                 return {"status": old.status, "task_id": old.task_id, "media_id": old.media_id, "idempotency_key": old.idempotency_key}
             task_id = old.task_id
             old.media_id = payload.media_id
@@ -67,9 +83,11 @@ async def upload_media(payload: MediaUploadRequest):
             old.account_id = payload.account_id
             old.asset_type = payload.asset_type
             old.source_url = payload.source_url
+            old.cover_url = payload.cover_url
             old.expected_md5 = payload.expected_md5.lower() if payload.expected_md5 else None
             old.status = "QUEUED"
             old.meta_asset_id = None
+            old.meta_thumbnail_hash = None
             old.error_message = None
             old.updated_at = datetime.utcnow()
             requeued_stale = True
@@ -83,6 +101,7 @@ async def upload_media(payload: MediaUploadRequest):
                 account_id=payload.account_id,
                 asset_type=payload.asset_type,
                 source_url=payload.source_url,
+                cover_url=payload.cover_url,
                 expected_md5=payload.expected_md5.lower() if payload.expected_md5 else None,
                 status="QUEUED",
             ))
@@ -100,6 +119,7 @@ async def upload_media(payload: MediaUploadRequest):
             payload.source_url,
             payload.idempotency_key,
             payload.expected_md5.lower() if payload.expected_md5 else None,
+            payload.cover_url,
         )
     except Exception as exc:
         failed_session = connector_session_factory()
@@ -152,6 +172,8 @@ async def upload_status(task_id: str):
             "end_offset": row.end_offset,
             "meta_video_id": row.meta_video_id,
             "meta_asset_id": row.meta_asset_id,
+            "meta_thumbnail_hash": row.meta_thumbnail_hash,
+            "cover_url": row.cover_url,
             "expected_md5": row.expected_md5,
             "error_message": row.error_message,
         }
