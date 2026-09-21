@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any
 
 from services.campaign_builder import CampaignBuilder, AdSetBuilder, CreativeBuilder
@@ -55,9 +56,16 @@ def _resolve_asset_refs(config: dict[str, Any], asset_bindings: dict[str, str]) 
 def build_connector_payload(template: Any, meta_account_id: str, *, budget_override: float | None = None,
                             status: str = "PAUSED", campaign_name: str | None = None,
                             adset_name: str | None = None,
-                            asset_bindings: dict[str, str] | None = None) -> dict[str, Any]:
+                            asset_bindings: dict[str, str] | None = None,
+                            existing_campaign_id: str | None = None,
+                            existing_ad_group_id: str | None = None,
+                            copy_ad_group: dict[str, Any] | None = None) -> dict[str, Any]:
     service = _PayloadService()
     campaign = CampaignBuilder(service, template, meta_account_id, status=status, campaign_name=campaign_name).build_params()
+    if existing_campaign_id:
+        # Connector 会识别该标记并跳过 Campaign 创建；其余字段保留，
+        # 便于协议审计和无复用模式使用同一套 payload 结构。
+        campaign["existing_id"] = existing_campaign_id
     asset_bindings = {str(key): str(value) for key, value in (asset_bindings or {}).items() if value}
     creative_config = _resolve_asset_refs(template.creative_config_json or {}, asset_bindings)
     delivery = creative_config.get("delivery") or {}
@@ -70,10 +78,35 @@ def build_connector_payload(template: Any, meta_account_id: str, *, budget_overr
         logical.append((config, creatives))
 
     adsets = []
+    if existing_ad_group_id:
+        logical = logical[:1]
     for index, (config, creatives) in enumerate(logical, 1):
+        if copy_ad_group and index == 1:
+            # COPY 模式只复制可迁移的广告组配置，不携带源账户的 Meta ID。
+            # budget_override 仍由 AdSetBuilder 优先处理，方便投手按目标账户调整预算。
+            config = copy.deepcopy(config)
+            source_name = str(copy_ad_group.get("name") or "").strip()
+            if source_name:
+                config["name"] = f"{source_name} Copy"
+            source_targeting = copy_ad_group.get("targeting")
+            if isinstance(source_targeting, str):
+                try:
+                    source_targeting = json.loads(source_targeting)
+                except (TypeError, ValueError):
+                    source_targeting = None
+            if isinstance(source_targeting, dict):
+                config["targeting"] = source_targeting
+            if budget_override is None and copy_ad_group.get("daily_budget") is not None:
+                config["budget"] = float(copy_ad_group["daily_budget"]) / 100
+            if copy_ad_group.get("bid_strategy"):
+                config["bid_strategy"] = copy_ad_group["bid_strategy"]
+            if copy_ad_group.get("bid_amount") is not None:
+                config["bid_amount"] = copy_ad_group["bid_amount"]
         adset = AdSetBuilder(service, template, meta_account_id, "${campaign.id}", budget_override=budget_override,
                              status=status, adset_name=adset_name, adset_config=config).build_params()
         adset["client_key"] = f"adset-{index}"
+        if existing_ad_group_id and index == 1:
+            adset["existing_id"] = existing_ad_group_id
         adset["creatives"] = []
         for cindex, cfg in enumerate(creatives, 1):
             resolved_cfg = _resolve_asset_refs(cfg, asset_bindings)

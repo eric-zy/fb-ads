@@ -11,7 +11,7 @@ from api.risk_control import (
     risk_accounts,
     risk_overview,
 )
-from models import AdAccount, RiskEvent, RiskEventType, RiskLevel, User, UserAccount
+from models import AdAccount, RiskEvent, RiskEventType, RiskLevel, SyncAlert, User, UserAccount
 
 
 def _request() -> Request:
@@ -161,3 +161,56 @@ def test_user_can_resolve_visible_event_and_event_list_is_paginated(db):
     assert result["resolved_by"] == user.id
     assert listed["total"] == 1
     assert listed["items"][0]["resolution"] == "已核查并记录处理结论"
+
+
+def test_sync_alert_is_visible_and_resolvable_in_risk_event_list(db):
+    user = _user(db, "risk-api-sync-alert-user")
+    account = AdAccount(
+        id="risk-api-sync-alert-account",
+        tenant_id="test_tenant",
+        account_id="act_risk_sync_alert",
+        account_name="同步告警账户",
+        currency="USD",
+    )
+    db.add(account)
+    db.add(UserAccount(
+        id="risk-api-sync-alert-assignment",
+        tenant_id="test_tenant",
+        user_id=user.id,
+        account_id=account.id,
+        assignment_status="ACTIVE",
+    ))
+    alert = SyncAlert(
+        id="risk-api-sync-alert",
+        tenant_id="test_tenant",
+        ad_account_id=account.id,
+        alert_type="DELIVERY_SYNC",
+        title="Meta 投放状态同步异常",
+        message="测试同步告警",
+        created_at=datetime.utcnow(),
+    )
+    db.add(alert)
+    db.commit()
+
+    listed = list_risk_events(
+        account_id=account.id,
+        risk_level=None,
+        event_type=None,
+        resolved=False,
+        page=1,
+        page_size=20,
+        current_user=user,
+        db=db,
+    )
+    resolved = resolve_risk_event(
+        alert.id,
+        RiskEventResolvePayload(resolution="已重新同步并确认恢复"),
+        _request(),
+        current_user=user,
+        db=db,
+    )
+
+    assert listed["total"] == 1
+    assert listed["items"][0]["source"] == "SYNC_ALERT"
+    assert listed["items"][0]["event_type"] == "DELIVERY_SYNC"
+    assert resolved["is_resolved"] is True

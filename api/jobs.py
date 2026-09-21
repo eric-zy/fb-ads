@@ -20,7 +20,7 @@ from core.database import get_db
 from core.enums import ActionType, InstanceStatus
 from core.logger import logger
 from core.tenant import effective_tenant_id
-from models import CampaignInstance, CampaignTemplate, CampaignJob, CampaignJobItem, PublishPreview, User
+from models import AdGroup, Campaign, CampaignInstance, CampaignTemplate, CampaignJob, CampaignJobItem, PublishPreview, User
 from services.account_access import accessible_account_ids
 
 def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
@@ -61,6 +61,10 @@ class CampaignCreateRequest(BaseModel):
     sinan_promotion_id: Optional[str] = None
     access_business_ids: Optional[dict[str, str]] = Field(
         None, description="按本地广告账户 ID 指定本次发布使用的 BM"
+    )
+    ad_group_mode: str = Field("NEW", description="广告组来源：NEW 新建，EXISTING 同账户复用，COPY 跨账户复制")
+    ad_group_selections: Optional[dict[str, dict]] = Field(
+        None, description="按本地广告账户 ID 选择已同步广告组"
     )
     preview_id: Optional[str] = Field(None, description="发布前预览快照 ID")
     snapshot_hash: Optional[str] = Field(None, description="发布前预览快照哈希")
@@ -284,6 +288,8 @@ def _create_preview(
         "status": req.status,
         "sinan_promotion_id": req.sinan_promotion_id,
         "access_business_ids": req.access_business_ids or {},
+        "ad_group_mode": req.ad_group_mode,
+        "ad_group_selections": req.ad_group_selections or {},
     }
     snapshot_hash = _canonical_hash({"request": request_snapshot, "result": result})
     preview = PublishPreview(
@@ -334,6 +340,41 @@ def _validate_preview_for_submit(
         raise HTTPException(status_code=403, detail="提交账户权限已变化，请重新选择账户")
     if req.template_id and req.template_id != preview.template_id:
         raise HTTPException(status_code=409, detail="提交模板与预览模板不一致")
+    expected_mode = (preview.request_snapshot or {}).get("ad_group_mode", "NEW")
+    expected_selections = (preview.request_snapshot or {}).get("ad_group_selections", {}) or {}
+    if req.ad_group_mode != expected_mode or (req.ad_group_selections or {}) != expected_selections:
+        raise HTTPException(status_code=409, detail="广告组选择与预览不一致，请重新执行预览")
+    mode = str(req.ad_group_mode or "NEW").upper()
+    if mode in {"EXISTING", "COPY"}:
+        stale_before = datetime.utcnow() - timedelta(hours=24)
+        selections = req.ad_group_selections or {}
+        for account_id in expected:
+            selection = selections.get(account_id) or {}
+            local_id = str(selection.get("ad_group_id") or "").strip()
+            query = (
+                db.query(AdGroup, Campaign)
+                .join(Campaign, AdGroup.campaign_id == Campaign.id)
+                .filter(
+                    AdGroup.id == local_id,
+                    AdGroup.tenant_id == preview.tenant_id,
+                    Campaign.tenant_id == preview.tenant_id,
+                )
+            )
+            if mode == "EXISTING":
+                query = query.filter(Campaign.ad_account_id == account_id)
+            row = query.first()
+            if not row:
+                raise HTTPException(status_code=409, detail="所选广告组已不存在或无权访问，请重新预检")
+            ad_group, campaign = row
+            if mode == "COPY":
+                visible_sources = accessible_account_ids(db, current_user)
+                if visible_sources is not None and campaign.ad_account_id not in visible_sources:
+                    raise HTTPException(status_code=403, detail="复制源广告账户权限已变化，请重新选择源广告组")
+            expected_external = str(selection.get("ad_group_external_id") or "").strip()
+            if expected_external and expected_external != ad_group.ad_group_id:
+                raise HTTPException(status_code=409, detail="所选广告组信息已变化，请重新预检")
+            if not ad_group.updated_at or ad_group.updated_at < stale_before:
+                raise HTTPException(status_code=409, detail="所选广告组已超过 24 小时未同步，请先同步 Meta")
     return preview
 
 
@@ -343,7 +384,15 @@ def _validate_preview_for_submit(
 def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("job:create"))):
     """发布前检查；不调用 Meta 写接口。直接配置会先标准化为内部配置。"""
     template_id = _ensure_template(db, req, effective_tenant_id(current_user))
-    result = JobService(db).preflight_campaign(template_id, req.ad_account_ids, req.budget_override, req.status, created_by=current_user.id)
+    result = JobService(db).preflight_campaign(
+        template_id,
+        req.ad_account_ids,
+        req.budget_override,
+        req.status,
+        created_by=current_user.id,
+        ad_group_mode=req.ad_group_mode,
+        ad_group_selections=req.ad_group_selections or {},
+    )
     result["source"] = req.source or ("TEMPLATE" if req.template_id else "DIRECT")
     result["template_id"] = template_id
     if result.get("passed"):
@@ -378,6 +427,8 @@ def create_campaign_batch(
             "status": req.status,
             "sinan_promotion_id": req.sinan_promotion_id,
             "access_business_ids": req.access_business_ids or {},
+            "ad_group_mode": req.ad_group_mode,
+            "ad_group_selections": req.ad_group_selections or {},
             "source": req.source or ("TEMPLATE" if req.template_id else "DIRECT"),
             "save_as_template": req.save_as_template,
             "_preview_id": preview.id,

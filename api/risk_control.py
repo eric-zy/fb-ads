@@ -15,7 +15,7 @@ from core.audit import record_audit
 from core.auth import get_current_active_user
 from core.database import get_db
 from core.tenant import effective_tenant_id
-from models import AdAccount, RiskEvent, RiskExecution, RiskRule, User
+from models import AdAccount, RiskEvent, RiskExecution, RiskRule, SyncAlert, User
 from models.risk_control import RiskEventType, RiskLevel
 from models.tenant import UserRole
 from services.account_access import accessible_account_ids
@@ -112,6 +112,7 @@ def _risk_level(score: float, critical_count: int = 0) -> str:
 def _event_to_dict(event: RiskEvent) -> dict:
     return {
         "id": event.id,
+        "source": "RISK_EVENT",
         "ad_account_id": event.ad_account_id,
         "event_type": event.event_type.value if event.event_type else None,
         "risk_level": event.risk_level.value if event.risk_level else None,
@@ -133,6 +134,42 @@ def _event_to_dict(event: RiskEvent) -> dict:
         "notification_results": event.notification_results,
         "created_at": event.created_at.isoformat() if event.created_at else None,
         "updated_at": event.updated_at.isoformat() if event.updated_at else None,
+    }
+
+
+_SYNC_ALERT_CRITICAL_TYPES = {"DELIVERY_SYNC_FAILED", "RISK_REDIS_UNAVAILABLE"}
+
+
+def _sync_alert_risk_level(alert_type: str) -> str:
+    return "critical" if alert_type in _SYNC_ALERT_CRITICAL_TYPES else "high"
+
+
+def _sync_alert_to_dict(alert: SyncAlert) -> dict:
+    """将同步告警适配为风控事件结构，保证工作台告警可在风控中心闭环处理。"""
+    return {
+        "id": alert.id,
+        "source": "SYNC_ALERT",
+        "ad_account_id": alert.ad_account_id,
+        "event_type": alert.alert_type,
+        "risk_level": _sync_alert_risk_level(alert.alert_type),
+        "risk_score": None,
+        "title": alert.title,
+        "description": alert.message,
+        "related_campaign_id": None,
+        "related_ad_id": None,
+        "is_resolved": bool(alert.is_resolved),
+        "resolution": None,
+        "resolved_by": None,
+        "resolved_at": alert.resolved_at.isoformat() if alert.resolved_at else None,
+        "auto_action_taken": None,
+        "requires_manual_review": True,
+        "notification_status": "PENDING",
+        "notification_attempts": 0,
+        "notification_sent_at": None,
+        "notification_error": None,
+        "notification_results": None,
+        "created_at": alert.created_at.isoformat() if alert.created_at else None,
+        "updated_at": alert.created_at.isoformat() if alert.created_at else None,
     }
 
 
@@ -343,29 +380,58 @@ def list_risk_events(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    query = db.query(RiskEvent)
+    risk_query = db.query(RiskEvent)
+    sync_query = db.query(SyncAlert)
     visible = accessible_account_ids(db, current_user)
     if visible is not None:
-        query = query.filter(RiskEvent.ad_account_id.in_(visible or ["__none__"]))
+        account_ids = visible or {"__none__"}
+        risk_query = risk_query.filter(RiskEvent.ad_account_id.in_(account_ids))
+        sync_query = sync_query.filter(SyncAlert.ad_account_id.in_(account_ids))
     if account_id:
         account = _get_visible_account(db, account_id, current_user)
-        query = query.filter(RiskEvent.ad_account_id == account.id)
+        risk_query = risk_query.filter(RiskEvent.ad_account_id == account.id)
+        sync_query = sync_query.filter(SyncAlert.ad_account_id == account.id)
     if risk_level:
         try:
-            query = query.filter(RiskEvent.risk_level == RiskLevel(risk_level.lower()))
+            level = RiskLevel(risk_level.lower())
+            risk_query = risk_query.filter(RiskEvent.risk_level == level)
+            if level == RiskLevel.CRITICAL:
+                sync_query = sync_query.filter(SyncAlert.alert_type.in_(_SYNC_ALERT_CRITICAL_TYPES))
+            elif level == RiskLevel.HIGH:
+                sync_query = sync_query.filter(~SyncAlert.alert_type.in_(_SYNC_ALERT_CRITICAL_TYPES))
+            else:
+                sync_query = sync_query.filter(False)
         except ValueError:
             raise HTTPException(status_code=422, detail="非法风险等级")
     if event_type:
         try:
-            query = query.filter(RiskEvent.event_type == RiskEventType(event_type.lower()))
+            risk_query = risk_query.filter(RiskEvent.event_type == RiskEventType(event_type.lower()))
+            sync_query = sync_query.filter(False)
         except ValueError:
-            raise HTTPException(status_code=422, detail="非法事件类型")
+            # 同步告警使用独立的字符串类型，例如 DELIVERY_SYNC。
+            sync_query = sync_query.filter(SyncAlert.alert_type == event_type.upper())
+            risk_query = risk_query.filter(False)
     if resolved is not None:
-        query = query.filter(RiskEvent.is_resolved.is_(resolved))
+        risk_query = risk_query.filter(RiskEvent.is_resolved.is_(resolved))
+        sync_query = sync_query.filter(SyncAlert.is_resolved.is_(resolved))
 
-    total = query.count()
-    events = query.order_by(RiskEvent.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    return {"items": [_event_to_dict(item) for item in events], **_page_meta(total, page, page_size)}
+    total = risk_query.count() + sync_query.count()
+    # 两类数据分别取到当前页所需的最大数量，再按发生时间合并，避免同步告警被
+    # 单独分页后挤出风控事件列表。
+    fetch_size = page * page_size
+    risk_events = risk_query.order_by(RiskEvent.created_at.desc()).limit(fetch_size).all()
+    sync_alerts = sync_query.order_by(SyncAlert.created_at.desc()).limit(fetch_size).all()
+    merged = [
+        (item.created_at or datetime.min, _event_to_dict(item)) for item in risk_events
+    ] + [
+        (item.created_at or datetime.min, _sync_alert_to_dict(item)) for item in sync_alerts
+    ]
+    merged.sort(key=lambda item: item[0], reverse=True)
+    start = (page - 1) * page_size
+    return {
+        "items": [item[1] for item in merged[start:start + page_size]],
+        **_page_meta(total, page, page_size),
+    }
 
 
 def _get_event(db: Session, event_id: str, current_user: User) -> RiskEvent:
@@ -376,13 +442,28 @@ def _get_event(db: Session, event_id: str, current_user: User) -> RiskEvent:
     return event
 
 
+def _get_sync_alert(db: Session, alert_id: str, current_user: User) -> SyncAlert:
+    query = db.query(SyncAlert).filter(SyncAlert.id == alert_id)
+    visible = accessible_account_ids(db, current_user)
+    if visible is not None:
+        query = query.filter(SyncAlert.ad_account_id.in_(visible or {"__none__"}))
+    alert = query.first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="风险事件不存在")
+    return alert
+
+
 @router.get("/events/{event_id}")
 def get_risk_event(
     event_id: str,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    return _event_to_dict(_get_event(db, event_id, current_user))
+    event = db.query(RiskEvent).filter(RiskEvent.id == event_id).first()
+    if event:
+        _get_visible_account(db, event.ad_account_id, current_user)
+        return _event_to_dict(event)
+    return _sync_alert_to_dict(_get_sync_alert(db, event_id, current_user))
 
 
 @router.post("/events/{event_id}/resolve")
@@ -393,24 +474,43 @@ def resolve_risk_event(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    event = _get_event(db, event_id, current_user)
-    event.is_resolved = True
-    event.resolution = payload.resolution.strip()
-    event.resolved_by = current_user.id
-    event.resolved_at = datetime.utcnow()
+    event = db.query(RiskEvent).filter(RiskEvent.id == event_id).first()
+    if event:
+        _get_visible_account(db, event.ad_account_id, current_user)
+        event.is_resolved = True
+        event.resolution = payload.resolution.strip()
+        event.resolved_by = current_user.id
+        event.resolved_at = datetime.utcnow()
+        db.commit()
+        db.refresh(event)
+        record_audit(
+            db,
+            action="RESOLVE_RISK_EVENT",
+            resource_type="risk_event",
+            resource_id=event.id,
+            user_id=current_user.id,
+            request_data=payload.model_dump(),
+            response_data={"resolved": True},
+            request=request,
+        )
+        return _event_to_dict(event)
+
+    alert = _get_sync_alert(db, event_id, current_user)
+    alert.is_resolved = True
+    alert.resolved_at = datetime.utcnow()
     db.commit()
-    db.refresh(event)
+    db.refresh(alert)
     record_audit(
         db,
-        action="RESOLVE_RISK_EVENT",
-        resource_type="risk_event",
-        resource_id=event.id,
+        action="RESOLVE_SYNC_ALERT",
+        resource_type="sync_alert",
+        resource_id=alert.id,
         user_id=current_user.id,
         request_data=payload.model_dump(),
         response_data={"resolved": True},
         request=request,
     )
-    return _event_to_dict(event)
+    return _sync_alert_to_dict(alert)
 
 
 @router.get("/rules")

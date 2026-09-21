@@ -72,6 +72,51 @@ def test_build_connector_payload_resolves_account_scoped_video_binding():
     assert creative["object_story_spec"]["video_data"]["video_id"] == "video-1"
 
 
+def test_build_connector_payload_copies_adset_config_without_reusing_meta_ids():
+    template = SimpleNamespace(
+        name="Target Campaign",
+        objective="TRAFFIC",
+        special_ad_categories=[],
+        is_adset_budget_sharing_enabled=False,
+        buying_type="AUCTION",
+        budget_type="DAILY",
+        daily_budget=10,
+        lifetime_budget=None,
+        billing_event="IMPRESSIONS",
+        optimization_goal="LINK_CLICKS",
+        targeting_json={"geo_locations": {"countries": ["US"]}},
+        placement_json={},
+        bid_strategy=None,
+        creative_config_json={
+            "page_id": "page-1",
+            "creatives": [{
+                "page_id": "page-1",
+                "asset_type": "image",
+                "image_hash": "hash-1",
+                "message": "hello",
+                "landing_url": "https://example.com",
+            }],
+        },
+    )
+
+    payload = build_connector_payload(
+        template,
+        "act_target",
+        copy_ad_group={
+            "name": "Source AdSet",
+            "targeting": {"geo_locations": {"countries": ["CA"]}},
+            "daily_budget": 2500,
+            "bid_strategy": "LOWEST_COST_WITHOUT_CAP",
+        },
+    )
+
+    assert "existing_id" not in payload["campaign"]
+    assert "existing_id" not in payload["adsets"][0]
+    assert payload["adsets"][0]["name"] == "Source AdSet Copy"
+    assert payload["adsets"][0]["daily_budget"] == 2500
+    assert payload["adsets"][0]["targeting"]["geo_locations"]["countries"] == ["CA"]
+
+
 def test_template_validation_accepts_video_asset_id_before_account_sync():
     _validate_delivery_config({
         "objective": "OUTCOME_TRAFFIC",

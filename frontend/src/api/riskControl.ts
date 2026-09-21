@@ -19,6 +19,8 @@ export interface RateLimitHourStatus {
 
 export interface RiskEventItem {
   id: string
+  source?: 'RISK_EVENT' | 'SYNC_ALERT'
+  ad_account_id?: string | null
   event_type: string | null
   risk_level: RiskLevel | null
   risk_score: number | null

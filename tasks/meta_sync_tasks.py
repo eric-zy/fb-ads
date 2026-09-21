@@ -391,6 +391,9 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                     canonical_campaign.name = remote.get("name") or canonical_campaign.name
                     canonical_campaign.objective = remote.get("objective") or canonical_campaign.objective
                     canonical_campaign.status = remote.get("status") or remote.get("effective_status") or canonical_campaign.status
+                    # 即使 Meta 字段没有变化，也要记录本次成功拉取时间，
+                    # 否则前端会持续把稳定不变的广告组判定为过期。
+                    canonical_campaign.updated_at = datetime.utcnow()
 
             # 状态同步也负责修复本地层级索引：历史上投放成功但轮询中断时，
             # campaign_instances 可能已经落库，而 adset_instances/ad_instances 尚未落库。
@@ -448,6 +451,7 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                             canonical_adset.tenant_id = account.tenant_id
                         canonical_adset.name = remote_set.get("name") or canonical_adset.name
                         canonical_adset.status = remote_set.get("status") or remote_set.get("effective_status") or canonical_adset.status
+                        canonical_adset.updated_at = datetime.utcnow()
 
                 adset = local_adsets.get(remote_adset_id)
                 if not adset:
@@ -524,6 +528,7 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                                 canonical_ad.tenant_id = account.tenant_id
                             canonical_ad.name = remote_ad.get("name") or canonical_ad.name
                             canonical_ad.status = remote_ad.get("status") or remote_ad.get("effective_status") or canonical_ad.status
+                            canonical_ad.updated_at = datetime.utcnow()
 
                     ad = local_ads.get(remote_ad_id)
                     if not ad:

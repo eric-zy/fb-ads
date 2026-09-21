@@ -9,7 +9,7 @@
 import hashlib
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -25,7 +25,11 @@ from models import (
     BusinessAssetAccess,
     MetaPage,
     MetaAssetBinding,
+    Campaign,
+    AdGroup,
+    User,
 )
+from services.account_access import accessible_account_ids
 from services.meta.page_access import page_account_access_error
 from tasks.campaign_tasks import (
     execute_campaign_job,
@@ -104,6 +108,7 @@ class JobService:
     def preflight_campaign(
         self, template_id: str, ad_account_ids: List[str], budget_override: Optional[float] = None,
         status: str = "PAUSED", created_by: Optional[str] = None,
+        ad_group_mode: str = "NEW", ad_group_selections: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """返回可读的发布前检查结果；不创建 Job，不调用 Meta 写接口。"""
         from services.meta import AdAccountService
@@ -121,6 +126,13 @@ class JobService:
         if budget <= 0:
             errors.append({"code": "INVALID_BUDGET", "message": "预算必须大于 0"})
         config = template.creative_config_json or {}
+        ad_group_mode = str(ad_group_mode or "NEW").upper()
+        ad_group_selections = ad_group_selections or {}
+        if ad_group_mode not in {"NEW", "EXISTING", "COPY"}:
+            errors.append({"code": "INVALID_AD_GROUP_MODE", "message": "广告组来源只能是 NEW、EXISTING 或 COPY"})
+        configured_adsets = config.get("adsets") if isinstance(config.get("adsets"), list) else []
+        if ad_group_mode in {"EXISTING", "COPY"} and len(configured_adsets) > 1:
+            errors.append({"code": "EXISTING_AD_GROUP_SINGLE_ONLY", "message": "复用或复制模式时，每个账户只能选择一个广告组"})
         page_id = str(config.get("page_id") or "")
         if not page_id:
             errors.append({"code": "PAGE_REQUIRED", "message": "模板未选择 Facebook Page"})
@@ -149,6 +161,63 @@ class JobService:
                 else:
                     compatible.append(account_pk)
             available = compatible
+
+        # EXISTING 复用同账户的真实 Meta AdSet；COPY 只读取源广告组参数，
+        # 目标账户仍由 Connector 新建 Campaign/AdSet，绝不跨账户复用 Meta ID。
+        existing_ad_groups: Dict[str, dict] = {}
+        if ad_group_mode in {"EXISTING", "COPY"} and available:
+            valid_available = []
+            source_visible = None
+            if ad_group_mode == "COPY" and created_by:
+                creator = self.db.query(User).filter(User.id == created_by).first()
+                if creator:
+                    source_visible = accessible_account_ids(self.db, creator)
+            for account_pk in available:
+                selection = ad_group_selections.get(account_pk) or {}
+                local_id = str(selection.get("ad_group_id") or "").strip()
+                if not local_id:
+                    rejected.append({"account_id": account_pk, "reason": "请选择一个已同步广告组"})
+                    continue
+                source_query = (
+                    self.db.query(AdGroup, Campaign)
+                    .join(Campaign, AdGroup.campaign_id == Campaign.id)
+                    .filter(AdGroup.id == local_id, AdGroup.tenant_id == template.tenant_id, Campaign.tenant_id == template.tenant_id)
+                )
+                if ad_group_mode == "EXISTING":
+                    source_query = source_query.filter(Campaign.ad_account_id == account_pk)
+                elif source_visible is not None:
+                    source_query = source_query.filter(Campaign.ad_account_id.in_(source_visible or {"__no_accounts__"}))
+                row = source_query.first()
+                if not row:
+                    rejected.append({"account_id": account_pk, "reason": "所选广告组不存在或无权访问"})
+                    continue
+                ad_group, campaign = row
+                if str(ad_group.status or "").upper() in {"DELETED", "NOT_FOUND", "ARCHIVED"}:
+                    rejected.append({"account_id": account_pk, "reason": "所选广告组已归档或已删除，请重新选择"})
+                    continue
+                if str(getattr(campaign.status, "value", campaign.status) or "").upper() in {"DELETED", "NOT_FOUND", "ARCHIVED"}:
+                    rejected.append({"account_id": account_pk, "reason": "所选广告组的父广告系列已归档或已删除"})
+                    continue
+                stale_before = datetime.utcnow() - timedelta(hours=24)
+                if not ad_group.updated_at or ad_group.updated_at < stale_before:
+                    rejected.append({"account_id": account_pk, "reason": "所选广告组超过 24 小时未同步，请先同步 Meta"})
+                    continue
+                expected_external = str(selection.get("ad_group_external_id") or "").strip()
+                if expected_external and expected_external != ad_group.ad_group_id:
+                    rejected.append({"account_id": account_pk, "reason": "所选广告组信息已变化，请刷新后重新选择"})
+                    continue
+                existing_ad_groups[account_pk] = {
+                    "id": ad_group.id,
+                    "ad_group_id": ad_group.ad_group_id,
+                    "name": ad_group.name,
+                    "status": str(ad_group.status or "ACTIVE"),
+                    "campaign_id": campaign.id,
+                    "campaign_external_id": campaign.campaign_id,
+                    "campaign_name": campaign.name,
+                    "source_account_id": campaign.ad_account_id,
+                }
+                valid_available.append(account_pk)
+            available = valid_available
 
         # Page/账户授权校验完成后再检查素材，避免已被剔除的账户同时出现
         # ASSET_SYNC_PENDING，给前端返回互相矛盾的预检结果。
@@ -200,7 +269,16 @@ class JobService:
         ).count() if available else 0
         if existing:
             warnings.append({"code": "ALREADY_DEPLOYED", "message": f"{existing} 个账户已有该模板实例，提交后会跳过创建"})
-        return {"passed": not errors, "template": {"id": template.id, "name": template.name, "objective": template.objective, "creative_count": len(creatives)}, "errors": errors, "warnings": warnings, "accounts": account_results, "ready_account_ids": available}
+        return {
+            "passed": not errors,
+            "template": {"id": template.id, "name": template.name, "objective": template.objective, "creative_count": len(creatives)},
+            "errors": errors,
+            "warnings": warnings,
+            "accounts": account_results,
+            "ready_account_ids": available,
+            "ad_group_mode": ad_group_mode,
+            "existing_ad_groups": existing_ad_groups,
+        }
 
     # 创建
     # ------------------------------------------------------------------

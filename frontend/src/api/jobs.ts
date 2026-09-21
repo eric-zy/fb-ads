@@ -75,6 +75,11 @@ export interface CreateCampaignPayload {
   status?: string
   sinan_promotion_id?: string
   access_business_ids?: Record<string, string>
+  ad_group_mode?: 'NEW' | 'EXISTING' | 'COPY'
+  ad_group_selections?: Record<string, { mode?: 'NEW' | 'EXISTING' | 'COPY'; ad_group_id: string; ad_group_external_id?: string }>
+  preview_id?: string
+  snapshot_hash?: string
+  idempotency_key?: string
 }
 
 export interface TemplateActionPayload {

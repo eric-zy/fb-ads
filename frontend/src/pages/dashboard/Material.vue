@@ -54,6 +54,7 @@
           class="overview-picker"
           v-model="overviewRange"
           type="daterange"
+          single-panel
           value-format="YYYY-MM-DD"
           range-separator="至"
           start-placeholder="统计开始"
@@ -185,6 +186,7 @@
         <el-date-picker
           v-model="statsRange"
           type="daterange"
+          single-panel
           value-format="YYYY-MM-DD"
           range-separator="至"
           start-placeholder="开始日期"

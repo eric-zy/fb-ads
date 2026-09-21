@@ -46,10 +46,26 @@ async def get_user_accounts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    """获取用户的广告账户列表"""
+    """获取用户的广告账户列表。
+
+    管理员通常不会在 ``user_accounts`` 中给自己建立分配记录，
+    因此管理员查询自己时应返回当前租户的全部账户；普通用户仍只返回
+    直接分配或账户组分配的账户。
+    """
     try:
         if current_user.id != user_id and not current_user.is_admin():
             raise HTTPException(status_code=403, detail="无权查看其他用户的广告账户")
+
+        if current_user.id == user_id and current_user.is_admin():
+            query = db.query(AdAccount).filter(AdAccount.owner_type != "UNBOUND")
+            tenant_id = effective_tenant_id(current_user)
+            if tenant_id:
+                query = query.filter(AdAccount.tenant_id == tenant_id)
+            accounts = query.order_by(AdAccount.created_at.desc()).all()
+            return UserAccountsResponse(
+                accounts=[account_to_dict(account, db) for account in accounts]
+            )
+
         from models import UserAccount
         from models.account_group import account_group_accounts, account_group_users
         
@@ -69,10 +85,12 @@ async def get_user_accounts(
         accounts = db.query(AdAccount).filter(
             AdAccount.id.in_(list(account_ids))
         ).all()
-        
+
         return UserAccountsResponse(
-            accounts=[account_to_dict(a) for a in accounts]
+            accounts=[account_to_dict(a, db) for a in accounts]
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get user accounts: {str(e)}")
         raise HTTPException(

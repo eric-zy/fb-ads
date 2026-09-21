@@ -196,6 +196,66 @@
           </el-select>
         </el-form-item>
 
+        <el-form-item label="广告组来源" required>
+          <el-radio-group v-model="adGroupMode">
+            <el-radio value="NEW">新建广告组</el-radio>
+            <el-radio value="EXISTING">同账户复用已同步广告组</el-radio>
+            <el-radio value="COPY">跨账户复制广告组配置</el-radio>
+          </el-radio-group>
+          <div class="tip">同账户复用会沿用广告组及父广告系列；跨账户复制只复制定向、预算和出价，目标账户会新建投放对象。</div>
+        </el-form-item>
+        <el-alert v-if="adGroupMode !== 'NEW' && currentAdsetCount > 1" type="warning" :closable="false" show-icon>
+          当前配置包含 {{ currentAdsetCount }} 个广告组；复用或复制模式每个账户只能选择一个已同步广告组，请调整为一个广告组后继续。
+        </el-alert>
+        <div v-if="adGroupMode !== 'NEW' && selectedAccountRows.length" class="existing-adgroup-list">
+          <div v-for="account in selectedAccountRows" :key="account.id" class="existing-adgroup-row">
+            <div class="account-label">{{ account.account_name || account.account_id }}</div>
+            <el-select
+              v-model="existingAdGroupSelections[account.id]"
+              filterable
+              remote
+              clearable
+              :remote-method="(query) => loadExistingAdGroups(account.id, query)"
+              :loading="existingAdGroupLoading[account.id]"
+              :placeholder="adGroupMode === 'COPY' ? '搜索源广告组 / 广告系列（可跨账户）' : '搜索已同步广告组 / 广告系列'"
+              style="width: 440px"
+              @focus="loadExistingAdGroups(account.id)"
+              @clear="delete existingAdGroupSelections[account.id]"
+            >
+              <el-option
+                v-for="group in (existingAdGroups[account.id] || [])"
+                :key="group.id"
+                :label="`${group.name} · ${group.campaign.name} · ${group.account_name || group.ad_account_id}`"
+                :value="group.id"
+              >
+                <span>{{ group.name }} · {{ group.campaign.name }} · {{ group.account_name || group.ad_account_id }}</span>
+                <small class="adgroup-option-meta">{{ group.ad_group_id }} · {{ group.status }}</small>
+                <el-tag v-if="group.stale" size="small" type="warning">同步超过 24 小时</el-tag>
+              </el-option>
+            </el-select>
+            <div v-if="selectedExistingAdGroup(account.id)" class="selected-adgroup-detail">
+              Meta AdSet {{ selectedExistingAdGroup(account.id)?.ad_group_id }} · 父系列 {{ selectedExistingAdGroup(account.id)?.campaign.campaign_id }}
+              <span v-if="selectedExistingAdGroup(account.id)?.stale" class="stale-adgroup-tip">
+                源数据超过 24 小时未同步，请先同步 Meta
+                <el-button
+                  size="small"
+                  type="warning"
+                  :loading="existingAdGroupSyncing[account.id]"
+                  @click="syncExistingAdGroup(account.id)"
+                >
+                  {{ existingAdGroupSyncing[account.id] ? '同步中' : '立即同步' }}
+                </el-button>
+              </span>
+              <span v-if="existingAdGroupSyncState[account.id]" class="adgroup-sync-state">
+                {{ adGroupSyncStateLabel(existingAdGroupSyncState[account.id]) }}
+              </span>
+              <span v-if="existingAdGroupSyncError[account.id]" class="adgroup-sync-error">
+                {{ existingAdGroupSyncError[account.id] }}
+              </span>
+            </div>
+          </div>
+        </div>
+
         <el-form-item label="预算覆盖">
           <el-input-number v-model="form.budget_override" :min="0" :step="10" />
           <span class="tip-inline">为 0 或留空时沿用模板预算（美元/天）</span>
@@ -255,6 +315,7 @@
             <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → {{ form.publish_mode === 'DIRECT' ? previewAdsetCount : adsetCount(selectedTemplate) }} 个 AdSet → {{ form.publish_mode === 'DIRECT' ? previewAdCount : creativeCount(selectedTemplate) * adsetCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
             <el-descriptions-item label="预算">{{ form.budget_override ? form.budget_override + ' 美元/天（本次覆盖）' : form.publish_mode === 'DIRECT' ? directForm.adsets.reduce((sum, item) => sum + Number(item.budget || 0), 0) + ' 美元/天' : templateBudget + '（沿用模板）' }}</el-descriptions-item>
             <el-descriptions-item label="初始状态">{{ form.status === 'ACTIVE' ? '立即启用' : '暂停' }}</el-descriptions-item>
+            <el-descriptions-item label="广告组来源">{{ adGroupMode === 'EXISTING' ? `同账户复用（${form.ad_account_ids.length} 个账户分别选择）` : adGroupMode === 'COPY' ? `跨账户复制（${form.ad_account_ids.length} 个账户分别选择）` : '新建广告组' }}</el-descriptions-item>
           </el-descriptions>
           <el-table :data="selectedAccountRows" size="small" style="margin-top: 12px">
             <el-table-column prop="account_name" label="账户" show-overflow-tooltip />
@@ -396,6 +457,7 @@ import { accountApi, type DeployableAccount } from '@/api/admin'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { mediaApi, type MetaAssetBinding } from '@/api/media'
 import { metaPagesApi, type MetaPage } from '@/api/metaPages'
+import { campaignsApi, type SyncedAdGroup } from '@/api/campaigns'
 import { useLocale } from '@/stores/localeStore'
 const { t } = useLocale()
 import {
@@ -424,6 +486,13 @@ const metaPages = ref<MetaPage[]>([])
 const pagesSyncing = ref(false)
 const mediaAssets = ref<any[]>([])
 const activeStep = ref(0)
+const adGroupMode = ref<'NEW' | 'EXISTING' | 'COPY'>('NEW')
+const existingAdGroups = reactive<Record<string, SyncedAdGroup[]>>({})
+const existingAdGroupLoading = reactive<Record<string, boolean>>({})
+const existingAdGroupSelections = reactive<Record<string, string>>({})
+const existingAdGroupSyncing = reactive<Record<string, boolean>>({})
+const existingAdGroupSyncState = reactive<Record<string, string>>({})
+const existingAdGroupSyncError = reactive<Record<string, string>>({})
 
 let pollTimer: number | null = null
 let assetPollTimer: number | null = null
@@ -524,6 +593,39 @@ const adsetCount = (template: CampaignTemplate | null) => {
   const adsets = template?.creative_config_json?.adsets
   return Array.isArray(adsets) && adsets.length ? adsets.length : 1
 }
+const currentAdsetCount = computed(() => form.publish_mode === 'DIRECT' ? directForm.adsets.length : adsetCount(selectedTemplate.value))
+const selectedExistingAdGroup = (accountId: string) =>
+  (existingAdGroups[accountId] || []).find(group => group.id === existingAdGroupSelections[accountId])
+const adGroupSyncStateLabel = (state?: string) => ({
+  PENDING: '同步任务排队中',
+  STARTED: '同步任务执行中',
+  RETRY: '同步任务重试中',
+  SUCCESS: '同步任务完成',
+  PARTIAL_SUCCESS: '同步完成，但有部分对象异常',
+  STALE: '同步完成，但广告组信息仍未刷新',
+  FAILURE: '同步任务失败',
+  REVOKED: '同步任务已取消',
+}[state || ''] || state || '')
+const adGroupSelectionsPayload = computed(() => {
+  if (adGroupMode.value === 'NEW') return {}
+  return Object.fromEntries(
+    form.ad_account_ids
+      .filter(id => existingAdGroupSelections[id])
+      .map(id => {
+        const selected = selectedExistingAdGroup(id)
+        return [id, {
+          mode: adGroupMode.value,
+          ad_group_id: existingAdGroupSelections[id],
+          ad_group_external_id: selected?.ad_group_id,
+        }]
+      }),
+  )
+})
+const existingAdGroupsReady = computed(() => adGroupMode.value === 'NEW'
+  || (currentAdsetCount.value === 1 && form.ad_account_ids.every(id => {
+    const selected = selectedExistingAdGroup(id)
+    return !!selected && !selected.stale && !existingAdGroupSyncing[id]
+  })))
 const directCreativesReady = computed(() => {
   const creatives = directConfig.value?.creatives as any[] | undefined
   const countReady = creativeFormat.value === 'CAROUSEL' ? !!creatives && creatives.length >= 2 && creatives.length <= 10 : !!creatives?.length
@@ -536,7 +638,7 @@ const canNext = computed(() => {
   if (activeStep.value === 0) return form.publish_mode === 'DIRECT'
     ? directObjectiveValid.value && !!directConfig.value?.page_id && !!directConfig.value?.name && (!form.save_as_template || !!form.template_name.trim()) && directForm.adsets.length > 0 && directForm.adsets.every(item => !!item.name && !!item.country && Number(item.budget) > 0 && item.age_min <= item.age_max) && directCreativesReady.value
     : !!form.template_id && templateReady.value
-  if (activeStep.value === 2) return form.ad_account_ids.length > 0
+  if (activeStep.value === 2) return form.ad_account_ids.length > 0 && existingAdGroupsReady.value
   return true
 })
 const goCreateTemplate = () => router.push('/dashboard/templates')
@@ -637,6 +739,67 @@ const syncAccessBusinessDefaults = () => {
   }
   for (const id of Object.keys(accessBusinessIds)) {
     if (!form.ad_account_ids.includes(id)) delete accessBusinessIds[id]
+  }
+}
+
+const loadExistingAdGroups = async (accountId: string, keyword = '') => {
+  existingAdGroupLoading[accountId] = true
+  try {
+    const { data } = await campaignsApi.searchAdGroups({ account_id: adGroupMode.value === 'EXISTING' ? accountId : undefined, q: keyword || undefined, limit: 50 })
+    const selected = selectedExistingAdGroup(accountId)
+    const rows = Array.isArray(data) ? data : []
+    existingAdGroups[accountId] = selected && !rows.some(item => item.id === selected.id) ? [selected, ...rows] : rows
+  } catch {
+    existingAdGroups[accountId] = []
+  } finally {
+    existingAdGroupLoading[accountId] = false
+  }
+}
+
+const syncExistingAdGroup = async (targetAccountId: string) => {
+  const selected = selectedExistingAdGroup(targetAccountId)
+  if (!selected || existingAdGroupSyncing[targetAccountId]) return
+  existingAdGroupSyncing[targetAccountId] = true
+  existingAdGroupSyncState[targetAccountId] = 'PENDING'
+  delete existingAdGroupSyncError[targetAccountId]
+  try {
+    const { data } = await campaignsApi.syncAdGroup(selected.id)
+    ElMessage.success('已提交广告组同步，完成后将自动刷新配置')
+    for (let attempt = 0; attempt < 45; attempt += 1) {
+      await new Promise(resolve => window.setTimeout(resolve, 2000))
+      const { data: task } = await campaignsApi.taskStatus(data.task_id)
+      existingAdGroupSyncState[targetAccountId] = task.state
+      if (task.state === 'FAILURE' || task.state === 'REVOKED') {
+        existingAdGroupSyncError[targetAccountId] = task.error || '同步任务失败，请重试'
+        return
+      }
+      if (String(task.result?.status || '').toLowerCase() === 'failed') {
+        existingAdGroupSyncState[targetAccountId] = 'FAILURE'
+        existingAdGroupSyncError[targetAccountId] = task.error || '同步任务失败，请重试'
+        return
+      }
+      await loadExistingAdGroups(targetAccountId)
+      const refreshed = selectedExistingAdGroup(targetAccountId)
+      if (refreshed && !refreshed.stale) {
+        if (task.result?.status === 'partial_success') {
+          existingAdGroupSyncState[targetAccountId] = 'PARTIAL_SUCCESS'
+          existingAdGroupSyncError[targetAccountId] = `已刷新，但有 ${task.result.error_count || 0} 项同步异常，可到任务中心查看详情`
+        } else {
+          existingAdGroupSyncState[targetAccountId] = 'SUCCESS'
+        }
+        ElMessage.success('广告组配置已刷新，可以继续预检')
+        return
+      }
+      if (['SUCCESS', 'FAILURE', 'REVOKED'].includes(task.state)) break
+    }
+    existingAdGroupSyncState[targetAccountId] = 'STALE'
+    existingAdGroupSyncError[targetAccountId] = '同步任务已结束，但广告组信息仍未刷新，请重试或检查任务中心'
+  } catch {
+    existingAdGroupSyncState[targetAccountId] = 'FAILURE'
+    existingAdGroupSyncError[targetAccountId] = '无法读取同步任务状态，请检查网络或任务中心'
+    ElMessage.error('广告组同步失败，请检查同步权限或任务中心')
+  } finally {
+    existingAdGroupSyncing[targetAccountId] = false
   }
 }
 
@@ -767,6 +930,8 @@ const submit = async () => {
       status: form.status,
       sinan_promotion_id: form.sinan_promotion_id || undefined,
       access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined,
+      ad_group_mode: adGroupMode.value,
+      ad_group_selections: adGroupSelectionsPayload.value,
       preview_id: preflightResult.value.preview_id,
       snapshot_hash: preflightResult.value.snapshot_hash,
       idempotency_key: `publish:${preflightResult.value.preview_id}`,
@@ -813,7 +978,7 @@ const runPreflight = async () => {
       ElMessage.success(`已保存投放模板：${saved.name}`)
     }
     syncAccessBusinessDefaults()
-  const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id || undefined, inline_config: form.publish_mode === 'DIRECT' ? directConfig.value || undefined : undefined, template_name: form.template_name || undefined, save_as_template: form.save_as_template, source: form.publish_mode, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined, access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined })
+    const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id || undefined, inline_config: form.publish_mode === 'DIRECT' ? directConfig.value || undefined : undefined, template_name: form.template_name || undefined, save_as_template: form.save_as_template, source: form.publish_mode, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined, access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined, ad_group_mode: adGroupMode.value, ad_group_selections: adGroupSelectionsPayload.value })
     if (data.template_id && form.publish_mode === 'DIRECT') form.template_id = data.template_id
     preflightResult.value = data
     if (!data.passed) ElMessage.error('预检未通过，请处理阻断项')
@@ -826,6 +991,21 @@ watch(() => form.publish_mode, mode => {
   form.template_id = ''
   preflightResult.value = null
   if (mode === 'TEMPLATE') form.save_as_template = false
+})
+watch(adGroupMode, () => {
+  preflightResult.value = null
+  if (adGroupMode.value !== 'NEW') {
+    for (const id of form.ad_account_ids) loadExistingAdGroups(id)
+  }
+})
+watch(() => form.ad_account_ids.slice(), ids => {
+  for (const id of Object.keys(existingAdGroupSelections)) {
+    if (!ids.includes(id)) delete existingAdGroupSelections[id]
+  }
+  for (const id of ids) {
+    if (adGroupMode.value !== 'NEW' && !existingAdGroups[id]) loadExistingAdGroups(id)
+  }
+  preflightResult.value = null
 })
 watch(() => form.save_as_template, enabled => {
   if (!enabled) form.template_name = ''
@@ -923,6 +1103,14 @@ onUnmounted(stopPolling)
 .direct-creative { padding: 14px 16px 4px; margin: 12px 0; border: 1px solid #e4e7ed; border-radius: 8px; background: #fff; }
 .job-meta { color: #909399; font-size: 12px; margin-right: 6px; }
 .direct-adset-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; color: #243b53; }
+.existing-adgroup-list { margin: 10px 0 18px 110px; max-width: 760px; padding: 12px 14px; border: 1px solid #dcdfe6; border-radius: 8px; background: #fafcff; }
+.existing-adgroup-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 8px 0; }
+.existing-adgroup-row .account-label { width: 150px; color: #303133; }
+.adgroup-option-meta { margin-left: 8px; color: #909399; }
+.selected-adgroup-detail { margin-left: 160px; color: #67c23a; font-size: 12px; }
+.stale-adgroup-tip { margin-left: 8px; color: #e6a23c; }
+.adgroup-sync-state { margin-left: 8px; color: #409eff; }
+.adgroup-sync-error { display: block; margin: 4px 0 0 160px; color: #f56c6c; }
 .step-panel { min-height: 180px; padding: 8px 4px; }
 .step-panel > .el-form-item { max-width: 760px; }
 .step-panel > .el-alert { max-width: 760px; }

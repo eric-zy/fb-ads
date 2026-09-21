@@ -26,13 +26,14 @@ from core.enums import (
 from core.logger import logger
 from core.tenant import resolve_tenant_of, tenant_task
 from config.settings import settings
-from models import CampaignInstance, AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, AdAccount, MetaPage, SinanCredential
+from models import Campaign, AdGroup, CampaignInstance, AdSetInstance, AdInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, AdAccount, MetaPage, SinanCredential, User
 from services.credential_service import CredentialService
 from services.credential_resolver import CredentialResolver
 from services.connector_campaign_builder import build_connector_payload
 from services.fb_connector_client import FBConnectorClient
 from services.media_usage import extract_asset_ids, record_template_usage
 from services.media_binding_service import ensure_asset_bindings, queue_pending_asset_bindings
+from services.account_access import accessible_account_ids
 from services.meta import MetaApiError
 from services.meta.page_access import page_account_access_error
 from services.integrations.sinan_client import SinanClient
@@ -475,6 +476,62 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
 
         params = job.params or {}
         budget_override = params.get("budget_override")
+        ad_group_mode = str(params.get("ad_group_mode") or "NEW").upper()
+        reuse_context = None
+        copy_context = None
+        if ad_group_mode in {"EXISTING", "COPY"}:
+            selection = (params.get("ad_group_selections") or {}).get(item.ad_account_id) or {}
+            selected_id = str(selection.get("ad_group_id") or "").strip()
+            if not selected_id:
+                raise ValueError("未选择已同步广告组")
+            selected_query = (
+                db.query(AdGroup, Campaign)
+                .join(Campaign, AdGroup.campaign_id == Campaign.id)
+                .filter(
+                    AdGroup.id == selected_id,
+                    AdGroup.tenant_id == item.tenant_id,
+                    Campaign.tenant_id == item.tenant_id,
+                )
+            )
+            if ad_group_mode == "EXISTING":
+                selected_query = selected_query.filter(Campaign.ad_account_id == item.ad_account_id)
+            selected = selected_query.first()
+            if not selected:
+                raise ValueError("所选广告组不存在、已移除或无权访问")
+            selected_group, selected_campaign = selected
+            if ad_group_mode == "COPY" and job.created_by:
+                creator = db.query(User).filter(User.id == job.created_by).first()
+                if creator:
+                    visible_sources = accessible_account_ids(db, creator)
+                    if visible_sources is not None and selected_campaign.ad_account_id not in visible_sources:
+                        raise ValueError("复制源广告账户权限已变化，请重新选择源广告组")
+            if str(selected_group.status or "").upper() in {"DELETED", "NOT_FOUND", "ARCHIVED"}:
+                raise ValueError("所选广告组已归档或删除，请重新选择")
+            if str(getattr(selected_campaign.status, "value", selected_campaign.status) or "").upper() in {"DELETED", "NOT_FOUND", "ARCHIVED"}:
+                raise ValueError("所选广告组的父广告系列已归档或删除")
+            expected_external = str(selection.get("ad_group_external_id") or "").strip()
+            if expected_external and expected_external != selected_group.ad_group_id:
+                raise ValueError("所选广告组已发生变化，请刷新后重新选择")
+            if ad_group_mode == "EXISTING":
+                reuse_context = {
+                    "campaign_id": selected_campaign.campaign_id,
+                    "ad_group_id": selected_group.ad_group_id,
+                    "local_campaign_id": selected_campaign.id,
+                    "local_ad_group_id": selected_group.id,
+                }
+            else:
+                copy_context = {
+                    "local_campaign_id": selected_campaign.id,
+                    "local_ad_group_id": selected_group.id,
+                    "source_account_id": selected_campaign.ad_account_id,
+                    "name": selected_group.name,
+                    "targeting": selected_group.targeting,
+                    "daily_budget": selected_group.daily_budget,
+                    "bid_strategy": selected_group.bid_strategy,
+                    "bid_amount": selected_group.bid_amount,
+                }
+        elif ad_group_mode != "NEW":
+            raise ValueError("广告组来源参数无效")
         # 默认 PAUSED：批量创建后不直接花钱，由用户确认后再启用
         status = params.get("status", InstanceStatus.PAUSED.value)
         sinan = {}
@@ -589,7 +646,14 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 status=status, campaign_name=sinan.get("campaign_name"),
                 adset_name=sinan.get("adset_name"),
                 asset_bindings=asset_bindings,
+                existing_campaign_id=(reuse_context or {}).get("campaign_id"),
+                existing_ad_group_id=(reuse_context or {}).get("ad_group_id"),
+                copy_ad_group=copy_context,
             )
+            if reuse_context:
+                protocol_payload["reuse_existing"] = reuse_context
+            elif copy_context:
+                protocol_payload["copy_source"] = copy_context
             protocol_payload.update({
                 "task_id": job_item_id,
                 "credential_id": ref.credential_id,

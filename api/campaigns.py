@@ -1,6 +1,6 @@
 """已创建 Meta 投放对象查询与异步控制接口。"""
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 import uuid
 
@@ -12,7 +12,7 @@ from core.auth import get_current_active_user
 from core.audit import record_audit
 from core.database import get_db
 from core.enums import ActionType
-from models import AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, AsyncTaskRecord, DeliveryAction, SyncAlert, User
+from models import AdAccount, AdGroup, Campaign, AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, AsyncTaskRecord, DeliveryAction, SyncAlert, User
 from services.job_service import JobService
 from services.account_access import accessible_account_ids
 from tasks.meta_sync_tasks import sync_delivery_objects_task, update_delivery_object_task
@@ -61,6 +61,118 @@ def _visible_accounts(db: Session, user: User) -> Optional[set[str]]:
 def _can_see_account(visible: Optional[set[str]], account_id: str) -> bool:
     return visible is None or account_id in visible
 
+
+@router.get("/ad-groups/search")
+def search_synced_ad_groups(
+    account_id: Optional[str] = None,
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
+    """搜索当前租户已同步的 Meta 广告组，供发布时复用。
+
+    返回的是本地 canonical 对象及其父 Campaign；客户端只提交本地
+    ``ad_group.id``，发布任务再次从数据库解析 Meta ID，避免篡改或串号。
+    """
+    limit = max(1, min(limit, 100))
+    visible = _visible_accounts(db, current_user)
+    query = (
+        _scope(db.query(AdGroup, Campaign, AdAccount), AdGroup, current_user)
+        .join(Campaign, AdGroup.campaign_id == Campaign.id)
+        .join(AdAccount, Campaign.ad_account_id == AdAccount.id)
+        .filter(Campaign.tenant_id == AdGroup.tenant_id)
+    )
+    if visible is not None:
+        query = query.filter(Campaign.ad_account_id.in_(visible or {"__no_accounts__"}))
+    if account_id:
+        if visible is not None and account_id not in visible:
+            return []
+        query = query.filter(Campaign.ad_account_id == account_id)
+    if status:
+        query = query.filter(AdGroup.status == status.upper())
+    if q and q.strip():
+        pattern = f"%{q.strip()}%"
+        query = query.filter(
+            (AdGroup.name.ilike(pattern))
+            | (AdGroup.ad_group_id.ilike(pattern))
+            | (Campaign.name.ilike(pattern))
+            | (Campaign.campaign_id.ilike(pattern))
+        )
+    rows = query.order_by(AdGroup.updated_at.desc().nullslast(), AdGroup.created_at.desc()).limit(limit).all()
+    stale_before = datetime.utcnow() - timedelta(hours=24)
+    return [
+        {
+            "id": group.id,
+            "ad_group_id": group.ad_group_id,
+            "name": group.name,
+            "status": str(group.status or "ACTIVE"),
+            "ad_account_id": campaign.ad_account_id,
+            "account_name": account.account_name,
+            "campaign": {
+                "id": campaign.id,
+                "campaign_id": campaign.campaign_id,
+                "name": campaign.name,
+            "status": str(getattr(campaign.status, "value", campaign.status) or "ACTIVE"),
+            },
+            "updated_at": group.updated_at.isoformat() if group.updated_at else None,
+            # 没有更新时间也视为过期：这类记录可能只完成了本地落库，
+            # 不能直接作为发布时的最新 Meta 配置使用。
+            "stale": not group.updated_at or group.updated_at < stale_before,
+        }
+        for group, campaign, account in rows
+    ]
+
+@router.post("/ad-groups/{ad_group_id}/sync")
+def sync_synced_ad_group(
+    ad_group_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
+    """刷新一个已同步广告组及其账户下的完整投放对象树。
+
+    广告组搜索返回的是 canonical AdGroup ID，而现有批量同步接口接收
+    CampaignInstance/AdSetInstance ID；单独提供此接口，避免前端把两类 ID
+    混用，也让发布页可以直接发起“立即同步”。
+    """
+    _require_action_permission(current_user, "SYNC")
+    visible = _visible_accounts(db, current_user)
+    row = (
+        _scope(db.query(AdGroup), AdGroup, current_user)
+        .join(Campaign, AdGroup.campaign_id == Campaign.id)
+        .filter(AdGroup.id == ad_group_id, Campaign.tenant_id == AdGroup.tenant_id)
+        .first()
+    )
+    if not row or not _can_see_account(visible, row.campaign.ad_account_id):
+        raise HTTPException(status_code=404, detail="广告组不存在或无权同步")
+
+    account_id = row.campaign.ad_account_id
+    task = sync_delivery_objects_task.delay(account_id)
+    db.add(AsyncTaskRecord(
+        task_id=task.id,
+        task_type="META_SYNC",
+        object_type="ADSET",
+        object_ids=[ad_group_id],
+        created_by=current_user.id,
+    ))
+    db.commit()
+    record_audit(
+        db,
+        action="SYNC_DELIVERY_OBJECTS",
+        resource_type="ad_group",
+        resource_id=ad_group_id,
+        user_id=current_user.id,
+        request_data={"ad_group_id": ad_group_id, "account_id": account_id},
+        response_data={"status": "QUEUED", "task_id": task.id},
+    )
+    return {
+        "status": "QUEUED",
+        "task_id": task.id,
+        "ad_group_id": ad_group_id,
+        "account_id": account_id,
+    }
+
 @router.get("/sync-alerts")
 def list_sync_alerts(limit: int = 50, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
     limit = max(1, min(limit, 200))
@@ -106,6 +218,8 @@ def get_async_task_status(task_id: str, db: Session = Depends(get_db), current_u
             "status": value.get("status", "success"),
             "error_count": value.get("error_count", 0),
         }
+        if str(value.get("status", "")).lower() == "failed":
+            payload["error"] = str(value.get("error") or "Meta 同步任务失败")
     elif result.failed():
         payload["error"] = str(result.result)
     record.status = result.state

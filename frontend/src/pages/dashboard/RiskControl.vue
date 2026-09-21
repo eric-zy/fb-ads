@@ -63,7 +63,7 @@ function accountId() { return accountStore.selectedAccount?.id || '' }
 function formatTime(value: string | null) { return value ? new Date(value).toLocaleString() : '—' }
 function riskLevelLabel(value: string | null) { return ({ critical: '严重', high: '高', medium: '中', low: '低' }[value || ''] || value || '未知') }
 function riskLevelType(value: string | null) { return ({ critical: 'danger', high: 'warning', medium: 'warning', low: 'success' }[value || ''] || 'info') }
-function eventTypeLabel(value: string | null) { return ({ unusual_spend: '异常花费', low_quality: '低质量', high_fraud: '高欺诈', account_frozen: '账户冻结', policy_violation: '政策违规', suspicious_pattern: '可疑模式' }[value || ''] || value || '未知事件') }
+function eventTypeLabel(value: string | null) { return ({ unusual_spend: '异常花费', low_quality: '低质量', high_fraud: '高欺诈', account_frozen: '账户冻结', policy_violation: '政策违规', suspicious_pattern: '可疑模式', DELIVERY_SYNC: '投放状态同步异常', DELIVERY_SYNC_FAILED: '投放状态同步失败', RISK_REDIS_UNAVAILABLE: '风控服务异常' }[value || ''] || value || '未知事件') }
 function notificationLabel(value?: string | null) { return ({ SENT: '已发送', FAILED: '失败', SKIPPED: '已跳过', PENDING: '待发送' }[value || ''] || '待发送') }
 function notificationType(value?: string | null) { return value === 'SENT' ? 'success' : value === 'FAILED' ? 'danger' : value === 'SKIPPED' ? 'info' : 'warning' }
 function actionLabel(value?: string | null) { return ({ ALERT: '告警', PAUSE_CAMPAIGN: '暂停广告系列', PAUSE_ADSET: '暂停广告组', PAUSE_AD: '暂停广告', FREEZE_ACCOUNT: '冻结账户' }[value || ''] || value || '—') }

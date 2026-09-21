@@ -447,13 +447,24 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
 
         campaign_id = row.campaign_id
         if not campaign_id:
-            campaign = service.create_campaign(account_id, payload.get("campaign") or {})
-            campaign_id = campaign["id"]
-            created.append(campaign_id)
+            campaign_payload = dict(payload.get("campaign") or {})
+            reuse_campaign_id = campaign_payload.pop("existing_id", None) or campaign_payload.pop("reuse_id", None)
+            if reuse_campaign_id:
+                campaign_id = str(reuse_campaign_id)
+                logger.info(
+                    "[ConnectorCampaign] reuse campaign connector_task_id=%s campaign_id=%s",
+                    connector_task_id,
+                    campaign_id,
+                )
+            else:
+                campaign = service.create_campaign(account_id, campaign_payload)
+                campaign_id = campaign["id"]
+                created.append(campaign_id)
             row.campaign_id = campaign_id
             row.step = "ADSET"
             session.commit()
-            logger.info("[ConnectorCampaign] campaign created connector_task_id=%s campaign_id=%s", connector_task_id, campaign_id)
+            if not reuse_campaign_id:
+                logger.info("[ConnectorCampaign] campaign created connector_task_id=%s campaign_id=%s", connector_task_id, campaign_id)
 
         object_map = {
             "adsets": list((row.objects or {}).get("adsets") or []),
@@ -478,6 +489,16 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
             creatives = adset.pop("creatives", []) or []
             adset_key = adset.get("client_key")
             adset_id = existing_id("adsets", adset_key)
+            reuse_adset_id = adset.pop("existing_id", None) or adset.pop("reuse_id", None)
+            if reuse_adset_id:
+                adset_id = str(reuse_adset_id)
+                remember("adsets", adset_key, adset_id, reused=True)
+                logger.info(
+                    "[ConnectorCampaign] reuse adset connector_task_id=%s client_key=%s id=%s",
+                    connector_task_id,
+                    adset_key,
+                    adset_id,
+                )
             if not adset_id:
                 adset.pop("client_key", None)
                 result = service.create_adset(account_id, {**adset, "campaign_id": campaign_id})

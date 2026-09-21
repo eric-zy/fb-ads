@@ -1,12 +1,46 @@
 """工作台聚合接口：验证按用户可见广告账户隔离。"""
 
 from datetime import date, datetime, timedelta
+import asyncio
 
 import pytest
 from fastapi import HTTPException
 
 from api.workbench import workbench_summary
 from models import AccountInsight, AdAccount, CampaignJob, CampaignJobItem, User, UserAccount
+from api.users import get_user_accounts
+
+
+def test_admin_user_accounts_returns_all_tenant_accounts_without_assignments(db):
+    admin = User(
+        id="workbench-admin",
+        tenant_id="test_tenant",
+        email="workbench-admin@test.local",
+        username="workbench-admin",
+        hashed_password="unused",
+        role="tenant_admin",
+        is_active=True,
+    )
+    first = AdAccount(
+        id="workbench-admin-account-1",
+        tenant_id="test_tenant",
+        account_id="act_admin_1",
+        account_name="管理员账户 1",
+        currency="USD",
+    )
+    second = AdAccount(
+        id="workbench-admin-account-2",
+        tenant_id="test_tenant",
+        account_id="act_admin_2",
+        account_name="管理员账户 2",
+        currency="USD",
+    )
+    db.add_all([admin, first, second])
+    db.commit()
+
+    payload = asyncio.run(get_user_accounts(admin.id, db=db, current_user=admin))
+
+    assert {item["id"] for item in payload.accounts} == {first.id, second.id}
 
 
 def test_workbench_summary_only_returns_assigned_accounts(db):

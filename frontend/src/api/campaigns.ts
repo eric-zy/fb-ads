@@ -1,13 +1,27 @@
 import request from '@/utils/request'
 export interface MetaCampaign { id: string; ad_account_id: string; account_name?: string; meta_campaign_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; objective?: string; template_name?: string; updated_at?: string; publisher?: { id: string; username: string; email?: string | null } | null }
 export interface MetaAdSet { id: string; campaign_id: string; meta_adset_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; optimization_goal?: string; daily_budget?: number }
+export interface SyncedAdGroup {
+  id: string
+  ad_group_id: string
+  name: string
+  status: string
+  ad_account_id: string
+  account_name?: string | null
+  campaign: { id: string; campaign_id: string; name: string; status: string }
+  updated_at?: string | null
+  stale?: boolean
+}
 export interface MetaAd { id: string; adset_id: string; meta_ad_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; effective_status?: string }
 export interface AsyncActionResult { job_id?: string; job_ids?: string[]; task_ids?: string[]; action_ids?: string[]; account_ids?: string[]; object_type?: string; object_ids?: string[]; object_count?: number; status: string }
+export interface AdGroupSyncResult { status: string; task_id: string; ad_group_id: string; account_id: string }
 export interface AsyncTaskStatus { task_id: string; state: string; result?: Record<string, any>; error?: string }
 export interface DeliveryAction { id: string; object_type: string; object_id: string; account_id: string; action: string; status: string; desired_status?: string; remote_status?: string; task_id?: string; error_message?: string; created_at?: string; finished_at?: string }
 export interface SyncAlert { id: string; ad_account_id?: string; alert_type: string; title: string; message: string; is_resolved: boolean; created_at?: string }
 export interface DeliveryObjectDetail { object_type: string; object: MetaCampaign | MetaAdSet | MetaAd; account?: Record<string, any> | null; ancestors: Record<string, any>; children: any[]; recent_actions: DeliveryAction[] }
 export const campaignsApi = {
+  searchAdGroups: (params?: { account_id?: string; q?: string; status?: string; limit?: number }) => request.get<SyncedAdGroup[]>('/api/v1/ad-groups/search', { params }),
+  syncAdGroup: (id: string) => request.post<AdGroupSyncResult>('/api/v1/ad-groups/' + id + '/sync'),
   list: (params?: { ad_account_id?: string; status?: string; keyword?: string }) => request.get<MetaCampaign[]>('/api/v1/campaigns', { params }),
   detail: (id: string) => request.get<any>('/api/v1/campaigns/' + id + '/detail'),
   objectDetail: (objectType: string, id: string) => request.get<DeliveryObjectDetail>('/api/v1/delivery-objects/' + objectType + '/' + id),
