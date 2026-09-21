@@ -1237,6 +1237,31 @@ Celery 任务提交与查询（与 Job Center 是两套体系：`tasks` 是单�
 
 ---
 
+## 13. 风控中心
+
+风控中心统一入口为 `/api/v1/risk-control`。查询结果受当前租户和当前用户广告账户范围约束；平台内置规则只读，租户自定义规则由管理员或经理管理。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/risk-control/overview` | 当前可见账户的状态、风险等级、未解决事件和当日执行汇总 |
+| GET | `/api/v1/risk-control/accounts` | 风险账户分页，支持等级、系统状态、未解决事件和关键字筛选 |
+| GET | `/api/v1/risk-control/events` | 风险事件分页，支持账户、等级、类型和解决状态筛选 |
+| GET | `/api/v1/risk-control/events/{event_id}` | 风险事件详情 |
+| POST | `/api/v1/risk-control/events/{event_id}/resolve` | 人工解决事件并写入审计日志 |
+| POST | `/api/v1/risk-control/accounts/{account_id}/recheck` | 投递一次手动账户风控重检查任务 |
+| GET | `/api/v1/risk-control/rules` | 风控规则列表 |
+| POST | `/api/v1/risk-control/rules` | 创建租户风控规则 |
+| PUT | `/api/v1/risk-control/rules/{rule_id}` | 修改租户风控规则并递增版本 |
+| POST | `/api/v1/risk-control/rules/{rule_id}/toggle` | 启停租户风控规则 |
+| POST | `/api/v1/risk-control/rules/{rule_id}/dry-run` | 生成无副作用的规则预览，不调用 Meta 写接口 |
+| GET | `/api/v1/risk-control/executions` | 止损执行记录分页 |
+| GET | `/api/v1/risk-control/executions/{execution_id}` | 止损执行记录详情 |
+| POST | `/api/v1/risk-control/executions/{execution_id}/retry` | 投递 FAILED 风控动作重试任务 |
+
+规则字段约定：`conditions` 为条件数组（支持 `spend`、`conversions`、`roi`、`cpa`、`ctr`、`cpc` 等指标及 `gt/gte/lt/lte/eq/neq/in/not_in`），`logic` 为 `AND`/`OR`，金额字段使用最小货币单位，`min_runtime` 与 `cooldown_seconds` 使用秒；dry-run 支持 `account_ids`、`window_days`，返回本地 Insights 指标、逐条件命中结果和 `KILL_SWITCH`/`COOLDOWN`/`WHITELIST` 等跳过原因，始终不调用 Meta 写接口。
+
+---
+
 ## 附录 A：Job 状态机
 
 任务状态：
