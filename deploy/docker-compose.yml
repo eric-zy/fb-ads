@@ -111,7 +111,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
-      start_period: 5s
+      # CentOS 7 / Docker 旧版环境下 Nginx 监听端口可能需要十几秒，
+      # 给 entrypoint 和 worker 进程留出启动宽限期，避免被早期拒绝连接判为 unhealthy。
+      start_period: 30s
 
 volumes:
   pgdata:
