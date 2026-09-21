@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
 from core.logger import logger
-from core.tenant import for_all_tenants, tenant_task
+from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task
 from config.settings import settings
 from models import AdAccount
 from services.ads_manager import AdsManager
