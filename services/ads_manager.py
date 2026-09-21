@@ -5,6 +5,7 @@ from models import (
     AccountInsight,
     CampaignInsight,
     AdSetInsight,
+    AdInsight,
     Ad,
     AdAccount,
     AdGroup,
