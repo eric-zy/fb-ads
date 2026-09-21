@@ -330,7 +330,13 @@ class AdsManager:
                 if not entity: continue
                 filter_column = getattr(model, parent)
                 existing = self.db.query(model).filter(filter_column == entity.id, model.date == insight_date).first()
-                target = existing or model(id=f"ins_{dimension}_{entity.id}_{insight_date}", **{parent: entity.id}, date=insight_date)
+                # Keep insight IDs within the VARCHAR(50) schema limit.  Internal
+                # entity IDs are already 32-char hashes, so including the
+                # dimension and date verbatim can exceed the column length.
+                insight_key = hashlib.sha256(
+                    f"{dimension}:{entity.id}:{insight_date}".encode("utf-8")
+                ).hexdigest()[:32]
+                target = existing or model(id=f"ins_{insight_key}", **{parent: entity.id}, date=insight_date)
                 if not existing: self.db.add(target)
                 action_metrics = self._parse_action_metrics(row.get("actions"), row.get("action_values")); target.spend = to_minor(float(row.get("spend", 0) or 0)); target.impressions = int(row.get("impressions", 0) or 0); target.clicks = int(row.get("clicks", 0) or 0); target.conversions = action_metrics["conversions"]; target.link_clicks = action_metrics["link_clicks"]; target.landing_page_views = action_metrics["landing_page_views"]; target.leads = action_metrics["leads"]; target.purchases = action_metrics["purchases"]; target.complete_registrations = action_metrics["complete_registrations"]; target.conversion_value = to_minor(action_metrics["conversion_value"]); target.actions = row.get("actions") or []; target.action_values = row.get("action_values") or []; target.synced_at = datetime.utcnow(); target.ctr = (target.clicks / target.impressions) if target.impressions else 0.0; target.cpc = to_major(target.spend) / target.clicks if target.clicks else 0.0; target.cpm = to_major(target.spend) / target.impressions * 1000 if target.impressions else 0.0; result[dimension] += 1
         self.db.commit()
