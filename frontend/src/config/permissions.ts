@@ -62,6 +62,15 @@ export const permissionGroups: PermissionGroup[] = [
     ],
   },
   {
+    key: 'risk',
+    label: '风控中心',
+    description: '查看风险事件、管理规则和检查止损记录',
+    permissions: [
+      { value: 'risk:read', label: '查看风控中心', description: '查看风控总览、风险账户和事件' },
+      { value: 'risk_rule:manage', label: '管理风控规则', description: '创建、编辑、启停和 dry-run 风控规则' },
+    ],
+  },
+  {
     key: 'settings',
     label: '系统设置',
     description: '访问个人和租户级系统设置',

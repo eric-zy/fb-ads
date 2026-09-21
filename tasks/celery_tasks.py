@@ -6,13 +6,26 @@ from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
 from core.logger import logger
+from core.redis_client import redis_client
 from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task
 from config.settings import settings
-from models import AdAccount
+from models import AdAccount, RiskExecution, Tenant
 from services.ads_manager import AdsManager
 from services.risk_detector import RiskDetector
 from services.analytics import AnalyticsEngine
 from services.notifications import NotificationService
+from services.risk_action_service import retry_failed_execution, run_account_rules
+from services.risk_reliability import (
+    check_database,
+    log_dependency_failure,
+    resolve_operational_alerts,
+    upsert_operational_alert,
+)
+
+
+def _resolve_account_tenant(account_id: str) -> Optional[str]:
+    """Celery 风控任务按账户建立租户上下文。"""
+    return resolve_tenant_of(AdAccount, account_id)
 
 
 # ==================== 洞察数据采集 ====================
@@ -30,7 +43,32 @@ def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
         采集结果统计
     """
     db = SessionLocal()
+    lock = None
+    lock_acquired = False
     try:
+        # 同一账户的洞察任务必须串行。Meta 报表通常需要几十秒到数分钟，
+        # 旧任务重试或用户手动补跑时如果并发执行，会互相竞争同一批
+        # (entity, date) 主键并产生重复键，同时放大 Meta API 限流。
+        lock_key = f"fbads:insights-sync:{account_id}"
+        try:
+            lock = redis_client.redis_client.lock(
+                lock_key,
+                timeout=max(int(settings.FB_CONNECTOR_REPORT_TIMEOUT) * 3, 1800),
+                blocking=False,
+            )
+            if not lock.acquire(blocking=False):
+                logger.warning("Insights sync already running for account %s", account_id)
+                return {
+                    "status": "skipped",
+                    "account_id": account_id,
+                    "reason": "same_account_task_running",
+                }
+            lock_acquired = True
+        except Exception as lock_exc:
+            # 锁服务不可用时不能放任任务并发写报表；让 Celery 稍后重试。
+            logger.error("Failed to acquire insights sync lock for %s: %s", account_id, lock_exc)
+            raise lock_exc
+
         logger.info(f"Fetching insights for account {account_id}")
         
         ads_manager = AdsManager(db)
@@ -54,6 +92,11 @@ def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
         # 重试
         raise self.retry(exc=exc, countdown=60)
     finally:
+        if lock is not None and lock_acquired:
+            try:
+                lock.release()
+            except Exception:
+                logger.warning("Failed to release insights sync lock for %s", account_id)
         db.close()
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=300)
@@ -109,25 +152,46 @@ def check_account_risk(self, account_id: str) -> Dict:
         
         logger.info(f"Checking risk for account {account_id}")
         
-        risk_detector = RiskDetector(db)
-        
-        # 执行风险检测
-        results = risk_detector.execute_risk_actions(account_id)
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        if not account:
+            return {"status": "not_found", "account_id": account_id}
+
+        # RC-04：每轮重新读取本地指标、重新求值，再由动作服务执行。
+        # 旧 RiskDetector 保留供历史手动调用，但不再由定时任务直接触发。
+        results = run_account_rules(db, account)
         
         logger.info(f"Risk check completed for {account_id}: {results}")
         
         # 如果有风险，发送通知
-        if results.get('events_created', 0) > 0:
+        if results.get("counts", {}).get("success", 0) > 0:
             notify_risk_events.delay(account_id)
         
         return {
-            "status": "partial" if results.get("spend_check_status") == "FAILED" else "success",
+            "status": "partial" if results.get("counts", {}).get("failed", 0) > 0 else "success",
             "account_id": account_id,
             "results": results,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as exc:
         logger.error(f"Failed to check risk for {account_id}: {str(exc)}")
+        try:
+            # 风控执行异常可能已经让当前事务进入 failed 状态，
+            # 先回滚再查询和写入运营告警，避免告警也被同一事务拖垮。
+            db.rollback()
+            account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+            if account:
+                alert, created = upsert_operational_alert(
+                    db,
+                    tenant_id=account.tenant_id,
+                    ad_account_id=account.id,
+                    alert_type="RISK_WORKER_FAILED",
+                    title="风控 Worker 执行失败",
+                    message=f"账户 {account_id} 的风控任务失败：{str(exc)[:500]}",
+                )
+                if created:
+                    NotificationService().notify_all(alert.title, alert.message)
+        except Exception:
+            logger.exception("Failed to persist risk worker failure alert for %s", account_id)
         raise self.retry(exc=exc, countdown=60)
     finally:
         db.close()
@@ -161,6 +225,70 @@ def check_all_accounts_risk(self) -> Dict:
         
         logger.info(f"Submitted {len(results)} risk check tasks")
         return {"status": "submitted", "task_count": len(results)}
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, max_retries=1, name="tasks.celery_tasks.monitor_risk_dependencies")
+@for_all_tenants
+def monitor_risk_dependencies(self) -> Dict:
+    """巡检风控依赖；告警按租户和依赖类型去重，恢复后自动关闭。"""
+    db = SessionLocal()
+    try:
+        check_database(db)
+        redis_ok = True
+        try:
+            redis_client.redis_client.ping()
+        except Exception as exc:
+            redis_ok = False
+            log_dependency_failure("redis", exc)
+
+        tenants = db.query(Tenant).all()
+        if redis_ok:
+            for tenant in tenants:
+                resolve_operational_alerts(db, tenant_id=tenant.id, alert_type="RISK_REDIS_UNAVAILABLE")
+        else:
+            for tenant in tenants:
+                alert, created = upsert_operational_alert(
+                    db,
+                    tenant_id=tenant.id,
+                    alert_type="RISK_REDIS_UNAVAILABLE",
+                    title="风控依赖 Redis 不可用",
+                    message="风控任务依赖的 Redis ping 失败，请检查 Redis 服务、连接地址和网络。",
+                )
+                if created:
+                    NotificationService().notify_all(alert.title, alert.message)
+        return {"status": "ok" if redis_ok else "degraded", "redis": redis_ok, "tenants": len(tenants)}
+    except Exception as exc:
+        # 数据库本身不可用时无法安全写告警，保留日志并让 Beat/监控系统接管。
+        log_dependency_failure("database", exc)
+        raise self.retry(exc=exc, countdown=60)
+    finally:
+        db.close()
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=120, name="risk.retry_execution")
+@tenant_task(lambda self, execution_id: resolve_tenant_of(RiskExecution, execution_id))
+def retry_risk_execution(self, execution_id: str) -> Dict:
+    """显式重试失败的风控动作；不会跳过规则二次校验。"""
+    db = SessionLocal()
+    try:
+        execution = db.query(RiskExecution).filter(RiskExecution.id == execution_id).first()
+        if not execution:
+            return {"status": "not_found", "execution_id": execution_id}
+        if execution.status != "FAILED":
+            return {"status": "ignored", "execution_id": execution_id, "reason": "仅允许重试 FAILED 记录"}
+        result = retry_failed_execution(db, execution)
+        return {
+            "status": "success" if result.status == "SUCCESS" else result.status.lower(),
+            "execution_id": execution_id,
+            "execution_status": result.status,
+            "retry_count": result.retry_count,
+        }
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Failed to retry risk execution %s", execution_id)
+        raise self.retry(exc=exc, countdown=120)
     finally:
         db.close()
 
@@ -252,23 +380,69 @@ def notify_risk_events(self, account_id: str) -> Dict:
         from models import RiskEvent
         
         # 获取未解决的风险事件
+        from sqlalchemy import or_
         events = db.query(RiskEvent).filter(
             RiskEvent.ad_account_id == account_id,
-            RiskEvent.is_resolved == False
+            RiskEvent.is_resolved == False,
+            or_(
+                RiskEvent.notification_status.is_(None),
+                ~RiskEvent.notification_status.in_(["SENT", "SKIPPED"]),
+            ),
         ).order_by(RiskEvent.created_at.desc()).limit(10).all()
         
         if not events:
             return {"status": "no_events"}
         
         notifier = NotificationService()
-        message = f"检测到 {len(events)} 个风险事件\n"
+        configured_channels = [
+            name for name, enabled in (
+                ("email", notifier.email_enabled),
+                ("dingtalk", notifier.dingtalk_enabled),
+                ("slack", notifier.slack_enabled),
+            ) if enabled
+        ]
+        results = {}
+        has_failure = False
+        now = datetime.utcnow()
         for event in events:
-            message += f"- [{event.risk_level.value}] {event.title}\n"
-        
-        notifier.notify_all(f"广告账户 {account_id} 风险告警", message)
+            previous = dict(event.notification_results or {})
+            pending_channels = [
+                channel for channel in configured_channels
+                if previous.get(channel) != "success"
+            ]
+            if pending_channels:
+                message = f"[{event.risk_level.value}] {event.title}\n{event.description or ''}"
+                channel_results = notifier.notify_all(
+                    f"广告账户 {account_id} 风险告警",
+                    message,
+                    channels=pending_channels,
+                )
+                previous.update(channel_results)
+                results.update(channel_results)
+            remaining_failures = [
+                channel for channel in configured_channels
+                if previous.get(channel) != "success"
+            ]
+            event.notification_attempts = int(event.notification_attempts or 0) + 1
+            event.notification_results = previous
+            if not configured_channels:
+                event.notification_status = "SKIPPED"
+                event.notification_error = "未启用任何通知渠道"
+            elif remaining_failures:
+                event.notification_status = "FAILED"
+                event.notification_error = str({channel: previous.get(channel) for channel in remaining_failures})[:1000]
+                has_failure = True
+            else:
+                event.notification_status = "SENT"
+                event.notification_sent_at = now
+                event.notification_error = None
+        db.commit()
+
+        if has_failure:
+            raise RuntimeError(f"风险告警通知部分失败: {results}")
         
         logger.info(f"Risk notifications sent for {account_id}")
-        return {"status": "sent", "events_count": len(events)}
+        return {"status": "sent" if results else "skipped", "events_count": len(events), "channels": results}
     except Exception as exc:
         logger.error(f"Failed to send risk notifications: {str(exc)}")
         raise self.retry(exc=exc, countdown=60)

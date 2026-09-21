@@ -17,7 +17,13 @@ class NotificationService:
         self.dingtalk_enabled = bool(settings.NOTIFY_DING_WEBHOOK)
         self.slack_enabled = bool(settings.NOTIFY_SLACK_WEBHOOK)
     
-    def notify_all(self, subject: str, message: str, html: Optional[str] = None) -> Dict:
+    def notify_all(
+        self,
+        subject: str,
+        message: str,
+        html: Optional[str] = None,
+        channels: Optional[List[str]] = None,
+    ) -> Dict:
         """发送到所有启用的通知渠道
         
         Args:
@@ -29,8 +35,9 @@ class NotificationService:
             各渠道发送结果
         """
         results = {}
-        
-        if self.email_enabled:
+        selected = set(channels) if channels is not None else {"email", "dingtalk", "slack"}
+
+        if self.email_enabled and "email" in selected:
             try:
                 self.send_email(subject, message, html)
                 results['email'] = 'success'
@@ -38,7 +45,7 @@ class NotificationService:
                 logger.error(f"Failed to send email: {str(e)}")
                 results['email'] = f'failed: {str(e)}'
         
-        if self.dingtalk_enabled:
+        if self.dingtalk_enabled and "dingtalk" in selected:
             try:
                 self.send_dingtalk(subject, message)
                 results['dingtalk'] = 'success'
@@ -46,7 +53,7 @@ class NotificationService:
                 logger.error(f"Failed to send DingTalk: {str(e)}")
                 results['dingtalk'] = f'failed: {str(e)}'
         
-        if self.slack_enabled:
+        if self.slack_enabled and "slack" in selected:
             try:
                 self.send_slack(subject, message)
                 results['slack'] = 'success'

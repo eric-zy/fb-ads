@@ -14,14 +14,28 @@
 """
 from datetime import datetime
 from typing import Dict
+import hashlib
 
 from celery import shared_task
 
 from config.settings import settings
 from core.database import SessionLocal
 from core.logger import logger
+from core.redis_client import redis_client
 from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task, bypass_tenant
-from models import AdAccount, MetaAccount, CampaignInstance, AdSetInstance, AdInstance, Credential, DeliveryAction, SyncAlert
+from models import (
+    AdAccount,
+    MetaAccount,
+    Campaign,
+    AdGroup,
+    Ad,
+    CampaignInstance,
+    AdSetInstance,
+    AdInstance,
+    Credential,
+    DeliveryAction,
+    SyncAlert,
+)
 import uuid
 from services.ads_manager import AdsManager
 from services.meta import MetaSyncService
@@ -35,6 +49,12 @@ from services.meta.connector_page_sync import sync_connector_pages
 
 def _log_to_dict(log) -> Dict:
     return log.to_dict() if log else {}
+
+
+def _canonical_object_id(account_id: str, object_type: str, external_id: str) -> str:
+    """Return a stable VARCHAR(50)-safe ID for a canonical Meta object."""
+    value = f"{account_id}:{object_type}:{external_id}".encode("utf-8")
+    return hashlib.sha256(value).hexdigest()[:32]
 
 
 @shared_task(bind=True, name="meta.sync_pages", max_retries=2, default_retry_delay=60)
@@ -264,7 +284,19 @@ def sync_campaigns_task(self, account_id: str) -> Dict:
 def sync_delivery_objects_task(self, account_id: str) -> Dict:
     """异步同步本地 Campaign / AdSet / Ad 的 Meta 状态。"""
     db = SessionLocal()
+    lock = None
+    lock_acquired = False
     try:
+        lock = redis_client.redis_client.lock(
+            f"fbads:delivery-sync:{account_id}",
+            timeout=max(int(settings.FB_CONNECTOR_REPORT_TIMEOUT) * 3, 1800),
+            blocking=False,
+        )
+        if not lock.acquire(blocking=False):
+            logger.warning("Delivery object sync already running for account %s", account_id)
+            raise RuntimeError(f"账户 {account_id} 的投放对象同步正在执行")
+        lock_acquired = True
+
         account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
         if not account:
             return {"status": "failed", "error": "广告账户不存在"}
@@ -286,6 +318,7 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
         remote_adsets_by_campaign = {}
         remote_ads_by_adset = {}
         updated = 0
+        canonical_created = {"campaign": 0, "adset": 0, "ad": 0}
 
         def sync_instance_state(instance, remote, object_type: str, object_id: str) -> int:
             """同步远端状态，同时保留本地归档/删除语义并记录漂移。"""
@@ -328,6 +361,37 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
             if campaign_fetch_ok and campaign.meta_campaign_id:
                 updated += sync_instance_state(campaign, remote, "CAMPAIGN", str(campaign.id))
 
+            # Keep the canonical reporting hierarchy in sync with the instance
+            # hierarchy.  The instance tables are for publishing/status
+            # projection; reports and insights reference campaigns/ad_groups/ads.
+            canonical_campaign = None
+            if campaign_key:
+                # Meta object ID 在平台侧全局唯一，规范表也有全局唯一约束。
+                # 只按外部 ID 查询，避免历史数据因账户字段不一致时重复插入。
+                canonical_campaign = db.query(Campaign).filter(
+                    Campaign.campaign_id == campaign_key,
+                ).first()
+                if canonical_campaign is None and remote is not None:
+                    canonical_campaign = Campaign(
+                        id=_canonical_object_id(account.id, "campaign", campaign_key),
+                        tenant_id=account.tenant_id,
+                        ad_account_id=account.id,
+                        campaign_id=campaign_key,
+                        name=remote.get("name") or f"Campaign {campaign_key}",
+                        objective=remote.get("objective"),
+                        status=remote.get("status") or remote.get("effective_status") or "PAUSED",
+                    )
+                    db.add(canonical_campaign)
+                    canonical_created["campaign"] += 1
+                elif canonical_campaign is not None and remote is not None:
+                    if canonical_campaign.ad_account_id != account.id:
+                        canonical_campaign.ad_account_id = account.id
+                    if canonical_campaign.tenant_id != account.tenant_id:
+                        canonical_campaign.tenant_id = account.tenant_id
+                    canonical_campaign.name = remote.get("name") or canonical_campaign.name
+                    canonical_campaign.objective = remote.get("objective") or canonical_campaign.objective
+                    canonical_campaign.status = remote.get("status") or remote.get("effective_status") or canonical_campaign.status
+
             # 状态同步也负责修复本地层级索引：历史上投放成功但轮询中断时，
             # campaign_instances 可能已经落库，而 adset_instances/ad_instances 尚未落库。
             # 因此不能只遍历本地子对象，必须以 Meta 返回的完整层级为准做 upsert。
@@ -358,6 +422,33 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                     continue
                 remote_adset_id = str(remote_adset_id)
                 seen_adset_ids.add(remote_adset_id)
+
+                canonical_adset = None
+                if canonical_campaign is not None:
+                    canonical_adset = db.query(AdGroup).filter(
+                        AdGroup.ad_group_id == remote_adset_id,
+                    ).first()
+                    if canonical_adset is None:
+                        remote_status = remote_set.get("effective_status") or remote_set.get("status") or "PAUSED"
+                        canonical_adset = AdGroup(
+                            id=_canonical_object_id(account.id, "adset", remote_adset_id),
+                            tenant_id=account.tenant_id,
+                            ad_group_id=remote_adset_id,
+                            campaign_id=canonical_campaign.id,
+                            name=remote_set.get("name") or f"AdSet {remote_adset_id}",
+                            status=remote_status,
+                        )
+                        canonical_adset.campaign = canonical_campaign
+                        db.add(canonical_adset)
+                        canonical_created["adset"] += 1
+                    else:
+                        if canonical_adset.campaign_id != canonical_campaign.id:
+                            canonical_adset.campaign_id = canonical_campaign.id
+                        if canonical_adset.tenant_id != account.tenant_id:
+                            canonical_adset.tenant_id = account.tenant_id
+                        canonical_adset.name = remote_set.get("name") or canonical_adset.name
+                        canonical_adset.status = remote_set.get("status") or remote_set.get("effective_status") or canonical_adset.status
+
                 adset = local_adsets.get(remote_adset_id)
                 if not adset:
                     remote_status = remote_set.get("effective_status") or remote_set.get("status") or "PAUSED"
@@ -407,6 +498,33 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                         continue
                     remote_ad_id = str(remote_ad_id)
                     seen_ad_ids.add(remote_ad_id)
+
+                    canonical_ad = None
+                    if canonical_adset is not None:
+                        canonical_ad = db.query(Ad).filter(
+                            Ad.ad_id == remote_ad_id,
+                        ).first()
+                        if canonical_ad is None:
+                            remote_status = remote_ad.get("effective_status") or remote_ad.get("status") or "PAUSED"
+                            canonical_ad = Ad(
+                                id=_canonical_object_id(account.id, "ad", remote_ad_id),
+                                tenant_id=account.tenant_id,
+                                ad_id=remote_ad_id,
+                                ad_group_id=canonical_adset.id,
+                                name=remote_ad.get("name") or f"Ad {remote_ad_id}",
+                                status=remote_status,
+                            )
+                            canonical_ad.ad_group = canonical_adset
+                            db.add(canonical_ad)
+                            canonical_created["ad"] += 1
+                        else:
+                            if canonical_ad.ad_group_id != canonical_adset.id:
+                                canonical_ad.ad_group_id = canonical_adset.id
+                            if canonical_ad.tenant_id != account.tenant_id:
+                                canonical_ad.tenant_id = account.tenant_id
+                            canonical_ad.name = remote_ad.get("name") or canonical_ad.name
+                            canonical_ad.status = remote_ad.get("status") or remote_ad.get("effective_status") or canonical_ad.status
+
                     ad = local_ads.get(remote_ad_id)
                     if not ad:
                         remote_status = remote_ad.get("effective_status") or remote_ad.get("status") or "PAUSED"
@@ -469,6 +587,7 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
             "status": "partial_success" if sync_errors else "success",
             "account_id": account.id,
             "updated": updated,
+            "canonical_created": canonical_created,
             "error_count": len(sync_errors),
             "errors": sync_errors[:20],
         }
@@ -489,6 +608,11 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                 logger.exception("[meta_sync] 投放状态同步失败告警发送失败")
             return {"status": "failed", "error": str(exc)}
     finally:
+        if lock is not None and lock_acquired:
+            try:
+                lock.release()
+            except Exception:
+                logger.warning("[meta_sync] 投放对象同步锁释放失败 account_id=%s", account_id)
         db.close()
 
 

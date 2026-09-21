@@ -1,356 +1,95 @@
 <template>
   <div class="risk-control-page">
-    <!-- 账户风险状态 -->
-    <el-row :gutter="20" class="status-cards">
-      <el-col :xs="24" :sm="12" :md="6">
-        <div class="status-card" :class="{ alert: accountHealth?.is_healthy === false }">
-          <h3>账户状态</h3>
-          <p class="status-value">{{ accountHealth?.health_report?.status || 'loading' }}</p>
-          <p class="status-desc">
-            {{ accountHealth?.is_healthy ? '正常' : '异常' }}
-          </p>
-        </div>
-      </el-col>
-
-      <el-col :xs="24" :sm="12" :md="6">
-        <div class="status-card">
-          <h3>风险评分</h3>
-          <div class="score-ring">
-            <el-progress
-              type="circle"
-              :percentage="Math.round(riskScore * 100)"
-              :color="getRiskColor"
-            />
-          </div>
-        </div>
-      </el-col>
-
-      <el-col :xs="24" :sm="12" :md="6">
-        <div class="status-card">
-          <h3>发布频次</h3>
-          <p class="status-value">{{ frequencyStatus }}</p>
-          <p class="status-desc">{{ frequencyDays }}天内</p>
-        </div>
-      </el-col>
-
-      <el-col :xs="24" :sm="12" :md="6">
-        <div class="status-card">
-          <h3>API限制</h3>
-          <p class="status-value">{{ rateLimitUsage }}%</p>
-          <p class="status-desc">当前小时</p>
-        </div>
-      </el-col>
+    <div class="page-head">
+      <div><div class="eyebrow">投放管理 / 风控中心</div><h2>风险控制</h2><p>从风险发现、规则预演到止损执行，统一查看和处理风控状态。</p></div>
+      <div class="head-actions"><span class="account-name">{{ accountStore.selectedAccount?.account_name || '未选择广告账户' }}</span><el-button :loading="loading" @click="refreshAll">刷新</el-button><el-button v-if="canManage" type="primary" :disabled="!accountStore.selectedAccount" @click="recheck">重新检查</el-button></div>
+    </div>
+    <el-alert v-if="pageError" :title="pageError" type="warning" show-icon closable @close="pageError = ''" />
+    <el-row :gutter="16" class="status-cards">
+      <el-col :xs="24" :sm="12" :md="6"><div class="status-card" :class="{ alert: accountHealth?.is_healthy === false }"><h3>账户状态</h3><p class="status-value">{{ accountHealth?.health_report?.status || '—' }}</p><p class="status-desc">{{ accountHealth?.is_healthy === false ? '异常' : accountHealth ? '正常' : '暂无数据' }}</p></div></el-col>
+      <el-col :xs="24" :sm="12" :md="6"><div class="status-card"><h3>风险评分</h3><el-progress type="circle" :percentage="Math.round(riskScore * 100)" :color="riskColor" /></div></el-col>
+      <el-col :xs="24" :sm="12" :md="6"><div class="status-card"><h3>发布频次</h3><p class="status-value">{{ frequencyStatus }}</p><p class="status-desc">{{ frequencyDescription }}</p></div></el-col>
+      <el-col :xs="24" :sm="12" :md="6"><div class="status-card"><h3>API 限制</h3><p class="status-value">{{ rateLimitUsage }}%</p><p class="status-desc">当前小时</p></div></el-col>
     </el-row>
 
-    <!-- 风险事件列表 -->
-    <el-card style="margin-top: 20px">
-      <template #header>
-        <div class="card-header">
-          <span>风险事件</span>
-          <el-button type="text" @click="loadRiskEvents">
-            <el-icon><Refresh /></el-icon>
-            刷新
-          </el-button>
-        </div>
-      </template>
+    <el-tabs v-model="activeTab" class="risk-tabs" @tab-change="onTabChange">
+      <el-tab-pane label="风险事件" name="events">
+        <el-card shadow="never"><div class="filters"><el-select v-model="eventResolved" clearable placeholder="处理状态" @change="eventPage = 1; loadRiskEvents()"><el-option label="未解决" :value="false" /><el-option label="已解决" :value="true" /></el-select><el-select v-model="eventLevel" clearable placeholder="风险等级" @change="eventPage = 1; loadRiskEvents()"><el-option label="严重" value="critical" /><el-option label="高" value="high" /><el-option label="中" value="medium" /><el-option label="低" value="low" /></el-select><el-button @click="loadRiskEvents">刷新事件</el-button></div>
+          <el-table :data="riskEvents" v-loading="eventsLoading" empty-text="暂无风险事件"><el-table-column prop="event_type" label="事件类型" width="140"><template #default="{ row }">{{ eventTypeLabel(row.event_type) }}</template></el-table-column><el-table-column prop="risk_level" label="等级" width="90"><template #default="{ row }"><el-tag :type="riskLevelType(row.risk_level)">{{ riskLevelLabel(row.risk_level) }}</el-tag></template></el-table-column><el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip /><el-table-column prop="notification_status" label="通知" width="100"><template #default="{ row }"><el-tag size="small" :type="notificationType(row.notification_status)">{{ notificationLabel(row.notification_status) }}</el-tag></template></el-table-column><el-table-column prop="is_resolved" label="状态" width="90"><template #default="{ row }"><el-tag size="small" :type="row.is_resolved ? 'success' : 'warning'">{{ row.is_resolved ? '已解决' : '未解决' }}</el-tag></template></el-table-column><el-table-column prop="created_at" label="发生时间" width="180"><template #default="{ row }">{{ formatTime(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="170" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="showEvent(row)">详情</el-button><el-button v-if="!row.is_resolved" link type="warning" @click="resolveEvent(row)">处理</el-button></template></el-table-column></el-table>
+          <el-pagination v-if="eventTotal" v-model:current-page="eventPage" class="pagination" layout="total, prev, pager, next" :page-size="eventPageSize" :total="eventTotal" @current-change="loadRiskEvents" />
+        </el-card>
+      </el-tab-pane>
+      <el-tab-pane label="风控规则" name="rules">
+        <el-card shadow="never"><div class="toolbar"><span class="muted">规则命中前会先执行 dry-run 和安全护栏校验</span><el-button v-if="canManage" type="primary" @click="openRule()">新建规则</el-button></div>
+          <el-table :data="rules" v-loading="rulesLoading" empty-text="暂无风控规则"><el-table-column prop="name" label="规则名称" min-width="190" show-overflow-tooltip /><el-table-column prop="rule_type" label="类型" width="120" /><el-table-column prop="logic" label="逻辑" width="70" /><el-table-column prop="action_on_trigger" label="触发动作" width="130"><template #default="{ row }">{{ actionLabel(row.action_on_trigger) }}</template></el-table-column><el-table-column label="范围" width="110"><template #default="{ row }">{{ row.scope?.level || 'ACCOUNT' }}</template></el-table-column><el-table-column label="状态" width="100"><template #default="{ row }"><el-switch :model-value="row.is_active" :disabled="!canManage || row.is_builtin" @change="toggleRule(row, Boolean($event))" /></template></el-table-column><el-table-column prop="version" label="版本" width="70" /><el-table-column label="操作" width="220" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="runDryRun(row)">dry-run</el-button><el-button v-if="canManage && !row.is_builtin" link type="primary" @click="openRule(row)">编辑</el-button><el-button link @click="viewRule(row)">详情</el-button></template></el-table-column></el-table>
+        </el-card>
+      </el-tab-pane>
+      <el-tab-pane label="止损记录" name="executions">
+        <el-card shadow="never"><div class="filters"><el-select v-model="executionStatus" clearable placeholder="执行状态" @change="loadExecutions"><el-option label="成功" value="SUCCESS" /><el-option label="失败" value="FAILED" /><el-option label="跳过" value="SKIPPED" /><el-option label="执行中" value="RUNNING" /></el-select><el-button @click="loadExecutions">刷新记录</el-button></div>
+          <el-table :data="executions" v-loading="executionsLoading" empty-text="暂无止损执行记录"><el-table-column prop="created_at" label="时间" width="180"><template #default="{ row }">{{ formatTime(row.created_at) }}</template></el-table-column><el-table-column prop="target_type" label="对象类型" width="100" /><el-table-column prop="target_id" label="对象 ID" min-width="160" show-overflow-tooltip /><el-table-column prop="action" label="动作" width="130"><template #default="{ row }">{{ actionLabel(row.action) }}</template></el-table-column><el-table-column prop="mode" label="模式" width="90" /><el-table-column prop="status" label="状态" width="90"><template #default="{ row }"><el-tag :type="executionType(row.status)">{{ row.status }}</el-tag></template></el-table-column><el-table-column prop="error_code" label="错误码" width="170" /><el-table-column label="操作" width="120"><template #default="{ row }"><el-button link type="primary" @click="showExecution(row)">详情</el-button><el-button v-if="canManage && row.status === 'FAILED'" link type="warning" @click="retryExecution(row)">重试</el-button></template></el-table-column></el-table>
+          <el-pagination v-if="executionTotal" v-model:current-page="executionPage" class="pagination" layout="total, prev, pager, next" :page-size="executionPageSize" :total="executionTotal" @current-change="loadExecutions" />
+        </el-card>
+      </el-tab-pane>
+      <el-tab-pane label="系统建议" name="recommendations"><el-card shadow="never"><div v-if="recommendations?.actions?.length" class="recommendations"><div v-for="action in recommendations.actions" :key="action.type" class="recommendation-item" :class="action.priority"><div class="item-header"><el-tag>{{ priorityLabel(action.priority) }}</el-tag><span>{{ action.type }}</span></div><p>{{ action.message }}</p><span class="muted">原因：{{ action.reason }}</span></div></div><el-empty v-else description="暂无建议" /></el-card></el-tab-pane>
+    </el-tabs>
 
-      <el-table
-        :data="riskEvents"
-        :loading="eventsLoading"
-        style="width: 100%"
-      >
-        <el-table-column prop="event_type" label="事件类型" width="150" />
-        <el-table-column prop="risk_level" label="风险等级" width="100">
-          <template #default="{ row }">
-            <el-tag :type="getRiskLevelType(row.risk_level)">
-              {{ row.risk_level }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="title" label="标题" />
-        <el-table-column prop="description" label="描述" width="200" />
-        <el-table-column prop="is_resolved" label="状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="row.is_resolved ? 'success' : 'info'">
-              {{ row.is_resolved ? '已解决' : '未解决' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="created_at" label="时间" width="150" />
-      </el-table>
-    </el-card>
-
-    <!-- 建议措施 -->
-    <el-card style="margin-top: 20px">
-      <template #header>
-        <div class="card-header">
-          <span>系统建议</span>
-        </div>
-      </template>
-
-      <div v-if="recommendations?.actions?.length > 0" class="recommendations">
-        <div
-          v-for="action in recommendations.actions"
-          :key="action.type"
-          class="recommendation-item"
-          :class="{ [action.priority]: true }"
-        >
-          <div class="item-header">
-            <span class="priority">{{ getPriorityLabel(action.priority) }}</span>
-            <span class="type">{{ action.type }}</span>
-          </div>
-          <p class="message">{{ action.message }}</p>
-          <p class="reason">原因: {{ action.reason }}</p>
-        </div>
-      </div>
-      <el-empty v-else description="暂无建议" />
-    </el-card>
+    <el-dialog v-model="eventDetailVisible" title="风险事件详情" width="700px"><el-descriptions v-if="eventDetail" :column="2" border><el-descriptions-item label="标题" :span="2">{{ eventDetail.title }}</el-descriptions-item><el-descriptions-item label="风险等级">{{ riskLevelLabel(eventDetail.risk_level) }}</el-descriptions-item><el-descriptions-item label="通知状态">{{ notificationLabel(eventDetail.notification_status) }}</el-descriptions-item><el-descriptions-item label="描述" :span="2">{{ eventDetail.description || '—' }}</el-descriptions-item><el-descriptions-item label="自动动作">{{ actionLabel(eventDetail.auto_action_taken) }}</el-descriptions-item><el-descriptions-item label="处理人">{{ eventDetail.resolved_by || '—' }}</el-descriptions-item><el-descriptions-item label="处理结果" :span="2">{{ eventDetail.resolution || '—' }}</el-descriptions-item></el-descriptions></el-dialog>
+    <el-dialog v-model="executionDetailVisible" title="止损执行详情" width="780px"><el-descriptions v-if="executionDetail" :column="2" border><el-descriptions-item label="执行 ID" :span="2">{{ executionDetail.id }}</el-descriptions-item><el-descriptions-item label="对象">{{ executionDetail.target_type }} / {{ executionDetail.target_id }}</el-descriptions-item><el-descriptions-item label="状态">{{ executionDetail.status }}</el-descriptions-item><el-descriptions-item label="错误码">{{ executionDetail.error_code || '—' }}</el-descriptions-item><el-descriptions-item label="重试次数">{{ executionDetail.retry_count }}</el-descriptions-item><el-descriptions-item label="失败原因" :span="2">{{ executionDetail.error_message || '—' }}</el-descriptions-item></el-descriptions><pre v-if="executionDetail.provider_response" class="detail-json">{{ JSON.stringify(executionDetail.provider_response, null, 2) }}</pre></el-dialog>
+    <el-dialog v-model="ruleDialogVisible" :title="ruleForm.id ? '编辑风控规则' : '新建风控规则'" width="720px"><el-form label-width="120px"><el-form-item label="规则名称"><el-input v-model="ruleForm.name" /></el-form-item><el-form-item label="规则类型"><el-input v-model="ruleForm.rule_type" placeholder="如 spend_anomaly" /></el-form-item><el-form-item label="触发动作"><el-select v-model="ruleForm.action_on_trigger"><el-option label="告警" value="ALERT" /><el-option label="暂停广告系列" value="PAUSE_CAMPAIGN" /><el-option label="暂停广告组" value="PAUSE_ADSET" /><el-option label="暂停广告" value="PAUSE_AD" /><el-option label="冻结账户" value="FREEZE_ACCOUNT" /></el-select></el-form-item><el-form-item label="逻辑"><el-radio-group v-model="ruleForm.logic"><el-radio label="AND">AND</el-radio><el-radio label="OR">OR</el-radio></el-radio-group></el-form-item><el-form-item label="作用范围"><el-input v-model="ruleForm.scopeText" placeholder='例如 {"level":"ACCOUNT"}' /></el-form-item><el-form-item label="条件 JSON"><el-input v-model="ruleForm.conditionsText" type="textarea" :rows="5" placeholder='例如 [{"metric":"spend","operator":"gte","value":10000}]' /></el-form-item><el-form-item label="冷却秒数"><el-input-number v-model="ruleForm.cooldown_seconds" :min="0" /></el-form-item><el-form-item label="单轮动作上限"><el-input-number v-model="ruleForm.max_actions_per_run" :min="1" /></el-form-item><el-form-item label="只读预演"><el-switch v-model="ruleForm.dry_run" /></el-form-item></el-form><template #footer><el-button @click="ruleDialogVisible = false">取消</el-button><el-button type="primary" :loading="ruleSaving" @click="saveRule">保存</el-button></template></el-dialog>
+    <el-dialog v-model="dryRunVisible" title="规则 dry-run 结果" width="900px"><el-alert v-if="dryRunResult" :title="`评估 ${dryRunResult.targets?.length || 0} 个目标，命中 ${dryRunResult.matched_count || 0} 个`" type="info" show-icon /><el-table v-if="dryRunResult" :data="dryRunResult.targets || []" size="small" style="margin-top: 14px"><el-table-column prop="account_name" label="账户" /><el-table-column prop="target_type" label="对象类型" width="110" /><el-table-column prop="target_id" label="对象 ID" /><el-table-column label="结果" width="120"><template #default="{ row }"><el-tag :type="row.evaluation?.matched ? 'danger' : 'info'">{{ row.evaluation?.matched ? '命中' : (row.evaluation?.reason || '未命中') }}</el-tag></template></el-table-column></el-table></el-dialog>
+    <el-dialog v-model="ruleDetailVisible" title="规则详情" width="680px"><pre v-if="ruleDetail" class="detail-json">{{ JSON.stringify(ruleDetail, null, 2) }}</pre></el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAccountStore } from '@/stores/accountStore'
-import request from '@/utils/request'
+import { useUserStore } from '@/stores/userStore'
+import { riskControlApi, type RiskEventItem, type RiskRuleItem } from '@/api/riskControl'
 
-const accountStore = useAccountStore()
-
-const accountHealth = ref<any>(null)
-const riskScore = ref(0)
-const frequencyStatus = ref('安全')
-const frequencyDays = ref(24)
-const rateLimitUsage = ref(0)
-const riskEvents = ref<any[]>([])
-const recommendations = ref<any>(null)
-const eventsLoading = ref(false)
-
-const getRiskColor = computed(() => {
-  const percentage = riskScore.value * 100
-  if (percentage > 70) return '#f56c6c'
-  if (percentage > 50) return '#e6a23c'
-  if (percentage > 30) return '#409eff'
-  return '#67c23a'
-})
-
-const getRiskLevelType = (level: string) => {
-  const typeMap: Record<string, string> = {
-    critical: 'danger',
-    high: 'warning',
-    medium: 'warning',
-    low: 'success',
-  }
-  return typeMap[level] || 'info'
-}
-
-const getPriorityLabel = (priority: string) => {
-  const labels: Record<string, string> = {
-    critical: '紧急',
-    high: '高',
-    medium: '中',
-    low: '低',
-  }
-  return labels[priority] || priority
-}
-
-const loadAccountHealth = async () => {
-  if (!accountStore.selectedAccount) return
-  try {
-    const response = await request.get(
-      `/api/v1/accounts/${accountStore.selectedAccount.account_id}/account-health-check`
-    )
-    accountHealth.value = response.data
-  } catch (error) {
-    // 错误已由 utils/request.ts 全局拦截器弹框提示
-  }
-}
-
-const loadRiskScore = async () => {
-  if (!accountStore.selectedAccount) return
-  try {
-    const response = await request.get(
-      `/api/v1/accounts/${accountStore.selectedAccount.account_id}/fraud-score`
-    )
-    riskScore.value = response.data.fraud_score
-  } catch (error) {
-    console.error('Error loading risk score:', error)
-  }
-}
-
-const loadRiskEvents = async () => {
-  if (!accountStore.selectedAccount) return
-  eventsLoading.value = true
-  try {
-    const response = await request.get(
-      `/api/v1/accounts/${accountStore.selectedAccount.account_id}/risk-events`
-    )
-    riskEvents.value = response.data.events || []
-  } catch (error) {
-    // 错误已由 utils/request.ts 全局拦截器弹框提示
-  } finally {
-    eventsLoading.value = false
-  }
-}
-
-const loadRecommendations = async () => {
-  if (!accountStore.selectedAccount) return
-  try {
-    const response = await request.get(
-      `/api/v1/accounts/${accountStore.selectedAccount.account_id}/safety-recommendations`
-    )
-    recommendations.value = response.data.recommendations
-  } catch (error) {
-    console.error('Error loading recommendations:', error)
-  }
-}
-
-const loadFrequencyStatus = async () => {
-  if (!accountStore.selectedAccount) return
-  try {
-    const response = await request.get(
-      `/api/v1/accounts/${accountStore.selectedAccount.account_id}/publish-frequency-check?hours=24`
-    )
-    const report = response.data.frequency_report
-    frequencyStatus.value = report.frequency_status
-  } catch (error) {
-    console.error('Error loading frequency status:', error)
-  }
-}
-
-const loadRateLimitStatus = async () => {
-  if (!accountStore.selectedAccount) return
-  try {
-    const response = await request.get(
-      `/api/v1/accounts/${accountStore.selectedAccount.account_id}/rate-limit-status`
-    )
-    const hourStatus = response.data.rate_limits.hour
-    rateLimitUsage.value = Math.round(hourStatus.usage_ratio * 100)
-  } catch (error) {
-    console.error('Error loading rate limit:', error)
-  }
-}
-
-const loadAllData = async () => {
-  await Promise.all([
-    loadAccountHealth(),
-    loadRiskScore(),
-    loadRiskEvents(),
-    loadRecommendations(),
-    loadFrequencyStatus(),
-    loadRateLimitStatus(),
-  ])
-}
-
-onMounted(() => {
-  loadAllData()
-  // 每30秒刷新一次
-  const timer = setInterval(loadAllData, 30000)
-  return () => clearInterval(timer)
-})
+const accountStore = useAccountStore(); const userStore = useUserStore()
+const activeTab = ref('events'); const loading = ref(false); const pageError = ref(''); const accountHealth = ref<any>(null); const riskScore = ref(0); const frequencyReport = ref<any>(null); const rateLimitUsage = ref(0); const recommendations = ref<any>(null)
+const riskEvents = ref<RiskEventItem[]>([]); const eventsLoading = ref(false); const eventTotal = ref(0); const eventPage = ref(1); const eventPageSize = 20; const eventResolved = ref<boolean | undefined>(false); const eventLevel = ref('')
+const rules = ref<RiskRuleItem[]>([]); const rulesLoading = ref(false); const executions = ref<any[]>([]); const executionsLoading = ref(false); const executionTotal = ref(0); const executionPage = ref(1); const executionPageSize = 20; const executionStatus = ref('')
+const eventDetail = ref<RiskEventItem | null>(null); const eventDetailVisible = ref(false); const executionDetail = ref<any>(null); const executionDetailVisible = ref(false); const ruleDetail = ref<any>(null); const ruleDetailVisible = ref(false); const dryRunResult = ref<any>(null); const dryRunVisible = ref(false); const ruleDialogVisible = ref(false); const ruleSaving = ref(false)
+const ruleForm = ref<any>({ name: '', description: '', rule_type: 'spend_anomaly', is_active: true, scopeText: '{"level":"ACCOUNT"}', conditionsText: '[{"metric":"spend","operator":"gte","value":10000}]', logic: 'AND', cooldown_seconds: 0, max_actions_per_run: 100, dry_run: false, action_on_trigger: 'ALERT', priority: 0, whitelist: [], min_spend: 0, min_runtime: 0 })
+let refreshTimer: number | null = null
+const canManage = computed(() => userStore.isAdmin || userStore.hasPermission('risk_rule:manage'))
+const frequencyStatus = computed(() => ({ safe: '安全', warning: '注意', danger: '危险', unknown: '未知' }[frequencyReport.value?.frequency_status || 'unknown'] || '未知'))
+const frequencyDescription = computed(() => frequencyReport.value ? `${frequencyReport.value.hours}小时内 ${frequencyReport.value.count} 次` : '暂无数据')
+const riskColor = computed(() => riskScore.value > .7 ? '#f56c6c' : riskScore.value > .5 ? '#e6a23c' : '#67c23a')
+function accountId() { return accountStore.selectedAccount?.id || '' }
+function formatTime(value: string | null) { return value ? new Date(value).toLocaleString() : '—' }
+function riskLevelLabel(value: string | null) { return ({ critical: '严重', high: '高', medium: '中', low: '低' }[value || ''] || value || '未知') }
+function riskLevelType(value: string | null) { return ({ critical: 'danger', high: 'warning', medium: 'warning', low: 'success' }[value || ''] || 'info') }
+function eventTypeLabel(value: string | null) { return ({ unusual_spend: '异常花费', low_quality: '低质量', high_fraud: '高欺诈', account_frozen: '账户冻结', policy_violation: '政策违规', suspicious_pattern: '可疑模式' }[value || ''] || value || '未知事件') }
+function notificationLabel(value?: string | null) { return ({ SENT: '已发送', FAILED: '失败', SKIPPED: '已跳过', PENDING: '待发送' }[value || ''] || '待发送') }
+function notificationType(value?: string | null) { return value === 'SENT' ? 'success' : value === 'FAILED' ? 'danger' : value === 'SKIPPED' ? 'info' : 'warning' }
+function actionLabel(value?: string | null) { return ({ ALERT: '告警', PAUSE_CAMPAIGN: '暂停广告系列', PAUSE_ADSET: '暂停广告组', PAUSE_AD: '暂停广告', FREEZE_ACCOUNT: '冻结账户' }[value || ''] || value || '—') }
+function priorityLabel(value: string) { return ({ critical: '紧急', high: '高', medium: '中', low: '低' }[value] || value) }
+function executionType(value: string) { return value === 'SUCCESS' ? 'success' : value === 'FAILED' ? 'danger' : value === 'SKIPPED' ? 'info' : 'warning' }
+async function loadOverview() { const selected = accountStore.selectedAccount; if (!selected) return; const calls = await Promise.allSettled([riskControlApi.accountHealth(selected.account_id), riskControlApi.fraudScore(selected.account_id), riskControlApi.recommendations(selected.account_id), riskControlApi.frequency(selected.account_id), riskControlApi.rateLimit(selected.account_id)]); const [health, score, advice, frequency, limit] = calls; if (health.status === 'fulfilled') accountHealth.value = health.value.data; if (score.status === 'fulfilled') riskScore.value = score.value.data.fraud_score || 0; if (advice.status === 'fulfilled') recommendations.value = advice.value.data.recommendations; if (frequency.status === 'fulfilled') frequencyReport.value = frequency.value.data.frequency_report; if (limit.status === 'fulfilled') rateLimitUsage.value = Math.round((limit.value.data.rate_limits?.hour?.usage_ratio || 0) * 100) }
+async function loadRiskEvents() { if (!accountId()) return; eventsLoading.value = true; try { const { data } = await riskControlApi.allEvents({ account_id: accountId(), page: eventPage.value, page_size: eventPageSize, resolved: eventResolved.value, risk_level: eventLevel.value || undefined }); riskEvents.value = data.items; eventTotal.value = data.total } catch { pageError.value = '风险事件加载失败，请稍后重试' } finally { eventsLoading.value = false } }
+async function loadRules() { rulesLoading.value = true; try { const { data } = await riskControlApi.rules(); rules.value = data.items } finally { rulesLoading.value = false } }
+async function loadExecutions() { if (!accountId()) return; executionsLoading.value = true; try { const { data } = await riskControlApi.executions({ account_id: accountId(), page: executionPage.value, page_size: executionPageSize, status: executionStatus.value || undefined }); executions.value = data.items; executionTotal.value = data.total } finally { executionsLoading.value = false } }
+async function refreshAll() { loading.value = true; pageError.value = ''; try { await Promise.all([loadOverview(), loadRiskEvents()]); if (activeTab.value === 'rules') await loadRules(); if (activeTab.value === 'executions') await loadExecutions() } finally { loading.value = false } }
+async function recheck() { try { await riskControlApi.recheckAccount(accountId()); ElMessage.success('已提交重新检查任务') } catch (error: any) { ElMessage.error(error?.response?.data?.detail || '提交重新检查失败') } }
+async function showEvent(row: RiskEventItem) { try { eventDetail.value = (await riskControlApi.event(row.id)).data; eventDetailVisible.value = true } catch { ElMessage.error('加载事件详情失败') } }
+async function resolveEvent(row: RiskEventItem) { try { const { value } = await ElMessageBox.prompt('请输入处理说明', '处理风险事件', { inputPlaceholder: '例如：已确认并完成账户核查', inputValidator: value => value?.trim() ? true : '处理说明不能为空' }); await riskControlApi.resolveEvent(row.id, value); ElMessage.success('风险事件已处理'); await loadRiskEvents() } catch (error: any) { if (error?.response?.data?.detail) ElMessage.error(error.response.data.detail) } }
+async function toggleRule(row: RiskRuleItem, value: boolean) { try { await riskControlApi.toggleRule(row.id, value); ElMessage.success(value ? '规则已启用' : '规则已停用'); await loadRules() } catch { await loadRules() } }
+function openRule(row?: RiskRuleItem) { ruleForm.value = row ? { ...row, scopeText: JSON.stringify(row.scope || { level: 'ACCOUNT' }), conditionsText: JSON.stringify(row.conditions || [], null, 2) } : { name: '', description: '', rule_type: 'spend_anomaly', is_active: true, scopeText: '{"level":"ACCOUNT"}', conditionsText: '[{"metric":"spend","operator":"gte","value":10000}]', logic: 'AND', cooldown_seconds: 0, max_actions_per_run: 100, dry_run: false, action_on_trigger: 'ALERT', priority: 0, whitelist: [], min_spend: 0, min_runtime: 0 }; ruleDialogVisible.value = true }
+async function saveRule() { ruleSaving.value = true; try { const payload: any = { ...ruleForm.value, scope: JSON.parse(ruleForm.value.scopeText), conditions: JSON.parse(ruleForm.value.conditionsText) }; delete payload.id; delete payload.scopeText; delete payload.conditionsText; if (ruleForm.value.id) await riskControlApi.updateRule(ruleForm.value.id, payload); else await riskControlApi.createRule(payload); ElMessage.success('规则已保存'); ruleDialogVisible.value = false; await loadRules() } catch (error: any) { ElMessage.error(error?.response?.data?.detail || '规则 JSON 或字段不合法') } finally { ruleSaving.value = false } }
+function viewRule(row: RiskRuleItem) { ruleDetail.value = row; ruleDetailVisible.value = true }
+async function runDryRun(row: RiskRuleItem) { try { dryRunResult.value = (await riskControlApi.dryRunRule(row.id, accountId() ? [accountId()] : [])).data; dryRunVisible.value = true } catch (error: any) { ElMessage.error(error?.response?.data?.detail || 'dry-run 执行失败') } }
+async function showExecution(row: any) { try { executionDetail.value = (await riskControlApi.execution(row.id)).data; executionDetailVisible.value = true } catch { ElMessage.error('加载执行详情失败') } }
+async function retryExecution(row: any) { try { await ElMessageBox.confirm('将重新经过规则和安全护栏校验，确认重试？', '重试止损动作', { type: 'warning' }); await riskControlApi.retryExecution(row.id); ElMessage.success('重试任务已提交'); await loadExecutions() } catch (error: any) { if (error?.response?.data?.detail) ElMessage.error(error.response.data.detail) } }
+async function onTabChange(tab: string | number) { if (tab === 'rules') await loadRules(); if (tab === 'executions') await loadExecutions() }
+watch(() => accountStore.selectedAccountId, async () => { eventPage.value = 1; executionPage.value = 1; accountHealth.value = null; riskScore.value = 0; frequencyReport.value = null; riskEvents.value = []; await refreshAll() })
+onMounted(() => { refreshAll(); refreshTimer = window.setInterval(refreshAll, 30000) })
+onUnmounted(() => { if (refreshTimer !== null) window.clearInterval(refreshTimer) })
 </script>
 
 <style scoped lang="scss">
-.risk-control-page {
-  .status-cards {
-    .status-card {
-      background: white;
-      border-radius: 8px;
-      padding: 20px;
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-      transition: all 0.3s ease;
-
-      &.alert {
-        border-left: 4px solid #f56c6c;
-      }
-
-      h3 {
-        margin: 0 0 15px 0;
-        font-size: 14px;
-        color: #909399;
-      }
-
-      .status-value {
-        margin: 0 0 8px 0;
-        font-size: 24px;
-        font-weight: 600;
-        color: #333;
-      }
-
-      .status-desc {
-        margin: 0;
-        font-size: 12px;
-        color: #909399;
-      }
-
-      .score-ring {
-        display: flex;
-        justify-content: center;
-        margin: 10px 0;
-      }
-    }
-  }
-
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .recommendations {
-    display: flex;
-    flex-direction: column;
-    gap: 15px;
-
-    .recommendation-item {
-      padding: 15px;
-      border-left: 4px solid #409eff;
-      border-radius: 4px;
-      background-color: #f5f7fa;
-
-      &.critical {
-        border-left-color: #f56c6c;
-        background-color: #fef0f0;
-      }
-
-      &.high {
-        border-left-color: #e6a23c;
-        background-color: #fdf6ec;
-      }
-
-      .item-header {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-bottom: 8px;
-
-        .priority {
-          display: inline-block;
-          padding: 2px 8px;
-          border-radius: 4px;
-          font-size: 12px;
-          font-weight: 600;
-          background-color: rgba(59, 130, 246, 0.1);
-          color: #3b82f6;
-        }
-
-        .type {
-          font-size: 14px;
-          font-weight: 600;
-          color: #333;
-        }
-      }
-
-      .message {
-        margin: 8px 0;
-        font-size: 14px;
-        color: #333;
-      }
-
-      .reason {
-        margin: 0;
-        font-size: 12px;
-        color: #909399;
-      }
-    }
-  }
-}
+.risk-control-page { padding: 4px; }.page-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; gap: 16px; }.eyebrow, .muted { color: #829ab1; font-size: 12px; }.page-head h2 { margin: 6px 0; color: #102a43; }.page-head p { margin: 0; color: #627d98; font-size: 13px; }.head-actions, .filters, .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }.account-name { color: #52606d; font-size: 13px; }.status-cards { margin-bottom: 18px; }.status-card { min-height: 108px; padding: 18px; background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }.status-card.alert { border-left: 4px solid #f56c6c; }.status-card h3 { margin: 0 0 12px; font-size: 14px; color: #829ab1; }.status-value { margin: 0 0 6px; font-size: 24px; font-weight: 600; color: #243b53; }.status-desc { margin: 0; color: #829ab1; font-size: 12px; }.risk-tabs { background: #fff; padding: 12px 16px 18px; border-radius: 8px; }.filters { margin-bottom: 14px; }.toolbar { justify-content: space-between; margin-bottom: 14px; }.pagination { justify-content: flex-end; margin-top: 16px; }.recommendations { display: flex; flex-direction: column; gap: 12px; }.recommendation-item { padding: 14px; border-left: 4px solid #409eff; background: #f5f7fa; border-radius: 4px; }.recommendation-item.critical { border-left-color: #f56c6c; background: #fef0f0; }.recommendation-item.high { border-left-color: #e6a23c; background: #fdf6ec; }.item-header { display: flex; align-items: center; gap: 10px; font-weight: 600; }.recommendation-item p { margin: 10px 0 6px; color: #334e68; }.detail-json { max-height: 380px; overflow: auto; padding: 12px; background: #f5f7fa; border-radius: 4px; white-space: pre-wrap; word-break: break-all; font-size: 12px; } @media (max-width: 800px) { .page-head { flex-direction: column; } .head-actions { width: 100%; } }
 </style>

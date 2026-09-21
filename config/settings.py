@@ -137,6 +137,10 @@ class Settings(BaseSettings):
     RISK_FRAUD_SCORE_THRESHOLD: float = float(os.getenv("RISK_FRAUD_SCORE_THRESHOLD", "0.7"))
     RISK_ACCOUNT_FREEZE_DAYS: int = int(os.getenv("RISK_ACCOUNT_FREEZE_DAYS", "3"))
     RISK_CHECK_INTERVAL: int = 3600  # 检查间隔（秒）
+    # RC-03/RC-04 全局安全开关：开启时规则只允许被评估为 SKIPPED，禁止后续动作执行。
+    RISK_AUTOMATION_KILL_SWITCH: bool = os.getenv(
+        "RISK_AUTOMATION_KILL_SWITCH", "false"
+    ).lower() == "true"
     
     # ========== 日志配置 ==========
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

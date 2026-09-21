@@ -20,7 +20,7 @@ from models.ad_group import AdGroup
 from models.ad import Ad
 from models.publish_task import PublishTask, PublishedAd
 from models.insights import AccountInsight, CampaignInsight, AdInsight, AdSetInsight
-from models.risk_control import RiskEvent, RiskLevel, RiskEventType, RiskRule
+from models.risk_control import RiskEvent, RiskExecution, RiskLevel, RiskEventType, RiskRule
 from models.user import User, UserAccount
 from models.role import Role
 from models.account_group import AccountGroup
@@ -75,6 +75,7 @@ __all__ = [
     'AdInsight',
     'AdSetInsight',
     'RiskEvent',
+    'RiskExecution',
     'RiskLevel',
     'RiskEventType',
     'RiskRule',

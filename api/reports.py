@@ -1,5 +1,6 @@
 from datetime import date, timedelta, datetime
 from typing import Optional
+from celery import chain
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from core.auth import get_current_active_user, require_admin
@@ -9,6 +10,7 @@ from core.money import to_major
 from models import AccountInsight, CampaignInsight, AdSetInsight, AdInsight, Campaign, AdGroup, Ad, AdAccount
 from services.account_access import accessible_account_ids
 from tasks.celery_tasks import fetch_account_insights
+from tasks.meta_sync_tasks import sync_delivery_objects_task
 
 router = APIRouter(prefix="/api/v1/reports", tags=["报表分析"])
 
@@ -29,7 +31,15 @@ def sync_report_data(
     accounts = query.all()
     if account_id and not accounts:
         raise HTTPException(status_code=404, detail="广告账户不存在或无权访问")
-    task_ids = [fetch_account_insights.apply_async(args=(account.id, days)).id for account in accounts]
+    # 报表回补必须先同步规范对象层级，再写入 Campaign/AdSet/Ad Insights。
+    # 否则 Meta 已返回数据，但本地缺少父对象时，洞察会被安全地跳过。
+    task_ids = [
+        chain(
+            sync_delivery_objects_task.si(account.id),
+            fetch_account_insights.si(account.id, days),
+        ).apply_async().id
+        for account in accounts
+    ]
     return {"status": "queued", "days": days, "account_count": len(accounts), "task_ids": task_ids}
 
 @router.get("/account-overview")

@@ -67,6 +67,10 @@ celery_app.conf.beat_schedule = {
         "task": "tasks.celery_tasks.check_all_accounts_risk",
         "schedule": _cron(settings.SCHEDULE_RISK_CHECK_CRON),
     },
+    "risk-dependency-monitor": {
+        "task": "tasks.celery_tasks.monitor_risk_dependencies",
+        "schedule": crontab(minute="*/5"),
+    },
     "daily-reports": {
         "task": "tasks.celery_tasks.dispatch_daily_reports",
         "schedule": _cron(settings.SCHEDULE_REPORT_DAILY_CRON),
