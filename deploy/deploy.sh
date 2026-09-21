@@ -54,7 +54,7 @@ echo "[deploy] 启动 API/Worker/Beat/Nginx，并等待 API 健康检查..."
 echo "[deploy] 等待 API 就绪：http://127.0.0.1:8000/health"
 api_ready=false
 for attempt in $(seq 1 30); do
-  if curl --fail --silent --show-error --max-time 5 \
+  if curl --noproxy '*' --ipv4 --fail --silent --show-error --max-time 5 \
       http://127.0.0.1:8000/health >/dev/null; then
     api_ready=true
     break
@@ -71,7 +71,7 @@ fi
 echo "[deploy] 等待 Nginx 网页入口：http://127.0.0.1:8094/"
 web_ready=false
 for attempt in $(seq 1 15); do
-  if curl --fail --silent --show-error --max-time 5 \
+  if curl --noproxy '*' --ipv4 --fail --silent --show-error --max-time 5 \
       http://127.0.0.1:8094/ >/dev/null; then
     web_ready=true
     break
@@ -81,6 +81,9 @@ for attempt in $(seq 1 15); do
 done
 if [[ "$web_ready" != true ]]; then
   echo "[deploy] Nginx 网页入口检查失败，最近日志：" >&2
+  echo "[deploy] Nginx 容器状态与端口映射：" >&2
+  "${compose[@]}" ps nginx >&2 || true
+  "${compose[@]}" port nginx 80 >&2 || true
   "${compose[@]}" logs --tail=100 nginx >&2 || true
   exit 1
 fi
