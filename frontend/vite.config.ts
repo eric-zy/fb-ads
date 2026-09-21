@@ -44,7 +44,7 @@ export default defineConfig({
         manualChunks: {
           'vendor-vue': ['vue', 'vue-router', 'pinia'],
           'vendor-element': ['element-plus', '@element-plus/icons-vue'],
-          'vendor-charts': ['echarts'],
+          'vendor-charts': ['echarts/core', 'echarts/charts', 'echarts/components', 'echarts/renderers'],
           'vendor-utils': ['axios', 'dayjs', 'js-cookie'],
         },
       },

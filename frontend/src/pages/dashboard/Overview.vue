@@ -163,11 +163,16 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Money, PieChart, Promotion, Refresh, Timer, TrendCharts, Warning } from '@element-plus/icons-vue'
-import * as echarts from 'echarts'
+import * as echarts from 'echarts/core'
+import { LineChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
 import { formatRequestError } from '@/utils/request'
 import { useAccountStore } from '@/stores/accountStore'
 import { useUserStore } from '@/stores/userStore'
 import { reportsApi, workbenchApi, type WorkbenchSummary } from '@/api/reports'
+
+echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
 
 const router = useRouter()
 const accountStore = useAccountStore()

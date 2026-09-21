@@ -2,7 +2,12 @@ from types import SimpleNamespace
 
 from config.settings import settings
 from fb_connector.celery_app import celery_app
-from fb_connector.tasks import _upload_video_resumable, upload_media_task
+from fb_connector.tasks import (
+    _cache_media_file,
+    _find_cached_media,
+    _upload_video_resumable,
+    upload_media_task,
+)
 
 
 class FakeSession:
@@ -132,6 +137,23 @@ def test_processing_retry_does_not_need_local_source_file(monkeypatch):
     assert result == {"video_id": "video-existing"}
     assert service.transfers == []
     assert row.phase == "READY"
+
+
+def test_media_cache_reuses_verified_md5_file(tmp_path, monkeypatch):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"same-content")
+    # Use the actual digest so the cache lookup also verifies file integrity.
+    import hashlib
+
+    expected_md5 = hashlib.md5(b"same-content").hexdigest()
+    monkeypatch.setattr(settings, "CONNECTOR_MEDIA_TEMP_DIR", str(tmp_path))
+    monkeypatch.setattr(settings, "CONNECTOR_MEDIA_CACHE_TTL_SECONDS", 3600)
+    monkeypatch.setattr(settings, "CONNECTOR_MEDIA_CACHE_MAX_BYTES", 1024 * 1024)
+
+    cached = _cache_media_file(str(source), expected_md5, ".mp4")
+
+    assert not source.exists()
+    assert _find_cached_media(expected_md5) == cached
 
 
 def test_connector_tasks_are_isolated_by_queue():

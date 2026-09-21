@@ -150,6 +150,7 @@ def upload_asset_task(self, binding_id: str):
             account.account_id,
             asset.asset_type,
             source_url,
+            expected_md5=asset.md5,
             idempotency_key=binding.id,
         )
         binding.connector_task_id = result.get("task_id")

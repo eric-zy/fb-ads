@@ -31,6 +31,7 @@ class ConnectorMediaTask(ConnectorBase):
     account_id = Column(String(64))
     asset_type = Column(String(16))
     source_url = Column(Text)
+    expected_md5 = Column(String(32), nullable=True, index=True)
     status = Column(String(32), nullable=False, default="QUEUED")
     phase = Column(String(32), nullable=True, default="QUEUED")
     total_bytes = Column(Integer, nullable=True)

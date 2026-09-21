@@ -133,6 +133,13 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
         item.adset_ids = [x.get("id") for x in objects.get("adsets", []) if x.get("id")]
         item.ad_ids = [x.get("id") for x in objects.get("ads", []) if x.get("id")]
         template_id = item.job.template_id
+        protocol_payload = (item.response_payload or {}).get("protocol") or {}
+        campaign_payload = protocol_payload.get("campaign") or {}
+        campaign_name = (
+            campaign_payload.get("name")
+            or (item.job.template.name if item.job and item.job.template else None)
+            or f"Campaign {item.meta_campaign_id}"
+        )
         instance = db.query(CampaignInstance).filter(CampaignInstance.template_id == template_id, CampaignInstance.ad_account_id == item.ad_account_id).first()
         if not instance:
             instance = CampaignInstance(
@@ -140,6 +147,7 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
                 template_id=template_id,
                 ad_account_id=item.ad_account_id,
                 meta_campaign_id=item.meta_campaign_id,
+                name=campaign_name,
                 status="PAUSED",
                 meta_status="PAUSED",
                 desired_status="PAUSED",
@@ -147,6 +155,8 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
             db.add(instance)
         else:
             instance.meta_campaign_id = item.meta_campaign_id
+            if not instance.name:
+                instance.name = campaign_name
         item.campaign_instance_id = instance.id
         adsets_by_key = {}
         for pos, remote in enumerate(objects.get("adsets", []), 1):

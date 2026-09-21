@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     # 无海外 OSS 时，Connector 只在本地临时目录落盘一个素材；
     # 生产环境通过独立 media worker + tmpfs 限制并发和磁盘占用。
     CONNECTOR_MEDIA_TEMP_DIR: str = os.getenv("CONNECTOR_MEDIA_TEMP_DIR", "/tmp/fb-connector-media")
+    # 已校验 MD5 的源文件在本地短期缓存，跨账户投放同一素材时避免重复从 OSS 下载。
+    CONNECTOR_MEDIA_CACHE_TTL_SECONDS: int = int(
+        os.getenv("CONNECTOR_MEDIA_CACHE_TTL_SECONDS", "86400")
+    )
+    CONNECTOR_MEDIA_CACHE_MAX_BYTES: int = int(
+        os.getenv("CONNECTOR_MEDIA_CACHE_MAX_BYTES", str(2 * 1024 * 1024 * 1024))
+    )
     CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES: int = int(
         os.getenv("CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES", str(1024 * 1024 * 1024))
     )

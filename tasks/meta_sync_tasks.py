@@ -323,43 +323,123 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
             return 1
 
         for campaign in campaigns:
-            remote = remote_campaign_by_id.get(str(campaign.meta_campaign_id))
+            campaign_key = str(campaign.meta_campaign_id or "")
+            remote = remote_campaign_by_id.get(campaign_key)
             if campaign_fetch_ok and campaign.meta_campaign_id:
                 updated += sync_instance_state(campaign, remote, "CAMPAIGN", str(campaign.id))
-            for adset in campaign.adsets:
-                if adset.meta_adset_id:
-                    campaign_key = str(campaign.meta_campaign_id)
-                    if campaign_key not in remote_adsets_by_campaign:
-                        try:
-                            remote_adsets_by_campaign[campaign_key] = FBConnectorClient().list_adsets(
-                                campaign.meta_campaign_id, ref.credential_id
-                            ).get("adsets", [])
-                        except Exception as exc:
-                            logger.warning(f"[meta_sync] Campaign {campaign_key} AdSet 拉取失败: {exc}")
-                            remote_adsets_by_campaign[campaign_key] = None
-                            sync_errors.append({"type": "ADSET", "parent_id": campaign_key, "error": str(exc)})
-                    remote_sets = remote_adsets_by_campaign[campaign_key]
-                    if remote_sets is not None:
-                        remote_set_by_id = {str(item.get("id")): item for item in remote_sets}
-                        remote_set = remote_set_by_id.get(str(adset.meta_adset_id))
-                        updated += sync_instance_state(adset, remote_set, "ADSET", str(adset.id))
-                for ad in adset.ads:
-                    if ad.meta_ad_id:
-                        adset_key = str(adset.meta_adset_id)
-                        if adset_key not in remote_ads_by_adset:
-                            try:
-                                remote_ads_by_adset[adset_key] = FBConnectorClient().list_ads(
-                                    adset.meta_adset_id, ref.credential_id
-                                ).get("ads", [])
-                            except Exception as exc:
-                                logger.warning(f"[meta_sync] AdSet {adset_key} Ad 拉取失败: {exc}")
-                                remote_ads_by_adset[adset_key] = None
-                                sync_errors.append({"type": "AD", "parent_id": adset_key, "error": str(exc)})
-                        remote_ads = remote_ads_by_adset[adset_key]
-                        if remote_ads is not None:
-                            remote_ad_by_id = {str(item.get("id")): item for item in remote_ads}
-                            remote_ad = remote_ad_by_id.get(str(ad.meta_ad_id))
-                            updated += sync_instance_state(ad, remote_ad, "AD", str(ad.id))
+
+            # 状态同步也负责修复本地层级索引：历史上投放成功但轮询中断时，
+            # campaign_instances 可能已经落库，而 adset_instances/ad_instances 尚未落库。
+            # 因此不能只遍历本地子对象，必须以 Meta 返回的完整层级为准做 upsert。
+            if not campaign.meta_campaign_id:
+                continue
+            if campaign_key not in remote_adsets_by_campaign:
+                try:
+                    remote_adsets_by_campaign[campaign_key] = FBConnectorClient().list_adsets(
+                        campaign.meta_campaign_id, ref.credential_id
+                    ).get("adsets", [])
+                except Exception as exc:
+                    logger.warning(f"[meta_sync] Campaign {campaign_key} AdSet 拉取失败: {exc}")
+                    remote_adsets_by_campaign[campaign_key] = None
+                    sync_errors.append({"type": "ADSET", "parent_id": campaign_key, "error": str(exc)})
+            remote_sets = remote_adsets_by_campaign[campaign_key]
+            if remote_sets is None:
+                continue
+
+            local_adsets = {
+                str(row.meta_adset_id): row
+                for row in campaign.adsets
+                if row.meta_adset_id
+            }
+            seen_adset_ids = set()
+            for remote_set in remote_sets:
+                remote_adset_id = remote_set.get("id")
+                if not remote_adset_id:
+                    continue
+                remote_adset_id = str(remote_adset_id)
+                seen_adset_ids.add(remote_adset_id)
+                adset = local_adsets.get(remote_adset_id)
+                if not adset:
+                    remote_status = remote_set.get("effective_status") or remote_set.get("status") or "PAUSED"
+                    adset = AdSetInstance(
+                        id=uuid.uuid4().hex,
+                        tenant_id=campaign.tenant_id,
+                        campaign_instance_id=campaign.id,
+                        meta_adset_id=remote_adset_id,
+                        name=remote_set.get("name") or f"AdSet {remote_adset_id}",
+                        status=remote_status,
+                        meta_status=remote_status,
+                        desired_status=remote_status,
+                    )
+                    db.add(adset)
+                    local_adsets[remote_adset_id] = adset
+                    logger.info(
+                        "[meta_sync] created missing AdSet campaign=%s meta_adset_id=%s",
+                        campaign.id,
+                        remote_adset_id,
+                    )
+                elif not adset.name and remote_set.get("name"):
+                    adset.name = remote_set["name"]
+                updated += sync_instance_state(adset, remote_set, "ADSET", str(adset.id))
+
+                if remote_adset_id not in remote_ads_by_adset:
+                    try:
+                        remote_ads_by_adset[remote_adset_id] = FBConnectorClient().list_ads(
+                            remote_adset_id, ref.credential_id
+                        ).get("ads", [])
+                    except Exception as exc:
+                        logger.warning(f"[meta_sync] AdSet {remote_adset_id} Ad 拉取失败: {exc}")
+                        remote_ads_by_adset[remote_adset_id] = None
+                        sync_errors.append({"type": "AD", "parent_id": remote_adset_id, "error": str(exc)})
+                remote_ads = remote_ads_by_adset[remote_adset_id]
+                if remote_ads is None:
+                    continue
+
+                local_ads = {
+                    str(row.meta_ad_id): row
+                    for row in adset.ads
+                    if row.meta_ad_id
+                }
+                seen_ad_ids = set()
+                for remote_ad in remote_ads:
+                    remote_ad_id = remote_ad.get("id")
+                    if not remote_ad_id:
+                        continue
+                    remote_ad_id = str(remote_ad_id)
+                    seen_ad_ids.add(remote_ad_id)
+                    ad = local_ads.get(remote_ad_id)
+                    if not ad:
+                        remote_status = remote_ad.get("effective_status") or remote_ad.get("status") or "PAUSED"
+                        ad = AdInstance(
+                            id=uuid.uuid4().hex,
+                            tenant_id=campaign.tenant_id,
+                            adset_instance_id=adset.id,
+                            meta_ad_id=remote_ad_id,
+                            name=remote_ad.get("name") or f"Ad {remote_ad_id}",
+                            status=remote_status,
+                            meta_status=remote_status,
+                            desired_status=remote_status,
+                        )
+                        db.add(ad)
+                        local_ads[remote_ad_id] = ad
+                        logger.info(
+                            "[meta_sync] created missing Ad adset=%s meta_ad_id=%s",
+                            adset.id,
+                            remote_ad_id,
+                        )
+                    elif not ad.name and remote_ad.get("name"):
+                        ad.name = remote_ad["name"]
+                    updated += sync_instance_state(ad, remote_ad, "AD", str(ad.id))
+
+                # Meta 已明确返回列表时，本地存在但远端不存在的对象标记为 NOT_FOUND；
+                # 请求失败时不做删除/失联判断，避免网络故障造成误报。
+                for ad in list(adset.ads):
+                    if ad.meta_ad_id and str(ad.meta_ad_id) not in seen_ad_ids:
+                        updated += sync_instance_state(ad, None, "AD", str(ad.id))
+
+            for adset in list(campaign.adsets):
+                if adset.meta_adset_id and str(adset.meta_adset_id) not in seen_adset_ids:
+                    updated += sync_instance_state(adset, None, "ADSET", str(adset.id))
         db.commit()
         if sync_errors:
             alert_message = str(sync_errors[:20])

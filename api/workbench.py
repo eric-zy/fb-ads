@@ -194,11 +194,18 @@ def workbench_summary(
     ).count()
 
     # Job Center：只统计有当前用户可见账户子项的任务，防止通过数量侧信道泄漏其他账户。
+    # 不要对包含 JSON 字段（CampaignJob.params）的实体查询直接调用 DISTINCT。
+    # PostgreSQL 的 json 类型没有等值操作符，会导致工作台接口 500；先取
+    # 可见 job_id，再按主键过滤任务实体，同时保持租户和账户范围隔离。
+    visible_job_ids = db.query(CampaignJobItem.job_id).filter(
+        CampaignJobItem.ad_account_id.in_(account_ids or empty_ids),
+    )
+    if tenant_id:
+        visible_job_ids = visible_job_ids.filter(CampaignJobItem.tenant_id == tenant_id)
     job_query = _scope(db.query(CampaignJob), CampaignJob, current_user, tenant_id)
-    job_query = job_query.join(CampaignJobItem, CampaignJobItem.job_id == CampaignJob.id)
-    job_query = job_query.filter(CampaignJobItem.ad_account_id.in_(account_ids or empty_ids)).distinct()
+    job_query = job_query.filter(CampaignJob.id.in_(visible_job_ids))
     job_status_rows = job_query.with_entities(
-        CampaignJob.status, func.count(func.distinct(CampaignJob.id))
+        CampaignJob.status, func.count(CampaignJob.id)
     ).group_by(CampaignJob.status).all()
     job_status = {str(status): int(count) for status, count in job_status_rows}
 
@@ -315,14 +322,17 @@ def workbench_notifications(
         SyncAlert.is_resolved.is_(False),
         SyncAlert.ad_account_id.in_(account_ids or empty_ids),
     )
-    job_query = _scope(db.query(CampaignJob), CampaignJob, current_user, tenant_id).join(
-        CampaignJobItem, CampaignJobItem.job_id == CampaignJob.id,
-    ).filter(
+    visible_job_ids = db.query(CampaignJobItem.job_id).filter(
         CampaignJobItem.ad_account_id.in_(account_ids or empty_ids),
+    )
+    if tenant_id:
+        visible_job_ids = visible_job_ids.filter(CampaignJobItem.tenant_id == tenant_id)
+    job_query = _scope(db.query(CampaignJob), CampaignJob, current_user, tenant_id).filter(
+        CampaignJob.id.in_(visible_job_ids),
         CampaignJob.status.in_(_FAILED_JOB_STATUSES),
-    ).distinct()
+    )
     alert_count = alert_query.count()
-    failed_job_count = job_query.with_entities(func.count(func.distinct(CampaignJob.id))).scalar() or 0
+    failed_job_count = job_query.with_entities(func.count(CampaignJob.id)).scalar() or 0
     return {
         "alerts": alert_count,
         "failed_jobs": int(failed_job_count),

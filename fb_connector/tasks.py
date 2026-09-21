@@ -348,6 +348,7 @@ def recover_stale_media_tasks(limit: int = 100):
                     row.asset_type,
                     row.source_url,
                     row.idempotency_key,
+                    row.expected_md5,
                 )
                 recovered += 1
                 logger.warning("[ConnectorMediaRecovery] requeued task_id=%s", row.task_id)
@@ -584,6 +585,86 @@ def _as_int(value, default=None):
         return default
 
 
+def _file_md5(file_path: str) -> str:
+    digest = hashlib.md5()
+    with open(file_path, "rb") as source:
+        for chunk in iter(lambda: source.read(4 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _media_cache_dir() -> str:
+    return os.path.join(settings.CONNECTOR_MEDIA_TEMP_DIR, "cache")
+
+
+def _prune_media_cache() -> None:
+    """删除过期/超额缓存，避免短期缓存占满 media worker 的 tmpfs。"""
+    cache_dir = _media_cache_dir()
+    os.makedirs(cache_dir, exist_ok=True)
+    now = time.time()
+    ttl = max(0, settings.CONNECTOR_MEDIA_CACHE_TTL_SECONDS)
+    files = []
+    for name in os.listdir(cache_dir):
+        path = os.path.join(cache_dir, name)
+        try:
+            if not os.path.isfile(path):
+                continue
+            stat = os.stat(path)
+            if ttl and now - stat.st_mtime > ttl:
+                os.unlink(path)
+                continue
+            files.append((path, stat.st_mtime, stat.st_size))
+        except OSError:
+            continue
+
+    max_bytes = max(0, settings.CONNECTOR_MEDIA_CACHE_MAX_BYTES)
+    total = sum(item[2] for item in files)
+    if max_bytes and total > max_bytes:
+        for path, _, size in sorted(files, key=lambda item: item[1]):
+            if total <= max_bytes:
+                break
+            try:
+                os.unlink(path)
+                total -= size
+            except OSError:
+                continue
+
+
+def _find_cached_media(expected_md5: str | None) -> str | None:
+    """按内容 MD5 查找并再次校验缓存，避免复用损坏的临时文件。"""
+    if not expected_md5 or len(expected_md5) != 32:
+        return None
+    expected_md5 = expected_md5.lower()
+    cache_dir = _media_cache_dir()
+    try:
+        candidates = [
+            os.path.join(cache_dir, name)
+            for name in os.listdir(cache_dir)
+            if name.startswith(f"{expected_md5}.")
+        ]
+    except OSError:
+        return None
+    for path in candidates:
+        try:
+            if os.path.isfile(path) and _file_md5(path) == expected_md5:
+                os.utime(path, None)
+                return path
+            if os.path.exists(path):
+                os.unlink(path)
+        except OSError:
+            continue
+    return None
+
+
+def _cache_media_file(file_path: str, content_md5: str, suffix: str) -> str:
+    cache_dir = _media_cache_dir()
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{content_md5.lower()}{suffix.lower()}")
+    os.replace(file_path, cache_path)
+    os.utime(cache_path, None)
+    return cache_path
+
+
 _IMAGE_UPLOAD_FORMATS = {
     ".jpg": (".jpg", "image/jpeg"),
     ".jpeg": (".jpeg", "image/jpeg"),
@@ -609,7 +690,7 @@ def _image_upload_format(source_url: str, content_type: str | None = None) -> tu
     )
 
 
-def _upload_video_resumable(service, account_id: str, file_path: str | None, row, session) -> dict:
+def _upload_video_resumable(service, account_id: str, file_path: str | None, row, session, *, keep_file: bool = False) -> dict:
     """执行 Meta start → transfer → finish → processing 轮询流程。"""
     total_bytes = os.path.getsize(file_path) if file_path else _as_int(row.total_bytes)
     if not total_bytes:
@@ -733,7 +814,7 @@ def _upload_video_resumable(service, account_id: str, file_path: str | None, row
             upload_session_id,
             video_id,
         )
-        if file_path:
+        if file_path and not keep_file:
             try:
                 os.unlink(file_path)
                 logger.info(
@@ -748,6 +829,12 @@ def _upload_video_resumable(service, account_id: str, file_path: str | None, row
                     file_path,
                     exc,
                 )
+        elif file_path:
+            logger.info(
+                "[ConnectorMedia] local source kept in cache task_id=%s path=%s",
+                row.task_id,
+                file_path,
+            )
 
     if row.phase == "READY" and row.status == "SUCCESS":
         return {"video_id": video_id or row.meta_asset_id}
@@ -790,7 +877,7 @@ def _upload_video_resumable(service, account_id: str, file_path: str | None, row
 
 
 @celery_app.task(bind=True, name="fb_connector.upload_media", max_retries=3, default_retry_delay=30)
-def upload_media_task(self, task_id: str, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, idempotency_key: str):
+def upload_media_task(self, task_id: str, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, idempotency_key: str, expected_md5: str | None = None):
     """海外执行素材下载和 Meta 上传；生产环境应将结果写入 Connector 任务表并回调 SaaS。"""
     temp_path = None
     row = None
@@ -816,6 +903,10 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
         row = session.get(ConnectorMediaTask, task_id)
         if not row:
             raise RuntimeError("上传任务不存在")
+        expected_md5 = (row.expected_md5 or expected_md5 or "").lower() or None
+        if expected_md5 and (len(expected_md5) != 32 or any(char not in "0123456789abcdef" for char in expected_md5)):
+            raise MetaApiError("素材 MD5 格式无效", category=ErrorCategory.VALIDATION)
+        _prune_media_cache()
         account_id = row.account_id or account_id
         account_lock = _media_account_lock(account_id)
         account_lock_acquired = account_lock.acquire(blocking=False)
@@ -852,7 +943,22 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
             row.phase,
         )
         source_required = asset_type != "video" or row.phase not in {"META_PROCESSING", "READY"}
+        cache_reused = False
         if source_required:
+            cached_path = _find_cached_media(expected_md5)
+            if cached_path:
+                temp_path = cached_path
+                cache_reused = True
+                if asset_type == "image":
+                    cached_suffix = os.path.splitext(cached_path)[1].lower()
+                    image_content_type = dict(_IMAGE_UPLOAD_FORMATS.values()).get(cached_suffix)
+                logger.info(
+                    "[ConnectorMedia] cache hit task_id=%s md5=%s path=%s",
+                    task_id,
+                    expected_md5,
+                    cached_path,
+                )
+        if source_required and not cache_reused:
             source_url = _refresh_source_url(
                 task_id,
                 media_id,
@@ -862,7 +968,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 row.source_url = source_url
                 session.commit()
         bytes_written = _as_int(row.total_bytes, 0) or 0
-        if source_required:
+        if source_required and not cache_reused:
             # 防止把超大文件一次性读入内存，视频上传使用流式写入。
             logger.info(
                 "[ConnectorMedia] download start task_id=%s connect_timeout=%ss read_timeout=%ss",
@@ -907,8 +1013,10 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                     dir=settings.CONNECTOR_MEDIA_TEMP_DIR,
                 ) as target:
                     temp_path = target.name
+                    content_md5 = hashlib.md5()
                     for chunk in response.iter_content(chunk_size=1024 * 1024):
                         if chunk:
+                            content_md5.update(chunk)
                             target.write(chunk)
                             bytes_written += len(chunk)
                             if (
@@ -919,12 +1027,26 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                                     "视频素材超过 Connector 本地临时磁盘保护上限: "
                                     f"size>{settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES}"
                                 )
+            actual_md5 = content_md5.hexdigest()
+            if expected_md5 and actual_md5 != expected_md5:
+                raise MetaApiError(
+                    f"素材 MD5 校验失败: expected={expected_md5} actual={actual_md5}",
+                    category=ErrorCategory.VALIDATION,
+                )
+            # 即使国内未传 MD5，也将本次下载结果按实际 MD5 缓存，
+            # 便于同一任务重试时复用；后续新请求应优先传 expected_md5。
+            expected_md5 = actual_md5
+            row.expected_md5 = actual_md5
+            temp_path = _cache_media_file(temp_path, actual_md5, suffix)
+            cache_reused = True
             logger.info(
-                "[ConnectorMedia] download complete task_id=%s bytes=%s temp_path=%s",
+                "[ConnectorMedia] download complete task_id=%s bytes=%s md5=%s temp_path=%s",
                 task_id,
                 bytes_written,
+                actual_md5,
                 temp_path,
             )
+            _persist_media_progress(session, row, expected_md5=actual_md5)
             if asset_type == "video":
                 _persist_media_progress(
                     session,
@@ -935,6 +1057,12 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 )
             else:
                 _persist_media_progress(session, row, phase="UPLOADING", status="UPLOADING")
+        elif source_required and cache_reused:
+            logger.info(
+                "[ConnectorMedia] skip source download task_id=%s reason=md5_cache_hit path=%s",
+                task_id,
+                temp_path,
+            )
         else:
             logger.info(
                 "[ConnectorMedia] skip source download task_id=%s phase=%s "
@@ -947,7 +1075,14 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
         logger.info("[ConnectorMedia] meta upload start task_id=%s account_id=%s asset_type=%s", task_id, account_id, asset_type)
         service = MetaAdsService(MetaClient(access_token=token))
         if asset_type == "video":
-            result = _upload_video_resumable(service, account_id, temp_path, row, session)
+            result = _upload_video_resumable(
+                service,
+                account_id,
+                temp_path,
+                row,
+                session,
+                keep_file=cache_reused,
+            )
             meta_asset_id = result.get("video_id")
         else:
             result = service.upload_image(
@@ -1001,7 +1136,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
             raise
         raise self.retry(exc=exc)
     finally:
-        if temp_path:
+        if temp_path and not cache_reused:
             try:
                 os.unlink(temp_path)
             except OSError:

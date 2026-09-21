@@ -140,10 +140,13 @@ class FBConnectorClient:
     def sync_pages(self, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/internal/meta/pages/sync", {"credential_id": credential_id}, request_id=request_id)
 
-    def upload_media(self, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, *, request_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+    def upload_media(self, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, *, expected_md5: str | None = None, request_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
         if not idempotency_key:
             raise FBConnectorError("素材上传必须提供幂等键")
-        return self._request("POST", "/internal/meta/media/upload", {"media_id": media_id, "credential_id": credential_id, "account_id": account_id, "asset_type": asset_type, "source_url": source_url, "idempotency_key": idempotency_key}, request_id=request_id, idempotency_key=idempotency_key)
+        payload = {"media_id": media_id, "credential_id": credential_id, "account_id": account_id, "asset_type": asset_type, "source_url": source_url, "idempotency_key": idempotency_key}
+        if expected_md5:
+            payload["expected_md5"] = expected_md5.lower()
+        return self._request("POST", "/internal/meta/media/upload", payload, request_id=request_id, idempotency_key=idempotency_key)
 
     def media_upload_status(self, task_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("GET", f"/internal/meta/media/upload/{task_id}", {}, request_id=request_id)
@@ -193,10 +196,10 @@ class FBConnectorClient:
         return self._request("POST", "/internal/meta/campaigns/pause", {"campaign_id": campaign_id, "credential_id": credential_id, "idempotency_key": idempotency_key}, request_id=request_id, idempotency_key=idempotency_key)
 
     def list_adsets(self, campaign_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
-        return self._request("POST", "/internal/meta/campaigns/adsets", {"campaign_id": campaign_id, "credential_id": credential_id}, request_id=request_id)
+        return self._request("POST", "/internal/meta/campaigns/adsets", {"parent_id": campaign_id, "credential_id": credential_id}, request_id=request_id)
 
     def list_ads(self, adset_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
-        return self._request("POST", "/internal/meta/campaigns/ads", {"adset_id": adset_id, "credential_id": credential_id}, request_id=request_id)
+        return self._request("POST", "/internal/meta/campaigns/ads", {"parent_id": adset_id, "credential_id": credential_id}, request_id=request_id)
 
     def update_object(
         self,

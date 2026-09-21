@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from api.workbench import workbench_summary
-from models import AccountInsight, AdAccount, User, UserAccount
+from models import AccountInsight, AdAccount, CampaignJob, CampaignJobItem, User, UserAccount
 
 
 def test_workbench_summary_only_returns_assigned_accounts(db):
@@ -165,3 +165,51 @@ def test_workbench_summary_keeps_currency_totals_separate_and_reports_partial_st
     assert payload["freshness"]["stale_account_count"] == 1
     account_statuses = {item["id"]: item["freshness"]["status"] for item in payload["scope"]["accounts"]}
     assert account_statuses == {usd.id: "FRESH", cny.id: "STALE"}
+
+
+def test_workbench_summary_handles_json_job_params_without_distinct_failure(db):
+    user = User(
+        id="workbench-user-4",
+        tenant_id="test_tenant",
+        email="workbench-4@test.local",
+        username="workbench-user-4",
+        hashed_password="unused",
+        role="user",
+        permissions=[],
+        is_active=True,
+    )
+    account = AdAccount(
+        id="workbench-job-account",
+        tenant_id="test_tenant",
+        account_id="act_job_account",
+        account_name="任务账户",
+        currency="USD",
+    )
+    job = CampaignJob(
+        id="workbench-json-job",
+        tenant_id="test_tenant",
+        action_type="CREATE",
+        status="FAILED",
+        params={"budget_override": 123.45, "nested": {"source": "workbench-test"}},
+        created_by=user.id,
+    )
+    item = CampaignJobItem(
+        id="workbench-json-job-item",
+        tenant_id="test_tenant",
+        job_id=job.id,
+        ad_account_id=account.id,
+        status="FAILED",
+    )
+    db.add_all([
+        user,
+        account,
+        UserAccount(id="workbench-assignment-job", tenant_id="test_tenant", user_id=user.id, account_id=account.id, assignment_status="ACTIVE"),
+        job,
+        item,
+    ])
+    db.commit()
+
+    payload = workbench_summary(db=db, current_user=user)
+
+    assert payload["job_status"] == {"FAILED": 1}
+    assert payload["recent_tasks"][0]["failed_count"] == 1

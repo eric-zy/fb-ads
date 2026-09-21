@@ -18,6 +18,7 @@ class MediaUploadRequest(BaseModel):
     account_id: str = Field(..., min_length=1, max_length=64)
     asset_type: str = Field(..., pattern="^(image|video)$")
     source_url: str = Field(..., min_length=1, max_length=2048)
+    expected_md5: str | None = Field(default=None, min_length=32, max_length=32, pattern=r"^[0-9a-fA-F]{32}$")
     idempotency_key: str = Field(..., min_length=8, max_length=128)
 
 
@@ -66,6 +67,7 @@ async def upload_media(payload: MediaUploadRequest):
             old.account_id = payload.account_id
             old.asset_type = payload.asset_type
             old.source_url = payload.source_url
+            old.expected_md5 = payload.expected_md5.lower() if payload.expected_md5 else None
             old.status = "QUEUED"
             old.meta_asset_id = None
             old.error_message = None
@@ -81,6 +83,7 @@ async def upload_media(payload: MediaUploadRequest):
                 account_id=payload.account_id,
                 asset_type=payload.asset_type,
                 source_url=payload.source_url,
+                expected_md5=payload.expected_md5.lower() if payload.expected_md5 else None,
                 status="QUEUED",
             ))
         session.commit()
@@ -88,7 +91,16 @@ async def upload_media(payload: MediaUploadRequest):
         session.close()
     from fb_connector.tasks import upload_media_task
     try:
-        async_result = upload_media_task.delay(task_id, payload.media_id, payload.credential_id, payload.account_id, payload.asset_type, payload.source_url, payload.idempotency_key)
+        async_result = upload_media_task.delay(
+            task_id,
+            payload.media_id,
+            payload.credential_id,
+            payload.account_id,
+            payload.asset_type,
+            payload.source_url,
+            payload.idempotency_key,
+            payload.expected_md5.lower() if payload.expected_md5 else None,
+        )
     except Exception as exc:
         failed_session = connector_session_factory()
         try:
@@ -140,6 +152,7 @@ async def upload_status(task_id: str):
             "end_offset": row.end_offset,
             "meta_video_id": row.meta_video_id,
             "meta_asset_id": row.meta_asset_id,
+            "expected_md5": row.expected_md5,
             "error_message": row.error_message,
         }
     finally:

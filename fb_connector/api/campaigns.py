@@ -55,7 +55,7 @@ def _delivery_task_is_stale(row: ConnectorDeliveryTask, now: datetime | None = N
 async def cleanup_deployment(payload: CleanupRequest):
     from fb_connector.credential_store import DatabaseCredentialVault
     from services.meta.service import MetaAdsService
-    from services.fb_client import MetaClient
+    from services.meta import MetaClient
     session = connector_session_factory()
     try:
         row = session.get(ConnectorDeliveryTask, payload.connector_task_id)
@@ -101,7 +101,7 @@ async def deploy_campaign(payload: dict):
 def _meta_service(credential_id: str):
     from fb_connector.credential_store import DatabaseCredentialVault
     from services.meta.service import MetaAdsService
-    from services.fb_client import MetaClient
+    from services.meta import MetaClient
     token = DatabaseCredentialVault().get_access_token(credential_id)
     return MetaAdsService(MetaClient(access_token=token))
 
@@ -161,7 +161,7 @@ async def list_campaigns(payload: CampaignListRequest):
         from fb_connector.credential_store import DatabaseCredentialVault
         token = DatabaseCredentialVault().get_access_token(payload.credential_id)
         from services.meta.service import MetaAdsService
-        from services.fb_client import MetaClient
+        from services.meta import MetaClient
         campaigns = MetaAdsService(MetaClient(access_token=token)).list_campaigns(payload.account_id)
         return {"account_id": payload.account_id, "credential_id": payload.credential_id, "campaigns": campaigns}
     except Exception as exc:
@@ -174,7 +174,7 @@ async def pause_campaign(payload: CampaignPauseRequest):
     try:
         from fb_connector.credential_store import DatabaseCredentialVault
         from services.meta.service import MetaAdsService
-        from services.fb_client import MetaClient
+        from services.meta import MetaClient
         token = DatabaseCredentialVault().get_access_token(payload.credential_id)
         result = MetaAdsService(MetaClient(access_token=token)).pause_campaign(payload.campaign_id)
         return {"campaign_id": payload.campaign_id, "credential_id": payload.credential_id, "result": result, "idempotency_key": payload.idempotency_key}
