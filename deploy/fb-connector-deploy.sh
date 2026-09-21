@@ -9,6 +9,14 @@ COMPOSE_FILE="$SCRIPT_DIR/docker-compose.connector-prod.yml"
 ENV_FILE="${CONNECTOR_ENV_FILE:-$SCRIPT_DIR/fb-connector.env}"
 PROJECT_NAME="${COMPOSE_PROJECT_NAME:-fb-connector}"
 
+# Compose resolves relative env_file paths from the compose file directory
+# (deploy/), which would turn deploy/fb-connector.env into deploy/deploy/....
+# Normalize custom paths before passing them to Compose.
+if [[ "$ENV_FILE" != /* ]]; then
+  ENV_FILE="$PROJECT_DIR/$ENV_FILE"
+fi
+ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+
 # Compose 文件中的 env_file 使用 CONNECTOR_ENV_FILE；显式导出绝对路径，
 # 确保自定义环境文件和默认环境文件在 Linux 部署机上解析一致。
 export CONNECTOR_ENV_FILE="$ENV_FILE"
