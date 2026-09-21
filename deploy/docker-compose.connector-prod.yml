@@ -75,6 +75,8 @@ services:
         condition: service_started
     tmpfs:
       - /tmp/fb-connector-media:rw,size=3g,mode=1777
+    volumes:
+      - connector_media_cache:/tmp/fb-connector-media/cache
     networks: [connector_net]
 
   fb-connector-beat:
@@ -93,6 +95,7 @@ services:
 volumes:
   connector_pgdata:
   connector_redisdata:
+  connector_media_cache:
 
 networks:
   connector_net:

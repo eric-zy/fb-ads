@@ -31,8 +31,10 @@ from models import (
     AdSetInstance,
     CampaignInstance,
     CampaignTemplate,
+    MetaAudienceAsset,
 )
 from services.meta.service import MetaAdsService
+from services.targeting_catalog import normalize_targeting
 
 
 def _new_id() -> str:
@@ -155,7 +157,19 @@ class AdSetBuilder:
         if not budget_cents or budget_cents <= 0:
             raise ValueError("广告组预算必须大于 0")
 
-        targeting = dict(self.adset_config.get("targeting") or self.template.targeting_json or {"geo_locations": {"countries": ["US"]}})
+        targeting = normalize_targeting(
+            dict(self.adset_config.get("targeting") or self.template.targeting_json or {"geo_locations": {"countries": ["US"]}})
+        )
+        # XMP/Meta 多账户批量创建的关键约束：受众引用必须属于当前目标账户。
+        # 未解析的旧模板引用交给发布预检处理，这里只拒绝明确错配，避免把
+        # 一个账户的 Audience ID 静默发到另一个账户。
+        for field in ("custom_audiences", "excluded_custom_audiences", "excluded_audiences"):
+            for audience in targeting.get(field) or []:
+                scoped_account = str(audience.get("ad_account_id") or audience.get("account_id") or "").strip()
+                if scoped_account and scoped_account.replace("act_", "") != str(self.meta_ad_account_id).replace("act_", ""):
+                    raise ValueError(
+                        f"定向字段 {field} 的受众 {audience.get('id')} 不属于目标广告账户 {self.meta_ad_account_id}"
+                    )
         # Meta 将 publisher_platforms/facebook_positions 等版位字段放在 targeting 中。
         targeting.update(self.adset_config.get("placement") or self.template.placement_json or {})
         # Meta 新版 AdSet 要求明确声明 Advantage+ 受众开关；旧模板默认启用，显式 0 仍保留。
@@ -493,6 +507,29 @@ class CampaignDeploymentBuilder:
         if split_level not in {"AD", "ADSET"}:
             raise ValueError("当前支持按 AD 或 ADSET 拆分；按 CAMPAIGN 拆分将在后续版本开放")
         adset_configs = creative_config.get("adsets") or [{}]
+        required_exclusions = [
+            row.meta_audience_id
+            for row in self.db.query(MetaAudienceAsset).filter(
+                MetaAudienceAsset.ad_account_id == self.ad_account_id,
+                MetaAudienceAsset.is_required_exclusion.is_(True),
+            ).all()
+        ]
+        if required_exclusions:
+            # 账户级合规策略在部署快照阶段合并，保证 direct Meta 模式与
+            # Connector 模式行为一致；模板原始 JSON 不被修改。
+            resolved_configs = []
+            for raw_config in adset_configs:
+                config = dict(raw_config or {})
+                targeting = dict(config.get("targeting") or self.template.targeting_json or {})
+                existing = list(targeting.get("excluded_custom_audiences") or [])
+                existing_ids = {str(item.get("id") if isinstance(item, dict) else item) for item in existing}
+                for audience_id in required_exclusions:
+                    if str(audience_id) not in existing_ids:
+                        existing.append({"id": str(audience_id), "resolution": "POLICY"})
+                targeting["excluded_custom_audiences"] = existing
+                config["targeting"] = targeting
+                resolved_configs.append(config)
+            adset_configs = resolved_configs
         all_adset_ids: List[str] = []
         ad_ids: List[str] = []
         logical_adsets = []

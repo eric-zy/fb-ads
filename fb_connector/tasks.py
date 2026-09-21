@@ -3,6 +3,8 @@ import tempfile
 import json
 import time
 import hashlib
+import errno
+import shutil
 from urllib.parse import urlparse
 
 from fb_connector.celery_app import celery_app
@@ -34,6 +36,35 @@ def _media_account_lock(account_id: str):
         f"fb_connector:media_account:{account_id}",
         timeout=settings.CONNECTOR_MEDIA_ACCOUNT_LOCK_TTL,
     )
+
+
+def _media_content_lock(content_sha256: str):
+    """创建跨 media worker 的内容级下载锁。"""
+    redis_client = Redis.from_url(
+        settings.CELERY_BROKER_URL,
+        socket_connect_timeout=settings.REDIS_TIMEOUT,
+        socket_timeout=settings.REDIS_TIMEOUT,
+    )
+    return redis_client.lock(
+        f"fb_connector:media_content:{content_sha256.lower()}",
+        timeout=settings.CONNECTOR_MEDIA_CONTENT_LOCK_TTL,
+    )
+
+
+def _remote_url_upload_enabled(account_id: str) -> bool:
+    """判断远程 URL 直传是否对当前广告账户开启。"""
+    if not settings.FB_VIDEO_FILE_URL_UPLOAD:
+        return False
+    configured = {
+        item.strip().lower()
+        for item in settings.FB_VIDEO_FILE_URL_UPLOAD_ACCOUNTS.split(",")
+        if item.strip()
+    }
+    if not configured:
+        return True
+    normalized = str(account_id or "").strip().lower()
+    numeric = normalized[4:] if normalized.startswith("act_") else normalized
+    return normalized in configured or numeric in configured or f"act_{numeric}" in configured
 
 
 def _connector_error_retryable(exc: Exception, auth_failed: bool = False) -> bool:
@@ -222,6 +253,7 @@ def _notify_media_status(row, *, media_id: str, account_id: str) -> bool:
             "account_id": account_id,
             "status": row.status,
             "phase": row.phase,
+            "upload_mode": row.upload_mode,
             "meta_asset_id": row.meta_asset_id,
             "meta_thumbnail_hash": row.meta_thumbnail_hash,
             "uploaded_bytes": row.uploaded_bytes,
@@ -438,6 +470,7 @@ def recover_stale_media_tasks(limit: int = 100):
                     row.idempotency_key,
                     row.expected_md5,
                     row.cover_url,
+                    row.expected_sha256,
                 )
                 recovered += 1
                 logger.warning("[ConnectorMediaRecovery] requeued task_id=%s", row.task_id)
@@ -703,6 +736,14 @@ def _file_md5(file_path: str) -> str:
     return digest.hexdigest()
 
 
+def _file_sha256(file_path: str) -> str:
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as source:
+        for chunk in iter(lambda: source.read(4 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _media_cache_dir() -> str:
     return os.path.join(settings.CONNECTOR_MEDIA_TEMP_DIR, "cache")
 
@@ -740,23 +781,37 @@ def _prune_media_cache() -> None:
                 continue
 
 
-def _find_cached_media(expected_md5: str | None) -> str | None:
-    """按内容 MD5 查找并再次校验缓存，避免复用损坏的临时文件。"""
-    if not expected_md5 or len(expected_md5) != 32:
+def _find_cached_media(expected_sha256: str | None, expected_md5: str | None = None) -> str | None:
+    """按 SHA256 查找缓存，兼容旧 MD5 缓存并再次校验文件内容。"""
+    if expected_sha256 and len(expected_sha256) == 64:
+        cache_key = expected_sha256.lower()
+        key_type = "sha256"
+    elif expected_sha256 and len(expected_sha256) == 32 and not expected_md5:
+        # 兼容旧调用方：迁移前第一个参数就是 expected_md5。
+        cache_key = expected_sha256.lower()
+        key_type = "md5"
+    elif expected_md5 and len(expected_md5) == 32:
+        cache_key = expected_md5.lower()
+        key_type = "md5"
+    else:
         return None
-    expected_md5 = expected_md5.lower()
     cache_dir = _media_cache_dir()
     try:
         candidates = [
             os.path.join(cache_dir, name)
             for name in os.listdir(cache_dir)
-            if name.startswith(f"{expected_md5}.")
+            if name.startswith(f"{cache_key}.")
         ]
     except OSError:
         return None
     for path in candidates:
         try:
-            if os.path.isfile(path) and _file_md5(path) == expected_md5:
+            if not os.path.isfile(path):
+                continue
+            valid = _file_sha256(path) == cache_key if key_type == "sha256" else _file_md5(path) == cache_key
+            if valid and expected_md5 and _file_md5(path) != expected_md5.lower():
+                valid = False
+            if valid:
                 os.utime(path, None)
                 return path
             if os.path.exists(path):
@@ -766,11 +821,18 @@ def _find_cached_media(expected_md5: str | None) -> str | None:
     return None
 
 
-def _cache_media_file(file_path: str, content_md5: str, suffix: str) -> str:
+def _cache_media_file(file_path: str, content_sha256: str, suffix: str) -> str:
     cache_dir = _media_cache_dir()
     os.makedirs(cache_dir, exist_ok=True)
-    cache_path = os.path.join(cache_dir, f"{content_md5.lower()}{suffix.lower()}")
-    os.replace(file_path, cache_path)
+    cache_path = os.path.join(cache_dir, f"{content_sha256.lower()}{suffix.lower()}")
+    try:
+        os.replace(file_path, cache_path)
+    except OSError as exc:
+        # tmpfs 临时目录与持久化 cache volume 可能属于不同文件系统。
+        if exc.errno != errno.EXDEV:
+            raise
+        shutil.copyfile(file_path, cache_path)
+        os.unlink(file_path)
     os.utime(cache_path, None)
     return cache_path
 
@@ -798,6 +860,69 @@ def _image_upload_format(source_url: str, content_type: str | None = None) -> tu
         f"无法识别图片格式: suffix={source_suffix or '<none>'} content_type={normalized_type or '<none>'}",
         category=ErrorCategory.VALIDATION,
     )
+
+
+def _poll_video_processing(service, video_id: str, row, session, total_bytes: int = 0) -> dict:
+    """轮询 Meta 视频转码状态，供本地分片和远程 URL 两条链路复用。"""
+    if row.phase == "READY" and row.status == "SUCCESS":
+        return {"video_id": video_id or row.meta_asset_id}
+
+    deadline = time.monotonic() + settings.FB_VIDEO_PROCESSING_TIMEOUT
+    while True:
+        status_result = service.get_video_status(video_id)
+        meta_status = str(status_result.get("status") or "unknown").lower()
+        logger.info(
+            "[ConnectorMedia] processing task_id=%s meta_video_id=%s status=%s",
+            row.task_id,
+            video_id,
+            meta_status,
+        )
+        if meta_status in {"ready", "success", "completed", "complete"}:
+            _persist_media_progress(
+                session,
+                row,
+                phase="READY",
+                status="SUCCESS",
+                meta_asset_id=video_id,
+                meta_video_id=video_id,
+                uploaded_bytes=total_bytes or _as_int(row.total_bytes, 0),
+                start_offset=total_bytes or _as_int(row.total_bytes, 0),
+                end_offset=total_bytes or _as_int(row.total_bytes, 0),
+            )
+            return {"video_id": video_id}
+        if meta_status in {"error", "failed", "failure", "rejected"}:
+            raise RuntimeError(f"Meta 视频转码失败: video_id={video_id} status={meta_status}")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"Meta 视频转码轮询超时: video_id={video_id} last_status={meta_status}"
+            )
+        row.updated_at = datetime.utcnow()
+        session.commit()
+        time.sleep(settings.FB_VIDEO_STATUS_POLL_INTERVAL)
+
+
+def _upload_video_from_url(service, account_id: str, source_url: str, row, session) -> dict:
+    """尝试让 Meta 直接拉取 OSS URL，不在 Connector 落盘。"""
+    _persist_media_progress(session, row, phase="STARTING", status="UPLOADING")
+    started = service.upload_video_from_url(account_id, source_url)
+    video_id = started.get("video_id") or started.get("id")
+    if not video_id:
+        raise RuntimeError(f"Meta 远程视频上传响应缺少视频 ID: {started}")
+    total_bytes = _as_int(row.total_bytes, 0) or 0
+    _persist_media_progress(
+        session,
+        row,
+        phase="META_PROCESSING",
+        status="UPLOADING",
+        meta_video_id=video_id,
+        uploaded_bytes=total_bytes,
+    )
+    logger.info(
+        "[ConnectorMedia] remote URL upload accepted task_id=%s meta_video_id=%s",
+        row.task_id,
+        video_id,
+    )
+    return _poll_video_processing(service, video_id, row, session, total_bytes)
 
 
 def _upload_video_resumable(service, account_id: str, file_path: str | None, row, session, *, keep_file: bool = False) -> dict:
@@ -946,54 +1071,117 @@ def _upload_video_resumable(service, account_id: str, file_path: str | None, row
                 file_path,
             )
 
-    if row.phase == "READY" and row.status == "SUCCESS":
-        return {"video_id": video_id or row.meta_asset_id}
+    return _poll_video_processing(service, video_id, row, session, total_bytes)
 
-    deadline = time.monotonic() + settings.FB_VIDEO_PROCESSING_TIMEOUT
-    while True:
-        status_result = service.get_video_status(video_id)
-        meta_status = str(status_result.get("status") or "unknown").lower()
+
+def _download_source_media(task_id: str, source_url: str, asset_type: str, row, session, expected_md5: str | None, expected_sha256: str | None):
+    """流式下载源文件、校验摘要并写入 SHA256 缓存。"""
+    logger.info(
+        "[ConnectorMedia] download start task_id=%s connect_timeout=%ss read_timeout=%ss",
+        task_id,
+        settings.FB_VIDEO_CONNECT_TIMEOUT,
+        settings.FB_VIDEO_UPLOAD_TIMEOUT,
+    )
+    os.makedirs(settings.CONNECTOR_MEDIA_TEMP_DIR, exist_ok=True)
+    bytes_written = 0
+    image_content_type = None
+    with requests.get(
+        source_url,
+        stream=True,
+        timeout=(settings.FB_VIDEO_CONNECT_TIMEOUT, settings.FB_VIDEO_UPLOAD_TIMEOUT),
+    ) as response:
         logger.info(
-            "[ConnectorMedia] processing task_id=%s meta_video_id=%s status=%s",
-            row.task_id,
-            video_id,
-            meta_status,
+            "[ConnectorMedia] download response task_id=%s status=%s content_length=%s",
+            task_id,
+            response.status_code,
+            response.headers.get("Content-Length"),
         )
-        if meta_status in {"ready", "success", "completed", "complete"}:
-            _persist_media_progress(
-                session,
-                row,
-                phase="READY",
-                status="SUCCESS",
-                meta_asset_id=video_id,
-                meta_video_id=video_id,
-                uploaded_bytes=total_bytes,
-                start_offset=total_bytes,
-                end_offset=total_bytes,
-            )
-            return {"video_id": video_id}
-        if meta_status in {"error", "failed", "failure", "rejected"}:
+        response.raise_for_status()
+        content_length = _as_int(response.headers.get("Content-Length"))
+        if (
+            asset_type == "video"
+            and content_length is not None
+            and content_length > settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES
+        ):
             raise RuntimeError(
-                f"Meta 视频转码失败: video_id={video_id} status={meta_status}"
+                "视频素材超过 Connector 本地临时磁盘保护上限: "
+                f"size={content_length} max={settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES}"
             )
-        if time.monotonic() >= deadline:
-            raise RuntimeError(
-                f"Meta 视频转码轮询超时: video_id={video_id} "
-                f"last_status={meta_status}"
+        if asset_type == "video":
+            suffix = ".mp4"
+        else:
+            suffix, image_content_type = _image_upload_format(
+                source_url,
+                response.headers.get("Content-Type"),
             )
-        row.updated_at = datetime.utcnow()
-        session.commit()
-        time.sleep(settings.FB_VIDEO_STATUS_POLL_INTERVAL)
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=suffix,
+            dir=settings.CONNECTOR_MEDIA_TEMP_DIR,
+        ) as target:
+            temp_path = target.name
+            content_md5 = hashlib.md5()
+            content_sha256 = hashlib.sha256()
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    content_md5.update(chunk)
+                    content_sha256.update(chunk)
+                    target.write(chunk)
+                    bytes_written += len(chunk)
+                    if (
+                        asset_type == "video"
+                        and bytes_written > settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES
+                    ):
+                        raise RuntimeError(
+                            "视频素材超过 Connector 本地临时磁盘保护上限: "
+                            f"size>{settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES}"
+                        )
+    actual_md5 = content_md5.hexdigest()
+    actual_sha256 = content_sha256.hexdigest()
+    if expected_md5 and actual_md5 != expected_md5:
+        raise MetaApiError(
+            f"素材 MD5 校验失败: expected={expected_md5} actual={actual_md5}",
+            category=ErrorCategory.VALIDATION,
+        )
+    if expected_sha256 and actual_sha256 != expected_sha256:
+        raise MetaApiError(
+            f"素材 SHA256 校验失败: expected={expected_sha256} actual={actual_sha256}",
+            category=ErrorCategory.VALIDATION,
+        )
+    row.expected_md5 = actual_md5
+    row.expected_sha256 = actual_sha256
+    temp_path = _cache_media_file(temp_path, actual_sha256, suffix)
+    _persist_media_progress(session, row, expected_md5=actual_md5, expected_sha256=actual_sha256)
+    if asset_type == "video":
+        _persist_media_progress(
+            session,
+            row,
+            total_bytes=bytes_written,
+            phase=row.phase if row.phase not in {"QUEUED", "DOWNLOADING", "FAILED"} else "STARTING",
+            status="UPLOADING",
+        )
+    else:
+        _persist_media_progress(session, row, phase="UPLOADING", status="UPLOADING")
+    logger.info(
+        "[ConnectorMedia] download complete task_id=%s bytes=%s md5=%s temp_path=%s",
+        task_id,
+        bytes_written,
+        actual_md5,
+        temp_path,
+    )
+    return temp_path, bytes_written, actual_md5, actual_sha256, image_content_type
 
 
 @celery_app.task(bind=True, name="fb_connector.upload_media", max_retries=3, default_retry_delay=30)
-def upload_media_task(self, task_id: str, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, idempotency_key: str, expected_md5: str | None = None, cover_url: str | None = None):
+def upload_media_task(self, task_id: str, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, idempotency_key: str, expected_md5: str | None = None, cover_url: str | None = None, expected_sha256: str | None = None):
     """海外执行素材下载和 Meta 上传；生产环境应将结果写入 Connector 任务表并回调 SaaS。"""
     temp_path = None
     cover_path = None
     row = None
     account_lock = None
     account_lock_acquired = False
+    content_lock = None
+    content_lock_acquired = False
     image_content_type = None
     from fb_connector.models import ConnectorMediaTask, connector_session_factory
 
@@ -1015,9 +1203,12 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
         if not row:
             raise RuntimeError("上传任务不存在")
         expected_md5 = (row.expected_md5 or expected_md5 or "").lower() or None
+        expected_sha256 = (row.expected_sha256 or expected_sha256 or "").lower() or None
         cover_url = row.cover_url or cover_url
         if expected_md5 and (len(expected_md5) != 32 or any(char not in "0123456789abcdef" for char in expected_md5)):
             raise MetaApiError("素材 MD5 格式无效", category=ErrorCategory.VALIDATION)
+        if expected_sha256 and (len(expected_sha256) != 64 or any(char not in "0123456789abcdef" for char in expected_sha256)):
+            raise MetaApiError("素材 SHA256 格式无效", category=ErrorCategory.VALIDATION)
         _prune_media_cache()
         account_id = row.account_id or account_id
         account_lock = _media_account_lock(account_id)
@@ -1059,8 +1250,26 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
         )
         source_required = asset_type != "video" or row.phase not in {"META_PROCESSING", "READY"}
         cache_reused = False
+        remote_url_upload_candidate = False
         if source_required:
-            cached_path = _find_cached_media(expected_md5)
+            cached_path = _find_cached_media(expected_sha256, expected_md5)
+            if not cached_path and expected_sha256:
+                content_lock = _media_content_lock(expected_sha256)
+                content_lock_acquired = content_lock.acquire(
+                    blocking=True,
+                    blocking_timeout=settings.CONNECTOR_MEDIA_CONTENT_LOCK_WAIT,
+                )
+                if not content_lock_acquired:
+                    raise RuntimeError(
+                        f"等待同内容素材下载锁超时: sha256={expected_sha256}"
+                    )
+                logger.info(
+                    "[ConnectorMedia] content lock acquired task_id=%s sha256=%s",
+                    task_id,
+                    expected_sha256,
+                )
+                # 前一个 Worker 可能刚刚完成下载，拿锁后必须再次检查缓存。
+                cached_path = _find_cached_media(expected_sha256, expected_md5)
             if cached_path:
                 temp_path = cached_path
                 cache_reused = True
@@ -1068,8 +1277,9 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                     cached_suffix = os.path.splitext(cached_path)[1].lower()
                     image_content_type = dict(_IMAGE_UPLOAD_FORMATS.values()).get(cached_suffix)
                 logger.info(
-                    "[ConnectorMedia] cache hit task_id=%s md5=%s path=%s",
+                    "[ConnectorMedia] cache hit task_id=%s sha256=%s md5=%s path=%s",
                     task_id,
+                    expected_sha256,
                     expected_md5,
                     cached_path,
                 )
@@ -1082,99 +1292,40 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
             if source_url != row.source_url:
                 row.source_url = source_url
                 session.commit()
+        remote_url_upload_candidate = bool(
+            _remote_url_upload_enabled(account_id)
+            and asset_type == "video"
+            and source_required
+            and not cache_reused
+            and row.phase not in {"META_PROCESSING", "READY"}
+            and not row.meta_video_id
+        )
+        if remote_url_upload_candidate:
+            logger.info(
+                "[ConnectorMedia] remote URL upload candidate task_id=%s source=%s",
+                task_id,
+                source_url.split("?", 1)[0],
+            )
         bytes_written = _as_int(row.total_bytes, 0) or 0
-        if source_required and not cache_reused:
-            # 防止把超大文件一次性读入内存，视频上传使用流式写入。
-            logger.info(
-                "[ConnectorMedia] download start task_id=%s connect_timeout=%ss read_timeout=%ss",
+        if source_required and not cache_reused and not remote_url_upload_candidate:
+            temp_path, bytes_written, expected_md5, expected_sha256, image_content_type = _download_source_media(
                 task_id,
-                settings.FB_VIDEO_CONNECT_TIMEOUT,
-                settings.FB_VIDEO_UPLOAD_TIMEOUT,
-            )
-            os.makedirs(settings.CONNECTOR_MEDIA_TEMP_DIR, exist_ok=True)
-            bytes_written = 0
-            with requests.get(
                 source_url,
-                stream=True,
-                timeout=(settings.FB_VIDEO_CONNECT_TIMEOUT, settings.FB_VIDEO_UPLOAD_TIMEOUT),
-            ) as response:
-                logger.info(
-                    "[ConnectorMedia] download response task_id=%s status=%s content_length=%s",
-                    task_id,
-                    response.status_code,
-                    response.headers.get("Content-Length"),
-                )
-                response.raise_for_status()
-                content_length = _as_int(response.headers.get("Content-Length"))
-                if (
-                    asset_type == "video"
-                    and content_length is not None
-                    and content_length > settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES
-                ):
-                    raise RuntimeError(
-                        "视频素材超过 Connector 本地临时磁盘保护上限: "
-                        f"size={content_length} max={settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES}"
-                    )
-                if asset_type == "video":
-                    suffix = ".mp4"
-                else:
-                    suffix, image_content_type = _image_upload_format(
-                        source_url,
-                        response.headers.get("Content-Type"),
-                    )
-                with tempfile.NamedTemporaryFile(
-                    delete=False,
-                    suffix=suffix,
-                    dir=settings.CONNECTOR_MEDIA_TEMP_DIR,
-                ) as target:
-                    temp_path = target.name
-                    content_md5 = hashlib.md5()
-                    for chunk in response.iter_content(chunk_size=1024 * 1024):
-                        if chunk:
-                            content_md5.update(chunk)
-                            target.write(chunk)
-                            bytes_written += len(chunk)
-                            if (
-                                asset_type == "video"
-                                and bytes_written > settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES
-                            ):
-                                raise RuntimeError(
-                                    "视频素材超过 Connector 本地临时磁盘保护上限: "
-                                    f"size>{settings.CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES}"
-                                )
-            actual_md5 = content_md5.hexdigest()
-            if expected_md5 and actual_md5 != expected_md5:
-                raise MetaApiError(
-                    f"素材 MD5 校验失败: expected={expected_md5} actual={actual_md5}",
-                    category=ErrorCategory.VALIDATION,
-                )
-            # 即使国内未传 MD5，也将本次下载结果按实际 MD5 缓存，
-            # 便于同一任务重试时复用；后续新请求应优先传 expected_md5。
-            expected_md5 = actual_md5
-            row.expected_md5 = actual_md5
-            temp_path = _cache_media_file(temp_path, actual_md5, suffix)
-            cache_reused = True
-            logger.info(
-                "[ConnectorMedia] download complete task_id=%s bytes=%s md5=%s temp_path=%s",
-                task_id,
-                bytes_written,
-                actual_md5,
-                temp_path,
+                asset_type,
+                row,
+                session,
+                expected_md5,
+                expected_sha256,
             )
-            _persist_media_progress(session, row, expected_md5=actual_md5)
-            if asset_type == "video":
-                _persist_media_progress(
-                    session,
-                    row,
-                    total_bytes=bytes_written,
-                    phase=row.phase if row.phase not in {"QUEUED", "DOWNLOADING", "FAILED"} else "STARTING",
-                    status="UPLOADING",
-                )
-            else:
-                _persist_media_progress(session, row, phase="UPLOADING", status="UPLOADING")
+            cache_reused = True
+        elif source_required and remote_url_upload_candidate:
+            logger.info(
+                "[ConnectorMedia] skip source download task_id=%s reason=remote_url_upload_candidate",
+                task_id,
+            )
         elif source_required and cache_reused:
             logger.info(
-                "[ConnectorMedia] skip source download task_id=%s reason=md5_cache_hit path=%s",
+                "[ConnectorMedia] skip source download task_id=%s reason=content_hash_cache_hit path=%s",
                 task_id,
                 temp_path,
             )
@@ -1185,19 +1336,81 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                 task_id,
                 row.phase,
             )
+        if content_lock is not None and content_lock_acquired:
+            try:
+                content_lock.release()
+                content_lock_acquired = False
+                logger.info(
+                    "[ConnectorMedia] content lock released task_id=%s sha256=%s",
+                    task_id,
+                    expected_sha256,
+                )
+            except LockError:
+                logger.warning(
+                    "[ConnectorMedia] content lock release skipped task_id=%s sha256=%s",
+                    task_id,
+                    expected_sha256,
+                )
         logger.info("[ConnectorMedia] credential lookup start task_id=%s credential_id=%s", task_id, credential_id)
         token = DatabaseCredentialVault().get_access_token(credential_id)
         logger.info("[ConnectorMedia] meta upload start task_id=%s account_id=%s asset_type=%s", task_id, account_id, asset_type)
         service = MetaAdsService(MetaClient(access_token=token))
         if asset_type == "video":
-            result = _upload_video_resumable(
-                service,
-                account_id,
-                temp_path,
-                row,
-                session,
-                keep_file=cache_reused,
-            )
+            if remote_url_upload_candidate:
+                _persist_media_progress(session, row, upload_mode="DIRECT_URL")
+                try:
+                    result = _upload_video_from_url(service, account_id, source_url, row, session)
+                except MetaApiError as exc:
+                    # 只有 Meta 明确拒绝 file_url 时回退；超时/限流不回退，避免远端已接收后重复创建视频。
+                    if exc.retryable or row.phase == "META_PROCESSING":
+                        raise
+                    logger.warning(
+                        "[ConnectorMedia] remote URL upload rejected task_id=%s; fallback=resumable error=%s",
+                        task_id,
+                        exc,
+                    )
+                    _persist_media_progress(
+                        session,
+                        row,
+                        upload_mode="RESUMABLE_FALLBACK",
+                        phase="STARTING",
+                        status="UPLOADING",
+                        meta_video_id=None,
+                        upload_session_id=None,
+                        start_offset=0,
+                        end_offset=0,
+                        uploaded_bytes=0,
+                    )
+                    if not temp_path:
+                        temp_path, bytes_written, expected_md5, expected_sha256, image_content_type = _download_source_media(
+                            task_id,
+                            source_url,
+                            asset_type,
+                            row,
+                            session,
+                            expected_md5,
+                            expected_sha256,
+                        )
+                        cache_reused = True
+                    result = _upload_video_resumable(
+                        service,
+                        account_id,
+                        temp_path,
+                        row,
+                        session,
+                        keep_file=cache_reused,
+                    )
+            else:
+                if row.upload_mode not in {"DIRECT_URL", "RESUMABLE_FALLBACK"}:
+                    _persist_media_progress(session, row, upload_mode="RESUMABLE")
+                result = _upload_video_resumable(
+                    service,
+                    account_id,
+                    temp_path,
+                    row,
+                    session,
+                    keep_file=cache_reused,
+                )
             meta_asset_id = result.get("video_id")
             if not row.meta_thumbnail_hash:
                 if not cover_url:
@@ -1222,6 +1435,7 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                     status="SUCCESS",
                 )
         else:
+            _persist_media_progress(session, row, upload_mode="IMAGE")
             result = service.upload_image(
                 account_id,
                 temp_path,
@@ -1304,6 +1518,20 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
                     "[ConnectorMedia] account lock release skipped task_id=%s account_id=%s",
                     task_id,
                     account_id,
+                )
+        if content_lock is not None and content_lock_acquired:
+            try:
+                content_lock.release()
+                logger.info(
+                    "[ConnectorMedia] content lock released in cleanup task_id=%s sha256=%s",
+                    task_id,
+                    expected_sha256,
+                )
+            except LockError:
+                logger.warning(
+                    "[ConnectorMedia] content lock cleanup skipped task_id=%s sha256=%s",
+                    task_id,
+                    expected_sha256,
                 )
 
 

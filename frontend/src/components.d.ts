@@ -66,6 +66,7 @@ declare module 'vue' {
     ElTree: typeof import('element-plus/es')['ElTree']
     ElUpload: typeof import('element-plus/es')['ElUpload']
     LanguageSwitcher: typeof import('./components/LanguageSwitcher.vue')['default']
+    MetaLanguageSelect: typeof import('./components/MetaLanguageSelect.vue')['default']
     PermissionSelector: typeof import('./components/PermissionSelector.vue')['default']
     PublicPage: typeof import('./components/PublicPage.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']

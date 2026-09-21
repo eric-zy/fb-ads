@@ -36,8 +36,13 @@ services:
       CONNECTOR_MEDIA_TEMP_DIR: /tmp/fb-connector-media
     tmpfs:
       - /tmp/fb-connector-media:rw,size=3g,mode=1777
+    volumes:
+      - connector_media_cache:/tmp/fb-connector-media/cache
     networks: [fbnet]
 
 networks:
   fbnet:
     driver: bridge
+
+volumes:
+  connector_media_cache:

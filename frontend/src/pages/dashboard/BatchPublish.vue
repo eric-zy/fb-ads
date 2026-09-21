@@ -121,6 +121,7 @@
               <el-form-item label="预算" required><el-input-number v-model="adset.budget" :min="1" :step="1" /><span class="tip-inline">美元/天</span></el-form-item>
               <el-form-item label="国家/地区" required><el-input v-model="adset.country" placeholder="例如 US；多个国家用逗号分隔" /></el-form-item>
               <el-form-item label="年龄范围"><el-input-number v-model="adset.age_min" :min="13" :max="65" /> <span>至</span> <el-input-number v-model="adset.age_max" :min="13" :max="65" /></el-form-item>
+              <el-form-item label="语言"><MetaLanguageSelect v-model="adset.languages" /></el-form-item>
               <el-form-item label="版位"><el-select v-model="adset.publisher_platforms" multiple style="width:100%"><el-option label="Facebook" value="facebook" /><el-option label="Instagram" value="instagram" /><el-option label="Audience Network" value="audience_network" /><el-option label="Messenger" value="messenger" /></el-select></el-form-item>
               <el-form-item label="优化目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" /><el-option label="转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" /></el-select></el-form-item>
               <el-form-item label="计费事件"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /></el-select></el-form-item>
@@ -495,6 +496,7 @@ import { accountApi, type DeployableAccount } from '@/api/admin'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { mediaApi, type MetaAssetBinding } from '@/api/media'
 import { metaPagesApi, type MetaPage } from '@/api/metaPages'
+import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
 import { campaignsApi, type SyncedAdGroup } from '@/api/campaigns'
 import { useLocale } from '@/stores/localeStore'
 const { t } = useLocale()
@@ -561,7 +563,7 @@ const directForm = reactive({
   name: '直接投放测试', objective: 'OUTCOME_TRAFFIC', page_id: '', daily_budget: 10,
   optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1,
   creative_format: 'MULTI_AD' as 'SINGLE_IMAGE' | 'MULTI_AD',
-  adsets: [{ key: `${Date.now()}-1`, name: 'US 广告组', budget: 10, country: 'US', age_min: 18, age_max: 65, publisher_platforms: ['facebook'] as string[], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1 }],
+  adsets: [{ key: `${Date.now()}-1`, name: 'US 广告组', budget: 10, country: 'US', age_min: 18, age_max: 65, languages: [] as string[], publisher_platforms: ['facebook'] as string[], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1 }],
   creatives: [{ key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' }],
 })
 const batchAssetIds = ref<string[]>([])
@@ -576,7 +578,7 @@ const directObjectiveValid = computed(() => !(directForm.objective === 'OUTCOME_
 const sharedCreative = reactive({ primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
 
 const addDirectAdset = () => {
-  directForm.adsets.push({ key: `${Date.now()}-${directForm.adsets.length + 1}`, name: `广告组 ${directForm.adsets.length + 1}`, budget: directForm.daily_budget, country: 'US', age_min: 18, age_max: 65, publisher_platforms: ['facebook'], optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy, bid_amount: 1 })
+  directForm.adsets.push({ key: `${Date.now()}-${directForm.adsets.length + 1}`, name: `广告组 ${directForm.adsets.length + 1}`, budget: directForm.daily_budget, country: 'US', age_min: 18, age_max: 65, languages: [], publisher_platforms: ['facebook'], optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy, bid_amount: 1 })
 }
 const removeDirectAdset = (index: number) => { if (directForm.adsets.length > 1) directForm.adsets.splice(index, 1) }
 const addDirectCreative = () => directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
@@ -620,7 +622,7 @@ const directConfig = computed<Record<string, any> | null>(() => {
     optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy,
     creatives,
     adsets: directForm.adsets.map(adset => ({ name: adset.name, budget: adset.budget,
-      targeting: { geo_locations: { countries: adset.country.split(',').map(v => v.trim()).filter(Boolean) }, age_min: adset.age_min, age_max: adset.age_max },
+      targeting: { geo_locations: { countries: adset.country.split(',').map(v => v.trim()).filter(Boolean) }, age_min: adset.age_min, age_max: adset.age_max, ...(adset.languages.length ? { languages: [...adset.languages] } : {}) },
       placement: { publisher_platforms: adset.publisher_platforms }, optimization_goal: adset.optimization_goal,
       billing_event: adset.billing_event, bid_strategy: adset.bid_strategy,
       bid_amount: adset.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? undefined : adset.bid_amount, creatives })),
@@ -652,6 +654,7 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
       country: Array.isArray(countries) ? countries.join(',') : String(countries || 'US'),
       age_min: Number(targeting.age_min || 18),
       age_max: Number(targeting.age_max || 65),
+      languages: Array.isArray(targeting.languages) ? [...targeting.languages] : [],
       publisher_platforms: item.placement?.publisher_platforms || ['facebook'],
       optimization_goal: item.optimization_goal || directForm.optimization_goal,
       billing_event: item.billing_event || directForm.billing_event,

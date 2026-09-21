@@ -7,7 +7,7 @@ from core.auth import get_current_active_user, require_admin
 from core.tenant import effective_tenant_id
 from core.database import get_db
 from core.money import to_major
-from models import AccountInsight, CampaignInsight, AdSetInsight, AdInsight, Campaign, AdGroup, Ad, AdAccount
+from models import AccountInsight, CampaignInsight, AdSetInsight, AdInsight, Campaign, AdGroup, Ad, AdAccount, AsyncTaskRecord
 from services.account_access import accessible_account_ids
 from tasks.celery_tasks import fetch_account_insights
 from tasks.meta_sync_tasks import sync_delivery_objects_task
@@ -33,13 +33,24 @@ def sync_report_data(
         raise HTTPException(status_code=404, detail="广告账户不存在或无权访问")
     # 报表回补必须先同步规范对象层级，再写入 Campaign/AdSet/Ad Insights。
     # 否则 Meta 已返回数据，但本地缺少父对象时，洞察会被安全地跳过。
-    task_ids = [
-        chain(
+    task_ids = []
+    for account in accounts:
+        task_id = chain(
             sync_delivery_objects_task.si(account.id),
             fetch_account_insights.si(account.id, days),
         ).apply_async().id
-        for account in accounts
-    ]
+        task_ids.append(task_id)
+        # 报表同步也纳入统一任务状态接口，否则前端拿到 task_id 后无法
+        # 判断链式任务是否已经真正完成，只能在提交后立即读取旧数据。
+        db.add(AsyncTaskRecord(
+            task_id=task_id,
+            tenant_id=account.tenant_id,
+            task_type="REPORT_SYNC",
+            object_type="ACCOUNT_INSIGHTS",
+            object_ids=[account.id],
+            created_by=current_user.id,
+        ))
+    db.commit()
     return {"status": "queued", "days": days, "account_count": len(accounts), "task_ids": task_ids}
 
 @router.get("/account-overview")
@@ -51,7 +62,9 @@ def account_overview(
 ):
     """按广告账户汇总消耗，并返回同步新鲜度。"""
     end = end_date or date.today()
-    start = start_date or end
+    # 回补任务默认同步最近 3 天；总览也必须使用同一窗口，否则当天尚无
+    # 消耗时页面会把已同步的前几天数据误显示为全 0。
+    start = start_date or (end - timedelta(days=2))
     if start > end:
         raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
     tenant_id = effective_tenant_id(current_user)

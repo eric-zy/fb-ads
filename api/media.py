@@ -127,6 +127,23 @@ def _oss_object_key(
     return f"{settings.OSS_BASE_PATH}/{tenant_id}/{user.id}/{settings.OSS_PLATFORM}/{now:%Y/%m/%d}/{asset_id}/{stored_name}"
 
 
+def _multipart_upload_response(storage: AliyunOSSStorage, session: MediaUploadSession) -> dict:
+    """Create fresh presigned URLs for every part of an active OSS upload."""
+    if not session.upload_id or not session.part_size or not session.part_count:
+        raise StorageError("OSS 分片上传会话参数不完整")
+    uploaded_parts = storage.list_multipart_parts(session.object_key, session.upload_id)
+    return {
+        "upload_id": session.upload_id,
+        "part_size": session.part_size,
+        "part_count": session.part_count,
+        "uploaded_parts": uploaded_parts,
+        "parts": [
+            storage.presign_upload_part(session.object_key, session.upload_id, part_number)
+            for part_number in range(1, session.part_count + 1)
+        ],
+    }
+
+
 @router.get("/{asset_id}/download-url")
 def media_download_url(
     asset_id: str,
@@ -384,7 +401,7 @@ def create_media_upload_session(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_active_user),
 ):
-    """创建 OSS 直传会话；文件内容由浏览器直接上传到 OSS。"""
+    """创建 OSS 浏览器直传会话；大文件使用 Multipart 分片上传。"""
     allowed = ALLOWED_IMAGE if payload.asset_type == "image" else ALLOWED_VIDEO
     if payload.mime_type not in allowed:
         raise HTTPException(status_code=400, detail=f"素材类型与 MIME 不匹配: {payload.mime_type}")
@@ -417,6 +434,49 @@ def create_media_upload_session(
             "task_id": task_id,
         }
 
+    # 浏览器中断后重新选择同一个文件时复用未完成会话，避免再次创建 OSS 对象。
+    pending_session = db.query(MediaUploadSession).filter(
+        MediaUploadSession.tenant_id == tenant_id,
+        MediaUploadSession.created_by == user.id,
+        MediaUploadSession.expected_sha256 == payload.sha256.lower(),
+        MediaUploadSession.expected_size == payload.size,
+        MediaUploadSession.status == "UPLOADING",
+        MediaUploadSession.expires_at > datetime.utcnow(),
+    ).order_by(MediaUploadSession.updated_at.desc()).first()
+    if pending_session:
+        pending_asset = db.query(CreativeAsset).filter(CreativeAsset.id == pending_session.asset_id).first()
+        if pending_asset:
+            binding = _upsert_asset_binding(db, pending_asset, account) if account else None
+            db.commit()
+            try:
+                storage = AliyunOSSStorage()
+                if pending_session.upload_mode == "multipart":
+                    multipart = _multipart_upload_response(storage, pending_session)
+                    upload = None
+                else:
+                    multipart = None
+                    upload = storage.presign_put(pending_session.object_key, payload.mime_type)
+            except StorageError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            logger.info(
+                "[MediaUpload] resumed asset_id=%s session_id=%s mode=%s parts=%s",
+                pending_asset.id,
+                pending_session.id,
+                pending_session.upload_mode,
+                pending_session.part_count or 1,
+            )
+            return {
+                "duplicate": False,
+                "resumed": True,
+                "asset_id": pending_asset.id,
+                "upload_session_id": pending_session.id,
+                "binding_id": binding.id if binding else None,
+                "object_key": pending_session.object_key,
+                "upload": upload,
+                "multipart": multipart,
+                "expires_at": pending_session.expires_at.isoformat(),
+            }
+
     asset_id = uuid.uuid4().hex
     object_key = _oss_object_key(
         user, asset_id, payload.name, payload.md5, payload.mime_type, payload.sha256
@@ -445,11 +505,17 @@ def create_media_upload_session(
         md5=payload.md5.lower() if payload.md5 else None,
         sha256=payload.sha256.lower(),
     )
+    use_multipart = payload.size >= settings.OSS_MULTIPART_THRESHOLD_BYTES
+    part_size = settings.OSS_MULTIPART_PART_SIZE_BYTES if use_multipart else None
+    part_count = ((payload.size + part_size - 1) // part_size) if part_size else None
     session = MediaUploadSession(
         id=uuid.uuid4().hex,
         tenant_id=tenant_id,
         asset_id=asset.id,
         object_key=object_key,
+        upload_mode="multipart" if use_multipart else "single",
+        part_size=part_size,
+        part_count=part_count,
         expected_size=payload.size,
         expected_md5=payload.md5.lower() if payload.md5 else None,
         expected_sha256=payload.sha256.lower(),
@@ -468,7 +534,14 @@ def create_media_upload_session(
             status="PENDING",
         )
     try:
-        upload = AliyunOSSStorage().presign_put(object_key, payload.mime_type)
+        storage = AliyunOSSStorage()
+        if use_multipart:
+            session.upload_id = storage.initiate_multipart_upload(object_key, payload.mime_type)
+            upload = None
+            multipart = _multipart_upload_response(storage, session)
+        else:
+            upload = storage.presign_put(object_key, payload.mime_type)
+            multipart = None
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     db.add(asset)
@@ -476,6 +549,14 @@ def create_media_upload_session(
     if binding:
         db.add(binding)
     db.commit()
+    logger.info(
+        "[MediaUpload] session created asset_id=%s session_id=%s mode=%s part_size=%s part_count=%s",
+        asset.id,
+        session.id,
+        session.upload_mode,
+        session.part_size,
+        session.part_count or 1,
+    )
     return {
         "duplicate": False,
         "asset_id": asset.id,
@@ -483,8 +564,41 @@ def create_media_upload_session(
         "binding_id": binding.id if binding else None,
         "object_key": object_key,
         "upload": upload,
+        "multipart": multipart,
         "expires_at": session.expires_at.isoformat(),
     }
+
+
+@router.get("/upload-sessions/{session_id}")
+def get_media_upload_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_active_user),
+):
+    """Return multipart progress and fresh part URLs for a resumable upload."""
+    session = db.query(MediaUploadSession).filter(
+        MediaUploadSession.id == session_id,
+        MediaUploadSession.tenant_id == effective_tenant_id(user),
+        MediaUploadSession.created_by == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="上传会话不存在")
+    if session.status == "COMPLETED":
+        return {"status": session.status, "asset_id": session.asset_id, "parts": []}
+    if session.expires_at < datetime.utcnow():
+        session.status = "EXPIRED"
+        session.error_message = "上传会话已过期"
+        db.commit()
+        raise HTTPException(status_code=400, detail="上传会话已过期")
+    response = {"status": session.status, "asset_id": session.asset_id, "upload_mode": session.upload_mode}
+    if session.upload_mode == "multipart":
+        try:
+            storage = AliyunOSSStorage()
+            response["uploaded_parts"] = storage.list_multipart_parts(session.object_key, session.upload_id)
+            response["multipart"] = _multipart_upload_response(storage, session)
+        except StorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return response
 
 
 @router.post("/upload-sessions/{session_id}/complete")
@@ -510,7 +624,33 @@ def complete_media_upload_session(
         db.commit()
         raise HTTPException(status_code=400, detail="上传会话已过期")
     try:
-        head = AliyunOSSStorage().head(session.object_key)
+        storage = AliyunOSSStorage()
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if session.upload_mode == "multipart":
+        if not session.upload_id or not session.part_count:
+            raise HTTPException(status_code=400, detail="OSS 分片上传会话参数不完整")
+        try:
+            parts = storage.list_multipart_parts(session.object_key, session.upload_id)
+        except Exception as exc:
+            session.error_message = str(exc)[:500]
+            db.commit()
+            raise HTTPException(status_code=400, detail="OSS 分片状态无法读取，请稍后重试") from exc
+        expected_parts = set(range(1, session.part_count + 1))
+        actual_parts = {part["part_number"] for part in parts}
+        if actual_parts != expected_parts:
+            missing = sorted(expected_parts - actual_parts)
+            session.error_message = f"OSS 分片尚未上传完成，缺少分片: {missing[:10]}"
+            db.commit()
+            raise HTTPException(status_code=400, detail=session.error_message)
+        try:
+            storage.complete_multipart_upload(session.object_key, session.upload_id, parts)
+        except Exception as exc:
+            session.error_message = str(exc)[:500]
+            db.commit()
+            raise HTTPException(status_code=400, detail="OSS 分片合并失败，请稍后重试") from exc
+    try:
+        head = storage.head(session.object_key)
     except Exception as exc:
         session.status = "FAILED"
         session.error_message = str(exc)[:500]

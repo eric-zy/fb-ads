@@ -94,6 +94,13 @@ if [[ "$web_ready" != true ]]; then
   exit 1
 fi
 
+echo "[deploy] 校验 Celery Worker 关键任务注册..."
+if ! "${compose[@]}" exec -T celery-worker python -c 'import celery_app; required = {"meta.sync_custom_audiences", "credentials.check_expiring"}; registered = set(celery_app.celery_app.tasks); missing = sorted(required - registered); assert not missing, f"missing celery tasks: {missing}"; print("celery task registration ok")'; then
+  echo "[deploy] Celery Worker 关键任务未注册，拒绝完成部署。最近日志：" >&2
+  "${compose[@]}" logs --tail=100 celery-worker >&2 || true
+  exit 1
+fi
+
 echo "[deploy] API 和网页入口均已就绪。"
 
 # 默认保留镜像和 BuildKit 缓存，避免下一次部署重新下载 Debian/Python 依赖。

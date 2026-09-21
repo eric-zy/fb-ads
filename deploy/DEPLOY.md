@@ -147,6 +147,23 @@ ADS_OSS_REGION=cn-beijing
 > Connector 模式下 Meta App Secret、OAuth 回调和 Meta Access Token 只配置在海外 Connector，国内 SaaS 不再配置 `FB_ACCESS_TOKEN`。
 > 当前素材服务强制使用阿里云 OSS，至少要配置 `ADS_OSS_ACCESS_KEY_ID`、`ADS_OSS_ACCESS_KEY_SECRET`、`ADS_OSS_BUCKET`、`ADS_OSS_REGION`。
 
+大文件素材使用 OSS Multipart 浏览器直传：`OSS_MULTIPART_THRESHOLD_BYTES` 控制切换阈值，
+`OSS_MULTIPART_PART_SIZE_BYTES` 控制分片大小（不得小于 5MiB）。默认均为 16MiB；前端最多并发上传 4 个分片，
+单片失败会自动重试，服务端在合并前会从 OSS 查询已上传分片。
+
+Connector 媒体 Worker 会将已校验的素材按 SHA256 短期缓存；同一素材跨广告账户再次投放时，
+会通过 Redis 内容锁避免并发重复下载。`CONNECTOR_MEDIA_CONTENT_LOCK_TTL` 控制锁租期，
+`CONNECTOR_MEDIA_CONTENT_LOCK_WAIT` 控制等待其他 Worker 完成下载的最长时间。
+
+`FB_VIDEO_FILE_URL_UPLOAD=false` 时继续使用本地 Meta 分片上传；灰度改为 `true` 后，
+视频任务会优先让 Meta 直接拉取 OSS 签名 URL。Meta 明确拒绝远程 URL 时自动回退到本地分片，
+超时或限流不会盲目回退，以避免远端已接收后重复创建视频。
+灰度期间可用 `FB_VIDEO_FILE_URL_UPLOAD_ACCOUNTS=act_123,act_456` 限定账户；任务状态中的
+`upload_mode` 会记录 `DIRECT_URL`、`RESUMABLE` 或 `RESUMABLE_FALLBACK`。
+
+生产 Connector 会将 `/tmp/fb-connector-media/cache` 挂载到 `connector_media_cache` 持久卷，
+Worker 重启后仍可按 SHA256 复用已校验素材；临时下载文件仍保留在 3GiB tmpfs 中。
+
 生成密钥：
 ```bash
 openssl rand -hex 32
@@ -225,6 +242,27 @@ docker compose logs -f api
 docker compose logs -f celery-worker
 docker compose logs -f nginx
 ```
+
+### 6.1 Meta 自定义受众同步验收
+
+自定义受众同步由国内 API 入队、Celery Worker 执行，必须同时确认 API 与 Worker 使用同一套 Redis Broker/Result Backend。
+
+```bash
+# 1. 确认 Worker 已注册任务
+docker compose exec celery-worker python -c "import celery_app; assert 'meta.sync_custom_audiences' in celery_app.celery_app.tasks; print('meta.sync_custom_audiences registered')"
+
+# 2. 触发同步后，使用返回的 task_id 查询状态
+curl -H "Authorization: Bearer <access_token>" \
+  -X POST http://localhost/api/v1/meta-audiences/<account_pk>/sync
+
+curl -H "Authorization: Bearer <access_token>" \
+  http://localhost/api/v1/tasks/<task_id>
+
+# 3. 按任务名过滤 Worker 日志
+docker compose logs --tail=200 celery-worker | grep "meta_audiences"
+```
+
+验收状态：`PENDING → STARTED → SUCCESS`；Meta/Connector 请求失败时应进入 `RETRY`，达到重试上限后为 `FAILURE`。重复点击同一账户的同步按钮，在已有活动任务期间应返回 `ALREADY_QUEUED`，不会新增并发任务。
 
 ---
 

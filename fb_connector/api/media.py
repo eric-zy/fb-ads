@@ -20,6 +20,7 @@ class MediaUploadRequest(BaseModel):
     source_url: str = Field(..., min_length=1, max_length=2048)
     cover_url: str | None = Field(default=None, max_length=2048)
     expected_md5: str | None = Field(default=None, min_length=32, max_length=32, pattern=r"^[0-9a-fA-F]{32}$")
+    expected_sha256: str | None = Field(default=None, min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$")
     idempotency_key: str = Field(..., min_length=8, max_length=128)
 
 
@@ -85,6 +86,7 @@ async def upload_media(payload: MediaUploadRequest):
             old.source_url = payload.source_url
             old.cover_url = payload.cover_url
             old.expected_md5 = payload.expected_md5.lower() if payload.expected_md5 else None
+            old.expected_sha256 = payload.expected_sha256.lower() if payload.expected_sha256 else None
             old.status = "QUEUED"
             old.meta_asset_id = None
             old.meta_thumbnail_hash = None
@@ -103,6 +105,7 @@ async def upload_media(payload: MediaUploadRequest):
                 source_url=payload.source_url,
                 cover_url=payload.cover_url,
                 expected_md5=payload.expected_md5.lower() if payload.expected_md5 else None,
+                expected_sha256=payload.expected_sha256.lower() if payload.expected_sha256 else None,
                 status="QUEUED",
             ))
         session.commit()
@@ -120,6 +123,7 @@ async def upload_media(payload: MediaUploadRequest):
             payload.idempotency_key,
             payload.expected_md5.lower() if payload.expected_md5 else None,
             payload.cover_url,
+            payload.expected_sha256.lower() if payload.expected_sha256 else None,
         )
     except Exception as exc:
         failed_session = connector_session_factory()
@@ -175,6 +179,8 @@ async def upload_status(task_id: str):
             "meta_thumbnail_hash": row.meta_thumbnail_hash,
             "cover_url": row.cover_url,
             "expected_md5": row.expected_md5,
+            "expected_sha256": row.expected_sha256,
+            "upload_mode": row.upload_mode,
             "error_message": row.error_message,
         }
     finally:

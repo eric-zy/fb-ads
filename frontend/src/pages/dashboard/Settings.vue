@@ -38,12 +38,40 @@
       <div class="info-row"><span>邮箱</span><b>{{ user?.email }}</b></div>
       <div class="info-row"><span>角色</span><b>{{ roleLabel(user?.role) }}</b></div>
     </div>
+
+    <div v-if="userStore.isAdmin" class="card audience-policy-card">
+      <h3>Meta 受众资产与强制排除</h3>
+      <p class="hint">管理员可按广告账户同步 Custom Audience，并锁定法律/运营要求的排除受众。投放时系统会自动合并这些排除项。</p>
+      <div class="field">
+        <label>广告账户</label>
+        <select v-model="selectedAccountId" class="input" @change="loadAudiences">
+          <option value="">请选择广告账户</option>
+          <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.account_name || account.account_id }}（{{ account.account_id }}）</option>
+        </select>
+      </div>
+      <div class="audience-actions">
+        <button class="btn" :disabled="!selectedAccountId || syncingAudiences" @click="syncAudiences">{{ syncingAudiences ? '同步中…' : '从 Meta 同步受众' }}</button>
+        <span class="hint">只同步受众元数据，不读取受众成员</span>
+        <span v-if="syncTaskState" class="sync-state">任务：{{ syncTaskState }}</span>
+      </div>
+      <div v-if="selectedAccountId && audiences.length" class="audience-list">
+        <label v-for="audience in audiences" :key="audience.id" class="audience-row">
+          <input v-model="requiredAudienceIds" type="checkbox" :value="audience.meta_audience_id" />
+          <span>{{ audience.name }}</span>
+          <small>{{ audience.subtype || 'CUSTOM' }} · {{ audience.meta_audience_id }} · 最近同步 {{ formatDate(audience.last_synced_at) }}</small>
+        </label>
+        <button class="btn btn-primary" :disabled="savingAudiencePolicy" @click="saveAudiencePolicy">保存强制排除策略</button>
+      </div>
+      <div v-else-if="selectedAccountId" class="hint audience-empty">暂无已同步受众，请先点击“从 Meta 同步受众”。</div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useUserStore } from '../../stores/userStore'
+import { accountApi, type AdAccountItem } from '@/api/admin'
+import { metaAudiencesApi, type MetaAudienceAsset } from '@/api/metaAudiences'
 
 const userStore = useUserStore()
 const user = userStore.user
@@ -56,6 +84,13 @@ const settings = ref({
 })
 const saving = ref(false)
 const saved = ref(false)
+const accounts = ref<AdAccountItem[]>([])
+const selectedAccountId = ref('')
+const audiences = ref<MetaAudienceAsset[]>([])
+const requiredAudienceIds = ref<string[]>([])
+const syncingAudiences = ref(false)
+const savingAudiencePolicy = ref(false)
+const syncTaskState = ref('')
 
 function roleLabel(r?: string) {
   return { admin: '管理员', manager: '经理', user: '普通用户' }[r || ''] || r || '-'
@@ -64,7 +99,71 @@ function roleLabel(r?: string) {
 onMounted(() => {
   const s = (userStore.user?.settings as Record<string, any>) || {}
   settings.value = { ...settings.value, ...s }
+  if (userStore.isAdmin) void loadAccounts()
 })
+
+async function loadAccounts() {
+  try {
+    const { data } = await accountApi.list({ page: 1, page_size: 100 })
+    accounts.value = Array.isArray(data) ? data : (data?.items || [])
+  } catch { accounts.value = [] }
+}
+
+async function loadAudiences() {
+  audiences.value = []
+  requiredAudienceIds.value = []
+  if (!selectedAccountId.value) return
+  try {
+    const { data } = await metaAudiencesApi.list(selectedAccountId.value)
+    audiences.value = data || []
+    requiredAudienceIds.value = audiences.value.filter(item => item.is_required_exclusion).map(item => item.meta_audience_id)
+  } catch { audiences.value = [] }
+}
+
+function formatDate(value?: string | null) {
+  return value ? new Date(value).toLocaleString() : '未同步'
+}
+
+async function waitForAudienceSync(taskId: string) {
+  for (let round = 0; round < 45; round += 1) {
+    const { data } = await metaAudiencesApi.taskStatus(taskId)
+    syncTaskState.value = data.state
+    if (['SUCCESS', 'FAILURE', 'REVOKED'].includes(data.state)) {
+      if (data.state !== 'SUCCESS' || String(data.result?.status || '').toUpperCase() === 'FAILED') {
+        throw new Error(data.error || 'Meta 受众同步任务失败')
+      }
+      return
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000))
+  }
+  throw new Error('同步任务等待超时，请到任务中心查看')
+}
+
+async function syncAudiences() {
+  if (!selectedAccountId.value) return
+  syncingAudiences.value = true
+  syncTaskState.value = 'PENDING'
+  try {
+    const { data } = await metaAudiencesApi.sync(selectedAccountId.value)
+    await waitForAudienceSync(data.task_id)
+    await loadAudiences()
+    alert('Meta 受众同步完成')
+  } catch (e: any) {
+    alert('受众同步失败：' + (e.response?.data?.detail || e.message))
+  } finally { syncingAudiences.value = false }
+}
+
+async function saveAudiencePolicy() {
+  if (!selectedAccountId.value) return
+  savingAudiencePolicy.value = true
+  try {
+    await metaAudiencesApi.setRequiredExclusions(selectedAccountId.value, requiredAudienceIds.value)
+    await loadAudiences()
+    alert('强制排除策略已保存')
+  } catch (e: any) {
+    alert('保存失败：' + (e.response?.data?.detail || e.message))
+  } finally { savingAudiencePolicy.value = false }
+}
 
 async function save() {
   saving.value = true
@@ -161,6 +260,14 @@ async function save() {
   color: #15803d;
   font-size: 13px;
 }
+.hint { color: #6b7280; font-size: 12px; line-height: 1.5; }
+.audience-policy-card { max-width: 760px; }
+.audience-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.sync-state { color: #409eff; font-size: 12px; }
+.audience-list { margin-top: 14px; border-top: 1px solid #f3f4f6; }
+.audience-row { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
+.audience-row small { margin-left: auto; color: #9ca3af; }
+.audience-empty { margin-top: 16px; }
 .info-row {
   display: flex;
   justify-content: space-between;

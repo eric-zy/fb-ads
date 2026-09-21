@@ -123,6 +123,18 @@ export interface UploadSessionResponse {
   upload_session_id?: string
   object_key?: string
   upload?: { url: string; method: 'PUT'; headers?: Record<string, string> }
+  multipart?: {
+    upload_id: string
+    part_size: number
+    part_count: number
+    uploaded_parts?: Array<{ part_number: number; etag: string; size?: number }>
+    parts: Array<{
+      part_number: number
+      url: string
+      method: 'PUT'
+      headers?: Record<string, string>
+    }>
+  }
   binding_id?: string | null
   binding?: MetaAssetBinding
   task_id?: string | null
@@ -177,19 +189,87 @@ export const mediaApi = {
           task_id: session.data.task_id,
         }
       }
-      const upload = session.data.upload
-      if (!upload?.url) throw new Error('OSS 上传签名缺失')
-      await axios.put(upload.url, file, {
-        headers: upload.headers || { 'Content-Type': file.type },
-        onUploadProgress: onProgress,
-        skipErrorMessage: true,
-      })
+      if (session.data.multipart) {
+        const multipart = session.data.multipart
+        const loadedByPart = new Map<number, number>()
+        for (const uploaded of multipart.uploaded_parts || []) {
+          const size = uploaded.size ?? Math.min(
+            multipart.part_size,
+            Math.max(0, file.size - (uploaded.part_number - 1) * multipart.part_size),
+          )
+          loadedByPart.set(uploaded.part_number, size)
+        }
+        const pendingParts = multipart.parts.filter(
+          (part) => !(multipart.uploaded_parts || []).some((uploaded) => uploaded.part_number === part.part_number),
+        )
+        let nextIndex = 0
+        const concurrency = Math.min(4, pendingParts.length)
+        const safeHeaders = (headers?: Record<string, string>) => {
+          if (!headers) return {}
+          // Host/Content-Length are browser-controlled and cannot be set by XHR.
+          return Object.fromEntries(
+            Object.entries(headers).filter(([name]) => !['host', 'content-length'].includes(name.toLowerCase())),
+          )
+        }
+        const reportProgress = () => {
+          if (!onProgress) return
+          const loaded = Array.from(loadedByPart.values()).reduce((sum, value) => sum + value, 0)
+          onProgress({ loaded, total: file.size, progress: file.size ? loaded / file.size : 0 } as AxiosProgressEvent)
+        }
+        const uploadPart = async (part: typeof multipart.parts[number]) => {
+          const start = (part.part_number - 1) * multipart.part_size
+          const chunk = file.slice(start, Math.min(start + multipart.part_size, file.size))
+          let lastError: unknown
+          for (let attempt = 1; attempt <= 3; attempt += 1) {
+            try {
+              await axios.put(part.url, chunk, {
+                headers: safeHeaders(part.headers),
+                onUploadProgress: (event) => {
+                  loadedByPart.set(part.part_number, Math.min(event.loaded, chunk.size))
+                  reportProgress()
+                },
+                skipErrorMessage: true,
+              })
+              loadedByPart.set(part.part_number, chunk.size)
+              reportProgress()
+              return
+            } catch (error) {
+              lastError = error
+              loadedByPart.delete(part.part_number)
+              if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 1000))
+            }
+          }
+          throw lastError || new Error(`OSS 分片 ${part.part_number} 上传失败`)
+        }
+        const worker = async () => {
+          while (nextIndex < pendingParts.length) {
+            const index = nextIndex
+            nextIndex += 1
+            await uploadPart(pendingParts[index])
+          }
+        }
+        await Promise.all(Array.from({ length: concurrency }, () => worker()))
+      } else {
+        const upload = session.data.upload
+        if (!upload?.url) throw new Error('OSS 上传签名缺失')
+        await axios.put(upload.url, file, {
+          headers: upload.headers || { 'Content-Type': file.type },
+          onUploadProgress: onProgress,
+          skipErrorMessage: true,
+        })
+      }
       const completed = await request.post<{ asset: MediaItem; task_id?: string }>(
         `/api/v1/media/upload-sessions/${session.data.upload_session_id}/complete`,
       )
       return { data: completed.data.asset }
     })
   },
+  getUploadSession: (sessionId: string) =>
+    request.get<UploadSessionResponse & {
+      status: string
+      upload_mode?: string
+      uploaded_parts?: Array<{ part_number: number; etag: string; size?: number }>
+    }>(`/api/v1/media/upload-sessions/${sessionId}`),
   groups: {
     list: () => request.get<CreativeAssetGroup[]>('/api/v1/creative-asset-groups'),
     create: (data: { name: string; description?: string; visibility?: string }) =>

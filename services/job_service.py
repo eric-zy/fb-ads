@@ -28,9 +28,11 @@ from models import (
     Campaign,
     AdGroup,
     User,
+    MetaAudienceAsset,
 )
 from services.account_access import accessible_account_ids
 from services.meta.page_access import page_account_access_error
+from services.targeting_catalog import normalize_targeting
 from tasks.campaign_tasks import (
     execute_campaign_job,
     retry_failed_job_items,
@@ -143,6 +145,60 @@ class JobService:
             errors.append({"code": "CREATIVE_REQUIRED", "message": "模板至少需要一个有效素材"})
 
         ids = list(dict.fromkeys(ad_account_ids or []))
+        # Custom Audience 不是跨账户可复用的字符串 ID。发布前先校验账户
+        # 范围，避免任务进入队列后才由 Meta 返回权限/参数错误。
+        target_accounts = self.db.query(AdAccount).filter(AdAccount.id.in_(ids)).all() if ids else []
+        account_scope = {}
+        for account in target_accounts:
+            account_scope[str(account.id)] = str(account.id)
+            account_scope[str(account.account_id).replace("act_", "")] = str(account.id)
+            account_scope[str(account.account_id)] = str(account.id)
+        targeting_configs = [("模板定向", template.targeting_json or {})]
+        for index, adset in enumerate(configured_adsets, 1):
+            if isinstance(adset, dict):
+                targeting_configs.append((f"广告组 {index} 定向", adset.get("targeting") or {}))
+        audience_errors = set()
+        for label, raw_targeting in targeting_configs:
+            try:
+                targeting = normalize_targeting(raw_targeting)
+            except ValueError as exc:
+                audience_errors.add(("AUDIENCE_TARGETING_INVALID", f"{label}：{exc}"))
+                continue
+            for field in ("custom_audiences", "excluded_custom_audiences", "excluded_audiences"):
+                for audience in targeting.get(field) or []:
+                    audience_id = str(audience.get("id") or "").strip()
+                    scoped = str(audience.get("ad_account_id") or audience.get("account_id") or "").strip()
+                    if not scoped or audience.get("resolution") == "UNRESOLVED":
+                        audience_errors.add(("AUDIENCE_SCOPE_REQUIRED", f"{label} 的受众 {audience_id} 必须绑定广告账户"))
+                    elif scoped.replace("act_", "") not in account_scope and scoped not in account_scope:
+                        audience_errors.add(("AUDIENCE_ACCOUNT_MISMATCH", f"{label} 的受众 {audience_id} 不属于本次投放账户"))
+        errors.extend({"code": code, "message": message} for code, message in sorted(audience_errors))
+
+        required_rows = self.db.query(MetaAudienceAsset).filter(
+            MetaAudienceAsset.ad_account_id.in_(ids),
+            MetaAudienceAsset.is_required_exclusion.is_(True),
+        ).all() if ids else []
+        now = datetime.utcnow()
+        for row in required_rows:
+            status_text = str(row.delivery_status or "").upper()
+            if any(marker in status_text for marker in ("DELETED", "EXPIRED", "UNAVAILABLE")):
+                errors.append({
+                    "code": "REQUIRED_AUDIENCE_UNAVAILABLE",
+                    "message": f"账户 {row.meta_ad_account_id} 的强制排除受众 {row.meta_audience_id} 已失效，请更新策略",
+                })
+            elif not row.last_synced_at:
+                errors.append({
+                    "code": "REQUIRED_AUDIENCE_NOT_SYNCED",
+                    "message": f"账户 {row.meta_ad_account_id} 的强制排除受众 {row.meta_audience_id} 尚未完成同步",
+                })
+            elif row.last_synced_at < now - timedelta(days=7):
+                warnings.append({
+                    "code": "REQUIRED_AUDIENCE_STALE",
+                    "message": f"账户 {row.meta_ad_account_id} 的强制排除受众同步已超过 7 天，建议重新同步",
+                    "account_id": row.ad_account_id,
+                    "audience_id": row.meta_audience_id,
+                })
+
         available, rejected = AdAccountService(self.db).filter_available_ids(
             ids,
             user_id=created_by,

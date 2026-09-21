@@ -22,6 +22,7 @@ from config.settings import settings
 from core.logger import logger
 from services.meta.errors import MetaApiError, classify, classify_facebook_error
 from core.enums import ErrorCategory
+from services.targeting_catalog import LANGUAGE_CATALOG, normalize_languages
 
 
 class MetaClient:
@@ -47,6 +48,7 @@ class MetaClient:
         self.access_token = access_token
         self.app_id = app_id or settings.FB_APP_ID
         self.app_secret = app_secret or settings.FB_APP_SECRET
+        self._ad_locales_cache: List[dict] | None = None
 
         try:
             session = FacebookSession(
@@ -269,3 +271,89 @@ class MetaClient:
                           "timezone_name,spend_cap,amount_spent,balance,disable_reason",
             },
         )
+
+    def get_custom_audiences(self, account_id: str, max_pages: int = 20) -> List[dict]:
+        """拉取广告账户可访问的 Custom Audience 元数据，不读取成员数据。"""
+        act = self.normalize_account_id(account_id)
+        params = {
+            "fields": "id,name,subtype,delivery_status,sharing_status,time_updated",
+            "limit": 200,
+        }
+        audiences: List[dict] = []
+        after = None
+        for _ in range(max_pages):
+            if after:
+                params["after"] = after
+            else:
+                params.pop("after", None)
+            payload = self._get(f"/{act}/customaudiences", params)
+            audiences.extend(payload.get("data", []) or [])
+            after = (payload.get("paging") or {}).get("cursors", {}).get("after")
+            if not after:
+                break
+        return audiences
+
+    def get_ad_locales(self, max_pages: int = 20) -> List[dict]:
+        """从 Meta Targeting Search 拉取当前版本可用的广告语言目录。"""
+        if self._ad_locales_cache is not None:
+            return list(self._ad_locales_cache)
+        params = {"type": "adlocale", "limit": 2000}
+        locales: List[dict] = []
+        after = None
+        for _ in range(max_pages):
+            if after:
+                params["after"] = after
+            else:
+                params.pop("after", None)
+            payload = self._get("/search", params)
+            locales.extend(payload.get("data", []) or [])
+            after = (payload.get("paging") or {}).get("cursors", {}).get("after")
+            if not after:
+                break
+        self._ad_locales_cache = list(locales)
+        return locales
+
+    def resolve_targeting_locales(self, targeting: dict | None) -> dict:
+        """把产品层 languages 别名解析成 Meta targeting.locales ID。"""
+        result = dict(targeting or {})
+        raw_languages = result.pop("languages", None)
+        if raw_languages is None or not raw_languages:
+            return result
+
+        requested = normalize_languages(raw_languages)
+        resolved = [str(value) for value in (result.get("locales") or [])]
+        available = self.get_ad_locales()
+        catalog = {item["id"]: item for item in LANGUAGE_CATALOG}
+
+        def clean(value: object) -> str:
+            return " ".join(str(value or "").casefold().replace("（", "(").replace("）", ")").split())
+
+        for item_id in requested:
+            if str(item_id).isdigit():
+                if str(item_id) not in resolved:
+                    resolved.append(str(item_id))
+                continue
+            item = catalog.get(item_id)
+            if not item:
+                raise ValueError(f"语言 {item_id} 不在当前 Meta 语言目录中")
+            names = {clean(item["name"]), clean(item["name_en"]), clean(item["code"])}
+            candidates = []
+            for remote in available:
+                remote_id = str(remote.get("id") or "").strip()
+                remote_name = clean(remote.get("name"))
+                if not remote_id or not remote_name:
+                    continue
+                if remote_name in names or any(
+                    name and (remote_name.startswith(name) or name.startswith(remote_name))
+                    for name in names
+                ):
+                    candidates.append(remote)
+            candidates.sort(key=lambda row: ("all" not in clean(row.get("name")), str(row.get("id"))))
+            if not candidates:
+                raise ValueError(f"Meta 当前未返回语言“{item['name']}”，请刷新语言目录后重试")
+            remote_id = str(candidates[0].get("id"))
+            if remote_id not in resolved:
+                resolved.append(remote_id)
+
+        result["locales"] = resolved
+        return result

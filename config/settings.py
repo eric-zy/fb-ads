@@ -61,15 +61,26 @@ class Settings(BaseSettings):
     FB_VIDEO_CHUNK_MAX_BYTES: int = int(os.getenv("FB_VIDEO_CHUNK_MAX_BYTES", str(10 * 1024 * 1024)))
     FB_VIDEO_PROCESSING_TIMEOUT: int = int(os.getenv("FB_VIDEO_PROCESSING_TIMEOUT", "900"))
     FB_VIDEO_STATUS_POLL_INTERVAL: int = int(os.getenv("FB_VIDEO_STATUS_POLL_INTERVAL", "15"))
+    # 灰度开启 Meta 从 OSS 签名 URL 直接拉取视频；失败时回退到本地分片上传。
+    FB_VIDEO_FILE_URL_UPLOAD: bool = os.getenv("FB_VIDEO_FILE_URL_UPLOAD", "false").lower() == "true"
+    # 逗号分隔的广告账户白名单；为空表示所有账户，支持填写 act_ 前缀或纯数字。
+    FB_VIDEO_FILE_URL_UPLOAD_ACCOUNTS: str = os.getenv("FB_VIDEO_FILE_URL_UPLOAD_ACCOUNTS", "")
     # 无海外 OSS 时，Connector 只在本地临时目录落盘一个素材；
     # 生产环境通过独立 media worker + tmpfs 限制并发和磁盘占用。
     CONNECTOR_MEDIA_TEMP_DIR: str = os.getenv("CONNECTOR_MEDIA_TEMP_DIR", "/tmp/fb-connector-media")
-    # 已校验 MD5 的源文件在本地短期缓存，跨账户投放同一素材时避免重复从 OSS 下载。
+    # 已校验 SHA256 的源文件在本地短期缓存，跨账户投放同一素材时避免重复从 OSS 下载。
     CONNECTOR_MEDIA_CACHE_TTL_SECONDS: int = int(
         os.getenv("CONNECTOR_MEDIA_CACHE_TTL_SECONDS", "86400")
     )
     CONNECTOR_MEDIA_CACHE_MAX_BYTES: int = int(
         os.getenv("CONNECTOR_MEDIA_CACHE_MAX_BYTES", str(2 * 1024 * 1024 * 1024))
+    )
+    # 同一 SHA256 素材的跨账户下载锁，避免多个 media worker 并发从 OSS 拉取同一文件。
+    CONNECTOR_MEDIA_CONTENT_LOCK_TTL: int = int(
+        os.getenv("CONNECTOR_MEDIA_CONTENT_LOCK_TTL", "1800")
+    )
+    CONNECTOR_MEDIA_CONTENT_LOCK_WAIT: int = int(
+        os.getenv("CONNECTOR_MEDIA_CONTENT_LOCK_WAIT", "900")
     )
     CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES: int = int(
         os.getenv("CONNECTOR_MEDIA_MAX_DOWNLOAD_BYTES", str(1024 * 1024 * 1024))
@@ -171,6 +182,9 @@ class Settings(BaseSettings):
     OSS_BASE_PATH: str = os.getenv("OSS_BASE_PATH", "ossuser/oversea").strip("/")
     OSS_PLATFORM: str = os.getenv("OSS_PLATFORM", "meta").strip("/") or "meta"
     OSS_UPLOAD_EXPIRE_SECONDS: int = int(os.getenv("OSS_UPLOAD_EXPIRE_SECONDS", "900"))
+    # 浏览器直传超过该大小时使用 OSS Multipart；分片大小必须不小于 OSS 要求的 5 MiB。
+    OSS_MULTIPART_THRESHOLD_BYTES: int = int(os.getenv("OSS_MULTIPART_THRESHOLD_BYTES", str(16 * 1024 * 1024)))
+    OSS_MULTIPART_PART_SIZE_BYTES: int = int(os.getenv("OSS_MULTIPART_PART_SIZE_BYTES", str(16 * 1024 * 1024)))
     OSS_DOWNLOAD_EXPIRE_SECONDS: int = int(os.getenv("OSS_DOWNLOAD_EXPIRE_SECONDS", "900"))
     OSS_ACCESS_KEY_ID: str = os.getenv(
         "ADS_OSS_ACCESS_KEY_ID",
@@ -266,6 +280,10 @@ class Settings(BaseSettings):
             raise ValueError(f"OSS 存储缺少配置: {', '.join(missing)}")
         if not (900 <= self.OSS_UPLOAD_EXPIRE_SECONDS <= 43200):
             raise ValueError("OSS_UPLOAD_EXPIRE_SECONDS 必须在 900 到 43200 秒之间")
+        if self.OSS_MULTIPART_THRESHOLD_BYTES <= 0:
+            raise ValueError("OSS_MULTIPART_THRESHOLD_BYTES 必须大于 0")
+        if self.OSS_MULTIPART_PART_SIZE_BYTES < 5 * 1024 * 1024:
+            raise ValueError("OSS_MULTIPART_PART_SIZE_BYTES 不能小于 5 MiB")
         if not (900 <= self.OSS_DOWNLOAD_EXPIRE_SECONDS <= 43200):
             raise ValueError("OSS_DOWNLOAD_EXPIRE_SECONDS 必须在 900 到 43200 秒之间")
         if not (900 <= self.OSS_STS_DURATION_SECONDS <= 43200):

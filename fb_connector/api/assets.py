@@ -17,6 +17,9 @@ class BusinessRequest(CredentialRequest):
 class AccountVerifyRequest(BusinessRequest):
     account_id: str = Field(..., min_length=1, max_length=64)
 
+class AudienceListRequest(CredentialRequest):
+    account_id: str = Field(..., min_length=1, max_length=64)
+
 def _client(credential_id: str) -> MetaClient:
     try:
         return MetaClient(access_token=DatabaseCredentialVault().get_access_token(credential_id))
@@ -84,4 +87,34 @@ async def sync_pages(payload: CredentialRequest):
     except Exception as exc:
         report_meta_auth_failure(payload.credential_id, exc)
         logger.exception("[ConnectorAssets] sync pages failed credential_id=%s", payload.credential_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@router.post("/audiences/list")
+async def list_custom_audiences(payload: AudienceListRequest):
+    """返回广告账户可访问的 Custom Audience 元数据。
+
+    Connector 只持有海外凭据，因此由 Connector 访问 Graph API；响应严格
+    限定为受众名称、类型和投放/共享状态，不读取或返回受众成员数据。
+    """
+    try:
+        logger.info(
+            "[ConnectorAssets] list audiences start credential_id=%s account_id=%s",
+            payload.credential_id,
+            payload.account_id,
+        )
+        audiences = _client(payload.credential_id).get_custom_audiences(payload.account_id)
+        logger.info(
+            "[ConnectorAssets] list audiences success credential_id=%s account_id=%s count=%s",
+            payload.credential_id,
+            payload.account_id,
+            len(audiences),
+        )
+        return {"account_id": payload.account_id, "audiences": audiences}
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception(
+            "[ConnectorAssets] list audiences failed credential_id=%s account_id=%s",
+            payload.credential_id,
+            payload.account_id,
+        )
         raise HTTPException(status_code=400, detail=str(exc)) from exc

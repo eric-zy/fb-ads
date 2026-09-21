@@ -82,6 +82,7 @@ def build_connector_payload(template: Any, meta_account_id: str, *, budget_overr
                             asset_bindings: dict[str, str] | None = None,
                             asset_types: dict[str, str] | None = None,
                             asset_thumbnail_hashes: dict[str, str] | None = None,
+                            required_excluded_audience_ids: list[str] | None = None,
                             existing_campaign_id: str | None = None,
                             existing_ad_group_id: str | None = None,
                             copy_ad_group: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -133,6 +134,16 @@ def build_connector_payload(template: Any, meta_account_id: str, *, budget_overr
                 config["bid_strategy"] = copy_ad_group["bid_strategy"]
             if copy_ad_group.get("bid_amount") is not None:
                 config["bid_amount"] = copy_ad_group["bid_amount"]
+        if required_excluded_audience_ids:
+            config = copy.deepcopy(config)
+            targeting = dict(config.get("targeting") or template.targeting_json or {})
+            existing = list(targeting.get("excluded_custom_audiences") or [])
+            existing_ids = {str(item.get("id") if isinstance(item, dict) else item) for item in existing}
+            for audience_id in required_excluded_audience_ids:
+                if str(audience_id) not in existing_ids:
+                    existing.append({"id": str(audience_id), "resolution": "POLICY"})
+            targeting["excluded_custom_audiences"] = existing
+            config["targeting"] = targeting
         adset = AdSetBuilder(service, template, meta_account_id, "${campaign.id}", budget_override=budget_override,
                              status=status, adset_name=adset_name, adset_config=config).build_params()
         adset["client_key"] = f"adset-{index}"

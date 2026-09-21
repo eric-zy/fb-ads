@@ -191,6 +191,9 @@
         <el-form-item label="兴趣">
           <el-input v-model="targetingForm.interests" placeholder="多个兴趣用逗号分隔（可选）" />
         </el-form-item>
+        <el-form-item label="语言">
+          <MetaLanguageSelect v-model="targetingForm.languages" />
+        </el-form-item>
         <el-form-item label="版位">
           <el-select v-model="targetingForm.placements" multiple collapse-tags style="width:100%" placeholder="默认自动版位">
             <el-option label="Facebook 信息流" value="facebook_feed" />
@@ -207,6 +210,7 @@
               <div class="inline-fields"><el-form-item label="预算"><el-input-number v-model="adset.budget" :min="1" :step="10" /><span class="field-code">Meta: daily_budget</span></el-form-item><el-form-item label="国家/地区"><el-input v-model="adset.countries" placeholder="US,CA" /><span class="field-code">Meta: geo_locations</span></el-form-item></div>
               <div class="inline-fields"><el-form-item label="年龄"><el-input-number v-model="adset.age_min" :min="13" :max="65" /><span>至</span><el-input-number v-model="adset.age_max" :min="13" :max="65" /></el-form-item><el-form-item label="性别"><el-checkbox-group v-model="adset.genders"><el-checkbox :label="1">男</el-checkbox><el-checkbox :label="2">女</el-checkbox></el-checkbox-group></el-form-item></div>
               <el-form-item label="兴趣"><el-input v-model="adset.interests" placeholder="可选，多个兴趣用逗号分隔" /></el-form-item>
+              <el-form-item label="语言"><MetaLanguageSelect v-model="adset.languages" /></el-form-item>
               <div class="inline-fields"><el-form-item label="优化目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击" value="LINK_CLICKS" /><el-option label="展示次数" value="IMPRESSIONS" /><el-option label="落地页浏览量" value="LANDING_PAGE_VIEWS" /></el-select><span class="field-code">Meta: optimization_goal</span></el-form-item><el-form-item label="计费事件"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示次数" value="IMPRESSIONS" /><el-option label="链接点击" value="LINK_CLICKS" /></el-select><span class="field-code">Meta: billing_event</span></el-form-item></div>
               <div class="inline-fields"><el-form-item label="出价策略"><el-select v-model="adset.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本（含竞价上限）" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select><span class="field-code">Meta: bid_strategy</span></el-form-item><el-form-item v-if="['LOWEST_COST_WITH_BID_CAP','COST_CAP'].includes(adset.bid_strategy)" label="竞价上限"><el-input-number v-model="adset.bid_amount" :min="1" :step="100" /><span class="field-code">Meta: bid_amount</span></el-form-item></div>
               <el-form-item label="Advantage+ 受众"><el-switch v-model="adset.advantage_audience" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="关闭" /></el-form-item>
@@ -293,6 +297,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
+import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
 import { mediaApi, type MediaItem } from '@/api/media'
 import { metaPagesApi, type MetaPage } from '@/api/metaPages'
 import { useLocale } from '@/stores/localeStore'
@@ -354,10 +359,11 @@ const targetingForm = reactive({
   age_max: 65,
   genders: [1, 2] as number[],
   interests: '',
+  languages: [] as string[],
   placements: [] as string[],
 })
-type AdsetForm = { name: string; budget: number; countries: string; age_min: number; age_max: number; genders: number[]; interests: string; placements: string[]; optimization_goal: string; billing_event: string; bid_strategy: string; bid_amount: number; advantage_audience: number }
-const newAdset = (): AdsetForm => ({ name: '', budget: 50, countries: 'US', age_min: 18, age_max: 65, genders: [1, 2], interests: '', placements: [], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 0, advantage_audience: 1 })
+type AdsetForm = { name: string; budget: number; countries: string; age_min: number; age_max: number; genders: number[]; interests: string; languages: string[]; placements: string[]; optimization_goal: string; billing_event: string; bid_strategy: string; bid_amount: number; advantage_audience: number }
+const newAdset = (): AdsetForm => ({ name: '', budget: 50, countries: 'US', age_min: 18, age_max: 65, genders: [1, 2], interests: '', languages: [], placements: [], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 0, advantage_audience: 1 })
 const adsetForms = reactive<AdsetForm[]>([newAdset()])
 const addAdset = () => adsetForms.push(newAdset())
 const removeAdset = (index: number) => adsetForms.splice(index, 1)
@@ -401,6 +407,7 @@ const buildCreativeJson = () => {
   }
   const adsets = adsetForms.map(adset => {
     const targeting: Record<string, any> = { geo_locations: { countries: adset.countries.split(',').map(v => v.trim()).filter(Boolean) }, age_min: adset.age_min, age_max: adset.age_max, genders: adset.genders }
+    if (adset.languages.length) targeting.languages = [...adset.languages]
     if (adset.interests.trim()) targeting.flexible_spec = [{ interests: adset.interests.split(',').map(v => ({ name: v.trim() })).filter(v => v.name) }]
     const placement: Record<string, any> = { publisher_platforms: [...new Set(adset.placements.map(v => v.split('_')[0]))] }
     const facebook = adset.placements.filter(v => v.startsWith('facebook_')).map(v => v.replace('facebook_', ''))
@@ -441,6 +448,7 @@ const buildTargetingJson = () => {
     age_max: targetingForm.age_max,
     genders: targetingForm.genders,
   }
+  if (targetingForm.languages.length) targeting.languages = [...targetingForm.languages]
   if (targetingForm.interests.trim()) targeting.flexible_spec = [{ interests: targetingForm.interests.split(',').map(v => ({ name: v.trim() })).filter(v => v.name) }]
   if (targetingForm.placements.length) {
     const facebook = targetingForm.placements.filter(v => v.startsWith('facebook_')).map(v => v.replace('facebook_', ''))
@@ -458,6 +466,7 @@ const loadTargetingForm = (value: Record<string, any> | null | undefined) => {
   targetingForm.age_max = targeting.age_max || 65
   targetingForm.genders = targeting.genders?.length ? targeting.genders : [1, 2]
   targetingForm.interests = (targeting.flexible_spec?.[0]?.interests || []).map((v: any) => v.name || '').filter(Boolean).join(',')
+  targetingForm.languages = Array.isArray(targeting.languages) ? [...targeting.languages] : []
   targetingForm.placements = [
     ...(targeting.facebook_positions || []).map((v: string) => `facebook_${v}`),
     ...(targeting.instagram_positions || []).map((v: string) => `instagram_${v}`),
@@ -574,7 +583,7 @@ const openEdit = (row: CampaignTemplate) => {
   form.creative_config_json = JSON.stringify(row.creative_config_json ?? {}, null, 2)
   form.adsets_json = JSON.stringify(row.creative_config_json?.adsets ?? [], null, 2)
   const savedAdsets = row.creative_config_json?.adsets
-  adsetForms.splice(0, adsetForms.length, ...(Array.isArray(savedAdsets) && savedAdsets.length ? savedAdsets.map((item: any) => ({ ...newAdset(), name: item.name || '', budget: item.budget || 50, countries: item.targeting?.geo_locations?.countries?.join(',') || 'US', age_min: item.targeting?.age_min || 18, age_max: item.targeting?.age_max || 65, genders: item.targeting?.genders || [1, 2], interests: (item.targeting?.flexible_spec?.[0]?.interests || []).map((v: any) => v.name || '').join(','), placements: [...(item.placement?.facebook_positions || []).map((v: string) => `facebook_${v}`), ...(item.placement?.instagram_positions || []).map((v: string) => `instagram_${v}`)] })) : [newAdset()]))
+  adsetForms.splice(0, adsetForms.length, ...(Array.isArray(savedAdsets) && savedAdsets.length ? savedAdsets.map((item: any) => ({ ...newAdset(), name: item.name || '', budget: item.budget || 50, countries: item.targeting?.geo_locations?.countries?.join(',') || 'US', age_min: item.targeting?.age_min || 18, age_max: item.targeting?.age_max || 65, genders: item.targeting?.genders || [1, 2], interests: (item.targeting?.flexible_spec?.[0]?.interests || []).map((v: any) => v.name || '').join(','), languages: Array.isArray(item.targeting?.languages) ? [...item.targeting.languages] : [], placements: [...(item.placement?.facebook_positions || []).map((v: string) => `facebook_${v}`), ...(item.placement?.instagram_positions || []).map((v: string) => `instagram_${v}`)] })) : [newAdset()]))
   loadCreativeForm(row.creative_config_json)
   loadMediaAssets()
   loadMetaPages()

@@ -15,6 +15,7 @@ from core.auth import get_current_active_user, require_admin
 from core.database import get_db
 from core.enums import TemplateStatus
 from models import CampaignTemplate, MetaPage, User
+from services.targeting_catalog import normalize_targeting, validate_audience_refs
 
 router = APIRouter(prefix="/api/v1/templates", tags=["投放模板"])
 
@@ -53,6 +54,12 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="模板预算必须大于 0")
 
     targeting = values.get("targeting_json") or {}
+    try:
+        # 语言和自定义受众统一走目录/引用校验；这里不访问 Meta，账户级
+        # 归属和状态由发布预检继续校验。
+        normalize_targeting(targeting)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     countries = ((targeting.get("geo_locations") or {}).get("countries") or [])
     if not countries:
         raise HTTPException(status_code=400, detail="定向必须至少选择一个国家")
@@ -84,8 +91,13 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         "lookalike_audiences", "excluded_audiences",
     }
     for key in audience_keys:
-        if targeting.get(key) is not None and not isinstance(targeting.get(key), list):
-            raise HTTPException(status_code=400, detail=f"定向字段 {key} 必须是数组")
+        if targeting.get(key) is not None:
+            try:
+                validate_audience_refs(targeting.get(key), key)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if targeting.get("languages") is not None and not isinstance(targeting.get("languages"), list):
+        raise HTTPException(status_code=400, detail="定向字段 languages 必须是数组")
     placements = values.get("placement_json") or {}
     for key in ("publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions"):
         if placements.get(key) is not None and not isinstance(placements.get(key), list):
@@ -97,6 +109,10 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         if adset.get("budget") is not None and float(adset["budget"]) <= 0:
             raise HTTPException(status_code=400, detail=f"广告组 {index} 预算必须大于 0")
         adset_targeting = adset.get("targeting") or {}
+        try:
+            normalize_targeting(adset_targeting)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"广告组 {index}：{exc}") from exc
         adset_geo = (adset_targeting.get("geo_locations") or {}).get("countries") or []
         if not adset_geo:
             raise HTTPException(status_code=400, detail=f"广告组 {index} 至少配置一个国家/地区")

@@ -15,6 +15,9 @@ class MediaUploadSession(TenantMixin, Base):
     asset_id = Column(String(50), nullable=False, index=True)
     object_key = Column(String(1024), nullable=False)
     upload_id = Column(String(255), nullable=True, index=True, comment="OSS Multipart Upload ID")
+    upload_mode = Column(String(20), nullable=False, default="single", comment="single/multipart")
+    part_size = Column(Integer, nullable=True)
+    part_count = Column(Integer, nullable=True)
     expected_size = Column(Integer, nullable=True)
     expected_md5 = Column(String(32), nullable=True)
     expected_sha256 = Column(String(64), nullable=True)
@@ -38,6 +41,9 @@ class MediaUploadSession(TenantMixin, Base):
             "asset_id": self.asset_id,
             "object_key": self.object_key,
             "upload_id": self.upload_id,
+            "upload_mode": self.upload_mode,
+            "part_size": self.part_size,
+            "part_count": self.part_count,
             "expected_size": self.expected_size,
             "expected_md5": self.expected_md5,
             "expected_sha256": self.expected_sha256,

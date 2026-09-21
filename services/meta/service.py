@@ -154,6 +154,9 @@ class MetaAdsService:
     def create_adset(self, account_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """创建 AdSet。params 需包含 campaign_id。"""
         act = self.client.normalize_account_id(account_id)
+        params = dict(params)
+        if params.get("targeting") is not None:
+            params["targeting"] = self.client.resolve_targeting_locales(params.get("targeting"))
 
         def _do():
             result = self.client._post(f"{act}/adsets", params)
@@ -466,6 +469,23 @@ class MetaAdsService:
             return {"video_id": video_id}
 
         return self._execute(_do, f"upload_video(act={act})", account_id=account_id)
+
+    def upload_video_from_url(self, account_id: str, file_url: str) -> Dict[str, Any]:
+        """让 Meta 从公开的远程 URL 拉取视频，返回 video_id。"""
+        act = self.client.normalize_account_id(account_id)
+
+        def _do():
+            result = self.client._post(
+                f"{act}/advideos",
+                {"file_url": file_url},
+                timeout=settings.FB_VIDEO_UPLOAD_TIMEOUT,
+            )
+            video_id = result.get("id")
+            if not video_id:
+                raise MetaApiError("Meta 远程视频上传未返回 id", category=ErrorCategory.UNKNOWN)
+            return {"video_id": video_id}
+
+        return self._execute(_do, f"upload_video_from_url(act={act})", account_id=account_id)
 
     def start_video_upload(self, account_id: str, file_size: int) -> Dict[str, Any]:
         """创建 Meta advideos 分片上传会话。"""

@@ -46,6 +46,7 @@ from models.async_task import AsyncTaskRecord
 from models.sinan_credential import SinanCredential
 from models.publish_preview import PublishPreview
 from models.delivery_action import DeliveryAction
+from models.meta_audience import MetaAudienceAsset
 
 __all__ = [
     # 租户
@@ -103,4 +104,5 @@ __all__ = [
     'SinanCredential',
     'PublishPreview',
     'DeliveryAction',
+    'MetaAudienceAsset',
 ]

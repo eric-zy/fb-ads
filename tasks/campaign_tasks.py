@@ -26,7 +26,7 @@ from core.enums import (
 from core.logger import logger
 from core.tenant import resolve_tenant_of, tenant_task
 from config.settings import settings
-from models import Campaign, AdGroup, CampaignInstance, AdSetInstance, AdInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, AdAccount, MetaPage, SinanCredential, User
+from models import Campaign, AdGroup, CampaignInstance, AdSetInstance, AdInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, MetaAudienceAsset, AdAccount, MetaPage, SinanCredential, User
 from services.credential_service import CredentialService
 from services.credential_resolver import CredentialResolver
 from services.connector_campaign_builder import build_connector_payload
@@ -673,6 +673,10 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 asset_bindings=asset_bindings,
                 asset_types=asset_types,
                 asset_thumbnail_hashes=asset_thumbnail_hashes,
+                required_excluded_audience_ids=[row.meta_audience_id for row in db.query(MetaAudienceAsset).filter(
+                    MetaAudienceAsset.ad_account_id == account.id,
+                    MetaAudienceAsset.is_required_exclusion.is_(True),
+                ).all()],
                 existing_campaign_id=(reuse_context or {}).get("campaign_id"),
                 existing_ad_group_id=(reuse_context or {}).get("ad_group_id"),
                 copy_ad_group=copy_context,

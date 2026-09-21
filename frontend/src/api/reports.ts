@@ -10,6 +10,7 @@ export const reportsApi = {
     request.get('/api/v1/reports/trend', { params }),
   sync: (params?: { account_id?: string; days?: number }) =>
     request.post('/api/v1/reports/sync', undefined, { params }),
+  taskStatus: (id: string) => request.get<{ task_id: string; state: string; result?: { status?: string; error_count?: number }; error?: string }>('/api/v1/tasks/' + id),
 }
 
 export interface WorkbenchCurrencyTotal {

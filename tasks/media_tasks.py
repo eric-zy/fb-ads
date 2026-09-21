@@ -159,6 +159,7 @@ def upload_asset_task(self, binding_id: str):
             source_url,
             cover_url=cover_url,
             expected_md5=asset.md5,
+            expected_sha256=asset.sha256,
             idempotency_key=binding.id,
         )
         binding.connector_task_id = result.get("task_id")

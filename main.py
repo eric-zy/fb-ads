@@ -45,6 +45,8 @@ from api import sinan_integration as sinan_api
 from api import connector_callbacks as connector_callbacks_api
 from api import connector_callbacks_insights as connector_callbacks_insights_api
 from api import risk_control as risk_control_api
+from api import meta_targeting as meta_targeting_api
+from api import meta_audiences as meta_audiences_api
 from core.auth import get_current_active_user, require_admin
 from core.middleware import (
     AuthEnforcementMiddleware,
@@ -199,6 +201,8 @@ app.include_router(sinan_api.router)
 app.include_router(connector_callbacks_api.router)
 app.include_router(connector_callbacks_insights_api.router)
 app.include_router(risk_control_api.router)
+app.include_router(meta_targeting_api.router)
+app.include_router(meta_audiences_api.router)
 
 # ==================== 认证API ====================
 

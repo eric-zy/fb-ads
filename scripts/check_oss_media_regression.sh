@@ -5,7 +5,7 @@ set -euo pipefail
 #   OSS_TEST_TOKEN='token' ./scripts/check_oss_media_regression.sh \
 #     http://127.0.0.1:8094 ACCOUNT_UUID ./sample.png
 #
-# Requirements: curl, jq, md5sum, sha256sum.
+# Requirements: curl, jq, md5sum, sha256sum, dd, truncate.
 # The script does not delete the uploaded asset.
 
 BASE_URL="${1:?SaaS base URL is required}"
@@ -50,13 +50,34 @@ ASSET_ID=$(jq -er '.asset_id' <<< "$SESSION_JSON")
 if [[ "$DUPLICATE" == "true" ]]; then
   echo "[2/6] duplicate detected; no second OSS object will be uploaded"
 else
-  UPLOAD_URL=$(jq -er '.upload.url' <<< "$SESSION_JSON")
-  echo "[2/6] direct PUT to OSS"
-  curl -fsS -X PUT -H "Content-Type: $MIME_TYPE" --upload-file "$FILE_PATH" "$UPLOAD_URL" >/dev/null
+  SESSION_ID=$(jq -er '.upload_session_id' <<< "$SESSION_JSON")
+  if jq -e '.multipart != null' >/dev/null <<< "$SESSION_JSON"; then
+    echo "[2/6] multipart PUT to OSS"
+    PART_SIZE=$(jq -er '.multipart.part_size' <<< "$SESSION_JSON")
+    PART_DIR=$(mktemp -d)
+    trap 'rm -rf "$PART_DIR"' EXIT
+    while IFS= read -r part_json; do
+      PART_NUMBER=$(jq -er '.part_number' <<< "$part_json")
+      PART_URL=$(jq -er '.url' <<< "$part_json")
+      OFFSET=$(( (PART_NUMBER - 1) * PART_SIZE ))
+      LENGTH=$(( SIZE - OFFSET ))
+      if (( LENGTH > PART_SIZE )); then LENGTH=$PART_SIZE; fi
+      PART_FILE="$PART_DIR/part-$PART_NUMBER"
+      # 默认 5/16MiB 分片均按 MiB 对齐；truncate 负责裁剪最后一片。
+      dd if="$FILE_PATH" of="$PART_FILE" bs=1048576 skip=$((OFFSET / 1048576)) \
+        count=$(( (LENGTH + 1048575) / 1048576 )) status=none
+      truncate -s "$LENGTH" "$PART_FILE"
+      curl -fsS -X PUT --upload-file "$PART_FILE" "$PART_URL" >/dev/null
+    done < <(jq -c '.multipart.parts[]' <<< "$SESSION_JSON")
+  else
+    UPLOAD_URL=$(jq -er '.upload.url' <<< "$SESSION_JSON")
+    echo "[2/6] direct PUT to OSS"
+    curl -fsS -X PUT -H "Content-Type: $MIME_TYPE" --upload-file "$FILE_PATH" "$UPLOAD_URL" >/dev/null
+  fi
 
   echo "[3/6] complete upload session"
   COMPLETE_JSON=$(curl -fsS "${AUTH[@]}" -X POST \
-    "$BASE_URL/api/v1/media/upload-sessions/$(jq -er '.upload_session_id' <<< "$SESSION_JSON")/complete")
+    "$BASE_URL/api/v1/media/upload-sessions/$SESSION_ID/complete")
   jq -e --arg asset_id "$ASSET_ID" '.asset_id == $asset_id' <<< "$COMPLETE_JSON" >/dev/null
 fi
 

@@ -81,7 +81,8 @@ celery_app.conf.beat_schedule = {
     },
     # Meta 长期 Token 只有 60 天且无法自动续期，必须每天巡检
     "credential-expiry-check": {
-        "task": "tasks.credential_tasks.check_expiring_credentials",
+        # 与 tasks/credential_tasks.py 中显式注册的任务名保持一致。
+        "task": "credentials.check_expiring",
         "schedule": _cron(settings.SCHEDULE_CREDENTIAL_CHECK_CRON),
     },
     "meta-pages-sync": {
@@ -135,6 +136,7 @@ for _task_module in (
     "tasks.celery_tasks",
     "tasks.campaign_tasks",
     "tasks.meta_sync_tasks",  # Meta 账号管理 V1：BM / 广告账户同步
+    "tasks.meta_audience_tasks",  # Meta Custom Audience 元数据同步
     "tasks.credential_tasks",  # 凭据到期巡检
     "tasks.media_tasks",  # 异步 Meta 素材上传与视频处理
     "tasks.assignment_tasks",  # 广告账户分配关系维护
