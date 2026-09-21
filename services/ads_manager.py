@@ -113,7 +113,7 @@ class AdsManager:
         except Exception as e:
             logger.error(f"Failed to sync campaigns: {str(e)}")
             self.db.rollback()
-            return 0, 0
+            raise
     
     def get_campaign_performance(self, campaign_id: str, 
                                  date_start: date, date_stop: date) -> Optional[Dict]:

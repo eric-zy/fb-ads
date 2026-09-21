@@ -188,7 +188,13 @@ class FBConnectorClient:
         return self._request("GET", f"/internal/meta/campaigns/create/{connector_task_id}", {}, request_id=request_id)
 
     def list_campaigns(self, account_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
-        return self._request("POST", "/internal/meta/campaigns/list", {"account_id": account_id, "credential_id": credential_id}, request_id=request_id)
+        return self._request(
+            "POST",
+            "/internal/meta/campaigns/list",
+            {"account_id": account_id, "credential_id": credential_id},
+            request_id=request_id,
+            timeout=settings.FB_CONNECTOR_REPORT_TIMEOUT,
+        )
 
     def pause_campaign(self, campaign_id: str, credential_id: str, *, request_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
         if not idempotency_key:
@@ -196,10 +202,22 @@ class FBConnectorClient:
         return self._request("POST", "/internal/meta/campaigns/pause", {"campaign_id": campaign_id, "credential_id": credential_id, "idempotency_key": idempotency_key}, request_id=request_id, idempotency_key=idempotency_key)
 
     def list_adsets(self, campaign_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
-        return self._request("POST", "/internal/meta/campaigns/adsets", {"parent_id": campaign_id, "credential_id": credential_id}, request_id=request_id)
+        return self._request(
+            "POST",
+            "/internal/meta/campaigns/adsets",
+            {"parent_id": campaign_id, "credential_id": credential_id},
+            request_id=request_id,
+            timeout=settings.FB_CONNECTOR_REPORT_TIMEOUT,
+        )
 
     def list_ads(self, adset_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
-        return self._request("POST", "/internal/meta/campaigns/ads", {"parent_id": adset_id, "credential_id": credential_id}, request_id=request_id)
+        return self._request(
+            "POST",
+            "/internal/meta/campaigns/ads",
+            {"parent_id": adset_id, "credential_id": credential_id},
+            request_id=request_id,
+            timeout=settings.FB_CONNECTOR_REPORT_TIMEOUT,
+        )
 
     def update_object(
         self,
