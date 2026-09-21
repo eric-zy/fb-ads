@@ -84,6 +84,12 @@ if [[ "$web_ready" != true ]]; then
   echo "[deploy] Nginx 容器状态与端口映射：" >&2
   "${compose[@]}" ps nginx >&2 || true
   "${compose[@]}" port nginx 80 >&2 || true
+  nginx_container=$("${compose[@]}" ps -q nginx 2>/dev/null || true)
+  if [[ -n "$nginx_container" ]]; then
+    echo "[deploy] Nginx 实际健康检查结果：" >&2
+    docker inspect --format '{{json .Config.Healthcheck.Test}}' "$nginx_container" >&2 || true
+    docker inspect --format '{{range .State.Health.Log}}{{.Start}} exit={{.ExitCode}} {{.Output}}{{end}}' "$nginx_container" >&2 || true
+  fi
   "${compose[@]}" logs --tail=100 nginx >&2 || true
   exit 1
 fi
