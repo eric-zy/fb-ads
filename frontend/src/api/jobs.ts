@@ -15,7 +15,8 @@ export interface CampaignJobItem {
   error_message: string | null
   error_category: string | null
   retry_count: number
-  response_payload?: { cleanup_failed?: boolean; cleanup_object_ids?: string[]; meta_status?: string; review_status?: string; effective_status?: string; error_code?: string; error_message?: string; failure?: { category?: string; code?: string | null; message?: string }; [key: string]: any } | null
+  connector_task_id?: string | null
+  response_payload?: { cleanup_failed?: boolean; cleanup_object_ids?: string[]; cleanup_status?: string; failure_stage?: string; created_objects?: Record<string, any>; retry_mode?: string; meta_status?: string; review_status?: string; effective_status?: string; error_code?: string; error_message?: string; failure?: { category?: string; code?: string | null; message?: string }; [key: string]: any } | null
   created_at: string | null
   updated_at: string | null
 }
@@ -181,7 +182,12 @@ export const jobsApi = {
   discardRevision: (id: string) =>
     request.post<CampaignJobRevision>(`/api/v1/jobs/revisions/${id}/discard`),
 
-  retry: (id: string) => request.post(`/api/v1/jobs/${id}/retry`),
+  retry: (id: string, data?: { item_ids?: string[]; mode?: 'CONTINUE' }) =>
+    request.post(`/api/v1/jobs/${id}/retry`, data || {}),
+  continueItem: (jobId: string, itemId: string) =>
+    request.post(`/api/v1/jobs/${jobId}/items/${itemId}/continue`),
+  cleanupItem: (jobId: string, itemId: string) =>
+    request.post(`/api/v1/jobs/${jobId}/items/${itemId}/cleanup`),
 
   cancel: (id: string) => request.post(`/api/v1/jobs/${id}/cancel`),
 }

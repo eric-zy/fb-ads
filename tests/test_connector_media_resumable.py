@@ -139,6 +139,29 @@ def test_processing_retry_does_not_need_local_source_file(monkeypatch):
     assert row.phase == "READY"
 
 
+def test_ready_video_retry_does_not_require_size_or_local_source(monkeypatch):
+    """A stale retry must reuse an already-ready Meta video."""
+    monkeypatch.setattr(settings, "FB_VIDEO_STATUS_POLL_INTERVAL", 0)
+    monkeypatch.setattr(settings, "FB_VIDEO_PROCESSING_TIMEOUT", 5)
+
+    row = _row()
+    row.status = "RETRY"
+    row.phase = "READY"
+    row.total_bytes = None
+    row.meta_video_id = "video-ready"
+    row.meta_asset_id = "video-ready"
+    row.meta_thumbnail_hash = "cover-hash"
+
+    service = FakeVideoService()
+    service.statuses = iter(["ready"])
+    result = _upload_video_resumable(service, "act_123", None, row, FakeSession())
+
+    assert result == {"video_id": "video-ready"}
+    assert service.transfers == []
+    assert row.phase == "READY"
+    assert row.status == "SUCCESS"
+
+
 def test_media_cache_reuses_verified_md5_file(tmp_path, monkeypatch):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"same-content")

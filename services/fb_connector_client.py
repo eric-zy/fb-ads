@@ -267,8 +267,24 @@ class FBConnectorClient:
             idempotency_key=idempotency_key,
         )
 
-    def cleanup_deployment(self, connector_task_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
-        return self._request("POST", "/internal/meta/campaigns/cleanup", {"connector_task_id": connector_task_id, "credential_id": credential_id}, request_id=request_id)
+    def cleanup_deployment(
+        self,
+        connector_task_id: str,
+        credential_id: str,
+        *,
+        orphaned_only: bool = False,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/internal/meta/campaigns/cleanup",
+            {
+                "connector_task_id": connector_task_id,
+                "credential_id": credential_id,
+                "orphaned_only": orphaned_only,
+            },
+            request_id=request_id,
+        )
 
     def get_insights(self, account_id: str, credential_id: str, days: int = 30, *, level: str = "account", since: str | None = None, until: str | None = None, request_id: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"account_id": account_id, "credential_id": credential_id, "days": days, "level": level}

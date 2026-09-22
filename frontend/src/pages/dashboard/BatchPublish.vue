@@ -110,8 +110,8 @@
               </div>
             </el-form-item>
             <el-form-item label="默认日预算" required><el-input-number v-model="directForm.daily_budget" :min="1" :step="1" /><span class="tip-inline">美元/天</span></el-form-item>
-            <el-form-item label="优化目标"><el-select v-model="directForm.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LINK_CLICKS')" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LANDING_PAGE_VIEWS')" /><el-option label="站外转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'OFFSITE_CONVERSIONS')" /><el-option label="价值 VALUE" value="VALUE" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'VALUE')" /><el-option label="互动 POST_ENGAGEMENT" value="POST_ENGAGEMENT" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'POST_ENGAGEMENT')" /><el-option label="视频观看 THRUPLAY" value="THRUPLAY" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'THRUPLAY')" /><el-option label="线索 LEAD_GENERATION" value="LEAD_GENERATION" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LEAD_GENERATION')" /></el-select></el-form-item>
-            <el-alert v-if="!directObjectiveValid" type="warning" :closable="false" show-icon title="当前目标与优化目标不兼容，请改用转化优化或切换为流量目标" />
+            <el-form-item label="成效目标"><el-select v-model="directForm.optimization_goal" style="width:100%"><el-option v-for="goal in optimizationGoalOptions(directForm.objective)" :key="goal.value" :label="`${goal.label} ${goal.value}`" :value="goal.value" /></el-select></el-form-item>
+            <el-alert v-if="!directObjectiveValid" type="warning" :closable="false" show-icon title="当前推广目标与成效目标不兼容，请切换成 Meta 支持的组合" />
             <el-form-item label="计费事件"><el-select v-model="directForm.billing_event" style="width:100%"><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /></el-select></el-form-item>
             <el-form-item label="出价策略"><el-select v-model="directForm.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本 + 竞价上限" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select></el-form-item>
             <el-form-item v-if="directForm.bid_strategy !== 'LOWEST_COST_WITHOUT_CAP'" label="出价金额"><el-input-number v-model="directForm.bid_amount" :min="1" :step="1" /><span class="tip-inline">Meta 账户货币最小单位</span></el-form-item>
@@ -125,7 +125,7 @@
               <el-form-item label="兴趣"><el-input v-model="adset.interests" placeholder="多个兴趣用逗号分隔（可选）" /></el-form-item>
               <el-form-item label="语言"><MetaLanguageSelect v-model="adset.languages" /></el-form-item>
               <el-form-item label="版位"><el-select v-model="adset.publisher_platforms" multiple style="width:100%"><el-option label="Facebook" value="facebook" /><el-option label="Instagram" value="instagram" /><el-option label="Audience Network" value="audience_network" /><el-option label="Messenger" value="messenger" /></el-select></el-form-item>
-              <el-form-item label="优化目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LINK_CLICKS')" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LANDING_PAGE_VIEWS')" /><el-option label="站外转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'OFFSITE_CONVERSIONS')" /><el-option label="价值 VALUE" value="VALUE" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'VALUE')" /><el-option label="互动 POST_ENGAGEMENT" value="POST_ENGAGEMENT" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'POST_ENGAGEMENT')" /><el-option label="视频观看 THRUPLAY" value="THRUPLAY" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'THRUPLAY')" /><el-option label="线索 LEAD_GENERATION" value="LEAD_GENERATION" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LEAD_GENERATION')" /></el-select></el-form-item>
+              <el-form-item label="成效目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option v-for="goal in optimizationGoalOptions(directForm.objective)" :key="goal.value" :label="`${goal.label} ${goal.value}`" :value="goal.value" /></el-select></el-form-item>
               <el-form-item label="计费事件"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /></el-select></el-form-item>
               <el-form-item label="出价策略"><el-select v-model="adset.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本 + 竞价上限" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select></el-form-item>
               <el-form-item v-if="adset.bid_strategy !== 'LOWEST_COST_WITHOUT_CAP'" label="出价金额"><el-input-number v-model="adset.bid_amount" :min="1" :step="1" /></el-form-item>
@@ -134,8 +134,8 @@
             <el-divider content-position="left">广告创意</el-divider>
             <el-form-item label="素材形式">
               <el-radio-group v-model="creativeFormat">
-                <el-radio value="MULTI_AD">多素材多个广告</el-radio>
-                <el-radio value="CAROUSEL">多图片轮播广告</el-radio>
+                <el-radio value="SINGLE_IMAGE_VIDEO">单图片或视频</el-radio>
+                <el-radio value="CAROUSEL">轮播</el-radio>
               </el-radio-group>
             </el-form-item>
             <el-form-item label="拆分方式">
@@ -145,8 +145,8 @@
                 <el-radio value="CAMPAIGN" disabled>按广告系列拆分（后续开放）</el-radio>
               </el-radio-group>
             </el-form-item>
-            <el-alert type="info" :closable="false" show-icon :title="creativeFormat === 'CAROUSEL' ? '轮播广告' : '多素材投放'">
-              {{ creativeFormat === 'CAROUSEL' ? '2-10 张图片组成 1 个轮播广告；所有图片同步完成后才允许发布。' : `每个创意素材会生成一个独立 Ad，共 ${directForm.creatives.length} 个广告。` }}
+            <el-alert type="info" :closable="false" show-icon :title="creativeFormat === 'CAROUSEL' ? '轮播广告' : '单图片或视频广告'">
+              {{ creativeFormat === 'CAROUSEL' ? '2-10 张图片组成 1 个轮播广告；所有图片同步完成后才允许发布。' : `每个广告使用一张图片或一个视频；选择多份素材时可按拆分方式生成多个广告，共 ${directForm.creatives.length} 个。` }}
             </el-alert>
             <el-form-item label="批量选素材">
               <el-select v-model="batchAssetIds" multiple filterable collapse-tags placeholder="选择多张素材后批量加入" style="width:100%">
@@ -165,7 +165,7 @@
             <el-form-item label="默认落地页"><el-input v-model="sharedCreative.landing_url" placeholder="https://example.com/landing（图片广告最终必须有有效链接）" /></el-form-item>
             <el-form-item label="公共标题"><el-input v-model="sharedCreative.headline" /></el-form-item>
             <el-form-item label="公共描述"><el-input v-model="sharedCreative.description" /></el-form-item>
-            <el-form-item label="公共行动按钮"><el-select v-model="sharedCreative.cta" style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /></el-select></el-form-item>
+            <el-form-item label="公共行动号召"><el-select v-model="sharedCreative.cta" style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
             <div v-for="(creative, index) in directForm.creatives" :key="creative.key" class="direct-creative">
               <div class="direct-adset-head"><b>创意 {{ index + 1 }}</b><el-button v-if="directForm.creatives.length > 1" link type="danger" @click="removeDirectCreative(index)">删除</el-button></div>
               <el-form-item label="素材" required><el-select v-model="creative.asset_id" filterable style="width:100%" placeholder="选择已上传素材"><el-option v-for="asset in mediaAssets" :key="asset.id" :label="`${asset.name} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" /></el-select></el-form-item>
@@ -173,7 +173,7 @@
                 <el-form-item label="主文案覆盖"><el-input v-model="creative.primary_text" type="textarea" :rows="3" placeholder="可留空，使用公共主文案" /></el-form-item>
                 <el-form-item label="标题覆盖"><el-input v-model="creative.headline" placeholder="可留空，使用公共标题" /></el-form-item>
                 <el-form-item label="描述覆盖"><el-input v-model="creative.description" placeholder="可留空，使用公共描述" /></el-form-item>
-                <el-form-item label="行动按钮覆盖"><el-select v-model="creative.cta" clearable style="width:100%"><el-option label="了解更多" value="LEARN_MORE" /><el-option label="立即购买" value="SHOP_NOW" /><el-option label="注册" value="SIGN_UP" /><el-option label="下载" value="DOWNLOAD" /></el-select></el-form-item>
+                <el-form-item label="行动号召覆盖"><el-select v-model="creative.cta" clearable style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
                 <el-form-item label="落地页覆盖"><el-input v-model="creative.landing_url" placeholder="可留空，使用公共默认落地页" /></el-form-item>
               </template>
             </div>
@@ -191,7 +191,7 @@
           <el-descriptions v-if="selectedTemplate" :column="2" border>
             <el-descriptions-item label="广告系列目标">{{ selectedTemplate.objective || '-' }}</el-descriptions-item>
             <el-descriptions-item label="购买类型">{{ selectedTemplate.buying_type || 'AUCTION' }}</el-descriptions-item>
-            <el-descriptions-item label="优化目标">{{ selectedTemplate.optimization_goal || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="成效目标">{{ optimizationGoalLabel(selectedTemplate.optimization_goal) }}</el-descriptions-item>
             <el-descriptions-item label="计费事件">{{ selectedTemplate.billing_event || '-' }}</el-descriptions-item>
             <el-descriptions-item label="默认预算">{{ templateBudget }}</el-descriptions-item>
             <el-descriptions-item label="广告创意">{{ creativeCount(selectedTemplate) }} 个</el-descriptions-item>
@@ -428,7 +428,7 @@
             <el-table-column label="性别" width="100"><template #default="{ row }">{{ row.genders?.length === 2 ? '男女' : row.genders?.includes(1) ? '男性' : row.genders?.includes(2) ? '女性' : '未设置' }}</template></el-table-column>
             <el-table-column prop="interests" label="兴趣" min-width="150" show-overflow-tooltip />
             <el-table-column label="版位" min-width="150"><template #default="{ row }">{{ row.publisher_platforms.join(', ') || '自动版位' }}</template></el-table-column>
-            <el-table-column prop="optimization_goal" label="优化目标" width="150" />
+          <el-table-column label="成效目标" width="150"><template #default="{ row }">{{ optimizationGoalLabel(row.optimization_goal) }}</template></el-table-column>
           </el-table>
           <el-alert v-if="form.publish_mode === 'DIRECT'" type="info" :closable="false" show-icon style="margin-top:12px">
             本次将生成 {{ previewAdsetCount }} 个 AdSet、{{ previewAdCount }} 个 Ad（按账户计算）。
@@ -574,9 +574,12 @@ import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
 import { campaignsApi, type SyncedAdGroup } from '@/api/campaigns'
 import { useLocale } from '@/stores/localeStore'
 import {
+  CTA_OPTIONS,
   defaultOptimizationGoal,
   isConversionOptimizationGoal,
   isOptimizationGoalAllowed,
+  optimizationGoalLabel,
+  optimizationGoalOptions,
   STANDARD_CONVERSION_EVENTS,
 } from '@/config/metaDeliveryRules'
 const { t } = useLocale()
@@ -646,15 +649,15 @@ const form = reactive({
 
 const directForm = reactive({
   name: '直接投放测试', objective: 'OUTCOME_TRAFFIC', page_id: '', daily_budget: 10,
-  optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1,
+  optimization_goal: 'LANDING_PAGE_VIEWS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1,
   dataset_id: '', conversion_event: 'PURCHASE',
-  creative_format: 'MULTI_AD' as 'SINGLE_IMAGE' | 'MULTI_AD',
-  adsets: [{ key: `${Date.now()}-1`, name: 'US 广告组', budget: 10, country: 'US', age_min: 18, age_max: 65, genders: [1, 2] as number[], interests: '', languages: [] as string[], publisher_platforms: ['facebook'] as string[], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1 }],
+  creative_format: 'SINGLE_IMAGE_VIDEO' as 'SINGLE_IMAGE_VIDEO' | 'CAROUSEL',
+  adsets: [{ key: `${Date.now()}-1`, name: 'US 广告组', budget: 10, country: 'US', age_min: 18, age_max: 65, genders: [1, 2] as number[], interests: '', languages: [] as string[], publisher_platforms: ['facebook'] as string[], optimization_goal: 'LANDING_PAGE_VIEWS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1 }],
   creatives: [{ key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' }],
 })
 const batchAssetIds = ref<string[]>([])
 const creativeCopyMode = ref<'SHARED' | 'INDIVIDUAL'>('SHARED')
-const creativeFormat = ref<'MULTI_AD' | 'CAROUSEL'>('MULTI_AD')
+const creativeFormat = ref<'SINGLE_IMAGE_VIDEO' | 'CAROUSEL'>('SINGLE_IMAGE_VIDEO')
 const delivery = reactive({ split_level: 'AD' as 'AD' | 'ADSET' | 'CAMPAIGN', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' })
 const previewAdsetCount = computed(() => delivery.split_level === 'ADSET' && creativeFormat.value !== 'CAROUSEL'
   ? directForm.adsets.length * directForm.creatives.length
@@ -750,7 +753,7 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
     || directForm.conversion_event
   directForm.billing_event = config.billing_event || directForm.billing_event
   directForm.bid_strategy = config.bid_strategy || directForm.bid_strategy
-  creativeFormat.value = config.creative_format || 'MULTI_AD'
+  creativeFormat.value = config.creative_format === 'CAROUSEL' ? 'CAROUSEL' : 'SINGLE_IMAGE_VIDEO'
   if (config.delivery) Object.assign(delivery, config.delivery)
   const firstCreative = (config.creatives || [])[0] || {}
   for (const key of ['primary_text', 'headline', 'description', 'cta', 'landing_url']) {

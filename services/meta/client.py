@@ -48,7 +48,10 @@ class MetaClient:
         self.access_token = access_token
         self.app_id = app_id or settings.FB_APP_ID
         self.app_secret = app_secret or settings.FB_APP_SECRET
-        self._ad_locales_cache: List[dict] | None = None
+        # Meta 的 adlocale 搜索结果按查询词缓存；不能只缓存一次“全量”
+        # 结果，因为当前 Graph API 对 /search?type=adlocale 的无 q 请求
+        # 可能返回不完整目录。
+        self._ad_locales_cache: dict[str, List[dict]] = {}
 
         try:
             session = FacebookSession(
@@ -359,11 +362,19 @@ class MetaClient:
                     break
         return assets
 
-    def get_ad_locales(self, max_pages: int = 20) -> List[dict]:
-        """从 Meta Targeting Search 拉取当前版本可用的广告语言目录。"""
-        if self._ad_locales_cache is not None:
-            return list(self._ad_locales_cache)
+    def get_ad_locales(self, max_pages: int = 20, query: str | None = None) -> List[dict]:
+        """从 Meta Targeting Search 拉取可用于 targeting.locales 的语言 ID。
+
+        Meta 官方接口返回的是 locale 对象及其 ID；发布时应使用返回的
+        numeric ID，而不是 ``en``、``English`` 等产品层别名。带 q 查询
+        比无条件请求“全量目录”更可靠，也能适配目录分页/裁剪。
+        """
+        cache_key = " ".join(str(query or "").split()).casefold()
+        if cache_key in self._ad_locales_cache:
+            return list(self._ad_locales_cache[cache_key])
         params = {"type": "adlocale", "limit": 2000}
+        if cache_key:
+            params["q"] = str(query).strip()
         locales: List[dict] = []
         after = None
         for _ in range(max_pages):
@@ -376,7 +387,7 @@ class MetaClient:
             after = (payload.get("paging") or {}).get("cursors", {}).get("after")
             if not after:
                 break
-        self._ad_locales_cache = list(locales)
+        self._ad_locales_cache[cache_key] = list(locales)
         return locales
 
     def resolve_targeting_locales(self, targeting: dict | None) -> dict:
@@ -388,7 +399,6 @@ class MetaClient:
 
         requested = normalize_languages(raw_languages)
         resolved = [str(value) for value in (result.get("locales") or [])]
-        available = self.get_ad_locales()
         catalog = {item["id"]: item for item in LANGUAGE_CATALOG}
 
         def clean(value: object) -> str:
@@ -402,21 +412,53 @@ class MetaClient:
             item = catalog.get(item_id)
             if not item:
                 raise ValueError(f"语言 {item_id} 不在当前 Meta 语言目录中")
-            names = {clean(item["name"]), clean(item["name_en"]), clean(item["code"])}
-            candidates = []
-            for remote in available:
-                remote_id = str(remote.get("id") or "").strip()
-                remote_name = clean(remote.get("name"))
-                if not remote_id or not remote_name:
-                    continue
-                if remote_name in names or any(
-                    name and (remote_name.startswith(name) or name.startswith(remote_name))
-                    for name in names
-                ):
-                    candidates.append(remote)
+            names = {
+                clean(item["name"]),
+                clean(item["name_en"]),
+                clean(item["code"]),
+            }
+
+            def find_candidates(available: list[dict]) -> list[dict]:
+                candidates = []
+                for remote in available:
+                    remote_id = str(remote.get("id") or "").strip()
+                    if not remote_id:
+                        continue
+                    remote_labels = {
+                        clean(remote.get(key))
+                        for key in ("name", "name_en", "code", "locale", "key")
+                        if remote.get(key)
+                    }
+                    if not remote_labels:
+                        continue
+                    if any(
+                        label in names
+                        or any(
+                            name and (label.startswith(name) or name.startswith(label))
+                            for name in names
+                        )
+                        for label in remote_labels
+                    ):
+                        candidates.append(remote)
+                return candidates
+
+            # 官方 Targeting Search 支持 q；优先按英文名、代码、中文名
+            # 查询，避免依赖无 q 的不完整分页结果。
+            candidates: list[dict] = []
+            for query in (item["name_en"], item["code"], item["name"]):
+                candidates = find_candidates(self.get_ad_locales(query=query))
+                if candidates:
+                    break
+            if not candidates:
+                # 保留一次无 q 兼容回退，覆盖旧版 Graph API 的行为。
+                candidates = find_candidates(self.get_ad_locales())
             candidates.sort(key=lambda row: ("all" not in clean(row.get("name")), str(row.get("id"))))
             if not candidates:
-                raise ValueError(f"Meta 当前未返回语言“{item['name']}”，请刷新语言目录后重试")
+                raise MetaApiError(
+                    f"Meta 当前未返回语言“{item['name']}”的 adlocale ID，请刷新语言目录后重试",
+                    category=ErrorCategory.VALIDATION,
+                    code=100,
+                )
             remote_id = str(candidates[0].get("id"))
             if remote_id not in resolved:
                 resolved.append(remote_id)

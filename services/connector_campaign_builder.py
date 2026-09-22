@@ -9,6 +9,7 @@ import json
 from typing import Any
 
 from services.campaign_builder import CampaignBuilder, AdSetBuilder, CreativeBuilder
+from services.creative_format import normalize_creative_format
 
 
 class _PayloadService:
@@ -100,6 +101,8 @@ def build_connector_payload(template: Any, meta_account_id: str, *, budget_overr
         asset_types,
         asset_thumbnail_hashes,
     )
+    # Normalize legacy templates before the payload reaches the Connector.
+    creative_config["creative_format"] = normalize_creative_format(creative_config.get("creative_format"))
     delivery = creative_config.get("delivery") or {}
     adset_configs = creative_config.get("adsets") or [{}]
     logical = []

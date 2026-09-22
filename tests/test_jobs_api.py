@@ -46,6 +46,13 @@ def test_ensure_template_forwards_top_level_dataset_and_event(db):
     assert template.is_temporary is True
 
 
+def test_ensure_template_normalizes_legacy_creative_format(db):
+    template_id = _ensure_template(db, _direct_request(creative_format="MULTI_AD"), "test_tenant")
+
+    template = db.get(CampaignTemplate, template_id)
+    assert template.creative_config_json["creative_format"] == "SINGLE_IMAGE_VIDEO"
+
+
 def test_ensure_template_rejects_invalid_conversion_event(db):
     request = _direct_request(conversion_event="purchase-event")
 

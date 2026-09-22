@@ -32,7 +32,9 @@ def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
     return {"id": user.id, "username": user.username, "email": user.email}
 from core.enums import TemplateStatus
 from services.job_service import JobDispatchError, JobService
-from services.meta_delivery_rules import budget_bid_preflight_errors, conversion_event_preflight_errors, objective_optimization_preflight_errors
+from services.creative_format import normalize_creative_format
+from services.meta_creative_options import normalize_cta
+from services.meta_delivery_rules import budget_bid_preflight_errors, conversion_event_preflight_errors, default_optimization_goal, objective_optimization_preflight_errors
 from services.targeting_catalog import placement_preflight_errors, targeting_preflight_errors
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["Job Center"])
@@ -98,6 +100,11 @@ class RevisionUpdateRequest(BaseModel):
     edit_reason: Optional[str] = Field(None, max_length=1000)
 
 
+class RetryJobRequest(BaseModel):
+    item_ids: Optional[List[str]] = Field(None, description="只继续指定的失败账户；为空表示全部失败账户")
+    mode: str = Field("CONTINUE", pattern="^CONTINUE$")
+
+
 def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optional[str] = None) -> str:
     """把模板请求和直接配置请求统一成现有发布器可消费的模板。"""
     if req.template_id:
@@ -127,7 +134,7 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
         raise HTTPException(status_code=400, detail="至少需要配置一个广告组")
     template_goal = config.get("optimization_goal") or next(
         (item.get("optimization_goal") for item in adsets if isinstance(item, dict) and item.get("optimization_goal")),
-        "LINK_CLICKS",
+        default_optimization_goal(objective),
     )
     objective_errors = objective_optimization_preflight_errors(objective, template_goal, {"adsets": adsets})
     if objective_errors:
@@ -161,12 +168,22 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
             raise HTTPException(status_code=400, detail=f"广告创意 {index} 缺少主文案")
         if not str(creative.get("landing_url") or "").startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail=f"广告创意 {index} 的落地页必须是 http/https 地址")
+        try:
+            normalized_cta = normalize_cta(creative.get("cta"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"广告创意 {index}：{exc}") from exc
+        if normalized_cta:
+            creative["cta"] = normalized_cta
     creative_config = dict(config.get("creative_config_json") or {})
     # 直接投放的事件源字段位于 inline_config 顶层；统一收进模板 JSON，
     # 否则预检和最终构建拿不到用户刚选择的 Pixel/Dataset。
     for key in ("page_id", "creatives", "adsets", "dataset_id", "pixel_id", "conversion_event", "custom_event_type", "promoted_object", "optimization_goal", "creative_format", "delivery"):
         if key in config and key not in creative_config:
             creative_config[key] = config[key]
+    try:
+        creative_config["creative_format"] = normalize_creative_format(creative_config.get("creative_format"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     event_errors = conversion_event_preflight_errors(template_goal, creative_config)
     if event_errors:
         raise HTTPException(status_code=400, detail=event_errors[0]["message"])
@@ -950,6 +967,7 @@ def get_job(
 @router.post("/{job_id}/retry")
 def retry_job(
     job_id: str,
+    req: Optional[RetryJobRequest] = None,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("job:retry")),
 ):
@@ -960,10 +978,66 @@ def retry_job(
     visible = accessible_account_ids(db, current_user)
     if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
-    count = JobService(db).retry_failed(job_id)
+    req = req or RetryJobRequest()
+    allowed_item_ids = set(req.item_ids or [])
+    if allowed_item_ids:
+        visible_item_ids = {item.id for item in job.items if visible is None or item.ad_account_id in visible}
+        if not allowed_item_ids.issubset(visible_item_ids):
+            raise HTTPException(status_code=404, detail="任务项不存在或无权访问")
+    count = JobService(db).retry_failed(job_id, req.item_ids, req.mode)
     if count == 0:
         raise HTTPException(status_code=400, detail="没有可重试的失败子项")
-    return {"job_id": job_id, "retried": count}
+    return {"job_id": job_id, "retried": count, "mode": req.mode}
+
+
+@router.post("/{job_id}/items/{item_id}/continue")
+def continue_job_item(
+    job_id: str,
+    item_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("job:retry")),
+):
+    """修复参数后仅继续一个失败账户，复用已创建的 Meta 父对象。"""
+    job = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    item = next((row for row in job.items if row.id == item_id), None)
+    visible = accessible_account_ids(db, current_user)
+    if not item or (visible is not None and job.created_by != current_user.id and item.ad_account_id not in visible):
+        raise HTTPException(status_code=404, detail="任务项不存在或无权访问")
+    item_payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+    if item_payload.get("cleanup_status") == "COMPLETED":
+        raise HTTPException(status_code=409, detail="该失败项的 Meta 对象已清理，请使用编辑后重投")
+    count = JobService(db).retry_failed(job_id, [item_id], "CONTINUE")
+    if count == 0:
+        raise HTTPException(status_code=400, detail="该任务项不是失败状态")
+    return {"job_id": job_id, "item_id": item_id, "mode": "CONTINUE"}
+
+
+@router.post("/{job_id}/items/{item_id}/cleanup")
+def cleanup_job_item(
+    job_id: str,
+    item_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("job:retry")),
+):
+    """显式清理失败任务创建的 Meta 对象；复用对象不会被删除。"""
+    job = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    item = next((row for row in job.items if row.id == item_id), None)
+    visible = accessible_account_ids(db, current_user)
+    if not item or (visible is not None and job.created_by != current_user.id and item.ad_account_id not in visible):
+        raise HTTPException(status_code=404, detail="任务项不存在或无权访问")
+    item_payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+    if item.status != "FAILED" and item_payload.get("cleanup_status") != "PENDING":
+        raise HTTPException(status_code=409, detail="当前任务项没有待清理的 Meta 对象")
+    try:
+        result = JobService(db).cleanup_job_item(job_id, item_id)
+    except Exception as exc:
+        logger.exception("[JobAPI] cleanup job item failed job_id=%s item_id=%s", job_id, item_id)
+        raise HTTPException(status_code=502, detail=f"清理 Meta 对象失败: {exc}") from exc
+    return {"job_id": job_id, "item_id": item_id, "result": result}
 
 
 @router.post("/{job_id}/cancel")

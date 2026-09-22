@@ -45,15 +45,28 @@ SUPPORTED_BID_STRATEGIES = frozenset({
 })
 
 OBJECTIVE_OPTIMIZATION_GOALS = {
-    "OUTCOME_TRAFFIC": frozenset({"LINK_CLICKS", "LANDING_PAGE_VIEWS", "OFFSITE_CONVERSIONS", "IMPRESSIONS", "REACH"}),
+    "OUTCOME_TRAFFIC": frozenset({"LINK_CLICKS", "LANDING_PAGE_VIEWS", "OFFSITE_CONVERSIONS", "IMPRESSIONS", "REACH", "CONVERSATIONS"}),
     "OUTCOME_SALES": frozenset({"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"}),
-    "OUTCOME_ENGAGEMENT": frozenset({"POST_ENGAGEMENT", "THRUPLAY", "EVENT_RESPONSES", "IMPRESSIONS"}),
-    "OUTCOME_LEADS": frozenset({"LEAD_GENERATION", "OFFSITE_CONVERSIONS", "IMPRESSIONS"}),
+    "OUTCOME_ENGAGEMENT": frozenset({"POST_ENGAGEMENT", "THRUPLAY", "EVENT_RESPONSES", "CONVERSATIONS", "IMPRESSIONS"}),
+    "OUTCOME_LEADS": frozenset({"LEAD_GENERATION", "OFFSITE_CONVERSIONS", "CONVERSATIONS", "IMPRESSIONS"}),
 }
 
 
 def normalized_optimization_goal(value: Any) -> str:
     return str(value or "LINK_CLICKS").strip().upper()
+
+
+def default_optimization_goal(objective: Any) -> str:
+    """Use Meta's default traffic performance goal for newly created forms."""
+
+    normalized = str(objective or "").strip().upper()
+    if normalized == "OUTCOME_SALES":
+        return "OFFSITE_CONVERSIONS"
+    if normalized == "OUTCOME_ENGAGEMENT":
+        return "POST_ENGAGEMENT"
+    if normalized == "OUTCOME_LEADS":
+        return "LEAD_GENERATION"
+    return "LANDING_PAGE_VIEWS"
 
 
 def budget_bid_preflight_errors(

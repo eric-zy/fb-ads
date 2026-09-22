@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from fb_connector.api.media import _media_task_is_stale
-from fb_connector.api.campaigns import _delivery_task_is_stale
+from fb_connector.api.campaigns import _cleanup_object_ids, _delivery_task_is_stale
 from config.settings import settings
 
 
@@ -37,3 +37,28 @@ def test_delivery_poll_window_covers_domestic_recovery_threshold():
         settings.FB_CONNECTOR_DELIVERY_POLL_MAX_RETRIES * 15
         >= settings.ASYNC_TASK_STALE_SECONDS
     )
+
+
+def test_cleanup_excludes_reused_objects_and_can_target_orphans_only():
+    row = SimpleNamespace(
+        campaign_id="campaign-new",
+        request_payload={"campaign": {"existing_id": "campaign-reused"}},
+        objects={
+            "adsets": [
+                {"id": "adset-reused", "reused": True},
+                {"id": "adset-new"},
+            ],
+            "creatives": [{"id": "creative-new"}],
+            "ads": [{"id": "ad-new"}],
+            "orphaned": [{"id": "creative-old"}, {"id": "ad-old"}],
+        },
+    )
+
+    assert _cleanup_object_ids(row) == [
+        "ad-new",
+        "creative-new",
+        "adset-new",
+        "creative-old",
+        "ad-old",
+    ]
+    assert _cleanup_object_ids(row, orphaned_only=True) == ["creative-old", "ad-old"]

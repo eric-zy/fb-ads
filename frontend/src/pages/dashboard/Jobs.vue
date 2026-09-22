@@ -163,7 +163,7 @@
           <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <el-tag :type="itemTagType(row.status)" size="small">{{ row.status }}</el-tag>
-            <el-tag v-if="row.response_payload?.cleanup_failed" type="danger" size="small" style="margin-left:4px">待人工清理</el-tag>
+            <el-tag v-if="row.response_payload?.cleanup_failed || row.response_payload?.cleanup_status === 'PENDING'" type="danger" size="small" style="margin-left:4px">待人工清理</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="meta_campaign_id" label="Meta Campaign" width="170" show-overflow-tooltip />
@@ -191,9 +191,25 @@
         </el-table-column>
           <el-table-column label="待清理 Meta 对象" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">
-              {{ row.response_payload?.cleanup_object_ids?.join(', ') || '-' }}
+              {{ row.response_payload?.cleanup_object_ids?.join(', ') || createdObjectIds(row).join(', ') || '-' }}
             </template>
           </el-table-column>
+        <el-table-column label="失败项操作" width="180" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'FAILED' && row.response_payload?.cleanup_status !== 'COMPLETED'"
+              link
+              type="primary"
+              @click="handleContinueItem(row)"
+            >继续执行</el-button>
+            <el-button
+              v-if="row.response_payload?.cleanup_status === 'PENDING'"
+              link
+              type="danger"
+              @click="handleCleanupItem(row)"
+            >清理对象</el-button>
+          </template>
+        </el-table-column>
       </el-table>
 
       <template #footer>
@@ -297,6 +313,12 @@ const statusTagType = (status: string) =>
 
 const itemTagType = (status: string) =>
   ({ SUCCESS: 'success', FAILED: 'danger', RUNNING: 'primary', PENDING: 'info' }[status] || 'info')
+
+const createdObjectIds = (row: any): string[] => {
+  const objects = row.response_payload?.created_objects || {}
+  return Object.values(objects)
+    .flatMap((items: any) => Array.isArray(items) ? items.map((item: any) => item?.id).filter(Boolean) : [])
+}
 
 const percent = (row: CampaignJob) => {
   if (!row.total_accounts) return 0
@@ -443,6 +465,47 @@ const startTimer = () => {
       if (isFinal(data.status) && !jobs.value.some((job) => !isFinal(job.status))) stopTimer()
     }
   }, 5000)
+}
+
+const refreshCurrentJob = async (jobId: string) => {
+  await loadJobs()
+  if (currentJob.value?.id === jobId) {
+    const { data } = await jobsApi.get(jobId)
+    currentJob.value = data
+  }
+}
+
+const handleContinueItem = async (row: any) => {
+  if (!currentJob.value) return
+  try {
+    await ElMessageBox.confirm(
+      '将复用该账户已经创建的 Meta 广告系列/广告组，只继续失败节点。确认继续？',
+      '继续执行',
+      { type: 'warning', confirmButtonText: '继续执行', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await jobsApi.continueItem(currentJob.value.id, row.id)
+  ElMessage.success('已重新分派该失败项')
+  await refreshCurrentJob(currentJob.value.id)
+  startTimer()
+}
+
+const handleCleanupItem = async (row: any) => {
+  if (!currentJob.value) return
+  try {
+    await ElMessageBox.confirm(
+      '仅清理本任务创建的 Meta 对象；若任务已成功，将只清理旧版本孤儿对象，复用的广告组和当前成功投放不会删除。确认？',
+      '清理 Meta 对象',
+      { type: 'warning', confirmButtonText: '确认清理', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await jobsApi.cleanupItem(currentJob.value.id, row.id)
+  ElMessage.success('清理请求已完成')
+  await refreshCurrentJob(currentJob.value.id)
 }
 
 const stopTimer = () => {

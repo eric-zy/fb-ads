@@ -15,6 +15,9 @@ from core.auth import get_current_active_user, require_admin
 from core.database import get_db
 from core.enums import TemplateStatus
 from models import CampaignTemplate, MetaPage, User
+from services.creative_format import normalize_creative_format
+from services.meta_creative_options import normalize_cta
+from services.meta_delivery_rules import default_optimization_goal
 from services.targeting_catalog import normalize_targeting, validate_audience_refs
 
 router = APIRouter(prefix="/api/v1/templates", tags=["投放模板"])
@@ -69,8 +72,8 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
     config = values.get("creative_config_json") or {}
     if budget_type == "LIFETIME" and not (config.get("schedule") or {}).get("end_time"):
         raise HTTPException(status_code=400, detail="总预算模板必须配置 schedule.end_time")
-    optimization_goal = str(values.get("optimization_goal") or "LINK_CLICKS").upper()
     objective = str(values.get("objective") or "OUTCOME_TRAFFIC").upper()
+    optimization_goal = str(values.get("optimization_goal") or default_optimization_goal(objective)).upper()
     if objective == "OUTCOME_SALES" and optimization_goal in {"LINK_CLICKS", "LANDING_PAGE_VIEWS"}:
         raise HTTPException(status_code=400, detail="OUTCOME_SALES 不支持 LINK_CLICKS/LANDING_PAGE_VIEWS；请改用 OUTCOME_TRAFFIC，或配置 OFFSITE_CONVERSIONS 及 promoted_object")
     # Pixel/Dataset 只在发布预检时按 optimization_goal 判断。模板可以先保存为
@@ -121,7 +124,12 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
             if adset_placements.get(key) is not None and not isinstance(adset_placements.get(key), list):
                 raise HTTPException(status_code=400, detail=f"广告组 {index} 的版位字段 {key} 必须是数组")
         # 广告组级事件源同样在发布预检阶段校验，模板保存不拦截。
-    creative_format = str(config.get("creative_format") or "MULTI_AD").upper()
+    try:
+        creative_format = normalize_creative_format(config.get("creative_format"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Persist the canonical value when this config is passed through create/update.
+    config["creative_format"] = creative_format
     delivery = config.get("delivery") or {}
     split_level = str(delivery.get("split_level") or "AD").upper()
     combination_mode = str(delivery.get("combination_mode") or "ACCOUNT_X_ADSET_X_CREATIVE").upper()
@@ -139,7 +147,6 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         creatives = config.get("creatives") or []
     if not creatives:
         raise HTTPException(status_code=400, detail="至少配置一个广告创意")
-    allowed_cta = {"LEARN_MORE", "SHOP_NOW", "SIGN_UP", "BOOK_NOW", "DOWNLOAD", "GET_OFFER", "CONTACT_US", "SUBSCRIBE", "APPLY_NOW", "WATCH_MORE", "MESSAGE_PAGE", "ORDER_NOW", "GET_QUOTE"}
     for index, creative in enumerate(creatives, 1):
         asset_type = str(creative.get("asset_type") or "image").lower()
         if creative_format == "CAROUSEL" and asset_type != "image":
@@ -164,8 +171,12 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
             parsed = urlparse(landing_url)
             if not parsed.scheme in {"http", "https"} or not parsed.netloc:
                 raise HTTPException(status_code=400, detail=f"创意 {index} 的落地页必须是有效的 http/https URL")
-        if creative.get("cta") and str(creative["cta"]).upper() not in allowed_cta:
-            raise HTTPException(status_code=400, detail=f"创意 {index} 的行动按钮不受 Meta 支持")
+        try:
+            normalized_cta = normalize_cta(creative.get("cta"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"创意 {index}：{exc}") from exc
+        if normalized_cta:
+            creative["cta"] = normalized_cta
 
 
 # ==================== 请求模型 ====================
@@ -238,11 +249,18 @@ def create_template(
     if db.query(CampaignTemplate).filter(CampaignTemplate.name == req.name).first():
         raise HTTPException(status_code=400, detail=f"模板名称已存在: {req.name}")
 
-    _validate_page_for_tenant(db, req.creative_config_json)
-    _validate_delivery_config(req.dict(exclude_none=False))
+    payload = req.dict(exclude_none=False)
+    creative_config = dict(payload.get("creative_config_json") or {})
+    try:
+        creative_config["creative_format"] = normalize_creative_format(creative_config.get("creative_format"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    payload["creative_config_json"] = creative_config
+    _validate_page_for_tenant(db, creative_config)
+    _validate_delivery_config(payload)
     template = CampaignTemplate(
         id=uuid.uuid4().hex,
-        **req.dict(exclude_none=False),
+        **payload,
         status=TemplateStatus.ACTIVE.value,
     )
     db.add(template)
@@ -277,6 +295,13 @@ def update_template(
         raise HTTPException(status_code=404, detail="模板不存在")
 
     values = req.dict(exclude_unset=True)
+    if "creative_config_json" in values:
+        creative_config = dict(values.get("creative_config_json") or {})
+        try:
+            creative_config["creative_format"] = normalize_creative_format(creative_config.get("creative_format"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        values["creative_config_json"] = creative_config
     merged = template.to_dict()
     merged.update(values)
     _validate_delivery_config(merged)

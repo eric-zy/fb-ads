@@ -1,4 +1,4 @@
-from services.meta_delivery_rules import budget_bid_preflight_errors, conversion_event_preflight_errors, objective_optimization_preflight_errors, schedule_preflight_errors, tracking_asset_preflight_errors, tracking_asset_requirements
+from services.meta_delivery_rules import budget_bid_preflight_errors, conversion_event_preflight_errors, default_optimization_goal, objective_optimization_preflight_errors, schedule_preflight_errors, tracking_asset_preflight_errors, tracking_asset_requirements
 
 
 def test_traffic_optimization_does_not_require_pixel():
@@ -78,6 +78,15 @@ def test_sales_click_optimization_is_blocked_in_preflight():
 
 def test_traffic_click_optimization_is_allowed():
     assert objective_optimization_preflight_errors("OUTCOME_TRAFFIC", "LINK_CLICKS", {}) == []
+
+
+def test_meta_traffic_performance_goals_are_allowed():
+    for goal in ("LANDING_PAGE_VIEWS", "LINK_CLICKS", "REACH", "CONVERSATIONS", "IMPRESSIONS"):
+        assert objective_optimization_preflight_errors("OUTCOME_TRAFFIC", goal, {}) == []
+
+
+def test_default_traffic_performance_goal_matches_meta_ui():
+    assert default_optimization_goal("OUTCOME_TRAFFIC") == "LANDING_PAGE_VIEWS"
 
 
 def test_leads_can_use_onsite_lead_generation_without_pixel():

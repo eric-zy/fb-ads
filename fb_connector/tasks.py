@@ -567,6 +567,16 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
         token = DatabaseCredentialVault().get_access_token(credential_id)
         service = MetaAdsService(MetaClient(access_token=token))
 
+        # 先解析所有“新建广告组”的语言定向，再创建 Campaign。
+        # Meta 官方要求提交 targeting.locales 的 adlocale ID；如果目录查询
+        # 失败，必须在任何写操作前返回 VALIDATION，避免留下孤立 Campaign。
+        for raw_adset in payload.get("adsets") or []:
+            if raw_adset.get("existing_id") or raw_adset.get("reuse_id"):
+                continue
+            targeting = raw_adset.get("targeting")
+            if targeting is not None:
+                raw_adset["targeting"] = service.client.resolve_targeting_locales(targeting)
+
         campaign_id = row.campaign_id
         requested_campaign = dict(payload.get("campaign") or {})
         requested_campaign_id = requested_campaign.get("existing_id") or requested_campaign.get("reuse_id")
@@ -984,6 +994,18 @@ def _upload_video_from_url(service, account_id: str, source_url: str, row, sessi
 
 def _upload_video_resumable(service, account_id: str, file_path: str | None, row, session, *, keep_file: bool = False) -> dict:
     """执行 Meta start → transfer → finish → processing 轮询流程。"""
+    # 已经拿到 Meta 视频 ID 的处理/就绪任务，只需要确认状态。
+    # 这条路径不能先要求本地文件大小：远程 URL 直传不会在 Connector
+    # 落盘，旧 retry 也可能已经清理了本地文件。
+    if row.phase in {"META_PROCESSING", "READY"} and row.meta_video_id:
+        return _poll_video_processing(
+            service,
+            row.meta_video_id,
+            row,
+            session,
+            _as_int(row.total_bytes, 0) or 0,
+        )
+
     total_bytes = os.path.getsize(file_path) if file_path else _as_int(row.total_bytes)
     if not total_bytes:
         raise RuntimeError("无法确定视频素材大小，不能恢复 Meta 分片上传")
@@ -1279,9 +1301,26 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
             task_id,
             account_id,
         )
-        if row.status == "SUCCESS" and row.meta_asset_id and (
+        # READY 是 Connector 侧的终态事实，不能只依赖 status=SUCCESS。
+        # 重复投递/旧 Celery retry 可能曾将 status 写成 RETRY/FAILED，但
+        # 只要已经有 Meta 素材和视频封面，就必须幂等收敛为成功，不能再次
+        # 进入上传或分片恢复流程。
+        media_already_ready = (
+            row.phase == "READY"
+            and bool(row.meta_asset_id)
+            and (asset_type != "video" or bool(row.meta_thumbnail_hash))
+        )
+        if (row.status == "SUCCESS" or media_already_ready) and row.meta_asset_id and (
             asset_type != "video" or row.meta_thumbnail_hash
         ):
+            if row.status != "SUCCESS" or row.error_message:
+                row.error_message = None
+                _persist_media_progress(
+                    session,
+                    row,
+                    status="SUCCESS",
+                    phase="READY",
+                )
             logger.info(
                 "[ConnectorMedia] already success task_id=%s meta_asset_id=%s",
                 task_id,
@@ -1413,7 +1452,21 @@ def upload_media_task(self, task_id: str, media_id: str, credential_id: str, acc
         logger.info("[ConnectorMedia] meta upload start task_id=%s account_id=%s asset_type=%s", task_id, account_id, asset_type)
         service = MetaAdsService(MetaClient(access_token=token))
         if asset_type == "video":
-            if remote_url_upload_candidate:
+            # URL 直传或分片上传完成后，Meta 视频可能已经进入 READY，
+            # 但本次任务只是在补偿封面或处理旧 retry。已有视频 ID 时只轮询
+            # Meta 状态，不要求本地文件大小，也不重新 start/transfer。
+            existing_meta_video = row.meta_video_id or (
+                row.meta_asset_id if row.phase in {"META_PROCESSING", "READY"} else None
+            )
+            if existing_meta_video and row.phase in {"META_PROCESSING", "READY"}:
+                result = _poll_video_processing(
+                    service,
+                    existing_meta_video,
+                    row,
+                    session,
+                    _as_int(row.total_bytes, 0) or 0,
+                )
+            elif remote_url_upload_candidate:
                 _persist_media_progress(session, row, upload_mode="DIRECT_URL")
                 try:
                     result = _upload_video_from_url(service, account_id, source_url, row, session)

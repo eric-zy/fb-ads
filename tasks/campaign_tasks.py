@@ -91,15 +91,24 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
             db.commit()
             raise self.retry()
         if status in {"FAILED", "ERROR"}:
-            cleanup = None
-            try:
-                credential_id = ((item.response_payload or {}).get("protocol") or {}).get("credential_id")
-                if credential_id:
-                    cleanup = FBConnectorClient().cleanup_deployment(remote_id, credential_id)
-            except Exception as exc:
-                cleanup = {"status": "FAILED", "error": str(exc)}
-            item.mark_failed(result.get("error_code") or "CONNECTOR_DEPLOY_FAILED", result.get("error_message") or "海外投放创建失败", ErrorCategory.UNKNOWN)
-            item.response_payload = {**(item.response_payload or {}), "cleanup": cleanup}
+            # 失败后保留 Connector 已创建的暂停对象，允许投手修复参数后
+            # 从失败节点继续执行；清理必须由用户显式触发，避免把可复用的
+            # Campaign/AdSet 一并删除，导致重试重复创建或失去续跑能力。
+            created_objects = result.get("objects") or {}
+            failure_stage = result.get("step") or "UNKNOWN"
+            item.mark_failed(
+                result.get("error_code") or "CONNECTOR_DEPLOY_FAILED",
+                result.get("error_message") or "海外投放创建失败",
+                ErrorCategory.UNKNOWN,
+            )
+            item.response_payload = {
+                **(item.response_payload or {}),
+                "connector_status": result,
+                "failure_stage": failure_stage,
+                "created_objects": created_objects,
+                "cleanup_status": "PENDING" if created_objects else "NOT_REQUIRED",
+                "retry_mode": "CONTINUE",
+            }
             template = item.job.template if item.job else None
             record_template_usage(
                 db,
@@ -700,7 +709,13 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             result = FBConnectorClient().deploy_campaign(protocol_payload, idempotency_key=protocol_payload["idempotency_key"])
             item.status = JobItemStatus.RUNNING.value
             item.connector_task_id = result.get("connector_task_id")
-            item.response_payload = {"connector": result, "protocol": protocol_payload}
+            previous_payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+            item.response_payload = {
+                key: previous_payload[key]
+                for key in ("retry_mode", "last_failure", "created_objects", "failure_stage", "cleanup_status", "cleanup")
+                if key in previous_payload
+            }
+            item.response_payload.update({"connector": result, "protocol": protocol_payload})
             db.commit()
             poll_connector_deployment_task.apply_async(args=[job_item_id], countdown=5)
             return {"status": "QUEUED", "job_item_id": job_item_id, **result}
@@ -947,7 +962,12 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
 # ----------------------------------------------------------------------
 @shared_task(bind=True, name="campaign.retry_failed_items")
 @tenant_task(lambda self, job_id: resolve_tenant_of(CampaignJob, job_id))
-def retry_failed_job_items(self, job_id: str) -> Dict[str, Any]:
+def retry_failed_job_items(
+    self,
+    job_id: str,
+    item_ids: Optional[list[str]] = None,
+    retry_mode: str = "CONTINUE",
+) -> Dict[str, Any]:
     """只重跑失败的子项，而不是重新执行全部账户
 
     100 个账户失败 7 个 → 只重跑这 7 个。
@@ -958,20 +978,29 @@ def retry_failed_job_items(self, job_id: str) -> Dict[str, Any]:
         if not job:
             return {"error": "job not found"}
 
-        failed_items = (
+        failed_query = (
             db.query(CampaignJobItem)
             .filter(
                 CampaignJobItem.job_id == job_id,
                 CampaignJobItem.status == JobItemStatus.FAILED.value,
             )
-            .all()
         )
+        if item_ids:
+            failed_query = failed_query.filter(CampaignJobItem.id.in_(item_ids))
+        failed_items = failed_query.all()
         for item in failed_items:
             item.status = JobItemStatus.PENDING.value
             item.retry_count = (item.retry_count or 0) + 1
             item.error_code = None
             item.error_message = None
             item.error_category = None
+            payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+            item.response_payload = {
+                **payload,
+                "retry_mode": retry_mode or "CONTINUE",
+                "last_failure": payload.get("failure") or payload.get("last_failure"),
+                "retry_started_at": datetime.utcnow().isoformat(),
+            }
         db.commit()
 
         job.status = JobStatus.RUNNING.value

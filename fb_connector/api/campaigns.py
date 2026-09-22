@@ -39,6 +39,7 @@ class ParentRequest(BaseModel):
 class CleanupRequest(BaseModel):
     connector_task_id: str = Field(..., min_length=1, max_length=50)
     credential_id: str = Field(..., min_length=1, max_length=50)
+    orphaned_only: bool = False
 
 
 def _delivery_task_is_stale(row: ConnectorDeliveryTask, now: datetime | None = None) -> bool:
@@ -50,6 +51,25 @@ def _delivery_task_is_stale(row: ConnectorDeliveryTask, now: datetime | None = N
     return (now or datetime.utcnow()) - timestamp >= timedelta(
         seconds=settings.CONNECTOR_MEDIA_STALE_SECONDS
     )
+
+
+def _cleanup_object_ids(row: ConnectorDeliveryTask, *, orphaned_only: bool = False) -> list[str]:
+    """只返回本任务创建的对象；复用对象和孤儿清理范围明确分离。"""
+    objects = row.objects or {}
+    groups = ("orphaned",) if orphaned_only else ("ads", "creatives", "adsets", "orphaned")
+    ids = [
+        item.get("id")
+        for group in groups
+        for item in (objects.get(group) or [])
+        if item.get("id") and not item.get("reused")
+    ]
+    requested_campaign = (row.request_payload or {}).get("campaign") or {}
+    campaign_reused = bool(
+        requested_campaign.get("existing_id") or requested_campaign.get("reuse_id")
+    )
+    if not orphaned_only and row.campaign_id and not campaign_reused:
+        ids.append(row.campaign_id)
+    return list(dict.fromkeys(ids))
 
 @router.post("/cleanup")
 async def cleanup_deployment(payload: CleanupRequest):
@@ -63,12 +83,7 @@ async def cleanup_deployment(payload: CleanupRequest):
             raise HTTPException(status_code=404, detail="海外任务不存在")
         token = DatabaseCredentialVault().get_access_token(payload.credential_id)
         service = MetaAdsService(MetaClient(access_token=token))
-        ids = []
-        objects = row.objects or {}
-        for group in ("ads", "creatives", "adsets"):
-            ids.extend([x.get("id") for x in objects.get(group, []) if x.get("id")])
-        if row.campaign_id:
-            ids.append(row.campaign_id)
+        ids = _cleanup_object_ids(row, orphaned_only=payload.orphaned_only)
         errors = []
         for object_id in ids:
             try:
@@ -208,6 +223,17 @@ async def create_campaign(payload: CampaignCreateRequest):
             payload_changed = (old.request_payload or {}) != (payload.payload or {})
             if old.status == "FAILED" and payload_changed:
                 objects = dict(old.objects or {})
+                # 参数修复后只重建 Creative/Ad，但不要丢失旧对象 ID：
+                # 旧对象仍可能存在，必须留给显式 cleanup 操作处理，
+                # 否则会形成 Connector 无法追踪的孤儿对象。
+                orphaned = list(objects.get("orphaned") or [])
+                orphaned.extend(
+                    item for group in ("creatives", "ads")
+                    for item in (objects.get(group) or [])
+                    if item.get("id")
+                )
+                if orphaned:
+                    objects["orphaned"] = orphaned
                 objects["creatives"] = []
                 objects["ads"] = []
                 old.objects = objects

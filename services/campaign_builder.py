@@ -35,7 +35,8 @@ from models import (
 )
 from services.meta.service import MetaAdsService
 from services.targeting_catalog import normalize_targeting
-from services.meta_delivery_rules import is_pixel_required
+from services.meta_delivery_rules import default_optimization_goal, is_pixel_required
+from services.meta_creative_options import normalize_cta
 
 
 def _new_id() -> str:
@@ -184,7 +185,7 @@ class AdSetBuilder:
             "campaign_id": self.campaign_id,
             "status": self.status,
             "billing_event": self.adset_config.get("billing_event") or self.template.billing_event or "IMPRESSIONS",
-            "optimization_goal": self.adset_config.get("optimization_goal") or self.template.optimization_goal or "LINK_CLICKS",
+            "optimization_goal": self.adset_config.get("optimization_goal") or self.template.optimization_goal or default_optimization_goal(self.template.objective),
             # 定向来自模板 JSONB，避免硬编码（原实现硬编码 US + reach）
             "targeting": targeting,
         }
@@ -283,8 +284,9 @@ class CreativeBuilder:
                 "link": cards[0]["landing_url"],
                 "child_attachments": child_attachments,
             }
-            if cfg.get("cta"):
-                media_data["call_to_action"] = {"type": cfg["cta"], "value": {"link": cards[0]["landing_url"]}}
+            cta = normalize_cta(cfg.get("cta"))
+            if cta and cta != "NO_BUTTON":
+                media_data["call_to_action"] = {"type": cta, "value": {"link": cards[0]["landing_url"]}}
             story_key = "link_data"
         else:
             story_key = None
@@ -309,9 +311,10 @@ class CreativeBuilder:
                 media_data["image_url"] = cfg["thumbnail_url"]
             if cfg.get("description"):
                 media_data["link_description"] = cfg["description"]
-            if cfg.get("landing_url"):
+            cta = normalize_cta(cfg.get("cta"))
+            if cfg.get("landing_url") and cta != "NO_BUTTON":
                 media_data["call_to_action"] = {
-                    "type": cfg.get("cta", "LEARN_MORE"),
+                    "type": cta or "LEARN_MORE",
                     "value": {
                         "link": cfg["landing_url"],
                         **({"link_caption": cfg["display_link"]} if cfg.get("display_link") else {}),
@@ -334,9 +337,10 @@ class CreativeBuilder:
                 media_data["name"] = cfg["headline"]
             if cfg.get("description"):
                 media_data["description"] = cfg["description"]
-            if cfg.get("cta"):
+            cta = normalize_cta(cfg.get("cta"))
+            if cta and cta != "NO_BUTTON":
                 media_data["call_to_action"] = {
-                    "type": cfg["cta"],
+                    "type": cta,
                     "value": {"link": cfg.get("landing_url", "")},
                 }
             if cfg.get("display_link"):

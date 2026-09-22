@@ -29,12 +29,64 @@ export const STANDARD_CONVERSION_EVENTS = [
   { value: 'DONATE', label: '捐赠' },
 ] as const
 
-export const OPTIMIZATION_GOAL_OPTIONS: Record<string, string[]> = {
-  OUTCOME_TRAFFIC: ['LINK_CLICKS', 'LANDING_PAGE_VIEWS', 'OFFSITE_CONVERSIONS', 'IMPRESSIONS', 'REACH'],
-  OUTCOME_SALES: ['OFFSITE_CONVERSIONS', 'VALUE', 'CONVERSIONS'],
-  OUTCOME_ENGAGEMENT: ['POST_ENGAGEMENT', 'THRUPLAY', 'EVENT_RESPONSES', 'IMPRESSIONS'],
-  OUTCOME_LEADS: ['LEAD_GENERATION', 'OFFSITE_CONVERSIONS', 'IMPRESSIONS'],
+// Meta AdCreative.CallToActionType；NO_BUTTON 在后端会转换为不发送 call_to_action。
+export const CTA_OPTIONS = [
+  { value: 'NO_BUTTON', label: '无按钮' },
+  { value: 'LEARN_MORE', label: '了解更多' },
+  { value: 'GET_DETAILS', label: '查看详情' },
+  { value: 'SEE_MORE', label: '查看更多' },
+  { value: 'WATCH_MORE', label: '查看更多' },
+  { value: 'GET_OFFER', label: '获取优惠' },
+  { value: 'APPLY_NOW', label: '立即申请' },
+  { value: 'BOOK_NOW', label: '立即预订' },
+  { value: 'CONTACT_US', label: '联系我们' },
+  { value: 'DONATE_NOW', label: '立即捐款' },
+  { value: 'DOWNLOAD', label: '下载' },
+  { value: 'GET_QUOTE', label: '获取报价' },
+  { value: 'SHOP_NOW', label: '立即购买' },
+  { value: 'BUY_NOW', label: '立即购买' },
+  { value: 'SIGN_UP', label: '注册' },
+  { value: 'SUBSCRIBE', label: '订阅' },
+  { value: 'MESSAGE_PAGE', label: '发送消息' },
+  { value: 'CHAT_NOW', label: '立即聊天' },
+  { value: 'WHATSAPP_MESSAGE', label: 'WhatsApp 消息' },
+  { value: 'ORDER_NOW', label: '立即订购' },
+  { value: 'CALL_NOW', label: '立即致电' },
+  { value: 'EVENT_RSVP', label: '参加活动' },
+  { value: 'FIND_OUT_MORE', label: '了解更多' },
+] as const
+
+export const OPTIMIZATION_GOAL_LABELS: Record<string, string> = {
+  LANDING_PAGE_VIEWS: '落地页浏览量最大化',
+  LINK_CLICKS: '链接点击量最大化',
+  REACH: '单日独立覆盖人数最大化',
+  CONVERSATIONS: '对话次数最大化',
+  IMPRESSIONS: '展示次数最大化',
+  OFFSITE_CONVERSIONS: '网站转化量最大化',
+  VALUE: '转化价值最大化',
+  CONVERSIONS: '转化次数最大化',
+  POST_ENGAGEMENT: '互动次数最大化',
+  THRUPLAY: '视频观看次数最大化',
+  EVENT_RESPONSES: '活动响应次数最大化',
+  LEAD_GENERATION: '潜在客户数量最大化',
 }
+
+export const OPTIMIZATION_GOAL_OPTIONS: Record<string, string[]> = {
+  // 顺序与 Meta 页面一致：核心成效目标在前，其它可用目标在后。
+  OUTCOME_TRAFFIC: ['LANDING_PAGE_VIEWS', 'LINK_CLICKS', 'REACH', 'CONVERSATIONS', 'IMPRESSIONS', 'OFFSITE_CONVERSIONS'],
+  OUTCOME_SALES: ['OFFSITE_CONVERSIONS', 'VALUE', 'CONVERSIONS'],
+  OUTCOME_ENGAGEMENT: ['POST_ENGAGEMENT', 'THRUPLAY', 'EVENT_RESPONSES', 'CONVERSATIONS', 'IMPRESSIONS'],
+  OUTCOME_LEADS: ['LEAD_GENERATION', 'OFFSITE_CONVERSIONS', 'CONVERSATIONS', 'IMPRESSIONS'],
+}
+
+export const optimizationGoalOptions = (objective: string) =>
+  (OPTIMIZATION_GOAL_OPTIONS[objective] || ['LINK_CLICKS']).map(value => ({
+    value,
+    label: OPTIMIZATION_GOAL_LABELS[value] || value,
+  }))
+
+export const optimizationGoalLabel = (goal: string | null | undefined) =>
+  OPTIMIZATION_GOAL_LABELS[String(goal || '').toUpperCase()] || goal || '-'
 
 export const isOptimizationGoalAllowed = (objective: string, goal: string) =>
   !OPTIMIZATION_GOAL_OPTIONS[objective] || OPTIMIZATION_GOAL_OPTIONS[objective].includes(goal)
@@ -43,7 +95,7 @@ export const defaultOptimizationGoal = (objective: string) => {
   if (objective === 'OUTCOME_SALES') return 'OFFSITE_CONVERSIONS'
   if (objective === 'OUTCOME_ENGAGEMENT') return 'POST_ENGAGEMENT'
   if (objective === 'OUTCOME_LEADS') return 'LEAD_GENERATION'
-  return 'LINK_CLICKS'
+  return 'LANDING_PAGE_VIEWS'
 }
 
 export const isConversionOptimizationGoal = (goal: string) =>

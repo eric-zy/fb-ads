@@ -35,10 +35,31 @@ def test_meta_targeting_resolves_product_language_to_locale_id(monkeypatch):
     from services.meta.client import MetaClient
 
     client = object.__new__(MetaClient)
-    monkeypatch.setattr(client, "get_ad_locales", lambda: [{"id": "6", "name": "English (All)"}])
+    calls = []
+
+    def fake_get_ad_locales(*, query=None):
+        calls.append(query)
+        return [{"id": "6", "name": "English (All)"}] if query == "English" else []
+
+    monkeypatch.setattr(client, "get_ad_locales", fake_get_ad_locales)
     result = client.resolve_targeting_locales({"languages": ["en"], "geo_locations": {"countries": ["US"]}})
 
     assert result == {"locales": ["6"], "geo_locations": {"countries": ["US"]}}
+    assert calls == ["English"]
+
+
+def test_meta_targeting_rejects_missing_remote_locale_as_validation_error(monkeypatch):
+    from services.meta.client import MetaClient
+    from services.meta.errors import MetaApiError
+
+    client = object.__new__(MetaClient)
+    monkeypatch.setattr(client, "get_ad_locales", lambda *args, **kwargs: [])
+
+    with pytest.raises(MetaApiError) as exc_info:
+        client.resolve_targeting_locales({"languages": ["en"]})
+
+    assert exc_info.value.category.value == "VALIDATION"
+    assert exc_info.value.retryable is False
 
 
 def test_targeting_preflight_rejects_empty_country_and_gender():

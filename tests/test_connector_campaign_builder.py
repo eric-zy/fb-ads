@@ -2,6 +2,22 @@ from types import SimpleNamespace
 
 from api.templates import _validate_delivery_config
 from services.connector_campaign_builder import build_connector_payload
+from services.creative_format import CAROUSEL, SINGLE_IMAGE_VIDEO, normalize_creative_format
+
+
+def test_creative_format_uses_meta_aligned_canonical_values():
+    assert normalize_creative_format("MULTI_AD") == SINGLE_IMAGE_VIDEO
+    assert normalize_creative_format("SINGLE_IMAGE_VIDEO") == SINGLE_IMAGE_VIDEO
+    assert normalize_creative_format("CAROUSEL") == CAROUSEL
+
+
+def test_creative_format_rejects_unknown_values():
+    try:
+        normalize_creative_format("COLLECTION")
+    except ValueError as exc:
+        assert "创意格式" in str(exc)
+    else:
+        raise AssertionError("未知创意格式必须被拒绝")
 
 
 def test_build_connector_payload_contains_complete_tree():
@@ -26,6 +42,7 @@ def test_build_connector_payload_contains_complete_tree():
                 "asset_type": "image",
                 "image_hash": "hash-1",
                 "message": "hello",
+                "cta": "NO_BUTTON",
                 "landing_url": "https://example.com",
             }],
         },
@@ -38,6 +55,7 @@ def test_build_connector_payload_contains_complete_tree():
     assert creative["client_key"] == "creative-1-1"
     assert creative["ads"][0]["client_key"] == "ad-1-1"
     assert creative["ads"][0]["adset_id"] == "${adset.id}"
+    assert "call_to_action" not in creative["object_story_spec"]["link_data"]
     assert payload["adsets"][0]["daily_budget"] == 1000
 
 

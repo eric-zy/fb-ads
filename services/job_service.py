@@ -41,6 +41,7 @@ from services.meta_delivery_rules import (
     tracking_asset_requirements,
 )
 from services.meta.page_access import page_account_access_error
+from services.fb_connector_client import FBConnectorClient
 from services.targeting_catalog import normalize_targeting, placement_preflight_errors, targeting_preflight_errors
 from tasks.campaign_tasks import (
     execute_campaign_job,
@@ -702,23 +703,64 @@ class JobService:
         logger.info(f"[JobService] 任务 {job_id} 已取消")
         return job
 
-    def retry_failed(self, job_id: str) -> int:
-        """只重跑失败子项（设计文档第 30 节）"""
+    def retry_failed(
+        self,
+        job_id: str,
+        item_ids: Optional[List[str]] = None,
+        retry_mode: str = "CONTINUE",
+    ) -> int:
+        """按账户/任务项继续执行失败节点，不重新执行已成功账户。"""
         job = self.get_job(job_id)
         if not job:
             return 0
-        failed_count = (
+        query = (
             self.db.query(CampaignJobItem)
             .filter(
                 CampaignJobItem.job_id == job_id,
                 CampaignJobItem.status == JobItemStatus.FAILED.value,
             )
-            .count()
         )
+        if item_ids:
+            query = query.filter(CampaignJobItem.id.in_(item_ids))
+        failed_count = query.count()
         if failed_count == 0:
             return 0
-        retry_failed_job_items.delay(job_id)
+        retry_failed_job_items.delay(job_id, item_ids or None, retry_mode)
         return failed_count
+
+    def cleanup_job_item(self, job_id: str, item_id: str) -> Optional[Dict[str, Any]]:
+        """显式清理该任务项已创建的 Meta 对象；复用对象由 Connector 跳过。"""
+        item = (
+            self.db.query(CampaignJobItem)
+            .filter(CampaignJobItem.id == item_id, CampaignJobItem.job_id == job_id)
+            .first()
+        )
+        if not item:
+            return None
+        payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+        protocol = payload.get("protocol") or {}
+        credential_id = protocol.get("credential_id")
+        task_id = item.connector_task_id or (payload.get("connector") or {}).get("connector_task_id")
+        cleanup_status = payload.get("cleanup_status")
+        if cleanup_status == "COMPLETED":
+            return {"status": "ALREADY_COMPLETED"}
+        orphaned_only = item.status != JobItemStatus.FAILED.value
+        if not credential_id or not task_id:
+            return {"status": "NOT_REQUIRED", "reason": "没有可清理的海外任务"}
+        result = FBConnectorClient().cleanup_deployment(
+            task_id,
+            credential_id,
+            orphaned_only=orphaned_only,
+        )
+        payload = {
+            **payload,
+            "cleanup": result,
+            "cleanup_status": "COMPLETED" if result.get("status") == "SUCCESS" else "PARTIAL",
+            "cleanup_scope": "ORPHANED_ONLY" if orphaned_only else "CREATED_OBJECTS",
+        }
+        item.response_payload = payload
+        self.db.commit()
+        return result
 
     def dispatch_now(self, job_id: str) -> Optional[CampaignJob]:
         """把定时任务提前为立即执行
