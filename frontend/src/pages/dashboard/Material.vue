@@ -158,13 +158,13 @@
             <el-button link type="success" size="small" :disabled="!isAssetReady(item)" @click="syncAllAccounts(item)">同步账户</el-button>
             <el-button v-if="item.can_edit" link size="small" @click="refreshMetadata(item)">刷新</el-button>
             <el-button
-              v-if="item.can_edit && item.status === 'FAILED'"
+              v-if="item.can_edit && ['FAILED', 'PENDING', 'UPLOADING'].includes(String(item.status || '').toUpperCase())"
               link
               type="warning"
               size="small"
               @click="beginRetryUpload(item)"
             >
-              重新上传
+              {{ String(item.status || '').toUpperCase() === 'FAILED' ? '重新上传' : '继续上传' }}
             </el-button>
           </div>
         </div>

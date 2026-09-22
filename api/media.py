@@ -421,7 +421,7 @@ def create_media_upload_session(
         retry_asset = _get_asset_or_404(db, payload.asset_id, user)
         if not user.is_admin() and retry_asset.created_by != user.id:
             raise HTTPException(status_code=403, detail="无权重新上传该素材")
-        if retry_asset.status not in {"FAILED", "PENDING"}:
+        if retry_asset.status not in {"FAILED", "PENDING", "UPLOADING"}:
             raise HTTPException(status_code=409, detail="当前素材不需要重新上传")
         if retry_asset.asset_type != payload.asset_type or retry_asset.size != payload.size:
             raise HTTPException(status_code=400, detail="重新上传的文件类型或大小与原素材不一致")
