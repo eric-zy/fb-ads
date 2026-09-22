@@ -392,7 +392,9 @@ const load = async () => {
   }
 }
 
-const onSelect = async (file: any, assetId = '') => {
+// Element Plus 的 change 回调第二个参数是当前文件列表，不能当成 asset_id 传给后端。
+// 重传场景走独立的原生 file input，由 uploadFile 显式传入原素材 ID。
+const uploadFile = async (file: any, assetId = '') => {
   const raw: File = file.raw
   if (!raw) return
   const validation = await validateMediaFile(raw)
@@ -439,6 +441,8 @@ const onSelect = async (file: any, assetId = '') => {
   }
 }
 
+const onSelect = async (file: any) => uploadFile(file)
+
 const beginRetryUpload = (item: MediaItem) => {
   retryAssetId.value = item.id
   ElMessage.info('请选择与原素材相同的文件，系统会复用原素材记录并重新上传')
@@ -451,7 +455,7 @@ const onRetryFileSelected = async (event: Event) => {
   const assetId = retryAssetId.value
   input.value = ''
   if (!raw || !assetId) return
-  await onSelect({ raw }, assetId)
+  await uploadFile({ raw }, assetId)
 }
 
 const openPreview = async (item: MediaItem) => {

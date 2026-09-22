@@ -61,7 +61,22 @@ Campaign
 
 `object_story_spec`、`asset_feed_spec`、`promoted_object`、轮播卡片等 Meta 参数原样放在对应节点，不由 Connector 猜测或补全业务含义。素材字段必须引用已存在的 Meta 资源 ID；素材上传另行处理。
 
-## 3. 返回值
+## 3. 账户级 Custom Audience 元数据同步
+
+国内管理员配置“法律/运营强制排除受众”前，先通过 Connector 同步指定广告账户可访问的受众元数据：
+
+`POST /internal/meta/audiences/list`
+
+```json
+{
+  "credential_id": "remote-credential-001",
+  "account_id": "act_123456789"
+}
+```
+
+响应仅包含 `id`、`name`、`subtype`、`delivery_status`、`sharing_status`、`time_updated` 等元数据；Connector 不读取、不缓存、不返回受众成员数据。国内服务按广告账户缓存这些资产，管理员只能从已同步且属于当前账户的 ID 中选择强制排除项。投放时强制排除项由国内服务合并进每个广告组的 `targeting.excluded_custom_audiences`，广告组模板不能覆盖或移除该策略。
+
+## 4. 返回值
 
 首次请求返回 `202 Accepted`：
 
@@ -76,7 +91,7 @@ Campaign
 
 重复使用同一幂等键必须返回原任务，不得再次创建 Meta 对象。
 
-## 4. 状态查询
+## 5. 状态查询
 
 `GET /internal/meta/campaigns/deploy/{connector_task_id}`
 
@@ -106,7 +121,7 @@ QUEUED → RUNNING → CAMPAIGN_CREATED → ADSETS_CREATED
 
 失败时返回 `failed_step`、`error_code`、`retryable` 和脱敏后的 `error_message`，不得返回 Access Token 或请求签名。
 
-## 5. 回调接口
+## 6. 回调接口
 
 海外任务状态通过 HMAC 回调国内，终态回调后国内会立即触发统一收敛；国内原有状态轮询保留为降级兜底：
 
@@ -115,7 +130,7 @@ QUEUED → RUNNING → CAMPAIGN_CREATED → ADSETS_CREATED
 
 回调携带 `X-Request-Id`、`X-Timestamp`、`X-Signature`、`X-Idempotency-Key`。签名覆盖 HTTP 方法、路径、时间戳、原始 body 摘要和幂等键。国内按 Connector task ID 更新对应投放子项或账户级素材绑定；未知任务返回 200 并记录告警，避免历史任务清理后触发无限重试。回调事件先写入 Connector 的 `connector_callback_events` outbox，失败按指数退避重试；回调失败不影响海外 Meta 执行，轮询和 Beat 恢复任务负责兜底。
 
-## 6. 国内映射
+## 7. 国内映射
 
 Connector 返回的 Meta ID 映射到本地：
 
@@ -128,7 +143,7 @@ Connector 返回的 Meta ID 映射到本地：
 
 本地保存 `connector_credential_id`，不得把海外 Token 写入国内 `Credential` 表。
 
-## 7. 失败与补偿
+## 8. 失败与补偿
 
 - 参数校验、权限不足、Meta 对象不存在：`retryable=false`，任务终止。
 - 网络超时、Meta 429、5xx：`retryable=true`，按步骤重试。
@@ -136,6 +151,6 @@ Connector 返回的 Meta ID 映射到本地：
 - 后续节点失败：保留已创建对象 ID，状态为 `FAILED`，由补偿任务按策略清理或人工处理。
 - 国内回调失败不影响海外任务最终状态，Connector 通过 outbox 和 Beat 按指数退避重试回调。
 
-## 8. Builder 改造约束
+## 9. Builder 改造约束
 
 后续 `CampaignDeploymentBuilder` 只负责生成协议 payload 和解析结果，不直接调用 Meta API。新增 Connector Builder 适配层，direct 模式继续使用现有四个 Builder。两种模式最终都必须产出相同的本地实例映射。
