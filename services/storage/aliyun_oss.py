@@ -105,6 +105,17 @@ class AliyunOSSStorage:
             upload_id=upload_id,
             part_number=part_number,
         )
+        # UploadPartRequest in alibabacloud-oss-v2 does not expose a
+        # content_type constructor argument, but browser XHR sends Content-Type
+        # for Blob bodies. Add the header to the request model before presigning
+        # so the generated URL signs the exact header sent by the frontend.
+        request._attribute_map = dict(request._attribute_map)
+        request._attribute_map["content_type"] = {
+            "tag": "input",
+            "position": "header",
+            "rename": "Content-Type",
+        }
+        request.content_type = "application/octet-stream"
         result = self.client.presign(
             request,
             expires=timedelta(seconds=settings.OSS_UPLOAD_EXPIRE_SECONDS),
@@ -113,7 +124,10 @@ class AliyunOSSStorage:
         if not url:
             raise StorageError("OSS SDK 未返回分片上传签名 URL")
         headers = getattr(result, "signed_headers", None) or getattr(result, "headers", None) or {}
-        return {"part_number": part_number, "url": url, "method": "PUT", "headers": dict(headers)}
+        headers = dict(headers)
+        if not any(str(name).lower() == "content-type" for name in headers):
+            headers["Content-Type"] = "application/octet-stream"
+        return {"part_number": part_number, "url": url, "method": "PUT", "headers": headers}
 
     def list_multipart_parts(self, key: str, upload_id: str) -> list[dict[str, Any]]:
         """Read uploaded parts from OSS; this avoids trusting browser-supplied ETags."""

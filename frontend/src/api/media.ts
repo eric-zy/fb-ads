@@ -222,8 +222,12 @@ export const mediaApi = {
           let lastError: unknown
           for (let attempt = 1; attempt <= 3; attempt += 1) {
             try {
+              const headers = safeHeaders(part.headers)
+              if (!Object.keys(headers).some((name) => name.toLowerCase() === 'content-type')) {
+                headers['Content-Type'] = 'application/octet-stream'
+              }
               await axios.put(part.url, chunk, {
-                headers: safeHeaders(part.headers),
+                headers,
                 onUploadProgress: (event) => {
                   loadedByPart.set(part.part_number, Math.min(event.loaded, chunk.size))
                   reportProgress()
