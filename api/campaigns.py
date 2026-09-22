@@ -334,6 +334,8 @@ def list_campaigns(
     ad_account_id: Optional[str] = None,
     status: Optional[str] = None,
     keyword: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_active_user),
 ):
@@ -354,7 +356,15 @@ def list_campaigns(
             (CampaignInstance.name.ilike(value))
             | (CampaignInstance.meta_campaign_id.ilike(value))
         )
-    rows = query.order_by(CampaignInstance.created_at.desc()).all()
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    total = query.count()
+    rows = (
+        query.order_by(CampaignInstance.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
     result = []
     for row in rows:
         payload = row.to_dict()
@@ -366,7 +376,7 @@ def list_campaigns(
                 break
         payload["publisher"] = publisher
         result.append(payload)
-    return result
+    return {"items": result, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/delivery-objects/{object_type}/{object_id}")
@@ -437,17 +447,40 @@ def delivery_object_detail(
     }
 
 @router.get("/campaigns/{campaign_id}/adsets")
-def list_adsets(campaign_id: str, status: Optional[str] = None, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+def list_adsets(
+    campaign_id: str,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
     campaign = _scope(db.query(CampaignInstance), CampaignInstance, current_user).filter(CampaignInstance.id == campaign_id).first()
     visible = _visible_accounts(db, current_user)
     if not campaign or not _can_see_account(visible, campaign.ad_account_id):
         raise HTTPException(status_code=404, detail="广告系列不存在")
-    rows = campaign.adsets
+    query = _scope(db.query(AdSetInstance), AdSetInstance, current_user).filter(
+        AdSetInstance.campaign_instance_id == campaign_id
+    )
     if status:
-        rows = [row for row in rows if row.status == status.upper()]
+        query = query.filter(AdSetInstance.status == status.upper())
     else:
-        rows = [row for row in rows if row.status != "DELETED"]
-    return [row.to_dict() for row in rows]
+        query = query.filter(AdSetInstance.status != "DELETED")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    total = query.count()
+    rows = (
+        query.order_by(AdSetInstance.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "items": [row.to_dict() for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 @router.get("/campaigns/{campaign_id}/detail")
 def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
@@ -516,17 +549,40 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
     }
 
 @router.get("/adsets/{adset_id}/ads")
-def list_ads(adset_id: str, status: Optional[str] = None, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+def list_ads(
+    adset_id: str,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
     adset = _scope(db.query(AdSetInstance), AdSetInstance, current_user).filter(AdSetInstance.id == adset_id).first()
     visible = _visible_accounts(db, current_user)
     if not adset or not _can_see_account(visible, adset.campaign_instance.ad_account_id):
         raise HTTPException(status_code=404, detail="广告组不存在")
-    rows = adset.ads
+    query = _scope(db.query(AdInstance), AdInstance, current_user).filter(
+        AdInstance.adset_instance_id == adset_id
+    )
     if status:
-        rows = [row for row in rows if row.status == status.upper()]
+        query = query.filter(AdInstance.status == status.upper())
     else:
-        rows = [row for row in rows if row.status != "DELETED"]
-    return [row.to_dict() for row in rows]
+        query = query.filter(AdInstance.status != "DELETED")
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    total = query.count()
+    rows = (
+        query.order_by(AdInstance.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "items": [row.to_dict() for row in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 @router.post("/campaigns/actions")
 def campaign_action(

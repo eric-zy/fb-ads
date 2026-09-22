@@ -22,7 +22,7 @@ import main
 from core.database import Base, get_db
 from core.enums import CredentialStatus
 from config.settings import settings
-from models import AdAccount, AuditLog, Credential, MetaAccount, SystemStatus, User
+from models import AdAccount, AuditLog, BusinessAssetAccess, Credential, MetaAccount, SystemStatus, User
 from services.credential_service import CredentialService
 
 # --------------------------------------------------------------------------
@@ -363,6 +363,27 @@ def test_account_filter_by_bm_and_total_count(client):
     ids = [a["account_id"] for a in resp.json()]
     assert ids == [acc_a["account_id"]]
     assert resp.headers["X-Total-Count"] == "1"
+
+
+def test_account_filter_by_bm_does_not_require_asset_access_row(client):
+    """已归属 BM 的历史账户即使没有关系表记录，也应能从 BM 数量入口看到。"""
+    meta = _make_meta(client)
+    account = _make_account(client, business_id=meta["id"])
+
+    db = TestingSessionLocal()
+    try:
+        db.query(BusinessAssetAccess).filter(
+            BusinessAssetAccess.business_id == meta["id"],
+            BusinessAssetAccess.asset_id == account["id"],
+            BusinessAssetAccess.asset_type == "AD_ACCOUNT",
+        ).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+    resp = client.get("/api/v1/accounts", params={"business_id": meta["id"]})
+    assert resp.status_code == 200
+    assert [item["id"] for item in resp.json()] == [account["id"]]
 
 
 def test_transfer_and_bulk_transfer(client):

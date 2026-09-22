@@ -20,9 +20,12 @@ export interface WorkbenchCurrencyTotal {
   clicks: number
   conversions: number
   conversion_value: number
-  ctr: number
-  cpa: number
-  roas: number
+  ctr: number | null
+  conversion_rate: number | null
+  cpc: number | null
+  cpm: number | null
+  cpa: number | null
+  roas: number | null
 }
 
 export interface WorkbenchSummary {
@@ -61,7 +64,21 @@ export interface WorkbenchSummary {
   delivery_health: { status_counts: Record<string, number>; status_drift: number }
   job_status: Record<string, number>
   currency_totals: WorkbenchCurrencyTotal[]
-  trend: Array<{ date: string; currency: string; spend: number; impressions: number; clicks: number }>
+  trend: Array<{
+    date: string
+    currency: string
+    spend: number
+    impressions: number
+    clicks: number
+    conversions: number
+    conversion_value: number
+    ctr: number | null
+    conversion_rate: number | null
+    cpc: number | null
+    cpm: number | null
+    cpa: number | null
+    roas: number | null
+  }>
   recent_tasks: Array<{ id: string; action_type: string; status: string; total_accounts: number; success_count: number; failed_count: number; created_by?: string; created_at?: string | null }>
   alerts: Array<{ id: string; ad_account_id?: string; alert_type: string; title: string; message: string; created_at?: string }>
 }

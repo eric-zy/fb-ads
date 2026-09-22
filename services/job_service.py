@@ -29,10 +29,19 @@ from models import (
     AdGroup,
     User,
     MetaAudienceAsset,
+    MetaTrackingAsset,
 )
 from services.account_access import accessible_account_ids
+from services.meta_delivery_rules import (
+    budget_bid_preflight_errors,
+    conversion_event_preflight_errors,
+    objective_optimization_preflight_errors,
+    schedule_preflight_errors,
+    tracking_asset_preflight_errors,
+    tracking_asset_requirements,
+)
 from services.meta.page_access import page_account_access_error
-from services.targeting_catalog import normalize_targeting
+from services.targeting_catalog import normalize_targeting, placement_preflight_errors, targeting_preflight_errors
 from tasks.campaign_tasks import (
     execute_campaign_job,
     retry_failed_job_items,
@@ -124,10 +133,25 @@ class JobService:
             errors.append({"code": "TEMPLATE_INACTIVE", "message": "投放模板不是 ACTIVE 状态"})
         if status not in (InstanceStatus.PAUSED.value, InstanceStatus.ACTIVE.value):
             errors.append({"code": "INVALID_STATUS", "message": "初始状态只能是 PAUSED 或 ACTIVE"})
-        budget = budget_override if budget_override is not None else (template.daily_budget or 0)
+        budget_type = str(template.budget_type or "DAILY").upper()
+        budget = budget_override if budget_override is not None else (
+            template.lifetime_budget if budget_type == "LIFETIME" else template.daily_budget
+        ) or 0
         if budget <= 0:
             errors.append({"code": "INVALID_BUDGET", "message": "预算必须大于 0"})
         config = template.creative_config_json or {}
+        errors.extend(schedule_preflight_errors(budget_type, config.get("schedule")))
+        errors.extend(objective_optimization_preflight_errors(template.objective, template.optimization_goal, config))
+        errors.extend(tracking_asset_preflight_errors(template.optimization_goal, config))
+        errors.extend(conversion_event_preflight_errors(template.optimization_goal, config))
+        errors.extend(budget_bid_preflight_errors(
+            "模板",
+            template.daily_budget,
+            template.bid_strategy,
+            (config.get("bidding") or {}).get("bid_amount") if isinstance(config.get("bidding"), dict) else None,
+            (config.get("bidding") or {}).get("bid_constraints") if isinstance(config.get("bidding"), dict) else None,
+        ))
+        tracking_requirements = tracking_asset_requirements(template.optimization_goal, config)
         ad_group_mode = str(ad_group_mode or "NEW").upper()
         ad_group_selections = ad_group_selections or {}
         if ad_group_mode not in {"NEW", "EXISTING", "COPY"}:
@@ -145,6 +169,58 @@ class JobService:
             errors.append({"code": "CREATIVE_REQUIRED", "message": "模板至少需要一个有效素材"})
 
         ids = list(dict.fromkeys(ad_account_ids or []))
+        if tracking_requirements and ids:
+            selected_asset_ids = {item["asset_id"] for item in tracking_requirements}
+            asset_rows = self.db.query(MetaTrackingAsset).filter(
+                MetaTrackingAsset.ad_account_id.in_(ids),
+                MetaTrackingAsset.meta_asset_id.in_(selected_asset_ids),
+                MetaTrackingAsset.status == "ACTIVE",
+                MetaTrackingAsset.usable.is_(True),
+            ).all()
+            usable_by_account = {}
+            for row in asset_rows:
+                usable_by_account.setdefault(row.ad_account_id, set()).add(row.meta_asset_id)
+            unavailable_items = []
+            for account_id in ids:
+                available_assets = usable_by_account.get(account_id, set())
+                for requirement in tracking_requirements:
+                    if requirement["asset_id"] not in available_assets:
+                        unavailable_items.append({
+                            "account_id": account_id,
+                            "asset_id": requirement["asset_id"],
+                            "optimization_goal": requirement["optimization_goal"],
+                            "scope": requirement["scope"],
+                            "reason": "事件源未同步、已失效或不属于该广告账户",
+                        })
+            if unavailable_items:
+                errors.append({
+                    "code": "TRACKING_ASSET_UNAVAILABLE",
+                    "message": "所选 Pixel/数据集并非所有目标广告账户均可用，请同步资产或调整账户范围",
+                    "items": unavailable_items,
+                })
+            stale_cutoff = datetime.utcnow() - timedelta(hours=24)
+            stale_assets = [
+                row for row in asset_rows
+                if not row.last_synced_at or row.last_synced_at < stale_cutoff
+            ]
+            if stale_assets:
+                stale_summary = "; ".join(
+                    f"{row.meta_ad_account_id}/{row.meta_asset_id}"
+                    for row in stale_assets[:10]
+                )
+                suffix = "等" if len(stale_assets) > 10 else ""
+                warnings.append({
+                    "code": "TRACKING_ASSET_STALE",
+                    "message": f"{len(stale_assets)} 个已选事件源超过 24 小时未同步（{stale_summary}{suffix}），建议先刷新资产",
+                    "items": [
+                        {
+                            "account_id": row.ad_account_id,
+                            "asset_id": row.meta_asset_id,
+                            "reason": "事件源同步已超过 24 小时",
+                        }
+                        for row in stale_assets
+                    ],
+                })
         # Custom Audience 不是跨账户可复用的字符串 ID。发布前先校验账户
         # 范围，避免任务进入队列后才由 Meta 返回权限/参数错误。
         target_accounts = self.db.query(AdAccount).filter(AdAccount.id.in_(ids)).all() if ids else []
@@ -154,11 +230,20 @@ class JobService:
             account_scope[str(account.account_id).replace("act_", "")] = str(account.id)
             account_scope[str(account.account_id)] = str(account.id)
         targeting_configs = [("模板定向", template.targeting_json or {})]
+        placement_configs = [("模板版位", template.placement_json or {})]
         for index, adset in enumerate(configured_adsets, 1):
             if isinstance(adset, dict):
                 targeting_configs.append((f"广告组 {index} 定向", adset.get("targeting") or {}))
+                placement_configs.append((f"广告组 {index} 版位", adset.get("placement") or {}))
+                errors.extend(budget_bid_preflight_errors(
+                    f"广告组 {index}",
+                    adset.get("budget"),
+                    adset.get("bid_strategy") or template.bid_strategy,
+                    adset.get("bid_amount"),
+                ))
         audience_errors = set()
         for label, raw_targeting in targeting_configs:
+            errors.extend(targeting_preflight_errors(label, raw_targeting))
             try:
                 targeting = normalize_targeting(raw_targeting)
             except ValueError as exc:
@@ -173,6 +258,8 @@ class JobService:
                     elif scoped.replace("act_", "") not in account_scope and scoped not in account_scope:
                         audience_errors.add(("AUDIENCE_ACCOUNT_MISMATCH", f"{label} 的受众 {audience_id} 不属于本次投放账户"))
         errors.extend({"code": code, "message": message} for code, message in sorted(audience_errors))
+        for label, placement in placement_configs:
+            errors.extend(placement_preflight_errors(label, placement))
 
         required_rows = self.db.query(MetaAudienceAsset).filter(
             MetaAudienceAsset.ad_account_id.in_(ids),

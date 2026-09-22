@@ -20,6 +20,9 @@ class AccountVerifyRequest(BusinessRequest):
 class AudienceListRequest(CredentialRequest):
     account_id: str = Field(..., min_length=1, max_length=64)
 
+class TrackingAssetsRequest(AudienceListRequest):
+    pass
+
 def _client(credential_id: str) -> MetaClient:
     try:
         return MetaClient(access_token=DatabaseCredentialVault().get_access_token(credential_id))
@@ -114,6 +117,26 @@ async def list_custom_audiences(payload: AudienceListRequest):
         report_meta_auth_failure(payload.credential_id, exc)
         logger.exception(
             "[ConnectorAssets] list audiences failed credential_id=%s account_id=%s",
+            payload.credential_id,
+            payload.account_id,
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@router.post("/tracking-assets/list")
+async def list_tracking_assets(payload: TrackingAssetsRequest):
+    """读取广告账户可用于转化优化的 Pixel / Dataset 元数据。"""
+    try:
+        logger.info(
+            "[ConnectorAssets] list tracking assets start credential_id=%s account_id=%s",
+            payload.credential_id,
+            payload.account_id,
+        )
+        assets = _client(payload.credential_id).get_tracking_assets(payload.account_id)
+        return {"account_id": payload.account_id, "assets": assets}
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception(
+            "[ConnectorAssets] list tracking assets failed credential_id=%s account_id=%s",
             payload.credential_id,
             payload.account_id,
         )

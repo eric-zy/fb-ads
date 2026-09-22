@@ -62,6 +62,14 @@ export const permissionGroups: PermissionGroup[] = [
     ],
   },
   {
+    key: 'sinan',
+    label: '司南平台',
+    description: '查看司南推广链数据',
+    permissions: [
+      { value: 'sinan:read', label: '查看司南推广链', description: '查看司南推广链和推广链接详情' },
+    ],
+  },
+  {
     key: 'risk',
     label: '风控中心',
     description: '查看风险事件、管理规则和检查止损记录',

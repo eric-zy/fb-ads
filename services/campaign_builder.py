@@ -35,6 +35,7 @@ from models import (
 )
 from services.meta.service import MetaAdsService
 from services.targeting_catalog import normalize_targeting
+from services.meta_delivery_rules import is_pixel_required
 
 
 def _new_id() -> str:
@@ -204,14 +205,17 @@ class AdSetBuilder:
         objective = str(self.template.objective or "OUTCOME_TRAFFIC").upper()
         if objective == "OUTCOME_SALES" and optimization_goal in {"LINK_CLICKS", "LANDING_PAGE_VIEWS"}:
             raise ValueError("OUTCOME_SALES 不支持 LINK_CLICKS/LANDING_PAGE_VIEWS；请改用 OUTCOME_TRAFFIC，或配置 OFFSITE_CONVERSIONS 及 promoted_object")
-        if optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"}:
+        if is_pixel_required(optimization_goal):
             config = {**(self.template.creative_config_json or {}), **self.adset_config}
             promoted_object = config.get("promoted_object")
             if not promoted_object:
-                dataset_id = config.get("dataset_id") or config.get("pixel_id")
-                event = config.get("conversion_event") or config.get("custom_event_type")
+                dataset_id = config.get("dataset_id")
+                pixel_id = config.get("pixel_id")
+                event = str(config.get("conversion_event") or config.get("custom_event_type") or "").strip()
                 if dataset_id and event:
-                    promoted_object = {"pixel_id": dataset_id, "custom_event_type": event}
+                    promoted_object = {"dataset_id": dataset_id, "conversion_event": event}
+                elif pixel_id and event:
+                    promoted_object = {"pixel_id": pixel_id, "custom_event_type": event}
             if not promoted_object:
                 raise ValueError(
                     f"优化目标 {optimization_goal} 必须配置 creative_config_json.promoted_object"

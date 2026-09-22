@@ -4,7 +4,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from core.auth import get_current_active_user
+from core.auth import get_current_active_user, require_permission
 from core.tenant import effective_tenant_id
 from core.database import get_db
 from models import SinanCredential, User
@@ -69,7 +69,7 @@ def _client(db, user):
     return SinanClient(row.base_url, row.app_id, row.get_access_token(), row.get_refresh_token(), row.menu_id)
 
 @router.post('/promotions/query')
-async def promotions_query(payload: dict, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
+async def promotions_query(payload: dict, db: Session = Depends(get_db), user: User = Depends(require_permission('sinan:read'))):
     try:
         return (await _client(db, user).promotion_list(payload.get('page', 1), payload.get('page_size', 20))).get('data', {})
     except HTTPException: raise
@@ -77,7 +77,7 @@ async def promotions_query(payload: dict, db: Session = Depends(get_db), user: U
         raise HTTPException(502, f'司南推广链查询失败：{exc}')
 
 @router.get('/promotions/{promotion_id}')
-async def promotion_detail(promotion_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
+async def promotion_detail(promotion_id: str, db: Session = Depends(get_db), user: User = Depends(require_permission('sinan:read'))):
     return (await _client(db, user).promotion_detail(promotion_id)).get('data', {})
 
 @router.post('/content/search')

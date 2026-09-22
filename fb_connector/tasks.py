@@ -568,8 +568,65 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
         service = MetaAdsService(MetaClient(access_token=token))
 
         campaign_id = row.campaign_id
+        requested_campaign = dict(payload.get("campaign") or {})
+        requested_campaign_id = requested_campaign.get("existing_id") or requested_campaign.get("reuse_id")
+        # EXISTING 模式复用的是本地同步快照，快照可能落后于 Meta（例如
+        # 投手刚在 Meta 删除了广告组）。先校验远端状态，避免先创建新的
+        # Campaign 再在已删除 AdSet 下创建 ACTIVE/PAUSED 广告，产生孤儿对象。
+        if requested_campaign_id:
+            requested_campaign_id = str(requested_campaign_id)
+            try:
+                remote_campaign = service.get_campaign(requested_campaign_id)
+            except MetaApiError as exc:
+                raise MetaApiError(
+                    f"复用广告系列 {requested_campaign_id} 已无法从 Meta 读取，请同步后重新选择",
+                    category=ErrorCategory.VALIDATION,
+                    code=100,
+                    subcode=1487861,
+                    fbtrace_id=exc.fbtrace_id,
+                ) from exc
+            remote_status = str(
+                remote_campaign.get("effective_status") or remote_campaign.get("status") or ""
+            ).upper()
+            if remote_status in {"DELETED", "ARCHIVED", "UNKNOWN", ""}:
+                raise MetaApiError(
+                    f"复用广告系列 {requested_campaign_id} 在 Meta 端已删除或不可用，请同步后重新选择",
+                    category=ErrorCategory.VALIDATION,
+                    code=100,
+                    subcode=1487861,
+                )
+        for raw_adset in payload.get("adsets") or []:
+            requested_adset_id = raw_adset.get("existing_id") or raw_adset.get("reuse_id")
+            if not requested_adset_id:
+                continue
+            try:
+                remote_adset = service.get_adset(str(requested_adset_id))
+            except MetaApiError as exc:
+                raise MetaApiError(
+                    f"复用广告组 {requested_adset_id} 已无法从 Meta 读取，请同步后重新选择",
+                    category=ErrorCategory.VALIDATION,
+                    code=100,
+                    subcode=1487861,
+                    fbtrace_id=exc.fbtrace_id,
+                ) from exc
+            remote_status = str(remote_adset.get("effective_status") or remote_adset.get("status") or "").upper()
+            if remote_status in {"DELETED", "ARCHIVED", "UNKNOWN", ""}:
+                raise MetaApiError(
+                    f"复用广告组 {requested_adset_id} 在 Meta 端已删除或不可用，请同步后重新选择",
+                    category=ErrorCategory.VALIDATION,
+                    code=100,
+                    subcode=1487861,
+                )
+            remote_parent_id = str(remote_adset.get("campaign_id") or "")
+            if requested_campaign_id and remote_parent_id and remote_parent_id != requested_campaign_id:
+                raise MetaApiError(
+                    f"复用广告组 {requested_adset_id} 不属于所选广告系列 {requested_campaign_id}，请重新同步后选择",
+                    category=ErrorCategory.VALIDATION,
+                    code=100,
+                    subcode=1487861,
+                )
         if not campaign_id:
-            campaign_payload = dict(payload.get("campaign") or {})
+            campaign_payload = requested_campaign
             reuse_campaign_id = campaign_payload.pop("existing_id", None) or campaign_payload.pop("reuse_id", None)
             if reuse_campaign_id:
                 campaign_id = str(reuse_campaign_id)

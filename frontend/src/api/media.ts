@@ -2,8 +2,7 @@
 import request from '@/utils/request'
 import axios from 'axios'
 import type { AxiosProgressEvent } from 'axios'
-import { md5ArrayBuffer } from '@/utils/md5'
-import { sha256ArrayBuffer } from '@/utils/sha256'
+import { fingerprintFile } from '@/utils/mediaFingerprint'
 
 export interface MediaItem {
   id: string
@@ -138,6 +137,7 @@ export interface UploadSessionResponse {
   binding_id?: string | null
   binding?: MetaAssetBinding
   task_id?: string | null
+  resumed?: boolean
 }
 
 export interface UploadResult {
@@ -162,12 +162,11 @@ export const mediaApi = {
     request.get<MediaItem[]>('/api/v1/media', { params }),
   upload: (
     file: File,
-    extra?: { meta_account_id?: string; account_id?: string; group_id?: string },
-    onProgress?: (e: AxiosProgressEvent) => void
+    extra?: { meta_account_id?: string; account_id?: string; group_id?: string; asset_id?: string },
+    onProgress?: (e: AxiosProgressEvent) => void,
+    onHashProgress?: (loaded: number, total: number) => void,
   ): Promise<UploadResult> => {
-    return file.arrayBuffer().then(async (buffer) => {
-      const sha256 = await sha256ArrayBuffer(buffer)
-      const md5 = md5ArrayBuffer(buffer)
+    return fingerprintFile(file, onHashProgress).then(async ({ md5, sha256 }) => {
       const assetType = file.type.startsWith('video/') ? 'video' : 'image'
       const session = await request.post<UploadSessionResponse>('/api/v1/media/upload-sessions', {
         name: file.name,
@@ -179,6 +178,7 @@ export const mediaApi = {
         account_id: extra?.account_id,
         meta_account_id: extra?.meta_account_id,
         group_id: extra?.group_id,
+        asset_id: extra?.asset_id,
       })
       if (session.data.duplicate) {
         if (!session.data.asset) throw new Error('重复素材响应缺少素材信息')

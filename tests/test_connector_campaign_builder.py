@@ -41,6 +41,75 @@ def test_build_connector_payload_contains_complete_tree():
     assert payload["adsets"][0]["daily_budget"] == 1000
 
 
+def test_build_connector_payload_preserves_dataset_conversion_source():
+    template = SimpleNamespace(
+        name="Dataset Conversion",
+        objective="OUTCOME_SALES",
+        special_ad_categories=[],
+        is_adset_budget_sharing_enabled=False,
+        buying_type="AUCTION",
+        budget_type="DAILY",
+        daily_budget=10,
+        lifetime_budget=None,
+        billing_event="IMPRESSIONS",
+        optimization_goal="OFFSITE_CONVERSIONS",
+        targeting_json={"geo_locations": {"countries": ["US"]}},
+        placement_json={},
+        bid_strategy=None,
+        creative_config_json={
+            "dataset_id": "dataset-1",
+            "conversion_event": "PURCHASE",
+            "page_id": "page-1",
+            "creatives": [{
+                "page_id": "page-1",
+                "asset_type": "image",
+                "image_hash": "hash-1",
+                "message": "hello",
+                "landing_url": "https://example.com",
+            }],
+        },
+    )
+
+    payload = build_connector_payload(template, "act_1")
+
+    assert payload["adsets"][0]["promoted_object"] == {
+        "dataset_id": "dataset-1",
+        "conversion_event": "PURCHASE",
+    }
+
+
+def test_build_connector_payload_does_not_require_tracking_source_for_traffic():
+    template = SimpleNamespace(
+        name="Traffic Campaign",
+        objective="OUTCOME_TRAFFIC",
+        special_ad_categories=[],
+        is_adset_budget_sharing_enabled=False,
+        buying_type="AUCTION",
+        budget_type="DAILY",
+        daily_budget=10,
+        lifetime_budget=None,
+        billing_event="IMPRESSIONS",
+        optimization_goal="LINK_CLICKS",
+        targeting_json={"geo_locations": {"countries": ["US"]}},
+        placement_json={},
+        bid_strategy=None,
+        creative_config_json={
+            "page_id": "page-1",
+            "creatives": [{
+                "page_id": "page-1",
+                "asset_type": "image",
+                "image_hash": "hash-1",
+                "message": "hello",
+                "landing_url": "https://example.com",
+            }],
+        },
+    )
+
+    payload = build_connector_payload(template, "act_1")
+
+    assert "promoted_object" not in payload["adsets"][0]
+
+
 def test_build_connector_payload_resolves_account_scoped_video_binding():
     template = SimpleNamespace(
         name="Video Demo",

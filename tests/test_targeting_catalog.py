@@ -1,6 +1,6 @@
 import pytest
 
-from services.targeting_catalog import normalize_languages, normalize_targeting, validate_audience_refs
+from services.targeting_catalog import normalize_languages, normalize_targeting, placement_preflight_errors, targeting_preflight_errors, validate_audience_refs
 
 
 def test_language_alias_expands_and_deduplicates():
@@ -39,3 +39,39 @@ def test_meta_targeting_resolves_product_language_to_locale_id(monkeypatch):
     result = client.resolve_targeting_locales({"languages": ["en"], "geo_locations": {"countries": ["US"]}})
 
     assert result == {"locales": ["6"], "geo_locations": {"countries": ["US"]}}
+
+
+def test_targeting_preflight_rejects_empty_country_and_gender():
+    errors = targeting_preflight_errors("广告组 1 定向", {
+        "geo_locations": {"countries": []},
+        "age_min": 18,
+        "age_max": 65,
+        "genders": [],
+    })
+    assert {item["code"] for item in errors} == {"TARGETING_COUNTRY_REQUIRED", "TARGETING_GENDER_INVALID"}
+
+
+def test_targeting_preflight_rejects_invalid_age_range():
+    errors = targeting_preflight_errors("广告组 1 定向", {
+        "geo_locations": {"countries": ["US"]},
+        "age_min": 66,
+        "age_max": 18,
+        "genders": [1, 2],
+    })
+    assert {item["code"] for item in errors} == {"TARGETING_AGE_INVALID", "TARGETING_AGE_RANGE_INVALID"}
+
+
+def test_placement_preflight_accepts_supported_platforms():
+    assert placement_preflight_errors("广告组 1 版位", {
+        "publisher_platforms": ["facebook", "instagram"],
+        "facebook_positions": ["feed", "story"],
+        "instagram_positions": ["stream", "story"],
+    }) == []
+
+
+def test_placement_preflight_rejects_unknown_platform_and_position():
+    errors = placement_preflight_errors("广告组 1 版位", {
+        "publisher_platforms": ["facebook", "wechat"],
+        "facebook_positions": ["unknown_position"],
+    })
+    assert {item["code"] for item in errors} == {"PLACEMENT_PLATFORM_INVALID", "PLACEMENT_POSITION_INVALID"}

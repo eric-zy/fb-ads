@@ -1,9 +1,10 @@
 <template>
   <div class="jobs-page">
-    <el-card shadow="never">
+    <el-card class="jobs-shell" shadow="never">
       <template #header>
         <div class="header-bar">
-          <div>
+          <div class="title-block">
+            <span class="eyebrow">DELIVERY OPERATIONS</span>
             <h2 class="page-title">任务中心（Job Center）</h2>
             <p class="page-desc">
               批量投放、批量启停、批量改预算都会生成异步任务。
@@ -15,77 +16,77 @@
               v-model="statusFilter"
               placeholder="状态筛选"
               clearable
-              style="width: 180px"
+              class="status-select"
               @change="loadJobs"
             >
-              <el-option label="PENDING" value="PENDING" />
-              <el-option label="RUNNING" value="RUNNING" />
-              <el-option label="SUCCESS" value="SUCCESS" />
-              <el-option label="PARTIAL_SUCCESS" value="PARTIAL_SUCCESS" />
-              <el-option label="FAILED" value="FAILED" />
-              <el-option label="CANCELLED" value="CANCELLED" />
+              <el-option label="全部状态" value="" />
+              <el-option label="等待中" value="PENDING" />
+              <el-option label="执行中" value="RUNNING" />
+              <el-option label="已成功" value="SUCCESS" />
+              <el-option label="部分成功" value="PARTIAL_SUCCESS" />
+              <el-option label="失败" value="FAILED" />
+              <el-option label="已取消" value="CANCELLED" />
             </el-select>
-            <el-checkbox v-model="autoRefresh" style="margin-left: 12px">自动刷新(5s)</el-checkbox>
-            <el-button :icon="Refresh" @click="loadJobs">刷新</el-button>
+            <el-checkbox v-model="autoRefresh" class="auto-refresh">自动刷新 <span>5s</span></el-checkbox>
+            <el-button class="refresh-button" :icon="Refresh" @click="loadJobs">刷新</el-button>
           </div>
         </div>
       </template>
 
-      <el-table :data="jobs" v-loading="loading" size="small">
-        <el-table-column prop="id" label="Job ID" width="240" show-overflow-tooltip />
-        <el-table-column label="动作" width="130">
+      <div class="job-summary">
+        <div class="summary-card total"><span class="summary-icon">◷</span><div><span class="summary-label">当前任务</span><strong>{{ summary.total }}</strong></div></div>
+        <div class="summary-card running"><span class="summary-icon">↻</span><div><span class="summary-label">执行中</span><strong>{{ summary.running }}</strong></div></div>
+        <div class="summary-card success"><span class="summary-icon">✓</span><div><span class="summary-label">已完成</span><strong>{{ summary.success }}</strong></div></div>
+        <div class="summary-card failed"><span class="summary-icon">!</span><div><span class="summary-label">需关注</span><strong>{{ summary.failed }}</strong></div></div>
+      </div>
+
+      <el-table class="job-table" :data="jobs" v-loading="loading" size="small" row-key="id">
+        <el-table-column label="任务 ID" width="180" show-overflow-tooltip>
+          <template #default="{ row }"><span class="job-id">{{ shortId(row.id) }}</span></template>
+        </el-table-column>
+        <el-table-column label="任务动作" width="130">
           <template #default="{ row }">
-            <el-tag size="small">{{ actionLabel(row.action_type) }}</el-tag>
+            <el-tag class="action-tag" size="small" effect="plain">{{ actionLabel(row.action_type) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="160">
+        <el-table-column label="状态" width="125">
           <template #default="{ row }">
-            <el-tag :type="statusTagType(row.status)" size="small">{{ row.status }}</el-tag>
+            <el-tag :type="statusTagType(row.status)" size="small" effect="light">{{ statusLabel(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="进度" width="200">
+        <el-table-column label="执行进度" min-width="190">
           <template #default="{ row }">
-            <el-progress
-              :percentage="percent(row)"
-              :stroke-width="14"
-              :status="progressStatus(row.status)"
-            />
+            <div class="progress-cell">
+              <div class="progress-line"><el-progress :percentage="percent(row)" :stroke-width="8" :show-text="false" :status="progressStatus(row.status)" /><span>{{ percent(row) }}%</span></div>
+              <small>{{ row.success_count + row.failed_count }} / {{ row.total_accounts }} 个账户已处理</small>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="总/成功/失败" width="130">
+        <el-table-column label="账户结果" width="145">
           <template #default="{ row }">
-            {{ row.total_accounts }} /
-            <span style="color:#67c23a">{{ row.success_count }}</span> /
-            <span style="color:#f56c6c">{{ row.failed_count }}</span>
+            <div class="result-counts"><span class="result-total">{{ row.total_accounts }} 总数</span><span class="result-success">{{ row.success_count }} 成功</span><span class="result-failed">{{ row.failed_count }} 失败</span></div>
           </template>
         </el-table-column>
-        <el-table-column prop="created_at" label="创建时间" width="180" show-overflow-tooltip />
-        <el-table-column label="发布人" width="150" show-overflow-tooltip><template #default="{ row }">{{ row.publisher?.username || row.publisher?.email || row.created_by || '-' }}</template></el-table-column>
-        <el-table-column label="操作" width="250" fixed="right">
+        <el-table-column label="创建时间" width="165" show-overflow-tooltip><template #default="{ row }"><span class="created-time">{{ formatDateTime(row.created_at) }}</span></template></el-table-column>
+        <el-table-column label="发布人" width="115" show-overflow-tooltip><template #default="{ row }">{{ row.publisher?.username || row.publisher?.email || row.created_by || '-' }}</template></el-table-column>
+        <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="viewDetail(row.id)">详情</el-button>
-            <el-button
-              v-if="canEditRepublish && row.action_type === 'CREATE' && ['FAILED', 'PARTIAL_SUCCESS'].includes(row.status)"
-              link
-              type="success"
-              @click="editRepublish(row)"
-            >
-              编辑后重投
-            </el-button>
-            <el-button
-              v-if="canRetry"
-              link
-              type="warning"
-              :disabled="!row.failed_count || isFinal(row.status) === false"
-              @click="handleRetry(row)"
-            >
-              重跑失败
-            </el-button>
-            <el-button v-if="canCancel" link type="danger" :disabled="isFinal(row.status)" @click="handleCancel(row)">
-              取消
-            </el-button>
+            <div class="operation-actions">
+              <el-button class="detail-button" size="small" type="primary" plain @click="viewDetail(row.id)">查看详情</el-button>
+              <el-dropdown v-if="hasMoreActions(row)" trigger="click" @command="(command: string) => handleAction(command, row)">
+                <el-button class="more-button" size="small" plain>更多<el-icon><ArrowDown /></el-icon></el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-if="canEditRepublish && row.action_type === 'CREATE' && ['FAILED', 'PARTIAL_SUCCESS'].includes(row.status)" command="edit">编辑后重投</el-dropdown-item>
+                    <el-dropdown-item v-if="canRetry" command="retry" :disabled="!row.failed_count || !isFinal(row.status)">重跑失败项</el-dropdown-item>
+                    <el-dropdown-item v-if="canCancel" command="cancel" :disabled="isFinal(row.status)" divided>取消任务</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </template>
         </el-table-column>
+        <template #empty><el-empty description="暂无任务记录" /></template>
       </el-table>
     </el-card>
 
@@ -100,7 +101,7 @@
         <el-descriptions-item label="来源任务">{{ currentJob?.parent_job_id || '-' }}</el-descriptions-item>
         <el-descriptions-item label="状态">
           <el-tag :type="statusTagType(currentJob?.status || '')" size="small">
-            {{ currentJob?.status }}
+            {{ statusLabel(currentJob?.status || '') }}
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="总数">{{ currentJob?.total_accounts }}</el-descriptions-item>
@@ -219,7 +220,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Refresh } from '@element-plus/icons-vue'
+import { ArrowDown, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   jobsApi,
@@ -242,6 +243,12 @@ const router = useRouter()
 const canRetry = computed(() => userStore.isAdmin || userStore.hasPermission('job:retry'))
 const canCancel = computed(() => userStore.isAdmin || userStore.hasPermission('job:cancel'))
 const canEditRepublish = computed(() => userStore.isAdmin || userStore.hasPermission('job:create'))
+const summary = computed(() => ({
+  total: jobs.value.length,
+  running: jobs.value.filter((job) => !isFinal(job.status)).length,
+  success: jobs.value.filter((job) => job.status === 'SUCCESS').length,
+  failed: jobs.value.filter((job) => ['FAILED', 'PARTIAL_SUCCESS'].includes(job.status)).length,
+}))
 
 let timer: number | null = null
 
@@ -255,6 +262,21 @@ const actionLabel = (action: string) =>
     UPDATE_BUDGET: '批量改预算',
     SYNC: '数据同步',
   }[action] || action)
+
+const statusLabel = (status: string) =>
+  ({
+    PENDING: '等待中',
+    VALIDATING: '校验中',
+    QUEUED: '排队中',
+    RUNNING: '执行中',
+    SUCCESS: '已完成',
+    PARTIAL_SUCCESS: '部分成功',
+    FAILED: '执行失败',
+    CANCELLED: '已取消',
+  }[status] || status || '-')
+
+const shortId = (id: string) => id ? `${id.slice(0, 8)}…${id.slice(-6)}` : '-'
+const formatDateTime = (value?: string | null) => value ? value.replace('T', ' ').slice(0, 19) : '-'
 
 const statusTagType = (status: string) =>
   ({
@@ -285,6 +307,17 @@ const progressStatus = (status: string) => {
   if (status === 'SUCCESS') return 'success'
   if (status === 'FAILED' || status === 'CANCELLED') return 'exception'
   return undefined
+}
+
+const hasMoreActions = (row: CampaignJob) =>
+  (canEditRepublish.value && row.action_type === 'CREATE' && ['FAILED', 'PARTIAL_SUCCESS'].includes(row.status))
+  || canRetry.value
+  || canCancel.value
+
+const handleAction = (command: string, row: CampaignJob) => {
+  if (command === 'edit') editRepublish(row)
+  else if (command === 'retry') void handleRetry(row)
+  else if (command === 'cancel') void handleCancel(row)
 }
 
 const loadJobs = async () => {
@@ -428,15 +461,59 @@ onUnmounted(stopTimer)
 </script>
 
 <style scoped lang="scss">
+.jobs-page { min-height: 100%; }
+.jobs-shell { border: 0; border-radius: 16px; overflow: hidden; background: #fff; box-shadow: 0 8px 28px rgba(31, 55, 80, .06); }
+.jobs-shell :deep(.el-card__header) { padding: 24px 24px 20px; border-bottom: 1px solid #edf1f5; }
+.jobs-shell :deep(.el-card__body) { padding: 0 20px 20px; }
 .header-bar {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
 
-  .page-title { margin: 0; font-size: 18px; }
-  .page-desc { margin: 4px 0 0; font-size: 13px; color: #909399; line-height: 1.6; max-width: 620px; }
+  .title-block { min-width: 0; }
+  .eyebrow { display: block; margin-bottom: 7px; color: #8a9aad; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; }
+  .page-title { margin: 0; color: #172b4d; font-size: 21px; font-weight: 700; }
+  .page-desc { margin: 8px 0 0; color: #7b8da3; font-size: 13px; line-height: 1.65; max-width: 650px; }
 }
-.actions { display: flex; align-items: center; }
+.actions { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.status-select { width: 140px; }
+.auto-refresh { margin: 0 2px 0 4px; color: #60758d; font-size: 13px; }
+.auto-refresh span { color: #2f80ed; font-weight: 600; }
+.refresh-button { border-color: #dbe5ef; color: #486581; }
+.job-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 20px 4px 18px; }
+.summary-card { display: flex; align-items: center; gap: 12px; min-height: 70px; padding: 13px 16px; border: 1px solid #edf1f5; border-radius: 12px; background: #fbfcfe; }
+.summary-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; font-size: 19px; font-weight: 700; }
+.summary-card div { display: flex; flex-direction: column; gap: 2px; }
+.summary-label { color: #7b8da3; font-size: 12px; }
+.summary-card strong { color: #172b4d; font-size: 23px; line-height: 1.1; }
+.summary-card.total .summary-icon { color: #2f80ed; background: #eaf3ff; }
+.summary-card.running .summary-icon { color: #9b6b00; background: #fff4d6; }
+.summary-card.success .summary-icon { color: #2f9e62; background: #e7f7ee; }
+.summary-card.failed .summary-icon { color: #d95757; background: #ffeded; }
+.job-table { color: #40566f; }
+.job-table :deep(th.el-table__cell) { height: 46px; color: #8495a8; background: #fbfcfe; font-size: 12px; font-weight: 600; }
+.job-table :deep(td.el-table__cell) { height: 66px; border-bottom-color: #eef2f6; }
+.job-table :deep(.el-table__row:hover > td.el-table__cell) { background: #f8fbff; }
+.job-id { color: #6f839a; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.action-tag { color: #3978c7; border-color: #cfe2fa; background: #f3f8ff; }
+.progress-cell { min-width: 155px; padding-right: 8px; }
+.progress-line { display: flex; align-items: center; gap: 9px; }
+.progress-line .el-progress { flex: 1; }
+.progress-line > span { width: 36px; color: #60758d; font-size: 12px; text-align: right; }
+.progress-cell small { display: block; margin-top: 5px; color: #9aaabd; font-size: 11px; }
+.result-counts { display: flex; flex-wrap: wrap; gap: 4px 8px; color: #8495a8; font-size: 12px; line-height: 1.5; }
+.result-success { color: #36a269; }
+.result-failed { color: #e06464; }
+.created-time { color: #6f839a; font-size: 12px; }
+.operation-actions { display: flex; align-items: center; gap: 6px; }
+.detail-button { border-color: #cfe2fa; }
+.more-button { color: #60758d; border-color: #dbe5ef; }
+.more-button :deep(.el-icon) { margin-left: 3px; }
 .err-cat { color: #e6a23c; margin-right: 4px; }
+@media (max-width: 1050px) {
+  .header-bar { flex-direction: column; }
+  .actions { width: 100%; justify-content: flex-end; }
+  .job-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 </style>

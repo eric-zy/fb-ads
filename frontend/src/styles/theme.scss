@@ -93,6 +93,65 @@
   border-radius: var(--radius);
 }
 
+// 日期选择器统一弹层：贴近输入框、尺寸克制，避免日期面板漂浮在页面正中间。
+.date-range-popper.el-popper,
+.date-time-popper.el-popper,
+.date-range-popper.el-picker-panel,
+.date-time-popper.el-picker-panel {
+  overflow: hidden;
+  border: 1px solid #e7edf5;
+  border-radius: 14px;
+  box-shadow: 0 14px 34px rgba(31, 55, 88, 0.16);
+}
+
+.date-range-popper .el-picker-panel,
+.date-time-popper .el-picker-panel {
+  border: 0;
+  box-shadow: none;
+}
+
+.date-range-popper .el-picker-panel__body,
+.date-time-popper .el-picker-panel__body {
+  padding: 4px;
+}
+
+.date-range-popper .el-date-range-picker__content,
+.date-time-popper .el-date-picker__header {
+  padding-right: 14px;
+  padding-left: 14px;
+}
+
+.date-range-popper .el-picker-panel__icon-btn,
+.date-time-popper .el-picker-panel__icon-btn {
+  color: #64748b;
+}
+
+.date-range-popper .el-date-table td.today span {
+  color: var(--primary-dark);
+}
+
+.date-range-popper .el-date-table td.available:hover span,
+.date-range-popper .el-date-table td.current:not(.disabled) span,
+.date-time-popper .el-date-table td.available:hover span,
+.date-time-popper .el-date-table td.current:not(.disabled) span {
+  color: #fff;
+  background: var(--primary);
+}
+
+.date-range-popper .el-date-table td.in-range div {
+  background: #edf6fd;
+}
+
+.date-range-popper .el-date-table td.start-date div,
+.date-range-popper .el-date-table td.end-date div {
+  color: #fff;
+  background: var(--primary);
+}
+
+.date-time-popper .el-time-panel {
+  border-top-color: #edf1f7;
+}
+
 // 滚动条美化
 ::-webkit-scrollbar {
   width: 8px;

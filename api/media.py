@@ -101,6 +101,7 @@ class MediaUploadSessionRequest(BaseModel):
     account_id: Optional[str] = None
     meta_account_id: Optional[str] = None
     group_id: Optional[str] = None
+    asset_id: Optional[str] = None
 
 
 def _oss_extension(name: str, mime_type: str) -> str:
@@ -157,8 +158,12 @@ def media_download_url(
     key = asset.object_key
     if kind == "thumbnail" and asset.thumbnail_key:
         key = asset.thumbnail_key
-    elif kind == "cover" and asset.cover_key:
-        key = asset.cover_key
+    elif kind == "cover":
+        # 封面生成失败时仍可使用 thumbnail；不能回退到视频 object_key，
+        # 否则前端 <img> 只能显示空白占位图。
+        key = asset.cover_key or asset.thumbnail_key
+    if kind in {"thumbnail", "cover"} and not key:
+        raise HTTPException(status_code=409, detail="素材缩略图尚未生成")
     try:
         url = AliyunOSSStorage().download_url(key)
     except StorageError as exc:
@@ -411,13 +416,54 @@ def create_media_upload_session(
     if not tenant_id:
         raise HTTPException(status_code=400, detail="当前用户未绑定租户")
 
+    retry_asset = None
+    if payload.asset_id:
+        retry_asset = _get_asset_or_404(db, payload.asset_id, user)
+        if not user.is_admin() and retry_asset.created_by != user.id:
+            raise HTTPException(status_code=403, detail="无权重新上传该素材")
+        if retry_asset.status not in {"FAILED", "PENDING"}:
+            raise HTTPException(status_code=409, detail="当前素材不需要重新上传")
+        if retry_asset.asset_type != payload.asset_type or retry_asset.size != payload.size:
+            raise HTTPException(status_code=400, detail="重新上传的文件类型或大小与原素材不一致")
+        if retry_asset.sha256 and retry_asset.sha256.lower() != payload.sha256.lower():
+            raise HTTPException(status_code=400, detail="重新上传的文件内容与原素材不一致")
+
+        # 同一素材只保留一个可写会话；旧 Multipart 会话及时中止，
+        # 避免重试时继续占用 OSS 临时分片空间。
+        old_sessions = db.query(MediaUploadSession).filter(
+            MediaUploadSession.asset_id == retry_asset.id,
+            MediaUploadSession.status == "UPLOADING",
+        ).with_for_update().all()
+        try:
+            storage_for_abort = AliyunOSSStorage()
+        except StorageError:
+            storage_for_abort = None
+        for old_session in old_sessions:
+            if storage_for_abort and old_session.upload_mode == "multipart" and old_session.upload_id:
+                try:
+                    storage_for_abort.abort_multipart_upload(old_session.object_key, old_session.upload_id)
+                except Exception as exc:
+                    logger.warning("[MediaUpload] abort old multipart failed session_id=%s: %s", old_session.id, exc)
+            old_session.status = "EXPIRED"
+            old_session.error_message = "已被用户重新上传替换"
+
+        retry_asset.storage_status = "UPLOADING"
+        retry_asset.processing_status = "PENDING"
+        retry_asset.status = "PENDING"
+        retry_asset.error = None
+        retry_asset.retry_count = (retry_asset.retry_count or 0) + 1
+        db.flush()
+
+    # 失败/中断的旧素材不能阻塞用户再次上传同一个文件。
+    # 已完成 OSS 上传但仍在解析中的素材仍可复用，避免重复对象。
     existing = _asset_query(db, user).filter(
         CreativeAsset.sha256 == payload.sha256.lower(),
         CreativeAsset.size == payload.size,
         CreativeAsset.asset_type == payload.asset_type,
-        CreativeAsset.status != "ARCHIVED",
+        CreativeAsset.status.in_(("PENDING", "PROCESSING", "READY")),
+        CreativeAsset.storage_status != "UPLOADING",
     ).order_by(CreativeAsset.updated_at.desc()).first()
-    if existing:
+    if existing and not retry_asset:
         binding = _upsert_asset_binding(db, existing, account) if account else None
         db.commit()
         task_id = None
@@ -477,12 +523,12 @@ def create_media_upload_session(
                 "expires_at": pending_session.expires_at.isoformat(),
             }
 
-    asset_id = uuid.uuid4().hex
-    object_key = _oss_object_key(
+    asset_id = retry_asset.id if retry_asset else uuid.uuid4().hex
+    object_key = retry_asset.object_key if retry_asset else _oss_object_key(
         user, asset_id, payload.name, payload.md5, payload.mime_type, payload.sha256
     )
     now = datetime.utcnow()
-    asset = CreativeAsset(
+    asset = retry_asset or CreativeAsset(
         id=asset_id,
         tenant_id=tenant_id,
         name=payload.name,
@@ -524,7 +570,13 @@ def create_media_upload_session(
         created_by=user.id,
     )
     binding = None
-    if account:
+    if account and retry_asset:
+        binding = _upsert_asset_binding(db, asset, account)
+        binding.status = "PENDING"
+        binding.processing_status = "PENDING"
+        binding.error_code = None
+        binding.error_message = None
+    elif account:
         binding = MetaAssetBinding(
             id=uuid.uuid4().hex,
             tenant_id=tenant_id,
@@ -588,6 +640,12 @@ def get_media_upload_session(
     if session.expires_at < datetime.utcnow():
         session.status = "EXPIRED"
         session.error_message = "上传会话已过期"
+        asset = db.query(CreativeAsset).filter(CreativeAsset.id == session.asset_id).first()
+        if asset and asset.storage_status == "UPLOADING":
+            asset.storage_status = "FAILED"
+            asset.status = "FAILED"
+            asset.processing_status = "FAILED"
+            asset.error = "OSS 上传会话已过期，请重新选择文件上传"
         db.commit()
         raise HTTPException(status_code=400, detail="上传会话已过期")
     response = {"status": session.status, "asset_id": session.asset_id, "upload_mode": session.upload_mode}
@@ -621,6 +679,12 @@ def complete_media_upload_session(
     if session.expires_at < datetime.utcnow():
         session.status = "EXPIRED"
         session.error_message = "上传会话已过期"
+        asset = db.query(CreativeAsset).filter(CreativeAsset.id == session.asset_id).first()
+        if asset and asset.storage_status == "UPLOADING":
+            asset.storage_status = "FAILED"
+            asset.status = "FAILED"
+            asset.processing_status = "FAILED"
+            asset.error = "OSS 上传会话已过期，请重新选择文件上传"
         db.commit()
         raise HTTPException(status_code=400, detail="上传会话已过期")
     try:

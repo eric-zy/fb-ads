@@ -150,6 +150,15 @@ class AliyunOSSStorage:
         )
         self.client.complete_multipart_upload(request)
 
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        """Abort an abandoned multipart upload so OSS does not retain orphaned parts."""
+        request = self.oss.AbortMultipartUploadRequest(
+            bucket=settings.OSS_BUCKET,
+            key=key,
+            upload_id=upload_id,
+        )
+        self.client.abort_multipart_upload(request)
+
     def presign_get(self, key: str) -> str:
         request = self.oss.GetObjectRequest(bucket=settings.OSS_BUCKET, key=key)
         result = self.client.presign(request, expires=timedelta(seconds=settings.OSS_DOWNLOAD_EXPIRE_SECONDS))

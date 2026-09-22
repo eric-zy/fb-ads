@@ -130,10 +130,10 @@
         </el-form-item>
         <template v-if="form.budget_type === 'LIFETIME'">
           <el-form-item label="开始时间">
-            <el-date-picker v-model="form.schedule_start" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" placeholder="可选，默认立即开始" style="width:100%" />
+            <el-date-picker v-model="form.schedule_start" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" placeholder="可选，默认立即开始" popper-class="date-time-popper" placement="bottom-start" style="width:100%" />
           </el-form-item>
           <el-form-item label="结束时间" required>
-            <el-date-picker v-model="form.schedule_end" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" placeholder="总预算必须设置结束时间" style="width:100%" />
+            <el-date-picker v-model="form.schedule_end" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" placeholder="总预算必须设置结束时间" popper-class="date-time-popper" placement="bottom-start" style="width:100%" />
           </el-form-item>
         </template>
 
@@ -142,11 +142,15 @@
         <el-divider content-position="left">广告组优化与定向</el-divider>
         <el-form-item label="优化目标">
           <el-select v-model="form.optimization_goal" filterable allow-create style="width: 100%">
-            <el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" :disabled="form.objective === 'OUTCOME_SALES'" />
-            <el-option label="站外转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" />
-            <el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" />
-            <el-option label="覆盖 REACH" value="REACH" />
-            <el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" :disabled="form.objective === 'OUTCOME_SALES'" />
+            <el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" :disabled="!isOptimizationGoalAllowed(form.objective, 'LINK_CLICKS')" />
+            <el-option label="站外转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" :disabled="!isOptimizationGoalAllowed(form.objective, 'OFFSITE_CONVERSIONS')" />
+            <el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" :disabled="!isOptimizationGoalAllowed(form.objective, 'IMPRESSIONS')" />
+            <el-option label="覆盖 REACH" value="REACH" :disabled="!isOptimizationGoalAllowed(form.objective, 'REACH')" />
+            <el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" :disabled="!isOptimizationGoalAllowed(form.objective, 'LANDING_PAGE_VIEWS')" />
+            <el-option label="价值 VALUE" value="VALUE" :disabled="!isOptimizationGoalAllowed(form.objective, 'VALUE')" />
+            <el-option label="互动 POST_ENGAGEMENT" value="POST_ENGAGEMENT" :disabled="!isOptimizationGoalAllowed(form.objective, 'POST_ENGAGEMENT')" />
+            <el-option label="视频观看 THRUPLAY" value="THRUPLAY" :disabled="!isOptimizationGoalAllowed(form.objective, 'THRUPLAY')" />
+            <el-option label="线索 LEAD_GENERATION" value="LEAD_GENERATION" :disabled="!isOptimizationGoalAllowed(form.objective, 'LEAD_GENERATION')" />
           </el-select>
         </el-form-item>
         <el-form-item label="计费事件">
@@ -170,12 +174,25 @@
         <el-form-item v-if="form.bid_strategy === 'LOWEST_COST_WITH_MIN_ROAS'" label="ROAS 约束 JSON" required>
           <el-input v-model="form.bid_constraints_json" type="textarea" :rows="3" placeholder='例如 {"roas_average_floor": 1.5}' />
         </el-form-item>
-        <template v-if="['OFFSITE_CONVERSIONS', 'VALUE'].includes(form.optimization_goal)">
-          <el-form-item label="Pixel ID" required>
-            <el-input v-model="form.pixel_id" placeholder="Meta Pixel ID" />
+        <template v-if="isConversionOptimizationGoal(form.optimization_goal)">
+          <el-alert type="info" :closable="false" show-icon title="转化事件源按发布预检校验">
+            Pixel / 数据集仅在转化类优化目标发布时必需；模板可先保存，发布预检会在缺少事件源时拦截。
+          </el-alert>
+          <el-form-item label="Pixel / 数据集">
+            <div class="tracking-source-input">
+              <el-select v-model="form.tracking_asset_type" style="width:120px">
+                <el-option label="Pixel" value="PIXEL" />
+                <el-option label="数据集" value="DATASET" />
+              </el-select>
+              <el-input v-if="form.tracking_asset_type === 'PIXEL'" v-model="form.pixel_id" placeholder="Meta Pixel ID" />
+              <el-input v-else v-model="form.dataset_id" placeholder="Meta Dataset ID" />
+            </div>
           </el-form-item>
-          <el-form-item label="转化事件" required>
-            <el-input v-model="form.custom_event_type" placeholder="例如 PURCHASE / LEAD" />
+          <el-form-item label="转化事件">
+            <el-select v-model="form.custom_event_type" filterable allow-create default-first-option style="width:100%" placeholder="选择 Meta 转化事件">
+              <el-option v-for="event in STANDARD_CONVERSION_EVENTS" :key="event.value" :label="`${event.label} ${event.value}`" :value="event.value" />
+            </el-select>
+            <div class="tip">支持标准事件或自定义事件；自定义事件需以字母开头，仅允许字母、数字和下划线。</div>
           </el-form-item>
         </template>
         <el-divider content-position="left">受众定向</el-divider>
@@ -211,7 +228,7 @@
               <div class="inline-fields"><el-form-item label="年龄"><el-input-number v-model="adset.age_min" :min="13" :max="65" /><span>至</span><el-input-number v-model="adset.age_max" :min="13" :max="65" /></el-form-item><el-form-item label="性别"><el-checkbox-group v-model="adset.genders"><el-checkbox :label="1">男</el-checkbox><el-checkbox :label="2">女</el-checkbox></el-checkbox-group></el-form-item></div>
               <el-form-item label="兴趣"><el-input v-model="adset.interests" placeholder="可选，多个兴趣用逗号分隔" /></el-form-item>
               <el-form-item label="语言"><MetaLanguageSelect v-model="adset.languages" /></el-form-item>
-              <div class="inline-fields"><el-form-item label="优化目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击" value="LINK_CLICKS" /><el-option label="展示次数" value="IMPRESSIONS" /><el-option label="落地页浏览量" value="LANDING_PAGE_VIEWS" /></el-select><span class="field-code">Meta: optimization_goal</span></el-form-item><el-form-item label="计费事件"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示次数" value="IMPRESSIONS" /><el-option label="链接点击" value="LINK_CLICKS" /></el-select><span class="field-code">Meta: billing_event</span></el-form-item></div>
+              <div class="inline-fields"><el-form-item label="优化目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击" value="LINK_CLICKS" :disabled="!isOptimizationGoalAllowed(form.objective, 'LINK_CLICKS')" /><el-option label="展示次数" value="IMPRESSIONS" :disabled="!isOptimizationGoalAllowed(form.objective, 'IMPRESSIONS')" /><el-option label="落地页浏览量" value="LANDING_PAGE_VIEWS" :disabled="!isOptimizationGoalAllowed(form.objective, 'LANDING_PAGE_VIEWS')" /><el-option label="站外转化" value="OFFSITE_CONVERSIONS" :disabled="!isOptimizationGoalAllowed(form.objective, 'OFFSITE_CONVERSIONS')" /><el-option label="互动" value="POST_ENGAGEMENT" :disabled="!isOptimizationGoalAllowed(form.objective, 'POST_ENGAGEMENT')" /><el-option label="视频观看" value="THRUPLAY" :disabled="!isOptimizationGoalAllowed(form.objective, 'THRUPLAY')" /><el-option label="线索" value="LEAD_GENERATION" :disabled="!isOptimizationGoalAllowed(form.objective, 'LEAD_GENERATION')" /></el-select><span class="field-code">Meta: optimization_goal</span></el-form-item><el-form-item label="计费事件"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示次数" value="IMPRESSIONS" /><el-option label="链接点击" value="LINK_CLICKS" /></el-select><span class="field-code">Meta: billing_event</span></el-form-item></div>
               <div class="inline-fields"><el-form-item label="出价策略"><el-select v-model="adset.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本（含竞价上限）" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select><span class="field-code">Meta: bid_strategy</span></el-form-item><el-form-item v-if="['LOWEST_COST_WITH_BID_CAP','COST_CAP'].includes(adset.bid_strategy)" label="竞价上限"><el-input-number v-model="adset.bid_amount" :min="1" :step="100" /><span class="field-code">Meta: bid_amount</span></el-form-item></div>
               <el-form-item label="Advantage+ 受众"><el-switch v-model="adset.advantage_audience" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="关闭" /></el-form-item>
               <el-form-item label="版位"><el-select v-model="adset.placements" multiple collapse-tags style="width:100%" placeholder="默认自动版位"><el-option label="Facebook 信息流" value="facebook_feed" /><el-option label="Instagram 信息流" value="instagram_stream" /><el-option label="Facebook 快拍" value="facebook_story" /><el-option label="Instagram 快拍" value="instagram_story" /></el-select></el-form-item>
@@ -294,13 +311,19 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
 import { mediaApi, type MediaItem } from '@/api/media'
 import { metaPagesApi, type MetaPage } from '@/api/metaPages'
 import { useLocale } from '@/stores/localeStore'
+import {
+  defaultOptimizationGoal,
+  isConversionOptimizationGoal,
+  isOptimizationGoalAllowed,
+  STANDARD_CONVERSION_EVENTS,
+} from '@/config/metaDeliveryRules'
 const { t } = useLocale()
 
 const templates = ref<CampaignTemplate[]>([])
@@ -344,6 +367,8 @@ const form = reactive({
   schedule_end: '',
   optimization_goal: 'LINK_CLICKS',
   pixel_id: '',
+  dataset_id: '',
+  tracking_asset_type: 'PIXEL' as 'PIXEL' | 'DATASET',
   custom_event_type: 'PURCHASE',
   billing_event: 'IMPRESSIONS',
   bid_strategy: '',
@@ -363,10 +388,16 @@ const targetingForm = reactive({
   placements: [] as string[],
 })
 type AdsetForm = { name: string; budget: number; countries: string; age_min: number; age_max: number; genders: number[]; interests: string; languages: string[]; placements: string[]; optimization_goal: string; billing_event: string; bid_strategy: string; bid_amount: number; advantage_audience: number }
-const newAdset = (): AdsetForm => ({ name: '', budget: 50, countries: 'US', age_min: 18, age_max: 65, genders: [1, 2], interests: '', languages: [], placements: [], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 0, advantage_audience: 1 })
+const newAdset = (): AdsetForm => ({ name: '', budget: 50, countries: 'US', age_min: 18, age_max: 65, genders: [1, 2], interests: '', languages: [], placements: [], optimization_goal: defaultOptimizationGoal(form.objective), billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 0, advantage_audience: 1 })
 const adsetForms = reactive<AdsetForm[]>([newAdset()])
 const addAdset = () => adsetForms.push(newAdset())
 const removeAdset = (index: number) => adsetForms.splice(index, 1)
+watch(() => form.objective, objective => {
+  if (!isOptimizationGoalAllowed(objective, form.optimization_goal)) form.optimization_goal = defaultOptimizationGoal(objective)
+  adsetForms.forEach(item => {
+    if (!isOptimizationGoalAllowed(objective, item.optimization_goal)) item.optimization_goal = defaultOptimizationGoal(objective)
+  })
+})
 type CreativeForm = { asset_type: 'image' | 'video'; image_hash: string; video_id: string; headline: string; primary_text: string; description: string; cta: string; landing_url: string; asset_id: string }
 const newCreative = (): CreativeForm => ({ asset_type: 'image', image_hash: '', video_id: '', headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '', asset_id: '' })
 const creativeForm = reactive<{ page_id: string; creative_format: 'MULTI_AD' | 'CAROUSEL'; delivery: { split_level: 'AD' | 'ADSET' | 'CAMPAIGN'; combination_mode: string }; shared: Omit<CreativeForm, 'asset_type' | 'asset_id' | 'image_hash' | 'video_id'>; creatives: CreativeForm[] }>({ page_id: '', creative_format: 'MULTI_AD', delivery: { split_level: 'AD', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' }, shared: { headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '' }, creatives: [newCreative()] })
@@ -399,11 +430,12 @@ const buildCreativeJson = () => {
   if (form.budget_type === 'LIFETIME') {
     config.schedule = { start_time: form.schedule_start || undefined, end_time: form.schedule_end }
   }
-  if (['OFFSITE_CONVERSIONS', 'VALUE'].includes(form.optimization_goal)) {
-    config.promoted_object = {
-      pixel_id: form.pixel_id,
-      custom_event_type: form.custom_event_type,
-    }
+  const trackingAssetId = form.tracking_asset_type === 'DATASET' ? form.dataset_id.trim() : form.pixel_id.trim()
+  if (isConversionOptimizationGoal(form.optimization_goal) && trackingAssetId && form.custom_event_type.trim()) {
+    config.promoted_object = form.tracking_asset_type === 'DATASET'
+      ? { dataset_id: trackingAssetId, conversion_event: form.custom_event_type }
+      : { pixel_id: trackingAssetId, custom_event_type: form.custom_event_type }
+    if (form.tracking_asset_type === 'DATASET') config.dataset_id = trackingAssetId
   }
   const adsets = adsetForms.map(adset => {
     const targeting: Record<string, any> = { geo_locations: { countries: adset.countries.split(',').map(v => v.trim()).filter(Boolean) }, age_min: adset.age_min, age_max: adset.age_max, genders: adset.genders }
@@ -436,8 +468,12 @@ const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
   creativeForm.shared = { headline: cfg.shared_creative?.headline || first.headline || '', primary_text: cfg.shared_creative?.primary_text || first.primary_text || '', description: cfg.shared_creative?.description || first.description || '', cta: cfg.shared_creative?.cta || first.cta || 'LEARN_MORE', landing_url: cfg.shared_creative?.landing_url || first.landing_url || '' }
   form.schedule_start = cfg.schedule?.start_time || ''
   form.schedule_end = cfg.schedule?.end_time || ''
-  form.pixel_id = cfg.promoted_object?.pixel_id || ''
-  form.custom_event_type = cfg.promoted_object?.custom_event_type || 'PURCHASE'
+  const datasetId = cfg.promoted_object?.dataset_id || cfg.dataset_id || ''
+  const pixelId = cfg.promoted_object?.pixel_id || cfg.pixel_id || ''
+  form.tracking_asset_type = datasetId ? 'DATASET' : 'PIXEL'
+  form.dataset_id = datasetId
+  form.pixel_id = pixelId
+  form.custom_event_type = cfg.promoted_object?.conversion_event || cfg.promoted_object?.custom_event_type || cfg.conversion_event || 'PURCHASE'
   const source = creativeForm.creative_format === 'CAROUSEL' ? cfg.carousel_cards : cfg.creatives
   creativeForm.creatives.splice(0, creativeForm.creatives.length, ...(Array.isArray(source) && source.length ? source.map((item: any) => ({ ...newCreative(), ...item })) : [newCreative()]))
 }
@@ -538,8 +574,10 @@ const resetForm = () => {
   form.lifetime_budget = 0
   form.schedule_start = ''
   form.schedule_end = ''
-  form.optimization_goal = 'LINK_CLICKS'
+  form.optimization_goal = 'OFFSITE_CONVERSIONS'
   form.pixel_id = ''
+  form.dataset_id = ''
+  form.tracking_asset_type = 'PIXEL'
   form.custom_event_type = 'PURCHASE'
   form.billing_event = 'IMPRESSIONS'
   form.bid_strategy = ''
@@ -651,12 +689,6 @@ const submit = async () => {
     templateStep.value = 3
     return
   }
-  if (['OFFSITE_CONVERSIONS', 'VALUE'].includes(form.optimization_goal) && (!form.pixel_id.trim() || !form.custom_event_type.trim())) {
-    ElMessage.warning('转化优化必须填写 Pixel ID 和转化事件')
-    templateStep.value = 2
-    return
-  }
-
   buildTargetingJson()
   buildCreativeJson()
   let targeting: Record<string, any>
@@ -772,6 +804,8 @@ onMounted(loadTemplates)
   .page-desc { margin: 4px 0 0; font-size: 13px; color: #909399; line-height: 1.6; max-width: 760px; }
 }
 .tip { color: #909399; font-size: 12px; margin-top: 4px; line-height: 1.5; }
+.tracking-source-input { display: flex; gap: 8px; width: 100%; }
+.tracking-source-input > .el-input { flex: 1; }
 .page-select-row { display: flex; align-items: center; gap: 10px; width: 100%; }
 .page-select { flex: 1; min-width: 0; }
 .page-sync-tip { color: #8a98aa; }

@@ -149,6 +149,15 @@ class FBConnectorClient:
             request_id=request_id,
         )
 
+    def list_tracking_assets(self, account_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
+        """读取 Pixel / Dataset 元数据，不返回事件或用户数据。"""
+        return self._request(
+            "POST",
+            "/internal/meta/tracking-assets/list",
+            {"account_id": account_id, "credential_id": credential_id},
+            request_id=request_id,
+        )
+
     def upload_media(self, media_id: str, credential_id: str, account_id: str, asset_type: str, source_url: str, *, cover_url: str | None = None, expected_md5: str | None = None, expected_sha256: str | None = None, request_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
         if not idempotency_key:
             raise FBConnectorError("素材上传必须提供幂等键")

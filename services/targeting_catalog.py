@@ -30,6 +30,19 @@ LANGUAGE_CATALOG: tuple[dict[str, str], ...] = (
     {"id": "ms", "code": "ms", "name": "马来语", "name_en": "Malay"},
 )
 
+PLACEMENT_PLATFORM_OPTIONS = frozenset({
+    "facebook",
+    "instagram",
+    "audience_network",
+    "messenger",
+})
+PLACEMENT_POSITION_OPTIONS = {
+    "facebook": frozenset({"feed", "story", "marketplace", "video_feeds", "right_hand_column", "search", "reels", "instream_video", "profile_feed"}),
+    "instagram": frozenset({"stream", "story", "reels", "explore", "explore_home", "profile_feed"}),
+    "audience_network": frozenset({"classic", "rewarded_video", "instream_video"}),
+    "messenger": frozenset({"messenger_home", "story"}),
+}
+
 _LANGUAGE_BY_ID = {item["id"].lower(): item for item in LANGUAGE_CATALOG}
 _LANGUAGE_ALIASES = {
     "中文": ("zh_CN", "zh_TW"),
@@ -131,3 +144,81 @@ def normalize_targeting(targeting: dict[str, Any] | None) -> dict[str, Any]:
         if result.get(field) is not None:
             result[field] = validate_audience_refs(result.get(field), field)
     return result
+
+
+def targeting_preflight_errors(scope: str, targeting: dict[str, Any] | None) -> list[dict[str, str]]:
+    """检查当前产品支持的基础定向字段，避免无效配置进入异步投放。"""
+
+    if targeting is None or targeting == {}:
+        # 兼容历史模板：未填写定向时仍沿用发布器默认定向。
+        return []
+    if not isinstance(targeting, dict):
+        return [{"code": "TARGETING_INVALID", "message": f"{scope}必须是对象"}]
+
+    errors: list[dict[str, str]] = []
+    geo_locations = targeting.get("geo_locations")
+    if geo_locations is not None:
+        countries = geo_locations.get("countries") if isinstance(geo_locations, dict) else None
+        if not isinstance(countries, list) or not any(str(country).strip() for country in countries):
+            errors.append({
+                "code": "TARGETING_COUNTRY_REQUIRED",
+                "message": f"{scope}至少需要选择一个国家/地区",
+            })
+
+    age_min = targeting.get("age_min")
+    age_max = targeting.get("age_max")
+    parsed_min = parsed_max = None
+    for field, value in (("age_min", age_min), ("age_max", age_max)):
+        if value is None:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            errors.append({"code": "TARGETING_AGE_INVALID", "message": f"{scope}的 {field} 必须是数字"})
+            continue
+        if parsed < 13 or parsed > 65:
+            errors.append({"code": "TARGETING_AGE_INVALID", "message": f"{scope}的年龄必须在 13 至 65 岁之间"})
+        if field == "age_min":
+            parsed_min = parsed
+        else:
+            parsed_max = parsed
+    if parsed_min is not None and parsed_max is not None and parsed_min > parsed_max:
+        errors.append({"code": "TARGETING_AGE_RANGE_INVALID", "message": f"{scope}的最小年龄不能大于最大年龄"})
+
+    genders = targeting.get("genders")
+    if genders is not None:
+        if not isinstance(genders, list) or not genders or any(str(gender) not in {"1", "2"} for gender in genders):
+            errors.append({"code": "TARGETING_GENDER_INVALID", "message": f"{scope}的性别定向无效，请至少选择男性或女性"})
+    return errors
+
+
+def placement_preflight_errors(scope: str, placement: dict[str, Any] | None) -> list[dict[str, str]]:
+    """校验版位平台和位置；未填写版位时表示使用自动版位。"""
+
+    if placement is None or placement == {}:
+        return []
+    if not isinstance(placement, dict):
+        return [{"code": "PLACEMENT_INVALID", "message": f"{scope}必须是对象"}]
+
+    errors: list[dict[str, str]] = []
+    platforms = placement.get("publisher_platforms")
+    if platforms is not None:
+        if not isinstance(platforms, list) or not platforms:
+            errors.append({"code": "PLACEMENT_PLATFORM_REQUIRED", "message": f"{scope}至少需要选择一个版位平台"})
+        else:
+            invalid = sorted({str(value).strip() for value in platforms if str(value).strip() not in PLACEMENT_PLATFORM_OPTIONS})
+            if invalid:
+                errors.append({"code": "PLACEMENT_PLATFORM_INVALID", "message": f"{scope}包含不支持的版位平台：{', '.join(invalid)}"})
+
+    for platform in PLACEMENT_PLATFORM_OPTIONS:
+        field = f"{platform}_positions"
+        positions = placement.get(field)
+        if positions is None:
+            continue
+        if not isinstance(positions, list) or any(not str(value).strip() for value in positions):
+            errors.append({"code": "PLACEMENT_POSITION_INVALID", "message": f"{scope}的 {field} 必须是非空位置列表"})
+            continue
+        invalid = sorted({str(value).strip() for value in positions if str(value).strip() not in PLACEMENT_POSITION_OPTIONS[platform]})
+        if invalid:
+            errors.append({"code": "PLACEMENT_POSITION_INVALID", "message": f"{scope}包含不支持的 {field}：{', '.join(invalid)}"})
+    return errors

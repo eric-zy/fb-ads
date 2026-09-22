@@ -89,6 +89,36 @@
           <el-empty v-if="!loading && !accounts.length" description="暂无可投账号" />
         </el-card>
       </el-tab-pane>
+      <el-tab-pane label="资产健康" name="tracking-health">
+        <el-card shadow="never" class="tab-card">
+          <div class="list-toolbar">
+            <div>
+              <b>Pixel / Dataset 健康度</b>
+              <span class="status-detail health-summary">共 {{ trackingHealthSummary.account_count || 0 }} 个账户 · 正常 {{ trackingHealthSummary.healthy_count || 0 }} · 待同步 {{ trackingHealthSummary.stale_count || 0 }} · 异常 {{ trackingHealthSummary.error_count || 0 }}</span>
+            </div>
+            <el-button :icon="Refresh" :loading="trackingHealthLoading" @click="loadTrackingHealth">刷新状态</el-button>
+          </div>
+          <el-alert type="info" :closable="false" show-icon>
+            资产同步只读取 Pixel / Dataset 元数据，不读取事件明细或用户数据；发布时仍会按目标账户重新校验可用范围。
+          </el-alert>
+          <el-table :data="trackingHealth" v-loading="trackingHealthLoading" stripe style="margin-top: 12px">
+            <el-table-column label="广告账户" min-width="190">
+              <template #default="{ row }"><div>{{ row.account_name }}</div><span class="status-detail">{{ row.account_id }} · {{ row.business_name || '个人授权' }}</span></template>
+            </el-table-column>
+            <el-table-column label="同步状态" width="120">
+              <template #default="{ row }"><el-tag :type="trackingHealthType(row.sync_status)" size="small">{{ trackingHealthLabel(row.sync_status) }}</el-tag><div class="status-detail">{{ row.last_synced_at || '尚未同步' }}</div></template>
+            </el-table-column>
+            <el-table-column label="可用资产" min-width="250">
+              <template #default="{ row }"><el-tag v-for="asset in row.assets" :key="`${asset.asset_type}-${asset.id}`" size="small" effect="plain" class="asset-tag">{{ asset.name }} · {{ asset.asset_type === 'PIXEL' ? 'Pixel' : 'Dataset' }}</el-tag><span v-if="!row.assets.length" class="status-detail">暂无可用资产</span></template>
+            </el-table-column>
+            <el-table-column label="数量" width="90"><template #default="{ row }">{{ row.usable_count }}/{{ row.asset_count }}</template></el-table-column>
+            <el-table-column label="操作" width="110">
+              <template #default="{ row }"><el-button v-if="isAdmin" link type="primary" :loading="trackingSyncing[row.account_pk]" @click="syncTrackingAsset(row.account_pk)">立即同步</el-button></template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-if="!trackingHealthLoading && !trackingHealth.length" description="暂无广告账户资产同步记录" />
+        </el-card>
+      </el-tab-pane>
     </el-tabs>
 
     <el-dialog v-model="addDialogVisible" title="添加 Meta 广告用户" width="620px" destroy-on-close>
@@ -136,12 +166,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ElTree } from 'element-plus'
 import { Connection, CreditCard, OfficeBuilding, Platform, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { accountApi, credentialApi, metaAccountApi, type AdAccountItem, type MetaAccountItem, type CredentialItem, type SyncLogItem } from '@/api/admin'
+import { metaTrackingAssetsApi, type TrackingAssetHealthItem } from '@/api/metaTrackingAssets'
 import { useUserStore } from '@/stores/userStore'
 import { formatMoney } from '@/utils/money'
 import { useLocale } from '@/stores/localeStore'
@@ -149,7 +180,7 @@ const { t } = useLocale()
 
 type DiscoveredBusiness = { id: string; name?: string | null; verification_status?: string | null }
 type TreeNode = { id: string; label: string; type: 'platform' | 'business' | 'account'; children?: TreeNode[]; businessId?: string; metaBusinessId?: string; credentialStatus?: string; syncStatus?: string; accountCount?: number; accountId?: string; accountStatus?: string | null; effectiveStatus?: string | null; systemStatus?: string; amountSpent?: number; currency?: string; businessName?: string | null; source?: AdAccountItem }
-const router = useRouter(); const route = useRoute(); const userStore = useUserStore(); const activeTab = ref('accounts-list'); const treeRef = ref<InstanceType<typeof ElTree>>(); const loading = ref(false); const credentialLoading = ref(false); const syncLoading = ref(false); const filterText = ref(''); const accountSearch = ref(''); const accountMetaStatus = ref(''); const accountSystemStatus = ref(''); const selectedAccountRows = ref<AdAccountItem[]>([]); const accountPage = ref(1); const accountPageSize = 20; const accountTotal = ref(0); const accounts = ref<AdAccountItem[]>([]); const metaAccounts = ref<MetaAccountItem[]>([]); const credentialRows = ref<CredentialItem[]>([]); const syncRows = ref<Array<SyncLogItem & { business_name: string }>>([]); const drawerVisible = ref(false); const selectedBusiness = ref<TreeNode | null>(null); const selectedAccount = ref<TreeNode | null>(null); const addDialogVisible = ref(false); const authorizing = ref(false); const completing = ref(false); const oauthCredentialId = ref<string | null>(null); const oauthStep = ref<'login' | 'businesses' | 'success'>('login'); const oauthError = ref(''); const discoveredBusinesses = ref<DiscoveredBusiness[]>([]); const selectedDiscoveredBusinessId = ref<string | null>(null); const oauthAdAccounts = ref<any[]>([]); const selectedOAuthAccountIds = ref<string[]>([]); const oauthOwnerFilter = ref<'ALL'|'PERSONAL'|'BUSINESS'>('ALL'); const isAdmin = computed(() => userStore.isAdmin); const activeCount = computed(() => accounts.value.filter(a => a.system_status === 'ACTIVE').length); const treeProps = { children: 'children', label: 'label' }
+const router = useRouter(); const route = useRoute(); const userStore = useUserStore(); const activeTab = ref('accounts-list'); const treeRef = ref<InstanceType<typeof ElTree>>(); const loading = ref(false); const credentialLoading = ref(false); const syncLoading = ref(false); const trackingHealthLoading = ref(false); const trackingHealth = ref<TrackingAssetHealthItem[]>([]); const trackingHealthSummary = ref<Record<string, number>>({}); const trackingSyncing = reactive<Record<string, boolean>>({}); const filterText = ref(''); const accountSearch = ref(''); const accountMetaStatus = ref(''); const accountSystemStatus = ref(''); const selectedAccountRows = ref<AdAccountItem[]>([]); const accountPage = ref(1); const accountPageSize = 20; const accountTotal = ref(0); const accounts = ref<AdAccountItem[]>([]); const metaAccounts = ref<MetaAccountItem[]>([]); const credentialRows = ref<CredentialItem[]>([]); const syncRows = ref<Array<SyncLogItem & { business_name: string }>>([]); const drawerVisible = ref(false); const selectedBusiness = ref<TreeNode | null>(null); const selectedAccount = ref<TreeNode | null>(null); const addDialogVisible = ref(false); const authorizing = ref(false); const completing = ref(false); const oauthCredentialId = ref<string | null>(null); const oauthStep = ref<'login' | 'businesses' | 'success'>('login'); const oauthError = ref(''); const discoveredBusinesses = ref<DiscoveredBusiness[]>([]); const selectedDiscoveredBusinessId = ref<string | null>(null); const oauthAdAccounts = ref<any[]>([]); const selectedOAuthAccountIds = ref<string[]>([]); const oauthOwnerFilter = ref<'ALL'|'PERSONAL'|'BUSINESS'>('ALL'); const isAdmin = computed(() => userStore.isAdmin); const activeCount = computed(() => accounts.value.filter(a => a.system_status === 'ACTIVE').length); const treeProps = { children: 'children', label: 'label' }
 const accountCredentialStatus = (account: AdAccountItem) => {
   const meta = account.business_id ? metaAccounts.value.find(item => item.id === account.business_id) : null
   const credential = account.credential_id ? credentialRows.value.find(item => item.id === account.credential_id) : null
@@ -213,7 +244,11 @@ async function completeOAuth() {
 }
 async function loadCredentials() { if (!isAdmin.value) return; credentialLoading.value = true; try { const r = await credentialApi.list({ page: 1, page_size: 100 }); credentialRows.value = r.data || [] } catch { credentialRows.value = [] } finally { credentialLoading.value = false } }
 async function loadSyncLogs() { if (!isAdmin.value) return; syncLoading.value = true; try { const results = await Promise.all(metaAccounts.value.map(async business => { try { const r = await metaAccountApi.syncLogs(business.id, { limit: 20 }); return (r.data || []).map((row: SyncLogItem) => ({ ...row, business_name: business.name })) } catch { return [] } })); syncRows.value = results.flat().sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))) } finally { syncLoading.value = false } }
-async function handleTabChange(tab: string | number) { if (tab === 'credentials') await loadCredentials(); if (tab === 'sync') await loadSyncLogs() }
+function trackingHealthLabel(status: string) { return ({ HEALTHY: '正常', STALE: '已过期', NEVER: '待同步', ERROR: '同步异常' } as Record<string, string>)[status] || status }
+function trackingHealthType(status: string): 'success'|'warning'|'danger'|'info' { return ({ HEALTHY: 'success', STALE: 'warning', NEVER: 'info', ERROR: 'danger' } as Record<string, 'success'|'warning'|'danger'|'info'>)[status] || 'info' }
+async function loadTrackingHealth() { trackingHealthLoading.value = true; try { const { data } = await metaTrackingAssetsApi.health(); trackingHealth.value = data.items || []; trackingHealthSummary.value = data.summary || {} } catch { trackingHealth.value = []; trackingHealthSummary.value = {} } finally { trackingHealthLoading.value = false } }
+async function syncTrackingAsset(accountPk: string) { trackingSyncing[accountPk] = true; try { await metaTrackingAssetsApi.sync(accountPk); ElMessage.success('已提交 Pixel / Dataset 同步任务'); await loadTrackingHealth() } finally { trackingSyncing[accountPk] = false } }
+async function handleTabChange(tab: string | number) { if (tab === 'credentials') await loadCredentials(); if (tab === 'sync') await loadSyncLogs(); if (tab === 'tracking-health') await loadTrackingHealth() }
 function handleOAuthMessage(e: MessageEvent) { if (e.origin !== window.location.origin) return; if (e.data?.type === 'meta-oauth-ready') openBusinessDiscovery(e.data.credential_id); if (e.data?.type === 'meta-oauth-completed') load() }
 async function authorizeBusiness(n: TreeNode | null) { if (!n?.businessId) return; try { const { data } = await credentialApi.oauthAuthorize(n.businessId); window.location.assign(data.authorization_url) } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '无法发起 Meta 重新授权') } }
 async function reauthorizeCredential(row: CredentialItem) { try { const { data } = row.meta_account_id ? await credentialApi.oauthAuthorize(row.meta_account_id) : await credentialApi.oauthAuthorizeFirst(); window.location.assign(data.authorization_url) } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '无法发起 Meta 重新授权') } }
@@ -231,4 +266,5 @@ onBeforeUnmount(() => window.removeEventListener('message', handleOAuthMessage))
 <style scoped lang="scss">
 .page-container{min-height:100%}.page-head{display:flex;justify-content:space-between;gap:24px;margin-bottom:18px}.eyebrow{color:#6b7f95;font-size:12px}.page-title{margin:5px 0;color:#102a43;font-size:28px}.page-subtitle{margin:0;color:#627d98;font-size:13px}.head-actions,.node-actions{display:flex;align-items:center;gap:8px}.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:12px}.stat-label,.stat-desc{color:#829ab1;font-size:12px}.stat-value{margin:7px 0;color:#102a43;font-size:25px;font-weight:700}.success-value{color:#18a058}.danger-value{color:#f56c6c}.warning-value{color:#e6a23c}.account-tabs{margin-top:2px}.tab-card,.tree-card{border:none}.card-header{display:flex;align-items:center;justify-content:space-between;gap:16px}.card-header span{margin-left:10px;color:#9fb3c8;font-size:12px}.search-input{width:340px}.tree-wrap{min-height:380px}.tree-node{display:flex;justify-content:space-between;align-items:center;width:100%;padding-right:10px;gap:15px}.node-main{display:flex;align-items:center;gap:8px;min-width:0}.node-name{max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.status-detail{margin-top:3px;color:#9aaabd;font-size:11px}.connect-panel{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:20px}.connect-panel h3{margin:0 0 8px;color:#102a43}.connect-panel p{margin:0;color:#829ab1;font-size:13px}.oauth-hero{display:flex;align-items:center;gap:14px;margin-bottom:20px}.oauth-logo{display:flex;align-items:center;justify-content:center;width:48px;height:48px;border-radius:14px;background:#eef6ff;color:#1877f2;font-size:24px}.oauth-title{font-size:18px;font-weight:600;color:#102a43}.oauth-subtitle,.steps p,.select-desc{color:#829ab1;font-size:12px}.steps{display:grid;gap:15px;margin-bottom:20px}.steps p{margin:5px 0 0}.business-list{display:flex;flex-direction:column;width:100%;gap:10px;margin-top:15px}.business-option{padding:14px;border:1px solid #e5edf5;border-radius:10px;cursor:pointer}.business-option.selected{border-color:#409eff;background:#f5f9ff}.business-option>div{margin:7px 0 0 24px;color:#829ab1;font-size:12px}.select-title{margin-top:15px;font-size:16px;font-weight:600;color:#243b53}.success-state{text-align:center;padding:45px}.success-state .el-icon{font-size:52px;color:#18a058}.success-state h3{margin:15px 0 5px}.success-state p{color:#829ab1}.drawer-button{margin-top:20px}@media(max-width:900px){.stats-grid{grid-template-columns:repeat(2,1fr)}.page-head,.card-header,.connect-panel{flex-direction:column;align-items:stretch}.search-input{width:100%}}@media(max-width:600px){.stats-grid{grid-template-columns:1fr}.tree-node{align-items:flex-start;flex-direction:column}.node-actions{width:100%}}
 .list-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:4px 0 16px}.filter-group,.batch-actions{display:flex;align-items:center;gap:10px}.list-search{width:280px}.status-select{width:140px}@media(max-width:1100px){.list-toolbar{align-items:stretch;flex-direction:column}.filter-group,.batch-actions{flex-wrap:wrap}.list-search{flex:1;min-width:240px}}@media(max-width:600px){.filter-group,.batch-actions{width:100%}.list-search,.status-select{width:100%}}
+.health-summary{margin-left:12px}.asset-tag{margin:2px 6px 2px 0}
 </style>

@@ -293,6 +293,72 @@ class MetaClient:
                 break
         return audiences
 
+    def get_tracking_assets(
+        self,
+        account_id: str,
+        business_id: str | None = None,
+        max_pages: int = 20,
+    ) -> List[dict]:
+        """读取广告账户可用于转化优化的 Pixel / Dataset 元数据。
+
+        Pixel 在 Meta API 中仍通过 ``adspixels`` 暴露；较新的 Dataset
+        资产则优先从 BM 的 ``datasets`` 边读取，部分账户也支持账户级
+        ``datasets``。这里只返回元数据，不读取事件或用户数据。
+        """
+        assets: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        account_object_id = self.normalize_account_id(account_id)
+        edges: list[tuple[str, str]] = [(account_object_id, "PIXEL")]
+        edges.append((account_object_id, "DATASET"))
+        if business_id:
+            edges.append((self.normalize_business_id(business_id), "DATASET"))
+
+        for object_id, asset_type in edges:
+            path = f"/{object_id}/adspixels" if asset_type == "PIXEL" else f"/{object_id}/datasets"
+            params = {
+                "fields": "id,name,owner_ad_account,owner_business",
+                "limit": 200,
+            }
+            after = None
+            for _ in range(max_pages):
+                if after:
+                    params["after"] = after
+                else:
+                    params.pop("after", None)
+                try:
+                    payload = self._get(path, params)
+                except MetaApiError as exc:
+                    # Dataset 不是所有 Graph API 版本/授权范围都提供，
+                    # 因此其边不可用时继续尝试另一条边；Pixel 失败仍需
+                    # 让调用方看到权限问题，避免把授权异常伪装成空列表。
+                    if asset_type == "DATASET":
+                        break
+                    raise exc
+                for raw in payload.get("data", []) or []:
+                    asset_id = str(raw.get("id") or "").strip()
+                    if not asset_id or (asset_type, asset_id) in seen:
+                        continue
+                    # BM 级 Dataset 列表可能包含该 BM 下其它账户的资产；
+                    # 没有明确 owner_ad_account 时宁可不返回，禁止跨账户串用。
+                    if asset_type == "DATASET" and object_id != account_object_id:
+                        owner = raw.get("owner_ad_account") or {}
+                        owner_id = owner.get("id") if isinstance(owner, dict) else owner
+                        if not owner_id or self.normalize_account_id(str(owner_id)) != account_object_id:
+                            continue
+                    seen.add((asset_type, asset_id))
+                    assets.append({
+                        "id": asset_id,
+                        "name": str(raw.get("name") or asset_id),
+                        "asset_type": asset_type,
+                        "owner_ad_account": raw.get("owner_ad_account"),
+                        "owner_business": raw.get("owner_business"),
+                        "last_fired_time": raw.get("last_fired_time"),
+                    })
+                after = (payload.get("paging") or {}).get("cursors", {}).get("after")
+                if not after:
+                    break
+        return assets
+
     def get_ad_locales(self, max_pages: int = 20) -> List[dict]:
         """从 Meta Targeting Search 拉取当前版本可用的广告语言目录。"""
         if self._ad_locales_cache is not None:

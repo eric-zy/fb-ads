@@ -20,9 +20,16 @@
               accept="image/*,video/*"
             >
               <el-button type="primary" :icon="UploadFilled" :loading="uploading">
-                上传素材
+                {{ retryAssetId ? '选择文件重试' : '上传素材' }}
               </el-button>
             </el-upload>
+            <input
+              ref="retryFileInput"
+              class="retry-file-input"
+              type="file"
+              accept="image/*,video/*"
+              @change="onRetryFileSelected"
+            />
             <el-button @click="createGroupVisible = true">新建分组</el-button>
             <el-button :disabled="!groups.length" @click="openMembers">成员管理</el-button>
           </div>
@@ -30,6 +37,14 @@
         <div class="shared-hint">
           <span class="hint-dot" />
           租户内共享素材，上传人仅用于记录；相同文件会自动去重。
+        </div>
+        <div v-if="uploading" class="upload-progress-panel">
+          <div class="upload-progress-head">
+            <span>{{ uploadStage }}</span>
+            <span>{{ uploadProgress }}%</span>
+          </div>
+          <el-progress :percentage="uploadProgress" :stroke-width="8" :show-text="false" />
+          <small>大视频会先校验文件指纹，再通过 OSS 分片上传；页面可安全等待或刷新后继续。</small>
         </div>
       </template>
 
@@ -59,6 +74,8 @@
           range-separator="至"
           start-placeholder="统计开始"
           end-placeholder="统计结束"
+          popper-class="date-range-popper"
+          placement="bottom-start"
           :clearable="true"
           @change="loadOverview"
         />
@@ -140,6 +157,15 @@
             <el-button link type="primary" size="small" :disabled="!isAssetReady(item)" @click="openBindings(item)">查看映射</el-button>
             <el-button link type="success" size="small" :disabled="!isAssetReady(item)" @click="syncAllAccounts(item)">同步账户</el-button>
             <el-button v-if="item.can_edit" link size="small" @click="refreshMetadata(item)">刷新</el-button>
+            <el-button
+              v-if="item.can_edit && item.status === 'FAILED'"
+              link
+              type="warning"
+              size="small"
+              @click="beginRetryUpload(item)"
+            >
+              重新上传
+            </el-button>
           </div>
         </div>
       </div>
@@ -191,6 +217,8 @@
           range-separator="至"
           start-placeholder="开始日期"
           end-placeholder="结束日期"
+          popper-class="date-range-popper"
+          placement="bottom-start"
           :clearable="true"
           @change="reloadStats"
         />
@@ -272,6 +300,10 @@ const newGroupName = ref('')
 const newGroupVisibility = ref('PRIVATE')
 const accounts = ref<AdAccountItem[]>([])
 const uploading = ref(false)
+const uploadProgress = ref(0)
+const uploadStage = ref('准备上传')
+const retryAssetId = ref('')
+const retryFileInput = ref<HTMLInputElement | null>(null)
 const bindingVisible = ref(false)
 const bindingLoading = ref(false)
 const bindings = ref<any[]>([])
@@ -288,6 +320,31 @@ const previewVisible = ref(false)
 const previewAsset = ref<MediaItem | null>(null)
 const previewOriginalUrl = ref('')
 let bindingTimer: number | null = null
+let assetPollingTimer: number | null = null
+
+const isAssetReady = (item: MediaItem) => item.processing_status === 'READY' || (!item.processing_status && item.status === 'READY')
+const isAssetProcessing = (item: MediaItem) =>
+  ['UPLOADING', 'PENDING', 'PROCESSING'].includes(String(item.status || '').toUpperCase())
+  || ['PENDING', 'PROCESSING'].includes(String(item.processing_status || '').toUpperCase())
+
+const stopAssetPolling = () => {
+  if (assetPollingTimer !== null) {
+    window.clearInterval(assetPollingTimer)
+    assetPollingTimer = null
+  }
+}
+
+const syncAssetPolling = () => {
+  if (list.value.some(isAssetProcessing)) {
+    if (assetPollingTimer === null) {
+      assetPollingTimer = window.setInterval(() => {
+        if (!loading.value) void load()
+      }, 5000)
+    }
+  } else {
+    stopAssetPolling()
+  }
+}
 
 const loadOverview = async () => {
   try {
@@ -315,7 +372,7 @@ const load = async () => {
     list.value = data
     await loadOverview()
     await Promise.all(data.map(async (item) => {
-      if (item.url || item.processing_status !== 'READY') return
+      if (item.url || !isAssetReady(item)) return
       const cached = previewUrls[item.id]
       if (cached && cached.expiresAt > Date.now() + 5000) return
       try {
@@ -329,12 +386,13 @@ const load = async () => {
         /* 预览失败不影响列表 */
       }
     }))
+    syncAssetPolling()
   } finally {
     loading.value = false
   }
 }
 
-const onSelect = async (file: any) => {
+const onSelect = async (file: any, assetId = '') => {
   const raw: File = file.raw
   if (!raw) return
   const validation = await validateMediaFile(raw)
@@ -344,11 +402,24 @@ const onSelect = async (file: any) => {
   }
   if (uploading.value) return
   uploading.value = true
+  uploadProgress.value = 0
+  uploadStage.value = '计算文件指纹'
   try {
     const res = await mediaApi.upload(raw, {
       account_id: uploadAccountId.value || undefined,
       group_id: filterGroup.value || undefined,
+      asset_id: assetId || undefined,
+    }, (event) => {
+      uploadStage.value = '上传 OSS'
+      if (event.total) uploadProgress.value = Math.min(99, 20 + Math.round((event.loaded / event.total) * 80))
+    }, (loaded, total) => {
+      uploadStage.value = '计算文件指纹'
+      uploadProgress.value = total ? Math.min(20, Math.round((loaded / total) * 20)) : 0
     })
+    uploadProgress.value = 100
+    uploadStage.value = res.data.status === 'PROCESSING' || res.data.processing_status === 'PROCESSING'
+      ? '生成封面并处理素材'
+      : '上传完成'
     ElMessage.success(
       res.duplicate
         ? (uploadAccountId.value ? '文件已存在，已关联当前广告账户：' : '文件已存在，已复用共享素材：') + res.data.name
@@ -364,10 +435,24 @@ const onSelect = async (file: any) => {
     ElMessage.error(String(detail))
   } finally {
     uploading.value = false
+    if (assetId) retryAssetId.value = ''
   }
 }
 
-const isAssetReady = (item: MediaItem) => item.processing_status === 'READY' || (!item.processing_status && item.status === 'READY')
+const beginRetryUpload = (item: MediaItem) => {
+  retryAssetId.value = item.id
+  ElMessage.info('请选择与原素材相同的文件，系统会复用原素材记录并重新上传')
+  retryFileInput.value?.click()
+}
+
+const onRetryFileSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const raw = input.files?.[0]
+  const assetId = retryAssetId.value
+  input.value = ''
+  if (!raw || !assetId) return
+  await onSelect({ raw }, assetId)
+}
 
 const openPreview = async (item: MediaItem) => {
   previewAsset.value = item
@@ -375,7 +460,7 @@ const openPreview = async (item: MediaItem) => {
   previewVisible.value = true
   try {
     if (item.url) previewOriginalUrl.value = item.url
-    else if (item.processing_status === 'READY') {
+    else if (isAssetReady(item)) {
       const { data } = await mediaApi.getDownloadUrl(item.id, 'original')
       previewOriginalUrl.value = data.url
     }
@@ -386,7 +471,7 @@ const waitForAsset = async (assetId: string) => {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise(resolve => window.setTimeout(resolve, 2000))
     const { data } = await mediaApi.get(assetId)
-    if (data.status === 'READY' || data.status === 'FAILED') return data
+    if (isAssetReady(data) || data.status === 'FAILED' || data.processing_status === 'FAILED') return data
   }
   return null
 }
@@ -565,7 +650,10 @@ const retryBinding = async (row: any) => {
 }
 const stopBindingPolling = () => { if (bindingTimer !== null) { window.clearInterval(bindingTimer); bindingTimer = null } }
 const openFailure = (item: MediaItem) => { failureAsset.value = item; failureVisible.value = true }
-onBeforeUnmount(() => { if (bindingTimer !== null) window.clearInterval(bindingTimer) })
+onBeforeUnmount(() => {
+  stopBindingPolling()
+  stopAssetPolling()
+})
 
 const formatSize = (n?: number | null) => {
   if (!n) return '-'
@@ -617,6 +705,7 @@ onMounted(async () => {
 
 <style scoped lang="scss">
 .material { color: #1f2937; }
+.retry-file-input { display: none; }
 .library-shell { border: 0; border-radius: 16px; background: #fff; box-shadow: 0 8px 28px rgba(15, 35, 70, .06); }
 .library-shell :deep(.el-card__header) { padding: 24px 28px 18px; border-bottom: 1px solid #edf1f7; }
 .library-shell :deep(.el-card__body) { padding: 20px 28px 28px; }
@@ -634,6 +723,9 @@ onMounted(async () => {
 }
 .shared-hint { display: flex; align-items: center; gap: 7px; margin-top: 16px; color: #718096; font-size: 12px; }
 .hint-dot { width: 7px; height: 7px; border-radius: 50%; background: #35b779; box-shadow: 0 0 0 4px #e8f7ef; }
+.upload-progress-panel { margin-top: 14px; padding: 12px 14px; border: 1px solid #dbeafe; border-radius: 10px; background: #f6faff; }
+.upload-progress-head { display: flex; justify-content: space-between; margin-bottom: 7px; color: #486581; font-size: 12px; font-weight: 600; }
+.upload-progress-panel small { display: block; margin-top: 7px; color: #8a9aad; font-size: 11px; }
 .filters {
   display: flex;
   align-items: center;

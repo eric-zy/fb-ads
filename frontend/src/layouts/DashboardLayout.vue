@@ -9,6 +9,7 @@
             <template #title><el-icon><Collection /></el-icon><span>内容管理</span></template>
             <el-menu-item index="material"><el-icon><Picture /></el-icon><span>素材库</span></el-menu-item>
             <el-menu-item index="templates"><el-icon><Collection /></el-icon><span>投放模板</span></el-menu-item>
+            <el-menu-item v-if="canSeeSinanPromotions" index="sinan-promotions"><el-icon><Promotion /></el-icon><span>司南推广链</span></el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="delivery">
             <template #title><el-icon><Promotion /></el-icon><span>投放管理</span></template>
@@ -16,7 +17,6 @@
             <el-menu-item index="batch-publish"><el-icon><Upload /></el-icon><span>批量投放</span></el-menu-item>
             <el-menu-item index="jobs"><el-icon><List /></el-icon><span>执行任务</span></el-menu-item>
             <el-menu-item index="scheduled-tasks"><el-icon><Timer /></el-icon><span>定时任务</span></el-menu-item>
-            <el-menu-item v-if="sinanVerified" index="sinan-promotions"><el-icon><Promotion /></el-icon><span>司南推广链</span></el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="analytics">
             <template #title><el-icon><PieChart /></el-icon><span>数据分析</span></template>
@@ -101,6 +101,7 @@ const sinanVerified = ref(false)
 const { t, isZh } = useLocale()
 const canSeeAccountsMenu = computed(() => userStore.isAdmin || userStore.isManager || userStore.hasPermission('ad_account:read'))
 const canSeeSettings = computed(() => userStore.isAdmin || userStore.hasPermission('settings:read'))
+const canSeeSinanPromotions = computed(() => sinanVerified.value && (userStore.isAdmin || userStore.hasPermission('sinan:read')))
 // 每个登录账号维护自己的司南配置，配置入口对所有登录用户开放。
 const canManageSinan = computed(() => !!userStore.user)
 

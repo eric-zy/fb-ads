@@ -129,6 +129,8 @@
             v-model="form.scheduledTime"
             type="datetime"
             placeholder="选择执行时间"
+            popper-class="date-time-popper"
+            placement="bottom-start"
             style="width: 100%"
             :disabled-date="disablePastDate"
             format="YYYY-MM-DD HH:mm"

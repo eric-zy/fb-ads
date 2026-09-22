@@ -32,6 +32,8 @@ def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
     return {"id": user.id, "username": user.username, "email": user.email}
 from core.enums import TemplateStatus
 from services.job_service import JobDispatchError, JobService
+from services.meta_delivery_rules import budget_bid_preflight_errors, conversion_event_preflight_errors, objective_optimization_preflight_errors
+from services.targeting_catalog import placement_preflight_errors, targeting_preflight_errors
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["Job Center"])
 
@@ -123,14 +125,32 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     adsets = config.get("adsets")
     if not isinstance(adsets, list) or not adsets:
         raise HTTPException(status_code=400, detail="至少需要配置一个广告组")
+    template_goal = config.get("optimization_goal") or next(
+        (item.get("optimization_goal") for item in adsets if isinstance(item, dict) and item.get("optimization_goal")),
+        "LINK_CLICKS",
+    )
+    objective_errors = objective_optimization_preflight_errors(objective, template_goal, {"adsets": adsets})
+    if objective_errors:
+        raise HTTPException(status_code=400, detail=objective_errors[0]["message"])
     for index, adset in enumerate(adsets, 1):
         if not isinstance(adset, dict) or not str(adset.get("name") or "").strip():
             raise HTTPException(status_code=400, detail=f"广告组 {index} 缺少名称")
-        if float(adset.get("budget") or 0) <= 0:
-            raise HTTPException(status_code=400, detail=f"广告组 {index} 预算必须大于 0")
+        targeting_errors = targeting_preflight_errors(f"广告组 {index} 定向", adset.get("targeting"))
+        placement_errors = placement_preflight_errors(f"广告组 {index} 版位", adset.get("placement"))
+        if targeting_errors or placement_errors:
+            error = (targeting_errors + placement_errors)[0]
+            raise HTTPException(status_code=400, detail=error["message"])
         strategy = str(adset.get("bid_strategy") or config.get("bid_strategy") or "LOWEST_COST_WITHOUT_CAP").upper()
-        if strategy in {"LOWEST_COST_WITH_BID_CAP", "COST_CAP"} and not adset.get("bid_amount"):
-            raise HTTPException(status_code=400, detail=f"广告组 {index} 的出价策略需要填写出价金额")
+        bidding = config.get("bidding") if isinstance(config.get("bidding"), dict) else {}
+        bid_errors = budget_bid_preflight_errors(
+            f"广告组 {index}",
+            adset.get("budget"),
+            strategy,
+            adset.get("bid_amount"),
+            adset.get("bid_constraints") or bidding.get("bid_constraints"),
+        )
+        if bid_errors:
+            raise HTTPException(status_code=400, detail=bid_errors[0]["message"])
     creatives = config.get("creatives") or []
     if not isinstance(creatives, list) or not creatives:
         raise HTTPException(status_code=400, detail="至少需要配置一个广告创意")
@@ -141,6 +161,15 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
             raise HTTPException(status_code=400, detail=f"广告创意 {index} 缺少主文案")
         if not str(creative.get("landing_url") or "").startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail=f"广告创意 {index} 的落地页必须是 http/https 地址")
+    creative_config = dict(config.get("creative_config_json") or {})
+    # 直接投放的事件源字段位于 inline_config 顶层；统一收进模板 JSON，
+    # 否则预检和最终构建拿不到用户刚选择的 Pixel/Dataset。
+    for key in ("page_id", "creatives", "adsets", "dataset_id", "pixel_id", "conversion_event", "custom_event_type", "promoted_object", "optimization_goal", "creative_format", "delivery"):
+        if key in config and key not in creative_config:
+            creative_config[key] = config[key]
+    event_errors = conversion_event_preflight_errors(template_goal, creative_config)
+    if event_errors:
+        raise HTTPException(status_code=400, detail=event_errors[0]["message"])
     fields = {
         "name": name,
         "objective": objective,
@@ -155,11 +184,7 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
         "billing_event": config.get("billing_event"),
         "targeting_json": config.get("targeting_json") or config.get("targeting"),
         "placement_json": config.get("placement_json") or config.get("placement"),
-        "creative_config_json": config.get("creative_config_json") or {
-            "page_id": config.get("page_id"),
-            "creatives": config.get("creatives", []),
-            "adsets": config.get("adsets", []),
-        },
+        "creative_config_json": creative_config,
     }
     if not fields["name"]:
         raise HTTPException(status_code=400, detail="直接配置必须提供投放名称")

@@ -349,11 +349,10 @@ def list_accounts(
     if account_status:
         q = q.filter(AdAccount.account_status == account_status)
     if business_id:
-        q = q.join(BusinessAssetAccess, BusinessAssetAccess.asset_id == AdAccount.id).filter(
-            BusinessAssetAccess.business_id == business_id,
-            BusinessAssetAccess.asset_type == "AD_ACCOUNT",
-            BusinessAssetAccess.status == "ACTIVE",
-        )
+        # BM 列表的账户数量来自 AdAccount.business_id；旧账户可能没有
+        # BusinessAssetAccess 关系记录，不能只通过关系表过滤，否则点击
+        # BM 的账户数量后会进入空列表。
+        q = q.filter(AdAccount.business_id == business_id)
     if asset_type:
         if asset_type not in ("OWNED", "CLIENT"):
             raise HTTPException(status_code=400, detail="asset_type 只能是 OWNED / CLIENT")

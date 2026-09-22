@@ -137,6 +137,7 @@ for _task_module in (
     "tasks.campaign_tasks",
     "tasks.meta_sync_tasks",  # Meta 账号管理 V1：BM / 广告账户同步
     "tasks.meta_audience_tasks",  # Meta Custom Audience 元数据同步
+    "tasks.meta_tracking_asset_tasks",  # Meta Pixel / Dataset 元数据同步
     "tasks.credential_tasks",  # 凭据到期巡检
     "tasks.media_tasks",  # 异步 Meta 素材上传与视频处理
     "tasks.assignment_tasks",  # 广告账户分配关系维护

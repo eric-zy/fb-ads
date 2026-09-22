@@ -115,7 +115,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="过期时间">
-          <el-date-picker v-model="createForm.expires_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="留空表示长期有效" style="width:100%" />
+          <el-date-picker v-model="createForm.expires_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="留空表示长期有效" popper-class="date-time-popper" placement="bottom-start" style="width:100%" />
         </el-form-item>
         <el-form-item label="停用旧凭据"><el-switch v-model="createForm.replace_active" /></el-form-item>
       </el-form>
@@ -136,7 +136,7 @@
             <el-option label="PAGE（主页令牌）" value="PAGE" />
           </el-select>
         </el-form-item>
-        <el-form-item label="过期时间"><el-date-picker v-model="rotateForm.expires_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="留空表示长期有效" style="width:100%" /></el-form-item>
+        <el-form-item label="过期时间"><el-date-picker v-model="rotateForm.expires_at" type="datetime" value-format="YYYY-MM-DDTHH:mm:ss" placeholder="留空表示长期有效" popper-class="date-time-popper" placement="bottom-start" style="width:100%" /></el-form-item>
         <el-form-item label="保留旧凭据"><el-switch v-model="rotateForm.keep_old" /></el-form-item>
       </el-form>
       <template #footer>

@@ -372,6 +372,16 @@ class MetaAdsService:
 
         return self._execute(_do, f"list_adsets(campaign={campaign_id})")
 
+    def get_campaign(self, campaign_id: str) -> Dict[str, Any]:
+        """读取单个 Campaign，用于复用投放对象前的远端有效性校验。"""
+        def _do():
+            return self.client._get(
+                campaign_id,
+                params={"fields": "id,name,status,effective_status"},
+            )
+
+        return self._execute(_do, f"get_campaign({campaign_id})")
+
     def list_ads(self, adset_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
         """读取 AdSet 下的 Ad。"""
         def _do():
@@ -392,6 +402,16 @@ class MetaAdsService:
             return rows
 
         return self._execute(_do, f"list_ads(adset={adset_id})")
+
+    def get_adset(self, adset_id: str) -> Dict[str, Any]:
+        """读取单个 AdSet，用于复用广告组前的远端有效性校验。"""
+        def _do():
+            return self.client._get(
+                adset_id,
+                params={"fields": "id,name,status,effective_status,campaign_id"},
+            )
+
+        return self._execute(_do, f"get_adset({adset_id})")
 
     def update_campaign(self, campaign_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """更新 Campaign 属性，例如名称、预算或状态。"""

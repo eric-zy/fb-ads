@@ -43,6 +43,7 @@ from services.meta.page_service import MetaPageSyncService
 from services.credential_resolver import CredentialResolver
 from services.fb_connector_client import FBConnectorClient, FBConnectorError
 from services.notifications import NotificationService
+from tasks.meta_tracking_asset_tasks import sync_tracking_assets_task
 from services.account_dispatch import AccountDispatchService
 from services.meta.connector_page_sync import sync_connector_pages
 
@@ -194,11 +195,24 @@ def sync_ad_accounts_task(self, business_id: str) -> Dict:
             tenant_id=business.tenant_id if business else None,
             operator_id=None,
         )
+        tracking_asset_task_ids = []
+        if business:
+            synced_accounts = db.query(AdAccount).filter(AdAccount.business_id == business.id).all()
+            for account in synced_accounts:
+                try:
+                    tracking_asset_task_ids.append(sync_tracking_assets_task.delay(account.id).id)
+                except Exception as exc:
+                    logger.warning(
+                        "[meta_sync] Pixel/Dataset 同步任务投递失败 account_pk=%s error=%s",
+                        account.id,
+                        exc,
+                    )
         return {
             "status": "success",
             "sync_log": _log_to_dict(log),
             "page_sync": page_sync,
             "assignment": assignment,
+            "tracking_asset_task_ids": tracking_asset_task_ids,
         }
     except Exception as exc:
         logger.error(f"[meta_sync] BM {business_id} 账户同步失败: {exc}")
@@ -235,7 +249,12 @@ def sync_ad_account_task(self, ad_account_id: str) -> Dict:
     db = SessionLocal()
     try:
         log = MetaSyncService(db).sync_ad_account(ad_account_id)
-        return {"status": "success", "sync_log": _log_to_dict(log)}
+        tracking_asset_task = sync_tracking_assets_task.delay(ad_account_id)
+        return {
+            "status": "success",
+            "sync_log": _log_to_dict(log),
+            "tracking_asset_task_id": tracking_asset_task.id,
+        }
     except Exception as exc:
         logger.error(f"[meta_sync] 账户 {ad_account_id} 同步失败: {exc}")
         try:

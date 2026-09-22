@@ -19,14 +19,15 @@ export interface AsyncTaskStatus { task_id: string; state: string; result?: Reco
 export interface DeliveryAction { id: string; object_type: string; object_id: string; account_id: string; action: string; status: string; desired_status?: string; remote_status?: string; task_id?: string; error_message?: string; created_at?: string; finished_at?: string }
 export interface SyncAlert { id: string; ad_account_id?: string; alert_type: string; title: string; message: string; is_resolved: boolean; created_at?: string }
 export interface DeliveryObjectDetail { object_type: string; object: MetaCampaign | MetaAdSet | MetaAd; account?: Record<string, any> | null; ancestors: Record<string, any>; children: any[]; recent_actions: DeliveryAction[] }
+export interface PageResult<T> { items: T[]; total: number; page: number; page_size: number }
 export const campaignsApi = {
   searchAdGroups: (params?: { account_id?: string; q?: string; status?: string; limit?: number }) => request.get<SyncedAdGroup[]>('/api/v1/ad-groups/search', { params }),
   syncAdGroup: (id: string) => request.post<AdGroupSyncResult>('/api/v1/ad-groups/' + id + '/sync'),
-  list: (params?: { ad_account_id?: string; status?: string; keyword?: string }) => request.get<MetaCampaign[]>('/api/v1/campaigns', { params }),
+  list: (params?: { ad_account_id?: string; status?: string; keyword?: string; page?: number; page_size?: number }) => request.get<PageResult<MetaCampaign>>('/api/v1/campaigns', { params }),
   detail: (id: string) => request.get<any>('/api/v1/campaigns/' + id + '/detail'),
   objectDetail: (objectType: string, id: string) => request.get<DeliveryObjectDetail>('/api/v1/delivery-objects/' + objectType + '/' + id),
-  adsets: (id: string, status?: string) => request.get<MetaAdSet[]>('/api/v1/campaigns/' + id + '/adsets', { params: { status } }),
-  ads: (id: string, status?: string) => request.get<MetaAd[]>('/api/v1/adsets/' + id + '/ads', { params: { status } }),
+  adsets: (id: string, status?: string, page?: number, page_size?: number) => request.get<PageResult<MetaAdSet>>('/api/v1/campaigns/' + id + '/adsets', { params: { status, page, page_size } }),
+  ads: (id: string, status?: string, page?: number, page_size?: number) => request.get<PageResult<MetaAd>>('/api/v1/adsets/' + id + '/ads', { params: { status, page, page_size } }),
   sync: (ids?: string[], objectType = 'CAMPAIGN') => request.post<AsyncActionResult & { object_type?: string; object_ids?: string[] }>('/api/v1/campaigns/actions', { action: 'SYNC', ids, object_type: objectType }),
   action: (data: { action: string; ids: string[]; object_type?: string; budget?: number; idempotency_key?: string }) => request.post<AsyncActionResult>('/api/v1/campaigns/actions', data),
   taskStatus: (id: string) => request.get<AsyncTaskStatus>('/api/v1/tasks/' + id),

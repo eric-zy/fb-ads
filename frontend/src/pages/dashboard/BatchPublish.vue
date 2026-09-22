@@ -110,7 +110,7 @@
               </div>
             </el-form-item>
             <el-form-item label="默认日预算" required><el-input-number v-model="directForm.daily_budget" :min="1" :step="1" /><span class="tip-inline">美元/天</span></el-form-item>
-            <el-form-item label="优化目标"><el-select v-model="directForm.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" :disabled="directForm.objective === 'OUTCOME_SALES'" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" :disabled="directForm.objective === 'OUTCOME_SALES'" /><el-option label="转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" /></el-select></el-form-item>
+            <el-form-item label="优化目标"><el-select v-model="directForm.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LINK_CLICKS')" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LANDING_PAGE_VIEWS')" /><el-option label="站外转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'OFFSITE_CONVERSIONS')" /><el-option label="价值 VALUE" value="VALUE" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'VALUE')" /><el-option label="互动 POST_ENGAGEMENT" value="POST_ENGAGEMENT" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'POST_ENGAGEMENT')" /><el-option label="视频观看 THRUPLAY" value="THRUPLAY" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'THRUPLAY')" /><el-option label="线索 LEAD_GENERATION" value="LEAD_GENERATION" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LEAD_GENERATION')" /></el-select></el-form-item>
             <el-alert v-if="!directObjectiveValid" type="warning" :closable="false" show-icon title="当前目标与优化目标不兼容，请改用转化优化或切换为流量目标" />
             <el-form-item label="计费事件"><el-select v-model="directForm.billing_event" style="width:100%"><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /></el-select></el-form-item>
             <el-form-item label="出价策略"><el-select v-model="directForm.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本 + 竞价上限" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select></el-form-item>
@@ -121,9 +121,11 @@
               <el-form-item label="预算" required><el-input-number v-model="adset.budget" :min="1" :step="1" /><span class="tip-inline">美元/天</span></el-form-item>
               <el-form-item label="国家/地区" required><el-input v-model="adset.country" placeholder="例如 US；多个国家用逗号分隔" /></el-form-item>
               <el-form-item label="年龄范围"><el-input-number v-model="adset.age_min" :min="13" :max="65" /> <span>至</span> <el-input-number v-model="adset.age_max" :min="13" :max="65" /></el-form-item>
+              <el-form-item label="性别"><el-checkbox-group v-model="adset.genders"><el-checkbox :label="1">男性</el-checkbox><el-checkbox :label="2">女性</el-checkbox></el-checkbox-group></el-form-item>
+              <el-form-item label="兴趣"><el-input v-model="adset.interests" placeholder="多个兴趣用逗号分隔（可选）" /></el-form-item>
               <el-form-item label="语言"><MetaLanguageSelect v-model="adset.languages" /></el-form-item>
               <el-form-item label="版位"><el-select v-model="adset.publisher_platforms" multiple style="width:100%"><el-option label="Facebook" value="facebook" /><el-option label="Instagram" value="instagram" /><el-option label="Audience Network" value="audience_network" /><el-option label="Messenger" value="messenger" /></el-select></el-form-item>
-              <el-form-item label="优化目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" /><el-option label="转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" /></el-select></el-form-item>
+              <el-form-item label="优化目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LINK_CLICKS')" /><el-option label="落地页浏览 LANDING_PAGE_VIEWS" value="LANDING_PAGE_VIEWS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LANDING_PAGE_VIEWS')" /><el-option label="站外转化 OFFSITE_CONVERSIONS" value="OFFSITE_CONVERSIONS" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'OFFSITE_CONVERSIONS')" /><el-option label="价值 VALUE" value="VALUE" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'VALUE')" /><el-option label="互动 POST_ENGAGEMENT" value="POST_ENGAGEMENT" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'POST_ENGAGEMENT')" /><el-option label="视频观看 THRUPLAY" value="THRUPLAY" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'THRUPLAY')" /><el-option label="线索 LEAD_GENERATION" value="LEAD_GENERATION" :disabled="!isOptimizationGoalAllowed(directForm.objective, 'LEAD_GENERATION')" /></el-select></el-form-item>
               <el-form-item label="计费事件"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示 IMPRESSIONS" value="IMPRESSIONS" /><el-option label="链接点击 LINK_CLICKS" value="LINK_CLICKS" /></el-select></el-form-item>
               <el-form-item label="出价策略"><el-select v-model="adset.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本 + 竞价上限" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select></el-form-item>
               <el-form-item v-if="adset.bid_strategy !== 'LOWEST_COST_WITHOUT_CAP'" label="出价金额"><el-input-number v-model="adset.bid_amount" :min="1" :step="1" /></el-form-item>
@@ -222,6 +224,63 @@
             />
           </el-select>
         </el-form-item>
+
+        <div v-if="trackingAssetRequired" class="tracking-asset-panel">
+          <div class="tracking-asset-panel__title">转化资产</div>
+          <div class="tracking-asset-panel__desc">
+            {{ form.publish_mode === 'DIRECT' ? 'Pixel / 数据集会按已选广告账户自动筛选；多账户仅展示共同可用资产。' : '当前模板使用转化优化，请确认模板中已配置可用 Pixel / 数据集。' }}
+          </div>
+          <el-form-item v-if="form.publish_mode === 'DIRECT'" label="Pixel / 数据集" :required="trackingAssetRequired">
+            <el-select
+              v-model="directForm.dataset_id"
+              filterable
+              clearable
+              style="width: 100%"
+              placeholder="先选择广告账户，再选择共同可用的 Pixel / 数据集"
+              :loading="trackingAssetsLoading"
+              :disabled="!form.ad_account_ids.length"
+            >
+              <el-option
+                v-for="asset in trackingAssets"
+                :key="`${asset.asset_type}-${asset.id}`"
+                :value="asset.id"
+              >
+                <div class="tracking-asset-option">
+                  <div class="tracking-asset-option__name">
+                    {{ asset.name }} · {{ asset.asset_type === 'PIXEL' ? 'Pixel' : 'Dataset' }} · {{ asset.id }}
+                  </div>
+                  <div class="tracking-asset-option__meta">
+                    <el-tag size="small" :type="trackingAssetStatusType(asset)">{{ trackingAssetStatusLabel(asset) }}</el-tag>
+                    <span>最近同步：{{ formatTrackingAssetTime(asset.last_synced_at) }}</span>
+                  </div>
+                </div>
+              </el-option>
+              <template #empty>
+                <div class="tracking-asset-empty">暂无共同可用的 Pixel / 数据集，请检查授权范围或先同步广告账户。</div>
+              </template>
+            </el-select>
+          </el-form-item>
+            <el-form-item v-if="form.publish_mode === 'DIRECT'" label="转化事件" :required="trackingAssetRequired">
+              <el-select v-model="directForm.conversion_event" filterable allow-create default-first-option style="width: 100%" placeholder="选择 Meta 转化事件">
+                <el-option v-for="event in STANDARD_CONVERSION_EVENTS" :key="event.value" :label="`${event.label} ${event.value}`" :value="event.value" />
+              </el-select>
+              <div class="tip">支持标准事件或自定义事件；自定义事件需以字母开头，仅允许字母、数字和下划线。</div>
+            </el-form-item>
+          <div v-else class="tracking-asset-template-state">
+            <el-tag v-if="selectedTemplateTrackingAssetId" type="success">已配置：{{ selectedTemplateTrackingAssetId }}</el-tag>
+            <el-tag v-else type="warning">模板未配置 Pixel / 数据集，请先编辑模板</el-tag>
+          </div>
+          <el-alert
+            v-if="!trackingConfigReady"
+            type="warning"
+            :closable="false"
+            show-icon
+            title="该优化目标需要事件源"
+          >
+            当前仅在发布预检阶段拦截；请选择 Pixel / 数据集并配置转化事件后再继续。
+          </el-alert>
+          <div v-if="trackingAssetsError" class="tracking-asset-error">{{ trackingAssetsError }}</div>
+        </div>
 
         <el-form-item label="广告组来源" required>
           <el-radio-group v-model="adGroupMode">
@@ -341,6 +400,8 @@
             <el-descriptions-item label="目标账户">{{ form.ad_account_ids.length }} 个</el-descriptions-item>
             <el-descriptions-item label="部署结构">每个账户 1 个 Campaign → {{ form.publish_mode === 'DIRECT' ? previewAdsetCount : adsetCount(selectedTemplate) }} 个 AdSet → {{ form.publish_mode === 'DIRECT' ? previewAdCount : creativeCount(selectedTemplate) * adsetCount(selectedTemplate) }} 个 Ad</el-descriptions-item>
             <el-descriptions-item label="预算">{{ form.budget_override ? form.budget_override + ' 美元/天（本次覆盖）' : form.publish_mode === 'DIRECT' ? directForm.adsets.reduce((sum, item) => sum + Number(item.budget || 0), 0) + ' 美元/天' : templateBudget + '（沿用模板）' }}</el-descriptions-item>
+            <el-descriptions-item v-if="form.publish_mode === 'TEMPLATE' && selectedTemplate?.budget_type === 'LIFETIME'" label="开始时间">{{ formatScheduleTime(templateSchedule.start_time) }}</el-descriptions-item>
+            <el-descriptions-item v-if="form.publish_mode === 'TEMPLATE' && selectedTemplate?.budget_type === 'LIFETIME'" label="结束时间">{{ formatScheduleTime(templateSchedule.end_time) }}</el-descriptions-item>
             <el-descriptions-item label="初始状态">{{ form.status === 'ACTIVE' ? '立即启用' : '暂停' }}</el-descriptions-item>
             <el-descriptions-item label="广告组来源">{{ adGroupMode === 'EXISTING' ? `同账户复用（${form.ad_account_ids.length} 个账户分别选择）` : adGroupMode === 'COPY' ? `跨账户复制（${form.ad_account_ids.length} 个账户分别选择）` : '新建广告组' }}</el-descriptions-item>
           </el-descriptions>
@@ -364,6 +425,8 @@
             <el-table-column prop="budget" label="预算（美元/天）" width="130" />
             <el-table-column prop="country" label="国家/地区" width="120" />
             <el-table-column label="年龄" width="100"><template #default="{ row }">{{ row.age_min }}-{{ row.age_max }}</template></el-table-column>
+            <el-table-column label="性别" width="100"><template #default="{ row }">{{ row.genders?.length === 2 ? '男女' : row.genders?.includes(1) ? '男性' : row.genders?.includes(2) ? '女性' : '未设置' }}</template></el-table-column>
+            <el-table-column prop="interests" label="兴趣" min-width="150" show-overflow-tooltip />
             <el-table-column label="版位" min-width="150"><template #default="{ row }">{{ row.publisher_platforms.join(', ') || '自动版位' }}</template></el-table-column>
             <el-table-column prop="optimization_goal" label="优化目标" width="150" />
           </el-table>
@@ -376,15 +439,25 @@
           <el-alert v-if="preflightResult" :type="preflightResult.passed ? 'success' : 'error'" :closable="false" show-icon style="margin-top:12px">
             <template #title>{{ preflightResult.passed ? `预检通过：${preflightResult.ready_account_ids.length} 个账户可投放` : '预检未通过，暂不能提交' }}</template>
             <div v-if="preflightResult.passed && preflightResult.expires_at" class="preflight-detail">本次预览仅对当前账户、素材和配置有效，提交前会再次校验；有效期至 {{ preflightResult.expires_at }}</div>
-            <div v-for="item in preflightResult.errors" :key="`error-${item.code}`" class="preflight-error-item">{{ item.message }}</div>
+            <div v-for="item in preflightResult.errors" :key="`error-${item.code}`" class="preflight-error-item">
+              <div>{{ item.message }}</div>
+              <div v-if="preflightActionHint(item.code)" class="preflight-detail">处理建议：{{ preflightActionHint(item.code) }}</div>
+              <div v-for="blocked in (item.items || [])" :key="`${item.code}-${blocked.account_id}-${blocked.asset_id || blocked.reason}`" class="preflight-detail">
+                账户 {{ blocked.account_id }}：{{ blocked.reason }}{{ blocked.asset_id ? `（事件源 ${blocked.asset_id}）` : '' }}
+              </div>
+            </div>
             <div v-for="item in preflightResult.warnings" :key="`warning-${item.code}`" class="preflight-warning">
               <div>{{ item.message }}</div>
+              <div v-if="preflightActionHint(item.code)" class="preflight-detail">处理建议：{{ preflightActionHint(item.code) }}</div>
               <div v-for="blocked in (item.items || [])" :key="`${item.code}-${blocked.account_id}-${blocked.reason}`" class="preflight-detail">
-                账户 {{ blocked.account_id }}：{{ blocked.reason }}
+                账户 {{ blocked.account_id }}：{{ blocked.reason }}{{ blocked.asset_id ? `（事件源 ${blocked.asset_id}）` : '' }}
               </div>
             </div>
             <el-button v-if="missingAssetAccounts.length" type="primary" size="small" style="margin-top:8px" :loading="syncingAssets" @click="syncMissingAssets">
               立即同步缺失素材
+            </el-button>
+            <el-button v-if="trackingAssetIssues.length" type="warning" size="small" style="margin-top:8px" :loading="syncingTrackingAssets" @click="refreshTrackingAssetsAndPreflight">
+              重新同步事件源并预检
             </el-button>
           </el-alert>
         </section>
@@ -496,9 +569,16 @@ import { accountApi, type DeployableAccount } from '@/api/admin'
 import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import { mediaApi, type MetaAssetBinding } from '@/api/media'
 import { metaPagesApi, type MetaPage } from '@/api/metaPages'
+import { metaTrackingAssetsApi, type MetaTrackingAsset } from '@/api/metaTrackingAssets'
 import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
 import { campaignsApi, type SyncedAdGroup } from '@/api/campaigns'
 import { useLocale } from '@/stores/localeStore'
+import {
+  defaultOptimizationGoal,
+  isConversionOptimizationGoal,
+  isOptimizationGoalAllowed,
+  STANDARD_CONVERSION_EVENTS,
+} from '@/config/metaDeliveryRules'
 const { t } = useLocale()
 import {
   jobsApi,
@@ -527,12 +607,16 @@ const loadingAccounts = ref(false)
 const loadingJobs = ref(false)
 const submitting = ref(false)
 const syncingAssets = ref(false)
+const syncingTrackingAssets = ref(false)
 const preflighting = ref(false)
 const preflightResult = ref<any>(null)
 const rateLimitStatus = ref<{ count: number; limit: number; usage_ratio: number } | null>(null)
 const assetBindings = ref<MetaAssetBinding[]>([])
 const metaPages = ref<MetaPage[]>([])
 const pagesSyncing = ref(false)
+const trackingAssets = ref<MetaTrackingAsset[]>([])
+const trackingAssetsLoading = ref(false)
+const trackingAssetsError = ref('')
 const mediaAssets = ref<any[]>([])
 const activeStep = ref(0)
 const adGroupMode = ref<'NEW' | 'EXISTING' | 'COPY'>('NEW')
@@ -547,6 +631,7 @@ let pollTimer: number | null = null
 let assetPollTimer: number | null = null
 let revisionSaveTimer: number | null = null
 let revisionSavePromise: Promise<void> | null = null
+let trackingAssetsRequest = 0
 
 const form = reactive({
   publish_mode: 'TEMPLATE' as 'TEMPLATE' | 'DIRECT',
@@ -562,8 +647,9 @@ const form = reactive({
 const directForm = reactive({
   name: '直接投放测试', objective: 'OUTCOME_TRAFFIC', page_id: '', daily_budget: 10,
   optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1,
+  dataset_id: '', conversion_event: 'PURCHASE',
   creative_format: 'MULTI_AD' as 'SINGLE_IMAGE' | 'MULTI_AD',
-  adsets: [{ key: `${Date.now()}-1`, name: 'US 广告组', budget: 10, country: 'US', age_min: 18, age_max: 65, languages: [] as string[], publisher_platforms: ['facebook'] as string[], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1 }],
+  adsets: [{ key: `${Date.now()}-1`, name: 'US 广告组', budget: 10, country: 'US', age_min: 18, age_max: 65, genders: [1, 2] as number[], interests: '', languages: [] as string[], publisher_platforms: ['facebook'] as string[], optimization_goal: 'LINK_CLICKS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1 }],
   creatives: [{ key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' }],
 })
 const batchAssetIds = ref<string[]>([])
@@ -574,11 +660,12 @@ const previewAdsetCount = computed(() => delivery.split_level === 'ADSET' && cre
   ? directForm.adsets.length * directForm.creatives.length
   : directForm.adsets.length)
 const previewAdCount = computed(() => directForm.adsets.length * (creativeFormat.value === 'CAROUSEL' ? 1 : directForm.creatives.length))
-const directObjectiveValid = computed(() => !(directForm.objective === 'OUTCOME_SALES' && ['LINK_CLICKS', 'LANDING_PAGE_VIEWS'].includes(directForm.optimization_goal)))
+const directObjectiveValid = computed(() => isOptimizationGoalAllowed(directForm.objective, directForm.optimization_goal)
+  && directForm.adsets.every(item => isOptimizationGoalAllowed(directForm.objective, item.optimization_goal)))
 const sharedCreative = reactive({ primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
 
 const addDirectAdset = () => {
-  directForm.adsets.push({ key: `${Date.now()}-${directForm.adsets.length + 1}`, name: `广告组 ${directForm.adsets.length + 1}`, budget: directForm.daily_budget, country: 'US', age_min: 18, age_max: 65, languages: [], publisher_platforms: ['facebook'], optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy, bid_amount: 1 })
+  directForm.adsets.push({ key: `${Date.now()}-${directForm.adsets.length + 1}`, name: `广告组 ${directForm.adsets.length + 1}`, budget: directForm.daily_budget, country: 'US', age_min: 18, age_max: 65, genders: [1, 2], interests: '', languages: [], publisher_platforms: ['facebook'], optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy, bid_amount: 1 })
 }
 const removeDirectAdset = (index: number) => { if (directForm.adsets.length > 1) directForm.adsets.splice(index, 1) }
 const addDirectCreative = () => directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
@@ -592,6 +679,19 @@ const addBatchCreatives = () => {
   for (const asset_id of added) directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}-${asset_id}`, asset_id, primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
   batchAssetIds.value = []
   ElMessage.success(`已加入 ${added.length} 个素材创意`)
+}
+
+const buildDirectTargeting = (adset: typeof directForm.adsets[number]) => {
+  const targeting: Record<string, any> = {
+    geo_locations: { countries: adset.country.split(',').map(v => v.trim()).filter(Boolean) },
+    age_min: adset.age_min,
+    age_max: adset.age_max,
+    genders: [...adset.genders],
+  }
+  const interests = adset.interests.split(',').map(v => v.trim()).filter(Boolean)
+  if (interests.length) targeting.flexible_spec = [{ interests: interests.map(name => ({ name })) }]
+  if (adset.languages.length) targeting.languages = [...adset.languages]
+  return targeting
 }
 
 const selectedTemplate = computed(() => templates.value.find(t => t.id === form.template_id) || null)
@@ -620,9 +720,13 @@ const directConfig = computed<Record<string, any> | null>(() => {
     delivery: { ...delivery },
     ...(creativeFormat.value === 'CAROUSEL' ? { carousel_cards: creatives } : {}),
     optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy,
+    // 事件源仅在当前广告组实际使用转化优化时进入请求；切换到互动、展示
+    // 或站内线索目标后保留界面草稿，但不把无关 Pixel/Dataset 发送给 Meta。
+    ...(directNeedsTrackingAsset.value && directForm.dataset_id ? { dataset_id: directForm.dataset_id } : {}),
+    ...(directNeedsTrackingAsset.value && directForm.conversion_event ? { conversion_event: directForm.conversion_event } : {}),
     creatives,
     adsets: directForm.adsets.map(adset => ({ name: adset.name, budget: adset.budget,
-      targeting: { geo_locations: { countries: adset.country.split(',').map(v => v.trim()).filter(Boolean) }, age_min: adset.age_min, age_max: adset.age_max, ...(adset.languages.length ? { languages: [...adset.languages] } : {}) },
+      targeting: buildDirectTargeting(adset),
       placement: { publisher_platforms: adset.publisher_platforms }, optimization_goal: adset.optimization_goal,
       billing_event: adset.billing_event, bid_strategy: adset.bid_strategy,
       bid_amount: adset.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? undefined : adset.bid_amount, creatives })),
@@ -635,6 +739,15 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
   directForm.page_id = config.page_id || directForm.page_id
   directForm.daily_budget = Number(config.daily_budget || directForm.daily_budget)
   directForm.optimization_goal = config.optimization_goal || directForm.optimization_goal
+  directForm.dataset_id = config.dataset_id
+    || config.pixel_id
+    || config.promoted_object?.dataset_id
+    || config.promoted_object?.pixel_id
+    || ''
+  directForm.conversion_event = config.conversion_event
+    || config.promoted_object?.conversion_event
+    || config.promoted_object?.custom_event_type
+    || directForm.conversion_event
   directForm.billing_event = config.billing_event || directForm.billing_event
   directForm.bid_strategy = config.bid_strategy || directForm.bid_strategy
   creativeFormat.value = config.creative_format || 'MULTI_AD'
@@ -654,6 +767,8 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
       country: Array.isArray(countries) ? countries.join(',') : String(countries || 'US'),
       age_min: Number(targeting.age_min || 18),
       age_max: Number(targeting.age_max || 65),
+      genders: Array.isArray(targeting.genders) ? [...targeting.genders] : [1, 2],
+      interests: (targeting.flexible_spec?.[0]?.interests || []).map((v: any) => v.name || '').filter(Boolean).join(','),
       languages: Array.isArray(targeting.languages) ? [...targeting.languages] : [],
       publisher_platforms: item.placement?.publisher_platforms || ['facebook'],
       optimization_goal: item.optimization_goal || directForm.optimization_goal,
@@ -771,8 +886,39 @@ const templateBudget = computed(() => {
   if (selectedTemplate.value.budget_type === 'LIFETIME') return '$' + (selectedTemplate.value.lifetime_budget ?? '-') + ' 总预算'
   return '$' + (selectedTemplate.value.daily_budget ?? '-') + ' / 天'
 })
+const templateSchedule = computed<Record<string, string>>(() => selectedTemplate.value?.creative_config_json?.schedule || {})
+const formatScheduleTime = (value?: string | null) => value
+  ? new Date(value).toLocaleString('zh-CN', { hour12: false })
+  : '未设置'
 const accessBusinessIds = reactive<Record<string, string>>({})
 const selectedAccountRows = computed(() => accounts.value.filter(account => form.ad_account_ids.includes(account.id)))
+const selectedTemplateTrackingConfig = computed(() => selectedTemplate.value?.creative_config_json || {})
+const selectedTemplateTrackingAssetId = computed(() => selectedTemplateTrackingConfig.value.dataset_id
+  || selectedTemplateTrackingConfig.value.pixel_id
+  || selectedTemplateTrackingConfig.value.promoted_object?.dataset_id
+  || selectedTemplateTrackingConfig.value.promoted_object?.pixel_id
+  || '')
+const templateOptimizationGoal = computed(() => selectedTemplate.value?.optimization_goal
+  || selectedTemplateTrackingConfig.value.optimization_goal
+  || selectedTemplateTrackingConfig.value.adsets?.[0]?.optimization_goal
+  || '')
+const templateNeedsTrackingAsset = computed(() => isConversionOptimizationGoal(templateOptimizationGoal.value)
+  || (selectedTemplateTrackingConfig.value.adsets || []).some((item: any) => isConversionOptimizationGoal(item?.optimization_goal)))
+const directNeedsTrackingAsset = computed(() => isConversionOptimizationGoal(directForm.optimization_goal)
+  || directForm.adsets.some(item => isConversionOptimizationGoal(item.optimization_goal)))
+const trackingAssetRequired = computed(() => form.publish_mode === 'DIRECT' ? directNeedsTrackingAsset.value : templateNeedsTrackingAsset.value)
+const trackingConfigReady = computed(() => !trackingAssetRequired.value
+  || (form.publish_mode === 'DIRECT'
+    ? !!directForm.dataset_id && !!directForm.conversion_event
+    : !!selectedTemplateTrackingAssetId.value))
+const formatTrackingAssetTime = (value?: string | null) => value
+  ? new Date(value).toLocaleString('zh-CN', { hour12: false })
+  : '未同步'
+const trackingAssetStatusLabel = (asset: MetaTrackingAsset) => asset.last_sync_error
+  ? '同步异常'
+  : asset.status === 'ACTIVE' && asset.usable !== false ? '可用' : '不可用'
+const trackingAssetStatusType = (asset: MetaTrackingAsset) => asset.last_sync_error
+  ? 'danger' : asset.status === 'ACTIVE' && asset.usable !== false ? 'success' : 'warning'
 const creativeCount = (template: CampaignTemplate | null) => {
   if (template?.creative_config_json?.creative_format === 'CAROUSEL') return 1
   const creatives = template?.creative_config_json?.creatives
@@ -1055,6 +1201,36 @@ const syncMetaPages = async () => {
   }
 }
 
+const loadTrackingAssets = async (accountIds = form.ad_account_ids) => {
+  const requestNo = ++trackingAssetsRequest
+  if (form.publish_mode !== 'DIRECT' || !directNeedsTrackingAsset.value || !accountIds.length) {
+    trackingAssets.value = []
+    trackingAssetsError.value = ''
+    return
+  }
+  trackingAssetsLoading.value = true
+  trackingAssetsError.value = ''
+  try {
+    const { data } = await metaTrackingAssetsApi.list([...accountIds])
+    // 后端已按账户返回关联范围；这里再做一次前端保护，避免旧响应覆盖新账户选择。
+    if (requestNo !== trackingAssetsRequest) return
+    trackingAssets.value = (data.items || []).filter(item => accountIds.every(id => item.account_ids.includes(id)))
+    const selectedAssetStillAvailable = trackingAssets.value.some(item => item.id === directForm.dataset_id)
+    if (!selectedAssetStillAvailable) directForm.dataset_id = ''
+    // 只有一个共同可用事件源时自动选中，减少投放人员重复操作；
+    // 存在多个资产时保留空值，让用户明确选择，避免误用 Pixel。
+    if (!directForm.dataset_id && trackingAssets.value.length === 1) {
+      directForm.dataset_id = trackingAssets.value[0].id
+    }
+  } catch (error: any) {
+    if (requestNo !== trackingAssetsRequest) return
+    trackingAssets.value = []
+    trackingAssetsError.value = error?.response?.data?.detail || 'Pixel / 数据集读取失败，请检查 Meta 授权状态'
+  } finally {
+    if (requestNo === trackingAssetsRequest) trackingAssetsLoading.value = false
+  }
+}
+
 const loadDirectResources = async () => {
   await Promise.all([
     loadMetaPages(),
@@ -1240,7 +1416,18 @@ watch(() => form.ad_account_ids.slice(), ids => {
   for (const id of ids) {
     if (adGroupMode.value !== 'NEW' && !existingAdGroups[id]) loadExistingAdGroups(id)
   }
+  loadTrackingAssets(ids)
   preflightResult.value = null
+})
+watch(() => directForm.optimization_goal, () => loadTrackingAssets())
+watch(() => directForm.objective, objective => {
+  if (!isOptimizationGoalAllowed(objective, directForm.optimization_goal)) directForm.optimization_goal = defaultOptimizationGoal(objective)
+  directForm.adsets.forEach(item => {
+    if (!isOptimizationGoalAllowed(objective, item.optimization_goal)) item.optimization_goal = defaultOptimizationGoal(objective)
+  })
+})
+watch(directNeedsTrackingAsset, (required) => {
+  if (required) loadTrackingAssets()
 })
 watch(() => form.save_as_template, enabled => {
   if (!enabled) form.template_name = ''
@@ -1253,8 +1440,28 @@ watch([form, directForm, sharedCreative, delivery, accessBusinessIds, existingAd
 }, { deep: true })
 
 const missingAssetAccounts = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['ASSET_SYNC_PENDING', 'ACCOUNTS_REJECTED'].includes(item.code) && item.items?.some((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步')))
-const preflightBlockedAccounts = computed(() => (preflightResult.value?.warnings || []).flatMap((item: any) => item.items || []))
-const preflightReasonByAccount = computed<Record<string, string>>(() => Object.fromEntries(preflightBlockedAccounts.value.map((item: any) => [item.account_id, item.reason || '预检未通过'])))
+const trackingAssetIssues = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['TRACKING_ASSET_UNAVAILABLE', 'TRACKING_ASSET_STALE'].includes(item.code)))
+const preflightActionHint = (code: string) => ({
+  TRACKING_ASSET_REQUIRED: '选择 Pixel / 数据集并填写转化事件，或切换为不需要事件源的优化目标。',
+  TRACKING_EVENT_INVALID: '检查事件名称格式：以字母开头，仅允许字母、数字和下划线。',
+  TRACKING_ASSET_UNAVAILABLE: '重新同步事件源，或缩小目标账户范围后重新选择共同可用资产。',
+  TRACKING_ASSET_STALE: '点击“重新同步事件源并预检”，确认最新资产状态。',
+  OBJECTIVE_OPTIMIZATION_INCOMPATIBLE: '调整推广目标或优化目标，使两者处于允许的组合。',
+  SCHEDULE_END_REQUIRED: '返回模板编辑，补充总预算投放的结束时间。',
+  SCHEDULE_TIME_INVALID: '返回模板编辑，重新选择合法的开始/结束时间。',
+  SCHEDULE_RANGE_INVALID: '返回模板编辑，确保结束时间晚于开始时间。',
+  BID_CONSTRAINT_INVALID: '返回模板编辑，填写大于 0 的 roas_average_floor。',
+}[code] || '')
+const preflightBlockedAccounts = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])]
+  .flatMap((item: any) => item.items || []))
+const preflightReasonByAccount = computed<Record<string, string>>(() => {
+  const reasons: Record<string, string> = {}
+  for (const item of preflightBlockedAccounts.value) {
+    const reason = `${item.reason || '预检未通过'}${item.asset_id ? `（事件源 ${item.asset_id}）` : ''}`
+    reasons[item.account_id] = reasons[item.account_id] ? `${reasons[item.account_id]}；${reason}` : reason
+  }
+  return reasons
+})
 
 const syncMissingAssets = async () => {
   const rows = missingAssetAccounts.value.flatMap((warning: any) => warning.items || []).filter((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步')
@@ -1269,6 +1476,21 @@ const syncMissingAssets = async () => {
     await runPreflight()
   } finally {
     syncingAssets.value = false
+  }
+}
+
+const refreshTrackingAssetsAndPreflight = async () => {
+  if (!form.ad_account_ids.length) return
+  syncingTrackingAssets.value = true
+  try {
+    // 直接投放由 loadTrackingAssets 同步并更新下拉选项；模板投放也要
+    // 触发一次账户级同步，确保预检读取到最新资产状态。
+    if (form.publish_mode === 'DIRECT') await loadTrackingAssets(form.ad_account_ids)
+    else await metaTrackingAssetsApi.list([...form.ad_account_ids])
+    await runPreflight()
+    ElMessage.success('事件源已刷新，并已重新执行预检')
+  } finally {
+    syncingTrackingAssets.value = false
   }
 }
 
@@ -1337,6 +1559,15 @@ onUnmounted(stopPolling)
 .tip-inline { color: #909399; font-size: 12px; margin-left: 10px; }
 .revision-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -4px 0 16px; padding: 10px 12px; border: 1px solid #d9ecff; border-radius: 6px; background: #f4f9ff; }
 .page-sync-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; color: #909399; font-size: 12px; line-height: 1.5; }
+.tracking-asset-panel { margin: 12px 0 18px; padding: 14px 16px 4px; border: 1px solid #d9ecff; border-radius: 8px; background: linear-gradient(180deg, #f7fbff 0%, #fff 100%); }
+.tracking-asset-panel__title { color: #1f2d3d; font-weight: 600; font-size: 14px; }
+.tracking-asset-panel__desc { margin: 4px 0 12px; color: #909399; font-size: 12px; line-height: 1.5; }
+.tracking-asset-empty { padding: 8px 12px; color: #909399; font-size: 12px; line-height: 1.5; }
+.tracking-asset-option { padding: 2px 0; line-height: 1.4; }
+.tracking-asset-option__name { color: #303133; font-size: 13px; }
+.tracking-asset-option__meta { display: flex; align-items: center; gap: 8px; margin-top: 3px; color: #909399; font-size: 11px; }
+.tracking-asset-template-state { margin: 0 0 12px 110px; }
+.tracking-asset-error { margin: -4px 0 12px 110px; color: #f56c6c; font-size: 12px; }
 .publish-steps { margin: 6px 0 28px; }
 .publish-form { max-width: 920px; }
 .publish-mode { margin-bottom: 18px; }

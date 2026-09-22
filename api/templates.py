@@ -73,18 +73,9 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
     objective = str(values.get("objective") or "OUTCOME_TRAFFIC").upper()
     if objective == "OUTCOME_SALES" and optimization_goal in {"LINK_CLICKS", "LANDING_PAGE_VIEWS"}:
         raise HTTPException(status_code=400, detail="OUTCOME_SALES 不支持 LINK_CLICKS/LANDING_PAGE_VIEWS；请改用 OUTCOME_TRAFFIC，或配置 OFFSITE_CONVERSIONS 及 promoted_object")
-    conversion_goal = optimization_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"}
-    has_conversion_config = bool(
-        config.get("promoted_object")
-        or ((config.get("dataset_id") or config.get("pixel_id")) and config.get("conversion_event"))
-    )
-    if conversion_goal and not has_conversion_config:
-        raise HTTPException(
-            status_code=400,
-            detail=f"优化目标 {optimization_goal} 必须配置 Dataset/Pixel + conversion_event",
-        )
-    if config.get("dataset_id") and not config.get("conversion_event") and not config.get("promoted_object"):
-        raise HTTPException(status_code=400, detail="配置 dataset_id/pixel_id 后必须配置 conversion_event")
+    # Pixel/Dataset 只在发布预检时按 optimization_goal 判断。模板可以先保存为
+    # 可复用草稿，避免把 Pixel 误设为所有推广目标的全局必填项；真正发布时由
+    # JobService.preflight_campaign 返回明确的 TRACKING_ASSET_REQUIRED。
 
     audience_keys = {
         "custom_audiences", "excluded_custom_audiences",
@@ -129,9 +120,7 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         for key in ("publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions"):
             if adset_placements.get(key) is not None and not isinstance(adset_placements.get(key), list):
                 raise HTTPException(status_code=400, detail=f"广告组 {index} 的版位字段 {key} 必须是数组")
-        adset_goal = str(adset.get("optimization_goal") or optimization_goal).upper()
-        if adset_goal in {"OFFSITE_CONVERSIONS", "VALUE", "CONVERSIONS"} and not (adset.get("promoted_object") or config.get("promoted_object")):
-            raise HTTPException(status_code=400, detail=f"广告组 {index} 的转化目标必须配置 promoted_object")
+        # 广告组级事件源同样在发布预检阶段校验，模板保存不拦截。
     creative_format = str(config.get("creative_format") or "MULTI_AD").upper()
     delivery = config.get("delivery") or {}
     split_level = str(delivery.get("split_level") or "AD").upper()

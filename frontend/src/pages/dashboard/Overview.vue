@@ -14,6 +14,8 @@
           range-separator="至"
           start-placeholder="开始日期"
           end-placeholder="结束日期"
+          popper-class="date-range-popper"
+          placement="bottom-start"
           :clearable="false"
           :disabled="loading"
           @change="scheduleLoad"
@@ -87,14 +89,23 @@
         <el-card shadow="never" class="chart-card">
           <template #header>
             <div class="card-header">
-              <span>消耗趋势</span>
-              <el-select v-if="currencyTotals.length" v-model="selectedCurrency" size="small" class="currency-selector">
+              <span>趋势分析</span>
+              <div class="chart-controls">
+                <el-select v-model="chartMetric" size="small" class="metric-selector" aria-label="统计指标">
+                  <el-option v-for="item in chartMetricOptions" :key="item.value" :label="item.label" :value="item.value" />
+                </el-select>
+                <el-select v-model="chartGranularity" size="small" class="granularity-selector" aria-label="统计粒度">
+                  <el-option v-for="item in chartGranularityOptions" :key="item.value" :label="item.label" :value="item.value" />
+                </el-select>
+                <el-select v-if="showCurrencySelector && currencyTotals.length" v-model="selectedCurrency" size="small" class="currency-selector" aria-label="统计币种">
                 <el-option v-for="item in currencyTotals" :key="item.currency" :label="item.currency" :value="item.currency" />
-              </el-select>
+                </el-select>
+                <el-checkbox v-model="compareEnabled" size="small">对比上期</el-checkbox>
+              </div>
             </div>
           </template>
-          <div v-if="trendRows.length" ref="chartRef" class="spend-chart"></div>
-          <el-empty v-else description="当前范围暂无报表数据" :image-size="70" />
+          <div v-if="chartHasValue" ref="chartRef" class="trend-chart"></div>
+          <el-empty v-else :description="chartEmptyText" :image-size="70" />
         </el-card>
       </el-col>
 
@@ -175,6 +186,31 @@ import { reportsApi, workbenchApi, type WorkbenchSummary } from '@/api/reports'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
 
+type ChartMetric = 'spend' | 'impressions' | 'clicks' | 'conversions' | 'conversion_value' | 'ctr' | 'conversion_rate' | 'cpc' | 'cpm' | 'cpa' | 'roas'
+type ChartGranularity = 'day' | 'week' | 'month'
+type TrendRow = WorkbenchSummary['trend'][number]
+type ChartRow = Pick<TrendRow, 'date' | 'spend' | 'impressions' | 'clicks' | 'conversions' | 'conversion_value'>
+
+const chartMetricOptions: Array<{ value: ChartMetric; label: string; unit: 'money' | 'count' | 'percent' | 'ratio' }> = [
+  { value: 'spend', label: '消耗', unit: 'money' },
+  { value: 'impressions', label: '展示', unit: 'count' },
+  { value: 'clicks', label: '点击', unit: 'count' },
+  { value: 'conversions', label: '转化', unit: 'count' },
+  { value: 'conversion_value', label: '转化金额', unit: 'money' },
+  { value: 'ctr', label: 'CTR', unit: 'percent' },
+  { value: 'conversion_rate', label: '转化率', unit: 'percent' },
+  { value: 'cpc', label: 'CPC', unit: 'money' },
+  { value: 'cpm', label: 'CPM', unit: 'money' },
+  { value: 'cpa', label: 'CPA', unit: 'money' },
+  { value: 'roas', label: 'ROAS', unit: 'ratio' },
+]
+const chartGranularityOptions = [
+  { value: 'day' as ChartGranularity, label: '按天' },
+  { value: 'week' as ChartGranularity, label: '按周' },
+  { value: 'month' as ChartGranularity, label: '按月' },
+]
+const currencyMetricKeys = new Set<ChartMetric>(['spend', 'conversion_value', 'cpc', 'cpm', 'cpa', 'roas'])
+
 const router = useRouter()
 const accountStore = useAccountStore()
 const userStore = useUserStore()
@@ -184,6 +220,10 @@ const loadError = ref('')
 const syncLoading = ref(false)
 const dateRange = ref<[string, string] | null>(null)
 const selectedCurrency = ref('')
+const chartMetric = ref<ChartMetric>('spend')
+const chartGranularity = ref<ChartGranularity>('day')
+const compareEnabled = ref(false)
+const comparisonSummary = ref<WorkbenchSummary | null>(null)
 const chartRef = ref<HTMLElement | null>(null)
 let chart: echarts.ECharts | null = null
 let resizeObserver: ResizeObserver | null = null
@@ -194,7 +234,14 @@ let loadTimer: ReturnType<typeof setTimeout> | null = null
 const currencyTotals = computed(() => summary.value?.currency_totals || [])
 const primaryTotal = computed(() => currencyTotals.value.find(item => item.currency === selectedCurrency.value) || currencyTotals.value[0] || null)
 const chartCurrency = computed(() => selectedCurrency.value || currencyTotals.value[0]?.currency || '')
-const trendRows = computed(() => (summary.value?.trend || []).filter(row => row.currency === chartCurrency.value))
+const chartMetricMeta = computed(() => chartMetricOptions.find(item => item.value === chartMetric.value) || chartMetricOptions[0])
+const showCurrencySelector = computed(() => currencyMetricKeys.has(chartMetric.value))
+const trendRows = computed(() => (summary.value?.trend || []).filter(row => !showCurrencySelector.value || row.currency === chartCurrency.value))
+const comparisonTrendRows = computed(() => (comparisonSummary.value?.trend || []).filter(row => !showCurrencySelector.value || row.currency === chartCurrency.value))
+const chartRows = computed(() => aggregateTrendRows(trendRows.value, chartGranularity.value))
+const comparisonChartRows = computed(() => aggregateTrendRows(comparisonTrendRows.value, chartGranularity.value))
+const chartHasValue = computed(() => chartRows.value.some(row => chartMetricValue(row, chartMetric.value) !== null))
+const chartEmptyText = computed(() => chartRows.value.length ? '当前指标暂无有效数据' : '当前范围暂无报表数据')
 const rangeText = computed(() => summary.value ? `${summary.value.range.start_date} 至 ${summary.value.range.end_date}` : '当前范围')
 const pendingCount = computed(() => (summary.value?.kpis.open_alerts || 0) + (summary.value?.kpis.failed_jobs || 0))
 const hasAccounts = computed(() => (summary.value?.scope.account_count || 0) > 0)
@@ -238,17 +285,90 @@ const dateParams = () => {
   return { account_id: accountStore.selectedAccountId || undefined, start_date, end_date }
 }
 
+const toUtcDate = (value: string) => new Date(`${value}T00:00:00Z`)
+const formatDate = (value: Date) => value.toISOString().slice(0, 10)
+const shiftDate = (value: string, days: number) => {
+  const date = toUtcDate(value)
+  date.setUTCDate(date.getUTCDate() + days)
+  return formatDate(date)
+}
+
+const bucketDate = (value: string, granularity: ChartGranularity) => {
+  const date = toUtcDate(value)
+  if (granularity === 'month') {
+    date.setUTCDate(1)
+  } else if (granularity === 'week') {
+    const day = date.getUTCDay() || 7
+    date.setUTCDate(date.getUTCDate() - day + 1)
+  }
+  return formatDate(date)
+}
+
+const deriveChartMetrics = (row: ChartRow) => ({
+  ctr: row.impressions ? row.clicks / row.impressions * 100 : null,
+  conversion_rate: row.clicks ? row.conversions / row.clicks * 100 : null,
+  cpc: row.clicks ? row.spend / row.clicks : null,
+  cpm: row.impressions ? row.spend / row.impressions * 1000 : null,
+  cpa: row.conversions ? row.spend / row.conversions : null,
+  roas: row.spend ? row.conversion_value / row.spend : null,
+})
+
+const aggregateTrendRows = (rows: TrendRow[], granularity: ChartGranularity): ChartRow[] => {
+  const grouped = new Map<string, ChartRow>()
+  rows.forEach(row => {
+    const date = bucketDate(row.date, granularity)
+    const current = grouped.get(date) || { date, spend: 0, impressions: 0, clicks: 0, conversions: 0, conversion_value: 0 }
+    current.spend += Number(row.spend || 0)
+    current.impressions += Number(row.impressions || 0)
+    current.clicks += Number(row.clicks || 0)
+    current.conversions += Number(row.conversions || 0)
+    current.conversion_value += Number(row.conversion_value || 0)
+    grouped.set(date, current)
+  })
+  return Array.from(grouped.values()).sort((left, right) => left.date.localeCompare(right.date))
+}
+
+const chartMetricValue = (row: ChartRow, metric: ChartMetric): number | null => {
+  if (metric in row) return Number(row[metric as keyof ChartRow] || 0)
+  return deriveChartMetrics(row)[metric as keyof ReturnType<typeof deriveChartMetrics>]
+}
+
+const formatChartValue = (value: number | null | undefined) => {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—'
+  if (chartMetricMeta.value.unit === 'money') return money(value, chartCurrency.value)
+  if (chartMetricMeta.value.unit === 'percent') return `${value.toFixed(2)}%`
+  if (chartMetricMeta.value.unit === 'ratio') return `${value.toFixed(2)}x`
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(value)
+}
+
+const chartDateLabel = (value: string) => chartGranularity.value === 'day' ? value.slice(5) : value
+
 const renderChart = () => {
   if (!chartRef.value) return
   if (chart) chart.dispose()
-  if (!trendRows.value.length) return
+  if (!chartHasValue.value) return
   chart = echarts.init(chartRef.value)
+  const currentRows = chartRows.value
+  const previousRows = comparisonChartRows.value
+  const currentValues = currentRows.map(row => chartMetricValue(row, chartMetric.value))
+  const previousValues = compareEnabled.value
+    ? currentRows.map((_, index) => previousRows[index] ? chartMetricValue(previousRows[index], chartMetric.value) : null)
+    : []
   chart.setOption({
-    tooltip: { trigger: 'axis', valueFormatter: (value: number) => money(value, chartCurrency.value) },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: any) => {
+        const items = Array.isArray(params) ? params : [params]
+        return [items[0]?.axisValueLabel || '', ...items.map(item => `${item.marker} ${item.seriesName}：${formatChartValue(item.value)}`)].join('<br/>')
+      },
+    },
     grid: { left: 55, right: 20, top: 20, bottom: 35 },
-    xAxis: { type: 'category', data: trendRows.value.map(row => row.date) },
-    yAxis: { type: 'value' },
-    series: [{ name: chartCurrency.value, data: trendRows.value.map(row => row.spend), type: 'line', smooth: true, itemStyle: { color: '#667eea' }, areaStyle: { color: 'rgba(102, 126, 234, 0.1)' } }],
+    xAxis: { type: 'category', data: currentRows.map(row => chartDateLabel(row.date)) },
+    yAxis: { type: 'value', axisLabel: { formatter: (value: number) => formatChartValue(value) } },
+    series: [
+      { name: `当前${showCurrencySelector.value ? ` · ${chartCurrency.value}` : ''}`, data: currentValues, type: 'line', smooth: true, connectNulls: false, itemStyle: { color: '#667eea' }, lineStyle: { color: '#667eea', width: 2 }, areaStyle: { color: 'rgba(102, 126, 234, 0.1)' } },
+      ...(compareEnabled.value ? [{ name: '上期', data: previousValues, type: 'line', smooth: true, connectNulls: false, itemStyle: { color: '#a0aec0' }, lineStyle: { color: '#a0aec0', type: 'dashed' } }] : []),
+    ],
   })
   resizeObserver?.disconnect()
   resizeObserver = new ResizeObserver(() => chart?.resize())
@@ -261,6 +381,17 @@ const scheduleLoad = () => {
     loadTimer = null
     void loadSummary()
   }, 250)
+}
+
+const comparisonDateParams = () => {
+  const [start, end] = dateRange.value || []
+  if (!start || !end) return null
+  const span = Math.round((toUtcDate(end).getTime() - toUtcDate(start).getTime()) / 86400000) + 1
+  return {
+    account_id: accountStore.selectedAccountId || undefined,
+    start_date: shiftDate(start, -span),
+    end_date: shiftDate(start, -1),
+  }
 }
 
 const loadSummary = async () => {
@@ -278,6 +409,20 @@ const loadSummary = async () => {
       selectedCurrency.value = currencyTotals.value[0]?.currency || ''
     }
     if (!dateRange.value) dateRange.value = [data.range.start_date, data.range.end_date]
+    comparisonSummary.value = null
+    if (compareEnabled.value) {
+      const params = comparisonDateParams()
+      if (params) {
+        try {
+          const comparisonResponse = await workbenchApi.summary(params, { signal: controller.signal, skipErrorMessage: true })
+          if (sequence === requestSequence) comparisonSummary.value = comparisonResponse.data
+        } catch (comparisonError: any) {
+          if (!controller.signal.aborted && comparisonError?.code !== 'ERR_CANCELED') {
+            ElMessage.info('上期数据暂不可用，已展示当前周期')
+          }
+        }
+      }
+    }
     await nextTick()
     renderChart()
   } catch (error: any) {
@@ -332,7 +477,8 @@ const goToCampaigns = () => router.push('/dashboard/campaigns')
 const goToTasks = () => router.push('/dashboard/jobs')
 
 watch(() => accountStore.selectedAccountId, scheduleLoad)
-watch(chartCurrency, async () => {
+watch(compareEnabled, scheduleLoad)
+watch([chartMetric, chartGranularity, chartCurrency, comparisonSummary], async () => {
   await nextTick()
   renderChart()
 })
@@ -356,8 +502,12 @@ onBeforeUnmount(() => {
 .content-row { margin-bottom: 16px; }
 .chart-card { min-height: 360px; }
 .card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 600; }
-.currency-selector { width: 92px; }
-.spend-chart { width: 100%; height: 300px; }
+.chart-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.metric-selector { width: 118px; }
+.granularity-selector { width: 88px; }
+.currency-selector { width: 78px; }
+.chart-controls :deep(.el-checkbox) { margin-right: 0; font-weight: 400; }
+.trend-chart { width: 100%; height: 300px; }
 .health-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .health-item { padding: 14px; background: #f7f9fc; border-radius: 8px; display: flex; flex-direction: column; gap: 8px; color: #909399; font-size: 13px; strong { color: #303133; font-size: 24px; } }
 .inline-alert { margin-top: 16px; }
@@ -367,4 +517,5 @@ onBeforeUnmount(() => {
 .card-header small { color: #909399; font-weight: 400; }
 .quick-actions { display: flex; gap: 12px; flex-wrap: wrap; }
 @media (max-width: 800px) { .page-toolbar { align-items: flex-start; flex-direction: column; } .toolbar-actions { width: 100%; .el-date-editor { flex: 1; } } .health-grid { grid-template-columns: repeat(2, 1fr); } .alert-with-action { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 760px) { .card-header { align-items: flex-start; flex-direction: column; } .chart-controls { justify-content: flex-start; width: 100%; } }
 </style>

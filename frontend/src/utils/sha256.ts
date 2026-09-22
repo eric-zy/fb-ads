@@ -63,3 +63,62 @@ export async function sha256ArrayBuffer(buffer: ArrayBuffer): Promise<string> {
   }
   return sha256Fallback(buffer)
 }
+
+export class Sha256Stream {
+  private hash = H0.slice()
+  private pending = new Uint8Array(0)
+  private totalLength = 0
+
+  update(input: Uint8Array) {
+    this.totalLength += input.length
+    const data = this.pending.length
+      ? (() => {
+          const combined = new Uint8Array(this.pending.length + input.length)
+          combined.set(this.pending)
+          combined.set(input, this.pending.length)
+          return combined
+        })()
+      : input
+    const fullLength = data.length - (data.length % 64)
+    for (let offset = 0; offset < fullLength; offset += 64) this.process(data, offset)
+    this.pending = data.slice(fullLength)
+  }
+
+  private process(data: Uint8Array, offset: number) {
+    const view = new DataView(data.buffer, data.byteOffset + offset, 64)
+    const words = new Uint32Array(64)
+    for (let i = 0; i < 16; i += 1) words[i] = view.getUint32(i * 4, false)
+    for (let i = 16; i < 64; i += 1) {
+      const s0 = rotr(words[i - 15], 7) ^ rotr(words[i - 15], 18) ^ (words[i - 15] >>> 3)
+      const s1 = rotr(words[i - 2], 17) ^ rotr(words[i - 2], 19) ^ (words[i - 2] >>> 10)
+      words[i] = add(words[i - 16], s0, words[i - 7], s1)
+    }
+    let [a, b, c, d, e, f, g, h] = this.hash
+    for (let i = 0; i < 64; i += 1) {
+      const sum1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
+      const choose = (e & f) ^ (~e & g)
+      const temp1 = add(h, sum1, choose, K[i], words[i])
+      const sum0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
+      const majority = (a & b) ^ (a & c) ^ (b & c)
+      const temp2 = add(sum0, majority)
+      h = g; g = f; f = e; e = add(d, temp1); d = c; c = b; b = a; a = add(temp1, temp2)
+    }
+    this.hash[0] = add(this.hash[0], a); this.hash[1] = add(this.hash[1], b)
+    this.hash[2] = add(this.hash[2], c); this.hash[3] = add(this.hash[3], d)
+    this.hash[4] = add(this.hash[4], e); this.hash[5] = add(this.hash[5], f)
+    this.hash[6] = add(this.hash[6], g); this.hash[7] = add(this.hash[7], h)
+  }
+
+  digest(): string {
+    const bitLength = this.totalLength * 8
+    const finalLength = Math.ceil((this.pending.length + 9) / 64) * 64
+    const final = new Uint8Array(finalLength)
+    final.set(this.pending)
+    final[this.pending.length] = 0x80
+    const view = new DataView(final.buffer)
+    view.setUint32(finalLength - 8, Math.floor(bitLength / 0x100000000), false)
+    view.setUint32(finalLength - 4, bitLength >>> 0, false)
+    for (let offset = 0; offset < final.length; offset += 64) this.process(final, offset)
+    return this.hash.map(value => value.toString(16).padStart(8, '0')).join('')
+  }
+}

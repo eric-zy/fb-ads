@@ -61,9 +61,9 @@ class Settings(BaseSettings):
     FB_VIDEO_CHUNK_MAX_BYTES: int = int(os.getenv("FB_VIDEO_CHUNK_MAX_BYTES", str(10 * 1024 * 1024)))
     FB_VIDEO_PROCESSING_TIMEOUT: int = int(os.getenv("FB_VIDEO_PROCESSING_TIMEOUT", "900"))
     FB_VIDEO_STATUS_POLL_INTERVAL: int = int(os.getenv("FB_VIDEO_STATUS_POLL_INTERVAL", "15"))
-    # 灰度开启 Meta 从 OSS 签名 URL 直接拉取视频；失败时回退到本地分片上传。
-    FB_VIDEO_FILE_URL_UPLOAD: bool = os.getenv("FB_VIDEO_FILE_URL_UPLOAD", "false").lower() == "true"
-    # 逗号分隔的广告账户白名单；为空表示所有账户，支持填写 act_ 前缀或纯数字。
+    # 默认让 Meta 从 OSS 签名 URL 直接拉取视频；明确拒绝时回退到本地分片上传。
+    FB_VIDEO_FILE_URL_UPLOAD: bool = os.getenv("FB_VIDEO_FILE_URL_UPLOAD", "true").lower() == "true"
+    # 兼容历史配置：为空表示全部账户；生产环境不再依赖白名单做灰度。
     FB_VIDEO_FILE_URL_UPLOAD_ACCOUNTS: str = os.getenv("FB_VIDEO_FILE_URL_UPLOAD_ACCOUNTS", "")
     # 无海外 OSS 时，Connector 只在本地临时目录落盘一个素材；
     # 生产环境通过独立 media worker + tmpfs 限制并发和磁盘占用。
@@ -181,7 +181,9 @@ class Settings(BaseSettings):
     OSS_BUCKET: str = os.getenv("ADS_OSS_BUCKET", os.getenv("OSS_BUCKET", ""))
     OSS_BASE_PATH: str = os.getenv("OSS_BASE_PATH", "ossuser/oversea").strip("/")
     OSS_PLATFORM: str = os.getenv("OSS_PLATFORM", "meta").strip("/") or "meta"
-    OSS_UPLOAD_EXPIRE_SECONDS: int = int(os.getenv("OSS_UPLOAD_EXPIRE_SECONDS", "900"))
+    # 250MB+ 视频的 Multipart 分片可能受跨境网络影响超过 15 分钟；
+    # 签名和会话默认保留 1 小时，仍可通过环境变量缩短/延长（上限 12 小时）。
+    OSS_UPLOAD_EXPIRE_SECONDS: int = int(os.getenv("OSS_UPLOAD_EXPIRE_SECONDS", "3600"))
     # 浏览器直传超过该大小时使用 OSS Multipart；分片大小必须不小于 OSS 要求的 5 MiB。
     OSS_MULTIPART_THRESHOLD_BYTES: int = int(os.getenv("OSS_MULTIPART_THRESHOLD_BYTES", str(16 * 1024 * 1024)))
     OSS_MULTIPART_PART_SIZE_BYTES: int = int(os.getenv("OSS_MULTIPART_PART_SIZE_BYTES", str(16 * 1024 * 1024)))

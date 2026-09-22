@@ -34,6 +34,23 @@ _ACTIVE_JOB_STATUSES = {"PENDING", "VALIDATING", "QUEUED", "RUNNING"}
 _FAILED_JOB_STATUSES = {"FAILED", "PARTIAL_SUCCESS"}
 
 
+def _derived_metrics(values: dict) -> dict:
+    """按同一统计粒度计算比率，分母不存在时返回 None 而不是伪造 0。"""
+    spend = float(values.get("spend") or 0)
+    impressions = int(values.get("impressions") or 0)
+    clicks = int(values.get("clicks") or 0)
+    conversions = int(values.get("conversions") or 0)
+    conversion_value = float(values.get("conversion_value") or 0)
+    return {
+        "ctr": round(clicks / impressions * 100, 4) if impressions else None,
+        "conversion_rate": round(conversions / clicks * 100, 4) if clicks else None,
+        "cpc": round(spend / clicks, 4) if clicks else None,
+        "cpm": round(spend / impressions * 1000, 4) if impressions else None,
+        "cpa": round(spend / conversions, 4) if conversions else None,
+        "roas": round(conversion_value / spend, 4) if spend else None,
+    }
+
+
 def _scope(query, model, user, tenant_id: Optional[str]):
     """显式加租户范围；平台管理员无租户上下文时才允许平台范围查询。"""
     if tenant_id:
@@ -140,6 +157,8 @@ def workbench_summary(
         trend[(row.insight_date.isoformat(), currency)]["spend"] += spend
         trend[(row.insight_date.isoformat(), currency)]["impressions"] += int(row.impressions or 0)
         trend[(row.insight_date.isoformat(), currency)]["clicks"] += int(row.clicks or 0)
+        trend[(row.insight_date.isoformat(), currency)]["conversions"] += int(row.conversions or 0)
+        trend[(row.insight_date.isoformat(), currency)]["conversion_value"] += conversion_value
         total_impressions += int(row.impressions or 0)
         total_clicks += int(row.clicks or 0)
         if row.latest_synced_at and (not latest_synced_at or row.latest_synced_at > latest_synced_at):
@@ -165,9 +184,7 @@ def workbench_summary(
             "clicks": total["clicks"],
             "conversions": conversions,
             "conversion_value": round(total["conversion_value"], 2),
-            "ctr": round(total["clicks"] / total["impressions"] * 100, 4) if total["impressions"] else 0,
-            "cpa": round(spend / conversions, 4) if conversions else 0,
-            "roas": round(total["conversion_value"] / spend, 4) if spend else 0,
+            **_derived_metrics(total),
         })
 
     trend_rows = []
@@ -178,6 +195,9 @@ def workbench_summary(
             "spend": round(values["spend"], 2),
             "impressions": values["impressions"],
             "clicks": values["clicks"],
+            "conversions": values["conversions"],
+            "conversion_value": round(values["conversion_value"], 2),
+            **_derived_metrics(values),
         })
 
     # 投放对象健康度。

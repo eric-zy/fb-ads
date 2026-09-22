@@ -10,22 +10,159 @@ from core.database import SessionLocal
 from core.enums import JobItemStatus
 from core.logger import logger
 from core.tenant import bypass_tenant
-from models import CampaignJobItem, CreativeAsset, MetaAssetBinding
+from models import CampaignJobItem, CreativeAsset, MetaAssetBinding, MediaUploadSession
 from services.media_binding_service import queue_pending_asset_bindings
+from services.storage import AliyunOSSStorage
 
 
 def _cutoff() -> datetime:
     return datetime.utcnow() - timedelta(seconds=settings.ASYNC_TASK_STALE_SECONDS)
 
 
+def _mark_upload_completed(db, session, asset, *, storage, result) -> bool:
+    """对账一个超时上传会话；OSS 完整时补齐 complete 回调的状态变更。"""
+    if not storage or not session.object_key:
+        return False
+
+    try:
+        if session.upload_mode == "multipart":
+            if not session.upload_id or not session.part_count:
+                return False
+            parts = storage.list_multipart_parts(session.object_key, session.upload_id)
+            expected_parts = set(range(1, session.part_count + 1))
+            actual_parts = {part["part_number"] for part in parts}
+            if actual_parts != expected_parts:
+                return False
+            storage.complete_multipart_upload(session.object_key, session.upload_id, parts)
+
+        head = storage.head(session.object_key)
+        if session.expected_size is not None and head.size != session.expected_size:
+            logger.warning(
+                "[Recovery] upload size mismatch session_id=%s expected=%s actual=%s",
+                session.id,
+                session.expected_size,
+                head.size,
+            )
+            return False
+    except Exception as exc:
+        # 未完成的 Multipart 可能只是仍在上传；不要把临时 OSS 错误当成失败。
+        logger.info("[Recovery] upload not complete session_id=%s: %s", session.id, exc)
+        return False
+
+    now = datetime.utcnow()
+    session.status = "COMPLETED"
+    session.completed_at = now
+    session.error_message = None
+    if asset:
+        asset.storage_status = "READY"
+        asset.processing_status = "PROCESSING"
+        asset.status = "PROCESSING"
+        asset.error = None
+    db.commit()
+
+    # 素材解析使用租户任务，由任务自身解析 tenant_id；这里仅负责补投递。
+    if asset:
+        try:
+            from tasks.media_tasks import process_oss_asset_task
+
+            process_oss_asset_task.delay(asset.id)
+        except Exception as exc:
+            db.rollback()
+            fresh_asset = db.query(CreativeAsset).filter(CreativeAsset.id == session.asset_id).first()
+            fresh_session = db.query(MediaUploadSession).filter(MediaUploadSession.id == session.id).first()
+            if fresh_asset:
+                fresh_asset.processing_status = "FAILED"
+                fresh_asset.status = "FAILED"
+                fresh_asset.error = "OSS 上传已完成，但素材处理任务投递失败，请刷新后重试"
+            if fresh_session:
+                fresh_session.error_message = f"素材处理任务投递失败: {exc}"[:500]
+            db.commit()
+            logger.exception("[Recovery] process asset enqueue failed session_id=%s", session.id)
+            return False
+
+    result["upload_sessions_recovered"] += 1
+    logger.warning(
+        "[Recovery] reconciled completed OSS upload session_id=%s asset_id=%s",
+        session.id,
+        session.asset_id,
+    )
+    return True
+
+
 @shared_task(name="maintenance.recover_stale_domestic_work")
 def recover_stale_domestic_work(limit: int = 100):
     """回收素材处理、账户素材绑定和投放子项的孤儿状态并重新入队。"""
     db = SessionLocal()
-    result = {"assets": 0, "bindings": 0, "job_items": 0, "failed": 0}
+    result = {
+        "assets": 0,
+        "upload_sessions": 0,
+        "upload_sessions_recovered": 0,
+        "upload_sessions_deferred": 0,
+        "upload_sessions_aborted": 0,
+        "bindings": 0,
+        "job_items": 0,
+        "failed": 0,
+    }
     try:
         # 这是系统级巡检，必须显式绕过租户过滤；重新投递的业务任务会自行解析租户。
         with bypass_tenant():
+            # 先对账 OSS。浏览器可能已经把最后一个分片传完，但 complete 请求
+            # 因刷新/断网没有到达 API；此时不能直接把会话判失败。
+            stale_uploads = (
+                db.query(MediaUploadSession)
+                .filter(
+                    MediaUploadSession.status == "UPLOADING",
+                    MediaUploadSession.updated_at < _cutoff(),
+                )
+                .order_by(MediaUploadSession.updated_at.asc())
+                .with_for_update(skip_locked=True)
+                .limit(limit)
+                .all()
+            )
+            storage = None
+            try:
+                storage = AliyunOSSStorage()
+            except Exception as exc:
+                logger.warning("[Recovery] OSS reconciliation unavailable: %s", exc)
+            now = datetime.utcnow()
+            for session in stale_uploads:
+                asset = db.query(CreativeAsset).filter(CreativeAsset.id == session.asset_id).first()
+                if session.expires_at and session.expires_at > now:
+                    if _mark_upload_completed(db, session, asset, storage=storage, result=result):
+                        continue
+                    # 会话仍在有效期内，可能仍有分片在传；留给下一轮对账，
+                    # 避免 250MB+ 视频上传超过默认巡检阈值后被误判失败。
+                    result["upload_sessions_deferred"] += 1
+                    continue
+
+                # 浏览器关闭、网络中断或真正过期时，旧会话不能永久让素材库
+                # 显示“处理中”。只有超过 expires_at 才标记失败。
+                if storage and session.upload_mode == "multipart" and session.upload_id:
+                    try:
+                        storage.abort_multipart_upload(session.object_key, session.upload_id)
+                        result["upload_sessions_aborted"] += 1
+                        logger.info(
+                            "[Recovery] aborted expired multipart session_id=%s upload_id=%s",
+                            session.id,
+                            session.upload_id,
+                        )
+                    except Exception as exc:
+                        # 状态仍然要落库为 EXPIRED；OSS 侧失败会在生命周期规则中兜底清理。
+                        logger.warning(
+                            "[Recovery] abort expired multipart failed session_id=%s: %s",
+                            session.id,
+                            exc,
+                        )
+                session.status = "EXPIRED"
+                session.error_message = "上传会话超时，已停止等待；请重新选择文件上传"
+                if asset and asset.storage_status == "UPLOADING":
+                    asset.storage_status = "FAILED"
+                    asset.processing_status = "FAILED"
+                    asset.status = "FAILED"
+                    asset.error = "OSS 上传会话超时，请重新选择文件上传"
+                db.commit()
+                result["upload_sessions"] += 1
+
             asset_rows = (
                 db.query(CreativeAsset)
                 .filter(
