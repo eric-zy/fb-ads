@@ -11,6 +11,7 @@
 而是把 api 实例显式传给每个 SDK 对象，保证多账户并发安全。
 """
 import json
+import re
 from typing import List, Optional
 
 import requests
@@ -403,10 +404,30 @@ class MetaClient:
             if not after:
                 break
         logger.info(
-            "[MetaTargeting] adlocale search query=%s pages=%s results=%s",
+            "[MetaTargeting] adlocale search query=%s pages=%s results=%s samples=%s",
             query or "",
             pages,
             len(locales),
+            [
+                {
+                    "id": item.get("id"),
+                    "labels": {
+                        key: item.get(key)
+                        for key in (
+                            "name",
+                            "name_en",
+                            "code",
+                            "locale",
+                            "key",
+                            "label",
+                            "title",
+                            "display_name",
+                        )
+                        if item.get(key) is not None
+                    },
+                }
+                for item in locales[:5]
+            ],
         )
         self._ad_locales_cache[cache_key] = list(locales)
         return locales
@@ -423,7 +444,11 @@ class MetaClient:
         catalog = {item["id"]: item for item in LANGUAGE_CATALOG}
 
         def clean(value: object) -> str:
-            return " ".join(str(value or "").casefold().replace("（", "(").replace("）", ")").split())
+            # Meta may return labels such as ``English (All)``, ``English-All``
+            # or localized text.  Compare a punctuation-insensitive form so
+            # the official Targeting Search label is not rejected merely due
+            # to display formatting.
+            return re.sub(r"[^\w]+", "", str(value or "").casefold())
 
         for item_id in requested:
             if str(item_id).isdigit():
@@ -447,7 +472,16 @@ class MetaClient:
                         continue
                     remote_labels = {
                         clean(remote.get(key))
-                        for key in ("name", "name_en", "code", "locale", "key")
+                        for key in (
+                            "name",
+                            "name_en",
+                            "code",
+                            "locale",
+                            "key",
+                            "label",
+                            "title",
+                            "display_name",
+                        )
                         if remote.get(key)
                     }
                     if not remote_labels:

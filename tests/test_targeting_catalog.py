@@ -68,6 +68,19 @@ def test_meta_targeting_accepts_object_shaped_search_data(monkeypatch):
     ]
 
 
+def test_meta_targeting_matches_label_with_display_punctuation(monkeypatch):
+    from services.meta.client import MetaClient
+
+    client = object.__new__(MetaClient)
+    monkeypatch.setattr(
+        client,
+        "get_ad_locales",
+        lambda *args, **kwargs: [{"id": "6", "label": "English-All"}],
+    )
+
+    assert client.resolve_targeting_locales({"languages": ["en"]}) == {"locales": ["6"]}
+
+
 def test_meta_targeting_rejects_missing_remote_locale_as_validation_error(monkeypatch):
     from services.meta.client import MetaClient
     from services.meta.errors import MetaApiError
