@@ -209,6 +209,45 @@ class FBConnectorClient:
     def deploy_status(self, connector_task_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("GET", f"/internal/meta/campaigns/create/{connector_task_id}", {}, request_id=request_id)
 
+    def reconcile_deployment(
+        self,
+        connector_task_id: str,
+        credential_id: str,
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """只读查询海外任务的未知提交结果，不自动认领或删除 Meta 对象。"""
+        return self._request(
+            "POST",
+            "/internal/meta/campaigns/reconcile",
+            {
+                "connector_task_id": connector_task_id,
+                "credential_id": credential_id,
+            },
+            request_id=request_id,
+            timeout=settings.FB_CONNECTOR_REPORT_TIMEOUT,
+        )
+
+    def confirm_reconcile_deployment(
+        self,
+        connector_task_id: str,
+        credential_id: str,
+        confirmations: list[dict[str, Any]],
+        *,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/internal/meta/campaigns/reconcile/confirm",
+            {
+                "connector_task_id": connector_task_id,
+                "credential_id": credential_id,
+                "confirmations": confirmations,
+            },
+            request_id=request_id,
+            timeout=settings.FB_CONNECTOR_REPORT_TIMEOUT,
+        )
+
     def list_campaigns(self, account_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request(
             "POST",

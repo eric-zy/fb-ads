@@ -81,6 +81,19 @@ def test_meta_targeting_matches_label_with_display_punctuation(monkeypatch):
     assert client.resolve_targeting_locales({"languages": ["en"]}) == {"locales": ["6"]}
 
 
+def test_meta_targeting_uses_adlocale_key_and_simplified_chinese_alias(monkeypatch):
+    from services.meta.client import MetaClient
+
+    client = object.__new__(MetaClient)
+    monkeypatch.setattr(
+        client,
+        "get_ad_locales",
+        lambda *args, **kwargs: [{"id": "9", "labels": {"key": 9, "name": "简体中文"}}],
+    )
+
+    assert client.resolve_targeting_locales({"languages": ["zh_CN"]}) == {"locales": ["9"]}
+
+
 def test_meta_targeting_rejects_missing_remote_locale_as_validation_error(monkeypatch):
     from services.meta.client import MetaClient
     from services.meta.errors import MetaApiError

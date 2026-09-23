@@ -13,6 +13,8 @@
 import json
 import mimetypes
 import os
+import copy
+import random
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -24,6 +26,44 @@ from core.logger import logger
 from services.meta.client import MetaClient
 from services.meta.errors import MetaApiError, classify, classify_facebook_error
 from services.rate_limit import RateLimitManager
+
+
+def _sanitize_meta_audience_refs(targeting: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep internal audience metadata out of Meta's targeting payload.
+
+    The domestic platform keeps account scope and policy resolution metadata
+    beside each audience ID. Meta's AdSet targeting contract only needs the
+    audience ID, so strip internal fields at the connector boundary.
+    """
+    result = copy.deepcopy(targeting or {})
+    for field in ("custom_audiences", "excluded_custom_audiences", "excluded_audiences"):
+        values = result.get(field)
+        if values is None:
+            continue
+        if not isinstance(values, list):
+            raise MetaApiError(
+                f"定向字段 {field} 必须是数组",
+                category=ErrorCategory.VALIDATION,
+            )
+        sanitized = []
+        for item in values:
+            if isinstance(item, dict):
+                audience_id = str(item.get("id") or item.get("meta_audience_id") or "").strip()
+                if item.get("resolution") == "UNRESOLVED":
+                    raise MetaApiError(
+                        f"定向字段 {field} 的受众 {audience_id} 尚未解析到账户范围",
+                        category=ErrorCategory.VALIDATION,
+                    )
+            else:
+                audience_id = str(item or "").strip()
+            if not audience_id:
+                raise MetaApiError(
+                    f"定向字段 {field} 的每个受众必须有 Meta Audience ID",
+                    category=ErrorCategory.VALIDATION,
+                )
+            sanitized.append({"id": audience_id})
+        result[field] = sanitized
+    return result
 
 
 class MetaAdsService:
@@ -86,7 +126,6 @@ class MetaAdsService:
             self._throttle(account_id)
             try:
                 result = fn()
-                self._count_call(account_id)
                 logger.info("[MetaAdsService] success description=%s attempt=%s", description, attempt + 1)
                 return result
             except MetaApiError as e:
@@ -95,6 +134,10 @@ class MetaAdsService:
                 last_err = MetaApiError(str(e), category=ErrorCategory.TEMPORARY)
             except Exception as e:  # 含 FacebookRequestError
                 last_err = classify_facebook_error(e)
+            finally:
+                # Rate-limit accounting must include failed/429 attempts too;
+                # otherwise a burst of failures can keep sending requests.
+                self._count_call(account_id)
 
             if last_err and not last_err.retryable:
                 # 参数/权限/认证类错误：重试无意义，直接失败
@@ -102,7 +145,10 @@ class MetaAdsService:
                 break
 
             if attempt < self.max_retries:
-                delay = self.backoff_base ** (attempt + 1)  # 2s → 4s → 8s
+                server_delay = getattr(last_err, "retry_after_seconds", None)
+                delay = float(server_delay) if server_delay is not None else float(self.backoff_base ** (attempt + 1))
+                delay = min(max(delay, 0.5), 300.0)
+                delay += random.uniform(0, min(1.0, delay * 0.1))
                 logger.warning(
                     f"[MetaAdsService] {description} 第 {attempt + 1} 次失败，"
                     f"{delay}s 后重试: {last_err}"
@@ -154,9 +200,10 @@ class MetaAdsService:
     def create_adset(self, account_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """创建 AdSet。params 需包含 campaign_id。"""
         act = self.client.normalize_account_id(account_id)
-        params = dict(params)
+        params = copy.deepcopy(params)
         if params.get("targeting") is not None:
             params["targeting"] = self.client.resolve_targeting_locales(params.get("targeting"))
+            params["targeting"] = _sanitize_meta_audience_refs(params["targeting"])
 
         def _do():
             result = self.client._post(f"{act}/adsets", params)
@@ -332,7 +379,7 @@ class MetaAdsService:
         def _do():
             fields = (
                 "id,name,status,effective_status,objective,daily_budget,"
-                "lifetime_budget,updated_time"
+                "lifetime_budget,created_time,updated_time"
             )
             rows: List[Dict[str, Any]] = []
             after = None
@@ -358,7 +405,7 @@ class MetaAdsService:
                 params = {
                     "fields": "id,name,status,effective_status,daily_budget,"
                               "lifetime_budget,optimization_goal,billing_event,"
-                              "targeting,updated_time",
+                              "targeting,created_time,updated_time",
                     "limit": limit,
                 }
                 if after:
@@ -389,7 +436,7 @@ class MetaAdsService:
             after = None
             for _ in range(20):
                 params = {
-                    "fields": "id,name,status,effective_status,creative,updated_time",
+                    "fields": "id,name,status,effective_status,creative,created_time,updated_time",
                     "limit": limit,
                 }
                 if after:
@@ -402,6 +449,29 @@ class MetaAdsService:
             return rows
 
         return self._execute(_do, f"list_ads(adset={adset_id})")
+
+    def list_creatives(self, account_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        """读取广告账户下的 AdCreative，用于未知提交结果对账。"""
+        act = self.client.normalize_account_id(account_id)
+
+        def _do():
+            rows: List[Dict[str, Any]] = []
+            after = None
+            for _ in range(20):
+                params = {
+                    "fields": "id,name,created_time,updated_time",
+                    "limit": limit,
+                }
+                if after:
+                    params["after"] = after
+                payload = self.client._get(f"{act}/adcreatives", params)
+                rows.extend(payload.get("data", []))
+                after = ((payload.get("paging") or {}).get("cursors") or {}).get("after")
+                if not after:
+                    break
+            return rows
+
+        return self._execute(_do, f"list_creatives(act={act})", account_id=account_id)
 
     def get_adset(self, adset_id: str) -> Dict[str, Any]:
         """读取单个 AdSet，用于复用广告组前的远端有效性校验。"""

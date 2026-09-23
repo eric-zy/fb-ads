@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     CONNECTOR_MEDIA_ACCOUNT_LOCK_TTL: int = int(
         os.getenv("CONNECTOR_MEDIA_ACCOUNT_LOCK_TTL", "3600")
     )
+    # 同一个完整投放任务同时只允许一个 Connector Worker 执行，
+    # 避免恢复任务与原任务并发创建 Meta 对象。
+    CONNECTOR_DELIVERY_LOCK_TTL: int = int(
+        os.getenv("CONNECTOR_DELIVERY_LOCK_TTL", "7200")
+    )
     # 超过该时间仍处于 UPLOADING 的 Connector 媒体任务视为孤儿任务，
     # 允许下一次幂等请求或定时恢复任务重新入队。
     CONNECTOR_MEDIA_STALE_SECONDS: int = int(os.getenv("CONNECTOR_MEDIA_STALE_SECONDS", "1800"))

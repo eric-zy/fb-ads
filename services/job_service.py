@@ -771,6 +771,75 @@ class JobService:
         self.db.commit()
         return result
 
+    def reconcile_job_item(self, job_id: str, item_id: str) -> Optional[Dict[str, Any]]:
+        """查询海外未知提交结果，并把候选快照保存到国内任务详情。"""
+        item = (
+            self.db.query(CampaignJobItem)
+            .filter(
+                CampaignJobItem.id == item_id,
+                CampaignJobItem.job_id == job_id,
+            )
+            .first()
+        )
+        if not item:
+            return None
+        payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+        protocol = payload.get("protocol") or {}
+        credential_id = protocol.get("credential_id")
+        task_id = item.connector_task_id or (payload.get("connector") or {}).get("connector_task_id")
+        if not credential_id or not task_id:
+            return {"status": "NOT_REQUIRED", "reason": "没有可对账的海外任务"}
+        result = FBConnectorClient().reconcile_deployment(task_id, credential_id)
+        item.response_payload = {
+            **payload,
+            "reconcile": result,
+            "reconcile_checked_at": datetime.utcnow().isoformat(),
+        }
+        self.db.commit()
+        return result
+
+    def confirm_reconcile_job_item(
+        self,
+        job_id: str,
+        item_id: str,
+        confirmations: list[dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """确认运营选择的海外 Meta 候选，并保存确认快照。"""
+        item = (
+            self.db.query(CampaignJobItem)
+            .filter(
+                CampaignJobItem.id == item_id,
+                CampaignJobItem.job_id == job_id,
+            )
+            .first()
+        )
+        if not item:
+            return None
+        payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+        protocol = payload.get("protocol") or {}
+        credential_id = protocol.get("credential_id")
+        task_id = item.connector_task_id or (payload.get("connector") or {}).get("connector_task_id")
+        if not credential_id or not task_id:
+            return {"status": "NOT_REQUIRED", "reason": "没有可确认的海外任务"}
+        result = FBConnectorClient().confirm_reconcile_deployment(
+            task_id,
+            credential_id,
+            confirmations,
+        )
+        reconcile = payload.get("reconcile") if isinstance(payload.get("reconcile"), dict) else {}
+        remaining_pending = result.get("remaining_pending") if isinstance(result, dict) else None
+        item.response_payload = {
+            **payload,
+            "reconcile": {
+                **reconcile,
+                "pending": remaining_pending if isinstance(remaining_pending, list) else reconcile.get("pending", []),
+                "message": result.get("message") if isinstance(result, dict) else reconcile.get("message"),
+            },
+            "reconcile_confirmation": result,
+        }
+        self.db.commit()
+        return result
+
     def dispatch_now(self, job_id: str) -> Optional[CampaignJob]:
         """把定时任务提前为立即执行
 

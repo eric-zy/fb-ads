@@ -76,6 +76,22 @@ Campaign
 
 响应仅包含 `id`、`name`、`subtype`、`delivery_status`、`sharing_status`、`time_updated` 等元数据；Connector 不读取、不缓存、不返回受众成员数据。国内服务按广告账户缓存这些资产，管理员只能从已同步且属于当前账户的 ID 中选择强制排除项。投放时强制排除项由国内服务合并进每个广告组的 `targeting.excluded_custom_audiences`，广告组模板不能覆盖或移除该策略。
 
+强制排除策略由国内服务保存为账户级版本化策略。发布预检时生成不可变快照，并随部署请求传递：
+
+```json
+{
+  "policy_snapshot": {
+    "policy_version": 12,
+    "hash": "sha256:...",
+    "fail_closed": true,
+    "required_excluded_audience_ids": ["238..."],
+    "captured_at": "2026-09-22T10:00:00Z"
+  }
+}
+```
+
+Connector 只使用其中的受众 ID 合并最终 AdSet targeting，并原样回传应用结果；策略原因、备注和审批信息仅留在国内服务。相同任务重试必须使用相同快照；策略变更只影响新的发布任务。受众同步完整成功后未返回的资产标记为 `MISSING`，包含强制策略的账户在预检阶段 fail-closed。
+
 ## 4. 返回值
 
 首次请求返回 `202 Accepted`：

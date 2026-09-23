@@ -11,7 +11,7 @@ import json
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,7 @@ from services.creative_format import normalize_creative_format
 from services.meta_creative_options import normalize_cta
 from services.meta_delivery_rules import budget_bid_preflight_errors, conversion_event_preflight_errors, default_optimization_goal, objective_optimization_preflight_errors
 from services.targeting_catalog import placement_preflight_errors, targeting_preflight_errors
+from core.audit import record_audit
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["Job Center"])
 
@@ -103,6 +104,16 @@ class RevisionUpdateRequest(BaseModel):
 class RetryJobRequest(BaseModel):
     item_ids: Optional[List[str]] = Field(None, description="只继续指定的失败账户；为空表示全部失败账户")
     mode: str = Field("CONTINUE", pattern="^CONTINUE$")
+
+
+class ReconcileConfirmationRequest(BaseModel):
+    group: str = Field(..., pattern="^(campaign|adsets|creatives|ads)$")
+    client_key: Optional[str] = Field(None, max_length=128)
+    object_id: str = Field(..., min_length=1, max_length=128)
+
+
+class ReconcileConfirmRequest(BaseModel):
+    confirmations: List[ReconcileConfirmationRequest] = Field(..., min_length=1, max_length=20)
 
 
 def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optional[str] = None) -> str:
@@ -1009,10 +1020,99 @@ def continue_job_item(
     item_payload = item.response_payload if isinstance(item.response_payload, dict) else {}
     if item_payload.get("cleanup_status") == "COMPLETED":
         raise HTTPException(status_code=409, detail="该失败项的 Meta 对象已清理，请使用编辑后重投")
+    pending_reconcile = (item_payload.get("reconcile") or {}).get("pending")
+    if isinstance(pending_reconcile, list) and pending_reconcile:
+        raise HTTPException(status_code=409, detail="仍有待确认的 Meta 对象，请先完成对账或人工核对")
     count = JobService(db).retry_failed(job_id, [item_id], "CONTINUE")
     if count == 0:
         raise HTTPException(status_code=400, detail="该任务项不是失败状态")
     return {"job_id": job_id, "item_id": item_id, "mode": "CONTINUE"}
+
+
+@router.post("/{job_id}/items/{item_id}/reconcile")
+def reconcile_job_item(
+    job_id: str,
+    item_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("job:retry")),
+):
+    """查询海外 Connector 的待对账候选，并回写任务详情。"""
+    job = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    item = next((row for row in job.items if row.id == item_id), None)
+    visible = accessible_account_ids(db, current_user)
+    if not item or (visible is not None and job.created_by != current_user.id and item.ad_account_id not in visible):
+        raise HTTPException(status_code=404, detail="任务项不存在或无权访问")
+    try:
+        result = JobService(db).reconcile_job_item(job_id, item_id)
+    except Exception as exc:
+        logger.exception("[JobAPI] reconcile job item failed job_id=%s item_id=%s", job_id, item_id)
+        raise HTTPException(status_code=502, detail=f"查询海外对账结果失败: {exc}") from exc
+    record_audit(
+        db,
+        action="RECONCILE_META_DELIVERY",
+        resource_type="campaign_job_item",
+        resource_id=item_id,
+        user_id=current_user.id,
+        request_data={"job_id": job_id, "item_id": item_id},
+        response_data={
+            "status": (result or {}).get("status"),
+            "pending_count": len((result or {}).get("pending") or []),
+        },
+        request=request,
+    )
+    return {"job_id": job_id, "item_id": item_id, "result": result}
+
+
+@router.post("/{job_id}/items/{item_id}/reconcile/confirm")
+def confirm_reconcile_job_item(
+    job_id: str,
+    item_id: str,
+    req: ReconcileConfirmRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("job:retry")),
+):
+    """确认后台选择的 Meta 候选，只建立本地复用关系。"""
+    job = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    item = next((row for row in job.items if row.id == item_id), None)
+    visible = accessible_account_ids(db, current_user)
+    if not item or (visible is not None and job.created_by != current_user.id and item.ad_account_id not in visible):
+        raise HTTPException(status_code=404, detail="任务项不存在或无权访问")
+    try:
+        result = JobService(
+            db
+        ).confirm_reconcile_job_item(
+            job_id,
+            item_id,
+            [confirmation.model_dump() for confirmation in req.confirmations],
+        )
+    except Exception as exc:
+        logger.exception("[JobAPI] confirm reconcile failed job_id=%s item_id=%s", job_id, item_id)
+        raise HTTPException(status_code=502, detail=f"确认海外对账候选失败: {exc}") from exc
+    record_audit(
+        db,
+        action="CONFIRM_META_RECONCILIATION",
+        resource_type="campaign_job_item",
+        resource_id=item_id,
+        user_id=current_user.id,
+        request_data={
+            "job_id": job_id,
+            "item_id": item_id,
+            "confirmations": [confirmation.model_dump() for confirmation in req.confirmations],
+        },
+        response_data={
+            "status": (result or {}).get("status"),
+            "confirmed": (result or {}).get("confirmed") or [],
+            "remaining_pending_count": len((result or {}).get("remaining_pending") or []),
+        },
+        request=request,
+    )
+    return {"job_id": job_id, "item_id": item_id, "result": result}
 
 
 @router.post("/{job_id}/items/{item_id}/cleanup")

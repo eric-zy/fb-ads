@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from fb_connector.celery_app import celery_app
 import requests
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from redis import Redis
 from redis.exceptions import LockError
 from sqlalchemy import or_
@@ -51,6 +51,19 @@ def _media_content_lock(content_sha256: str):
     )
 
 
+def _delivery_task_lock(task_id: str):
+    """创建完整投放任务锁，防止恢复任务与原任务并发写入 Meta。"""
+    redis_client = Redis.from_url(
+        settings.CELERY_BROKER_URL,
+        socket_connect_timeout=settings.REDIS_TIMEOUT,
+        socket_timeout=settings.REDIS_TIMEOUT,
+    )
+    return redis_client.lock(
+        f"fb_connector:delivery_task:{task_id}",
+        timeout=settings.CONNECTOR_DELIVERY_LOCK_TTL,
+    )
+
+
 def _remote_url_upload_enabled(account_id: str) -> bool:
     """判断远程 URL 直传是否对当前广告账户开启。"""
     if not settings.FB_VIDEO_FILE_URL_UPLOAD:
@@ -70,6 +83,245 @@ def _remote_url_upload_enabled(account_id: str) -> bool:
 def _connector_error_retryable(exc: Exception, auth_failed: bool = False) -> bool:
     """Only retry transport/rate-limit errors; validation errors are terminal."""
     return not auth_failed and (not isinstance(exc, MetaApiError) or exc.retryable)
+
+
+_RECONCILE_TIME_SKEW = timedelta(minutes=5)
+
+
+def _delivery_objects_state(row) -> dict:
+    """返回投放任务的可扩展对象状态，兼容旧任务的空/非字典值。"""
+    return dict(row.objects) if isinstance(row.objects, dict) else {}
+
+
+def _mark_pending_delivery_object(
+    session,
+    row,
+    *,
+    group: str,
+    client_key: str | None,
+    name: str | None,
+    parent_id: str | None = None,
+) -> None:
+    """在调用 Meta 写接口前落库，覆盖 Worker 崩溃导致的未知提交结果。"""
+    state = _delivery_objects_state(row)
+    pending = [
+        item
+        for item in (state.get("pending") or [])
+        if not (
+            item.get("group") == group
+            and item.get("client_key") == client_key
+        )
+    ]
+    pending.append(
+        {
+            "group": group,
+            "client_key": client_key,
+            "name": name,
+            "parent_id": parent_id,
+            "submitted_at": datetime.utcnow().isoformat() + "Z",
+        }
+    )
+    state["pending"] = pending
+    row.objects = state
+    row.updated_at = datetime.utcnow()
+    session.commit()
+
+
+def _parse_remote_datetime(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+    except (TypeError, ValueError):
+        return None
+
+
+def _pending_remote_candidates(candidates: list[dict], pending: dict) -> list[dict]:
+    """筛选名称精确且时间合理的远端候选。"""
+    expected_name = pending.get("name")
+    submitted_at = _parse_remote_datetime(pending.get("submitted_at"))
+    matches = [
+        candidate
+        for candidate in candidates
+        if expected_name is not None and str(candidate.get("name")) == str(expected_name)
+    ]
+    if submitted_at:
+        recent = []
+        for candidate in matches:
+            created_at = _parse_remote_datetime(candidate.get("created_time"))
+            if created_at and created_at >= submitted_at - _RECONCILE_TIME_SKEW:
+                recent.append(candidate)
+        matches = recent
+    return matches
+
+
+def _pending_remote_match(candidates: list[dict], pending: dict) -> tuple[str | None, int]:
+    """只接受名称精确、时间合理且唯一的远端候选。"""
+    matches = _pending_remote_candidates(candidates, pending)
+    if len(matches) != 1:
+        return None, len(matches)
+    object_id = matches[0].get("id")
+    return (str(object_id) if object_id else None), len(matches)
+
+
+def _reconcile_pending_delivery_objects(session, row, service, account_id: str) -> None:
+    """恢复外部成功、数据库未提交的对象；不确定时禁止再次创建。"""
+    state = _delivery_objects_state(row)
+    pending = list(state.get("pending") or [])
+    if not pending:
+        return
+
+    cached: dict[tuple[str, str | None], list[dict]] = {}
+    resolved: list[tuple[dict, str]] = []
+    unresolved: list[str] = []
+    for item in pending:
+        group = item.get("group")
+        parent_id = item.get("parent_id")
+        cache_key = (group, parent_id)
+        if group == "campaign":
+            if cache_key not in cached:
+                cached[cache_key] = service.list_campaigns(account_id)
+        elif group == "adsets" and parent_id:
+            if cache_key not in cached:
+                cached[cache_key] = service.list_adsets(parent_id)
+        elif group == "creatives":
+            if cache_key not in cached:
+                cached[cache_key] = service.list_creatives(account_id)
+        elif group == "ads" and parent_id:
+            if cache_key not in cached:
+                cached[cache_key] = service.list_ads(parent_id)
+        else:
+            unresolved.append(f"{group}:{item.get('client_key') or item.get('name') or '-'}")
+            continue
+
+        object_id, count = _pending_remote_match(cached[cache_key], item)
+        if object_id:
+            resolved.append((item, object_id))
+        else:
+            unresolved.append(
+                f"{group}:{item.get('client_key') or item.get('name') or '-'}"
+                f"(候选={count})"
+            )
+
+    if unresolved:
+        raise MetaApiError(
+            "RECONCILE_REQUIRED：存在未确认的 Meta 对象，已停止重试以避免重复创建；"
+            f"请先核对 {', '.join(unresolved)}",
+            category=ErrorCategory.VALIDATION,
+            code=100,
+        )
+
+    for item, object_id in resolved:
+        group = item["group"]
+        if group == "campaign":
+            row.campaign_id = object_id
+            continue
+        state.setdefault(group, []).append(
+            {
+                "client_key": item.get("client_key"),
+                "id": object_id,
+                "reconciled": True,
+                **({"adset_id": item.get("parent_id")} if group == "ads" else {}),
+            }
+        )
+    state["pending"] = []
+    row.objects = state
+    row.updated_at = datetime.utcnow()
+    session.commit()
+    logger.warning(
+        "[ConnectorCampaign] reconciled pending objects connector_task_id=%s count=%s",
+        row.task_id,
+        len(resolved),
+    )
+
+
+def _clear_pending_delivery_objects(row) -> None:
+    state = _delivery_objects_state(row)
+    if "pending" in state:
+        state.pop("pending", None)
+        row.objects = state
+
+
+def _list_pending_candidates(service, group: str, parent_id: str | None, account_id: str):
+    if group == "campaign":
+        return service.list_campaigns(account_id)
+    if group == "adsets" and parent_id:
+        return service.list_adsets(parent_id)
+    if group == "creatives":
+        return service.list_creatives(account_id)
+    if group == "ads" and parent_id:
+        return service.list_ads(parent_id)
+    return []
+
+
+def _confirm_pending_delivery_objects(
+    session,
+    row,
+    service,
+    account_id: str,
+    confirmations: list[dict],
+) -> list[str]:
+    """校验并确认人工选定的 Meta ID，只修改本地任务记录。"""
+    state = _delivery_objects_state(row)
+    pending = list(state.get("pending") or [])
+    resolved: list[tuple[dict, str]] = []
+    for confirmation in confirmations:
+        group = confirmation.get("group")
+        client_key = confirmation.get("client_key")
+        object_id = str(confirmation.get("object_id") or "")
+        matches = [
+            item
+            for item in pending
+            if item.get("group") == group and item.get("client_key") == client_key
+        ]
+        if len(matches) != 1:
+            raise MetaApiError(
+                f"RECONCILE_REQUIRED：找不到唯一待确认对象 {group}:{client_key or '-'}",
+                category=ErrorCategory.VALIDATION,
+                code=100,
+            )
+        item = matches[0]
+        candidates = _pending_remote_candidates(
+            _list_pending_candidates(service, group, item.get("parent_id"), account_id),
+            item,
+        )
+        if not any(str(candidate.get("id")) == object_id for candidate in candidates):
+            raise MetaApiError(
+                f"RECONCILE_REQUIRED：Meta 对象 {object_id} 不符合待确认对象的名称、时间或父级校验",
+                category=ErrorCategory.VALIDATION,
+                code=100,
+            )
+        resolved.append((item, object_id))
+
+    resolved_keys = {
+        (item.get("group"), item.get("client_key")) for item, _ in resolved
+    }
+    remaining = [
+        item
+        for item in pending
+        if (item.get("group"), item.get("client_key")) not in resolved_keys
+    ]
+    for item, object_id in resolved:
+        group = item["group"]
+        if group == "campaign":
+            row.campaign_id = object_id
+            continue
+        state.setdefault(group, []).append(
+            {
+                "client_key": item.get("client_key"),
+                "id": object_id,
+                "reconciled": True,
+                **({"adset_id": item.get("parent_id")} if group == "ads" else {}),
+            }
+        )
+    state["pending"] = remaining
+    row.objects = state
+    row.updated_at = datetime.utcnow()
+    session.commit()
+    return [object_id for _, object_id in resolved]
 
 
 def _deliver_callback_event(session, event) -> bool:
@@ -544,6 +796,14 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
     session = connector_session_factory()
     row = None
     retries = self.request.retries
+    delivery_lock = _delivery_task_lock(connector_task_id)
+    if not delivery_lock.acquire(blocking=False):
+        session.close()
+        logger.warning(
+            "[ConnectorCampaign] duplicate execution deferred connector_task_id=%s",
+            connector_task_id,
+        )
+        raise self.retry(exc=RuntimeError("同一投放任务正在执行"), countdown=30)
     try:
         logger.info(
             "[ConnectorCampaign] start connector_task_id=%s account_id=%s retry=%s",
@@ -566,6 +826,10 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
         logger.info("[ConnectorCampaign] status=RUNNING connector_task_id=%s step=%s", connector_task_id, row.step)
         token = DatabaseCredentialVault().get_access_token(credential_id)
         service = MetaAdsService(MetaClient(access_token=token))
+
+        # 如果上一轮在 Meta 写成功、数据库提交前崩溃，先做远端对账。
+        # 对账不通过时直接终止，不能把未知结果当成“未创建”再次提交。
+        _reconcile_pending_delivery_objects(session, row, service, account_id)
 
         # 先解析所有“新建广告组”的语言定向，再创建 Campaign。
         # Meta 官方要求提交 targeting.locales 的 adlocale ID；如果目录查询
@@ -646,6 +910,13 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
                     campaign_id,
                 )
             else:
+                _mark_pending_delivery_object(
+                    session,
+                    row,
+                    group="campaign",
+                    client_key=None,
+                    name=campaign_payload.get("name"),
+                )
                 campaign = service.create_campaign(account_id, campaign_payload)
                 campaign_id = campaign["id"]
                 created.append(campaign_id)
@@ -690,6 +961,14 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
                 )
             if not adset_id:
                 adset.pop("client_key", None)
+                _mark_pending_delivery_object(
+                    session,
+                    row,
+                    group="adsets",
+                    client_key=adset_key,
+                    name=adset.get("name"),
+                    parent_id=campaign_id,
+                )
                 result = service.create_adset(account_id, {**adset, "campaign_id": campaign_id})
                 adset_id = result["id"]
                 created.append(adset_id)
@@ -707,6 +986,14 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
                 creative_key = creative.pop("client_key", None)
                 creative_id = existing_id("creatives", creative_key)
                 if not creative_id:
+                    _mark_pending_delivery_object(
+                        session,
+                        row,
+                        group="creatives",
+                        client_key=creative_key,
+                        name=creative.get("name"),
+                        parent_id=account_id,
+                    )
                     creative_result = service.create_creative(account_id, creative)
                     creative_id = creative_result["id"]
                     created.append(creative_id)
@@ -723,6 +1010,14 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
                     ad.pop("creative", None)
                     ad_id = existing_id("ads", ad_key)
                     if not ad_id:
+                        _mark_pending_delivery_object(
+                            session,
+                            row,
+                            group="ads",
+                            client_key=ad_key,
+                            name=ad.get("name"),
+                            parent_id=adset_id,
+                        )
                         ad_result = service.create_ad(
                             account_id,
                             {**ad, "adset_id": adset_id, "creative": {"creative_id": creative_id}},
@@ -743,6 +1038,14 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
             adset_id = ad.pop("adset_id", None) or (adset_ids[0] if adset_ids else None)
             ad_id = existing_id("ads", ad_key)
             if not ad_id:
+                _mark_pending_delivery_object(
+                    session,
+                    row,
+                    group="ads",
+                    client_key=ad_key,
+                    name=ad.get("name"),
+                    parent_id=adset_id,
+                )
                 ad_result = service.create_ad(account_id, {**ad, "adset_id": adset_id})
                 ad_id = ad_result["id"]
                 created.append(ad_id)
@@ -766,6 +1069,14 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
         session.rollback()
         row = row or session.get(ConnectorDeliveryTask, connector_task_id)
         if row:
+            # 明确的 Meta 参数校验不会创建对象，可以移除提交前标记；
+            # 超时/临时错误保留标记，下一次必须先远端对账。
+            if (
+                isinstance(exc, MetaApiError)
+                and not exc.retryable
+                and "RECONCILE_REQUIRED" not in str(exc)
+            ):
+                _clear_pending_delivery_objects(row)
             will_retry = retries < self.max_retries and _connector_error_retryable(exc, auth_failed)
             row.status = "RETRY" if will_retry else "FAILED"
             row.error_message = f"已创建对象={created}: {exc}"[:1000]
@@ -776,7 +1087,11 @@ def create_campaign_task(self, connector_task_id: str, credential_id: str, accou
             raise
         raise self.retry(exc=RuntimeError(f"投放步骤失败，已创建对象={created}: {exc}"))
     finally:
-        session.close()
+        try:
+            if delivery_lock.locked():
+                delivery_lock.release()
+        finally:
+            session.close()
 
 
 def _persist_media_progress(session, row, **values):

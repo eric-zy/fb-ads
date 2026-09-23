@@ -42,6 +42,65 @@ class CleanupRequest(BaseModel):
     orphaned_only: bool = False
 
 
+class ReconcileRequest(BaseModel):
+    connector_task_id: str = Field(..., min_length=1, max_length=50)
+    credential_id: str = Field(..., min_length=1, max_length=50)
+
+
+class ReconcileConfirmation(BaseModel):
+    group: str = Field(..., pattern="^(campaign|adsets|creatives|ads)$")
+    client_key: str | None = Field(default=None, max_length=128)
+    object_id: str = Field(..., min_length=1, max_length=128)
+
+
+class ReconcileConfirmRequest(ReconcileRequest):
+    confirmations: list[ReconcileConfirmation] = Field(..., min_length=1, max_length=20)
+
+
+def _pending_reconcile_results(row, service) -> list[dict]:
+    """把待对账标记转换成稳定的候选结果格式，供查询和确认接口共用。"""
+    from fb_connector.tasks import _list_pending_candidates, _pending_remote_candidates
+
+    objects = row.objects if isinstance(row.objects, dict) else {}
+    pending = list(objects.get("pending") or [])
+    cache = {}
+    results = []
+    for item in pending:
+        group = item.get("group")
+        parent_id = item.get("parent_id")
+        cache_key = (group, parent_id)
+        if cache_key not in cache:
+            cache[cache_key] = _list_pending_candidates(
+                service, group, parent_id, row.account_id
+            )
+        candidates = _pending_remote_candidates(cache[cache_key], item)
+        results.append(
+            {
+                "group": group,
+                "client_key": item.get("client_key"),
+                "name": item.get("name"),
+                "parent_id": parent_id,
+                "submitted_at": item.get("submitted_at"),
+                "can_auto_reconcile": len(candidates) == 1,
+                "candidates": [
+                    {
+                        key: candidate.get(key)
+                        for key in (
+                            "id",
+                            "name",
+                            "created_time",
+                            "status",
+                            "effective_status",
+                        )
+                        if candidate.get(key) is not None
+                    }
+                    for candidate in candidates
+                ],
+            }
+        )
+    return results
+
+
 def _delivery_task_is_stale(row: ConnectorDeliveryTask, now: datetime | None = None) -> bool:
     if row.status not in {"QUEUED", "RUNNING", "RETRY"}:
         return False
@@ -301,3 +360,100 @@ async def delivery_status(connector_task_id: str):
         logger.info("[ConnectorCampaignAPI] status connector_task_id=%s status=%s step=%s", connector_task_id, row.status, row.step)
         return {"status": row.status, "step": row.step, "connector_task_id": row.task_id, "campaign_id": row.campaign_id, "objects": row.objects or {}, "error_message": row.error_message}
     finally: session.close()
+
+
+@router.post("/reconcile")
+async def reconcile_delivery(payload: ReconcileRequest):
+    """只读检查未知提交结果，供运营确认后再重试任务。"""
+    from services.meta import MetaClient
+    from services.meta.service import MetaAdsService
+    from fb_connector.credential_store import DatabaseCredentialVault
+
+    session = connector_session_factory()
+    try:
+        row = session.get(ConnectorDeliveryTask, payload.connector_task_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="海外任务不存在")
+        if row.credential_id and row.credential_id != payload.credential_id:
+            raise HTTPException(status_code=403, detail="凭据与任务不匹配")
+
+        objects = row.objects if isinstance(row.objects, dict) else {}
+        pending = list(objects.get("pending") or [])
+        if not pending:
+            return {
+                "status": row.status,
+                "connector_task_id": row.task_id,
+                "pending": [],
+                "message": "当前任务没有待对账对象",
+            }
+
+        token = DatabaseCredentialVault().get_access_token(
+            row.credential_id or payload.credential_id
+        )
+        service = MetaAdsService(MetaClient(access_token=token))
+        results = _pending_reconcile_results(row, service)
+        return {
+            "status": row.status,
+            "connector_task_id": row.task_id,
+            "campaign_id": row.campaign_id,
+            "pending": results,
+            "message": "仅返回候选，不会自动认领或删除 Meta 对象；确认后请重试原任务",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception(
+            "[ConnectorCampaignAPI] reconcile failed connector_task_id=%s",
+            payload.connector_task_id,
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@router.post("/reconcile/confirm")
+async def confirm_reconcile_delivery(payload: ReconcileConfirmRequest):
+    """确认运营选定的 Meta 候选，只落库复用关系，不执行 Meta 写操作。"""
+    from fb_connector.tasks import _confirm_pending_delivery_objects
+    from services.meta import MetaClient
+    from services.meta.service import MetaAdsService
+    from fb_connector.credential_store import DatabaseCredentialVault
+
+    session = connector_session_factory()
+    try:
+        row = session.get(ConnectorDeliveryTask, payload.connector_task_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="海外任务不存在")
+        if row.credential_id and row.credential_id != payload.credential_id:
+            raise HTTPException(status_code=403, detail="凭据与任务不匹配")
+        token = DatabaseCredentialVault().get_access_token(
+            row.credential_id or payload.credential_id
+        )
+        service = MetaAdsService(MetaClient(access_token=token))
+        confirmed = _confirm_pending_delivery_objects(
+            session,
+            row,
+            service,
+            row.account_id,
+            [item.model_dump() for item in payload.confirmations],
+        )
+        remaining_pending = _pending_reconcile_results(row, service)
+        return {
+            "status": row.status,
+            "connector_task_id": row.task_id,
+            "confirmed": confirmed,
+            "remaining_pending": remaining_pending,
+            "message": "已确认本地复用关系，请继续执行原任务",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception(
+            "[ConnectorCampaignAPI] reconcile confirm failed connector_task_id=%s",
+            payload.connector_task_id,
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()

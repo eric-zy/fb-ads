@@ -164,6 +164,7 @@
           <template #default="{ row }">
             <el-tag :type="itemTagType(row.status)" size="small">{{ row.status }}</el-tag>
             <el-tag v-if="row.response_payload?.cleanup_failed || row.response_payload?.cleanup_status === 'PENDING'" type="danger" size="small" style="margin-left:4px">待人工清理</el-tag>
+            <el-tag v-if="hasPendingReconcile(row)" type="warning" size="small" style="margin-left:4px">待对账</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="meta_campaign_id" label="Meta Campaign" width="170" show-overflow-tooltip />
@@ -194,14 +195,20 @@
               {{ row.response_payload?.cleanup_object_ids?.join(', ') || createdObjectIds(row).join(', ') || '-' }}
             </template>
           </el-table-column>
-        <el-table-column label="失败项操作" width="180" fixed="right">
+        <el-table-column label="失败项操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="row.status === 'FAILED' && row.response_payload?.cleanup_status !== 'COMPLETED'"
+              v-if="row.status === 'FAILED' && row.response_payload?.cleanup_status !== 'COMPLETED' && !hasPendingReconcile(row)"
               link
               type="primary"
               @click="handleContinueItem(row)"
             >继续执行</el-button>
+            <el-button
+              v-if="row.status === 'FAILED' && hasPendingReconcile(row)"
+              link
+              type="warning"
+              @click="handleReconcileItem(row)"
+            >查询对账</el-button>
             <el-button
               v-if="row.response_payload?.cleanup_status === 'PENDING'"
               link
@@ -211,6 +218,39 @@
           </template>
         </el-table-column>
       </el-table>
+
+      <div v-if="reconcileRows.length" class="reconcile-panel">
+        <h4>海外 Meta 对账结果</h4>
+        <el-alert
+          title="结果仅用于核对，不会自动认领或删除 Meta 对象。唯一候选可继续执行；多个候选或无候选需要人工核对。"
+          type="warning"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 10px"
+        />
+        <el-table :data="reconcileRows" size="small" border>
+          <el-table-column prop="group" label="对象类型" width="100" />
+          <el-table-column prop="name" label="对象名称" min-width="180" show-overflow-tooltip />
+          <el-table-column label="判断" width="110">
+            <template #default="{ row }">
+              <el-tag :type="row.can_auto_reconcile ? 'success' : 'danger'" size="small">
+                {{ row.can_auto_reconcile ? '唯一候选' : '需人工核对' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="Meta 候选" min-width="280" show-overflow-tooltip>
+            <template #default="{ row }">
+              <div v-if="row.candidates?.length" class="reconcile-candidates">
+                <div v-for="candidate in row.candidates" :key="candidate.id" class="reconcile-candidate">
+                  <span>{{ candidate.id || '-' }} {{ candidate.name || '' }}</span>
+                  <el-button link type="primary" size="small" @click="handleConfirmReconcile(row, candidate)">确认复用</el-button>
+                </div>
+              </div>
+              <span v-else>未找到候选</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
 
       <template #footer>
         <el-button @click="detailVisible = false">关闭</el-button>
@@ -243,11 +283,22 @@ import {
   isFinalStatus,
   type CampaignJob,
   type CampaignJobRevision,
+  type DeliveryReconcileItem,
 } from '@/api/jobs'
 import { useUserStore } from '@/stores/userStore'
 
 const jobs = ref<CampaignJob[]>([])
 const currentJob = ref<CampaignJob | null>(null)
+type ReconcileDisplayItem = DeliveryReconcileItem & { item_id: string }
+
+const reconcileRows = computed<ReconcileDisplayItem[]>(() =>
+  (currentJob.value?.items || []).flatMap((item: any) =>
+    (item.response_payload?.reconcile?.pending || []).map((pending: DeliveryReconcileItem) => ({
+      ...pending,
+      item_id: item.id,
+    })),
+  ),
+)
 const loading = ref(false)
 const detailVisible = ref(false)
 const revisions = ref<CampaignJobRevision[]>([])
@@ -318,6 +369,11 @@ const createdObjectIds = (row: any): string[] => {
   const objects = row.response_payload?.created_objects || {}
   return Object.values(objects)
     .flatMap((items: any) => Array.isArray(items) ? items.map((item: any) => item?.id).filter(Boolean) : [])
+}
+
+const hasPendingReconcile = (row: any): boolean => {
+  const pending = row.response_payload?.reconcile?.pending || row.response_payload?.created_objects?.pending
+  return Array.isArray(pending) && pending.length > 0
 }
 
 const percent = (row: CampaignJob) => {
@@ -492,6 +548,45 @@ const handleContinueItem = async (row: any) => {
   startTimer()
 }
 
+const handleReconcileItem = async (row: any) => {
+  if (!currentJob.value) return
+  try {
+    const { data } = await jobsApi.reconcileItem(currentJob.value.id, row.id)
+    const pending = data.result?.pending || []
+    const unique = pending.filter((item) => item.can_auto_reconcile).length
+    if (pending.length && unique === pending.length) {
+      ElMessage.success('已找到唯一 Meta 候选，可以继续执行')
+    } else if (!pending.length) {
+      ElMessage.info('当前没有待对账对象')
+    } else {
+      ElMessage.warning('存在多个或缺失候选，请先人工核对，系统不会自动认领')
+    }
+    const refreshed = await jobsApi.get(currentJob.value.id)
+    currentJob.value = refreshed.data
+  } catch {
+    // 错误已由 request 拦截器提示
+  }
+}
+
+const handleConfirmReconcile = async (row: ReconcileDisplayItem, candidate: { id?: string }) => {
+  if (!currentJob.value || !candidate.id) return
+  try {
+    await ElMessageBox.confirm(
+      `确认将 Meta 对象 ${candidate.id} 绑定为本次任务的复用对象？系统不会删除或修改该 Meta 对象。`,
+      '确认复用 Meta 对象',
+      { type: 'warning', confirmButtonText: '确认复用', cancelButtonText: '取消' },
+    )
+    await jobsApi.confirmReconcileItem(currentJob.value.id, row.item_id, [
+      { group: row.group, client_key: row.client_key, object_id: candidate.id },
+    ])
+    ElMessage.success('已确认复用关系，请点击“继续执行”')
+    const refreshed = await jobsApi.get(currentJob.value.id)
+    currentJob.value = refreshed.data
+  } catch {
+    // 取消或请求失败时保持当前任务详情
+  }
+}
+
 const handleCleanupItem = async (row: any) => {
   if (!currentJob.value) return
   try {
@@ -574,6 +669,10 @@ onUnmounted(stopTimer)
 .more-button { color: #60758d; border-color: #dbe5ef; }
 .more-button :deep(.el-icon) { margin-left: 3px; }
 .err-cat { color: #e6a23c; margin-right: 4px; }
+.reconcile-panel { margin-top: 16px; padding: 14px; border: 1px solid #f0d8a8; border-radius: 10px; background: #fffbf2; }
+.reconcile-panel h4 { margin: 0 0 10px; color: #7b5b1e; font-size: 14px; }
+.reconcile-candidates { display: flex; flex-direction: column; gap: 4px; }
+.reconcile-candidate { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 @media (max-width: 1050px) {
   .header-bar { flex-direction: column; }
   .actions { width: 100%; justify-content: flex-end; }

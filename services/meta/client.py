@@ -26,6 +26,17 @@ from core.enums import ErrorCategory
 from services.targeting_catalog import LANGUAGE_CATALOG, normalize_languages
 
 
+def _retry_after_seconds(response: requests.Response) -> float | None:
+    """Parse Meta/HTTP Retry-After without making retry logic depend on it."""
+    raw = response.headers.get("Retry-After") if response is not None else None
+    if raw is None:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
 class MetaClient:
     """面向单个凭据（Token）的 Meta API 客户端
 
@@ -119,6 +130,7 @@ class MetaClient:
                 error = error or {}
                 code = error.get("code")
                 subcode = error.get("error_subcode")
+                retry_after_seconds = _retry_after_seconds(response)
                 raise MetaApiError(
                     error.get("message", f"Graph API HTTP {response.status_code}"),
                     category=classify(code, subcode, response.status_code),
@@ -126,6 +138,7 @@ class MetaClient:
                     subcode=subcode,
                     http_status=response.status_code,
                     fbtrace_id=error.get("fbtrace_id"),
+                    retry_after_seconds=retry_after_seconds,
                 )
             logger.info("[MetaAPI] GET success path=%s keys=%s", path, list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__)
             return payload
@@ -173,6 +186,7 @@ class MetaClient:
                 error = error or {}
                 code = error.get("code")
                 subcode = error.get("error_subcode")
+                retry_after_seconds = _retry_after_seconds(response)
                 raise MetaApiError(
                     error.get("message", f"Graph API HTTP {response.status_code}"),
                     category=classify(code, subcode, response.status_code),
@@ -183,6 +197,7 @@ class MetaClient:
                     error_user_title=error.get("error_user_title"),
                     error_user_msg=error.get("error_user_msg"),
                     error_type=error.get("type"),
+                    retry_after_seconds=retry_after_seconds,
                 )
             logger.info("[MetaAPI] POST success path=%s status=%s keys=%s", path, response.status_code, list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__)
             return payload
@@ -399,7 +414,20 @@ class MetaClient:
                 page_items = [item for item in raw_data if isinstance(item, dict)]
             else:
                 page_items = []
-            locales.extend(page_items)
+            for item in page_items:
+                normalized_item = dict(item)
+                labels = normalized_item.get("labels")
+                if isinstance(labels, dict):
+                    # Meta's current response nests the localized label and
+                    # numeric adlocale key under ``labels``.
+                    for key, value in labels.items():
+                        normalized_item.setdefault(key, value)
+                # Meta's official adlocale response uses ``key`` as the
+                # numeric locale ID (for example English (US) -> 6).  Some
+                # Graph responses do not include an ``id`` field at all.
+                if not normalized_item.get("id") and normalized_item.get("key") is not None:
+                    normalized_item["id"] = str(normalized_item["key"])
+                locales.append(normalized_item)
             after = (payload.get("paging") or {}).get("cursors", {}).get("after")
             if not after:
                 break
@@ -467,11 +495,18 @@ class MetaClient:
             def find_candidates(available: list[dict]) -> list[dict]:
                 candidates = []
                 for remote in available:
-                    remote_id = str(remote.get("id") or "").strip()
+                    remote_labels_data = remote.get("labels")
+                    remote_labels_data = remote_labels_data if isinstance(remote_labels_data, dict) else {}
+                    remote_id = str(
+                        remote.get("id")
+                        or remote.get("key")
+                        or remote_labels_data.get("key")
+                        or ""
+                    ).strip()
                     if not remote_id:
                         continue
                     remote_labels = {
-                        clean(remote.get(key))
+                        clean(remote.get(key) if remote.get(key) is not None else remote_labels_data.get(key))
                         for key in (
                             "name",
                             "name_en",
@@ -482,7 +517,7 @@ class MetaClient:
                             "title",
                             "display_name",
                         )
-                        if remote.get(key)
+                        if remote.get(key) is not None or remote_labels_data.get(key) is not None
                     }
                     if not remote_labels:
                         continue
@@ -500,6 +535,10 @@ class MetaClient:
             # 官方 Targeting Search 支持 q；优先按英文名、代码、中文名
             # 查询，避免依赖无 q 的不完整分页结果。
             candidates: list[dict] = []
+            names.update({
+                "zh_CN": {"zhcn", "中文简体", "简体中文", "chinesesimplified", "simplifiedchinese"},
+                "zh_TW": {"zhtw", "中文繁体", "繁体中文", "chinesetraditional", "traditionalchinese"},
+            }.get(item_id, set()))
             for query in (item["name_en"], item["code"], item["name"]):
                 candidates = find_candidates(self.get_ad_locales(query=query))
                 if candidates:
@@ -514,7 +553,15 @@ class MetaClient:
                     category=ErrorCategory.VALIDATION,
                     code=100,
                 )
-            remote_id = str(candidates[0].get("id"))
+            # Keep the resolver compatible with raw Targeting Search records
+            # as well as the normalized records returned by get_ad_locales.
+            candidate_labels = candidates[0].get("labels")
+            candidate_labels = candidate_labels if isinstance(candidate_labels, dict) else {}
+            remote_id = str(
+                candidates[0].get("id")
+                or candidates[0].get("key")
+                or candidate_labels.get("key")
+            )
             if remote_id not in resolved:
                 resolved.append(remote_id)
 

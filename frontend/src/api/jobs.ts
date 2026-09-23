@@ -16,7 +16,7 @@ export interface CampaignJobItem {
   error_category: string | null
   retry_count: number
   connector_task_id?: string | null
-  response_payload?: { cleanup_failed?: boolean; cleanup_object_ids?: string[]; cleanup_status?: string; failure_stage?: string; created_objects?: Record<string, any>; retry_mode?: string; meta_status?: string; review_status?: string; effective_status?: string; error_code?: string; error_message?: string; failure?: { category?: string; code?: string | null; message?: string }; [key: string]: any } | null
+  response_payload?: { cleanup_failed?: boolean; cleanup_object_ids?: string[]; cleanup_status?: string; failure_stage?: string; created_objects?: Record<string, any>; retry_mode?: string; meta_status?: string; review_status?: string; effective_status?: string; error_code?: string; error_message?: string; reconcile?: DeliveryReconcileResult; reconcile_confirmation?: DeliveryReconcileConfirmationResult; failure?: { category?: string; code?: string | null; message?: string }; [key: string]: any } | null
   created_at: string | null
   updated_at: string | null
 }
@@ -44,6 +44,40 @@ export interface CampaignJob {
   revision_no?: number
   edit_mode?: string | null
   items?: CampaignJobItem[]
+}
+
+export interface DeliveryReconcileCandidate {
+  id?: string
+  name?: string
+  created_time?: string
+  status?: string
+  effective_status?: string
+}
+
+export interface DeliveryReconcileItem {
+  group: string
+  client_key?: string | null
+  name?: string | null
+  parent_id?: string | null
+  submitted_at?: string | null
+  can_auto_reconcile: boolean
+  candidates: DeliveryReconcileCandidate[]
+}
+
+export interface DeliveryReconcileResult {
+  status: string
+  connector_task_id?: string
+  campaign_id?: string | null
+  pending: DeliveryReconcileItem[]
+  message?: string
+}
+
+export interface DeliveryReconcileConfirmationResult {
+  status: string
+  connector_task_id?: string
+  confirmed: string[]
+  remaining_pending: DeliveryReconcileItem[]
+  message?: string
 }
 
 export interface JobSubmitResult {
@@ -186,6 +220,10 @@ export const jobsApi = {
     request.post(`/api/v1/jobs/${id}/retry`, data || {}),
   continueItem: (jobId: string, itemId: string) =>
     request.post(`/api/v1/jobs/${jobId}/items/${itemId}/continue`),
+  reconcileItem: (jobId: string, itemId: string) =>
+    request.post<{ job_id: string; item_id: string; result: DeliveryReconcileResult }>(`/api/v1/jobs/${jobId}/items/${itemId}/reconcile`),
+  confirmReconcileItem: (jobId: string, itemId: string, confirmations: Array<{ group: string; client_key?: string | null; object_id: string }>) =>
+    request.post<{ job_id: string; item_id: string; result: DeliveryReconcileConfirmationResult }>(`/api/v1/jobs/${jobId}/items/${itemId}/reconcile/confirm`, { confirmations }),
   cleanupItem: (jobId: string, itemId: string) =>
     request.post(`/api/v1/jobs/${jobId}/items/${itemId}/cleanup`),
 

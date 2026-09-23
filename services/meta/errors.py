@@ -41,6 +41,7 @@ class MetaApiError(Exception):
         error_user_title: Optional[str] = None,
         error_user_msg: Optional[str] = None,
         error_type: Optional[str] = None,
+        retry_after_seconds: Optional[float] = None,
     ):
         super().__init__(message)
         self.message = message
@@ -52,6 +53,7 @@ class MetaApiError(Exception):
         self.error_user_title = error_user_title
         self.error_user_msg = error_user_msg
         self.error_type = error_type
+        self.retry_after_seconds = retry_after_seconds
 
     @property
     def retryable(self) -> bool:
@@ -84,6 +86,7 @@ class MetaApiError(Exception):
             "error_user_title": self.error_user_title,
             "error_user_msg": self.error_user_msg,
             "error_type": self.error_type,
+            "retry_after_seconds": self.retry_after_seconds,
         }
 
 
