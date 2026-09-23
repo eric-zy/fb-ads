@@ -451,18 +451,20 @@
               <div>{{ item.message }}</div>
               <div v-if="preflightActionHint(item.code)" class="preflight-detail">处理建议：{{ preflightActionHint(item.code) }}</div>
               <div v-for="blocked in (item.items || [])" :key="`${item.code}-${blocked.account_id}-${blocked.asset_id || blocked.reason}`" class="preflight-detail">
-                账户 {{ blocked.account_id }}：{{ blocked.reason }}{{ blocked.asset_id ? `（事件源 ${blocked.asset_id}）` : '' }}
+                账户 {{ blocked.account_name || blocked.account_id }}：{{ blocked.reason }}{{ blocked.asset_name ? `；素材 ${blocked.asset_name}` : blocked.asset_id ? `（素材 ${blocked.asset_id}）` : '' }}{{ blocked.error_message ? `；原因：${formatPreflightError(blocked.error_message)}` : '' }}
+                <span v-if="blocked.error_message" class="preflight-detail">处理建议：{{ preflightAssetHint(blocked.error_message) }}</span>
               </div>
             </div>
             <div v-for="item in preflightResult.warnings" :key="`warning-${item.code}`" class="preflight-warning">
               <div>{{ item.message }}</div>
               <div v-if="preflightActionHint(item.code)" class="preflight-detail">处理建议：{{ preflightActionHint(item.code) }}</div>
               <div v-for="blocked in (item.items || [])" :key="`${item.code}-${blocked.account_id}-${blocked.reason}`" class="preflight-detail">
-                账户 {{ blocked.account_id }}：{{ blocked.reason }}{{ blocked.asset_id ? `（事件源 ${blocked.asset_id}）` : '' }}
+                账户 {{ blocked.account_name || blocked.account_id }}：{{ blocked.reason }}{{ blocked.asset_name ? `；素材 ${blocked.asset_name}` : blocked.asset_id ? `（事件源 ${blocked.asset_id}）` : '' }}{{ blocked.error_message ? `；原因：${formatPreflightError(blocked.error_message)}` : '' }}
+                <span v-if="blocked.error_message" class="preflight-detail">处理建议：{{ preflightAssetHint(blocked.error_message) }}</span>
               </div>
             </div>
             <el-button v-if="missingAssetAccounts.length" type="primary" size="small" style="margin-top:8px" :loading="syncingAssets" @click="syncMissingAssets">
-              立即同步缺失素材
+              自动同步/重试素材
             </el-button>
             <el-button v-if="trackingAssetIssues.length" type="warning" size="small" style="margin-top:8px" :loading="syncingTrackingAssets" @click="refreshTrackingAssetsAndPreflight">
               重新同步事件源并预检
@@ -1523,20 +1525,36 @@ watch([form, directForm, sharedCreative, delivery, accessBusinessIds, existingAd
   }
 }, { deep: true })
 
-const missingAssetAccounts = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['ASSET_SYNC_PENDING', 'ASSET_SYNC_FAILED', 'ACCOUNTS_REJECTED'].includes(item.code) && item.items?.some((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步' || String(row.reason || '').startsWith('素材同步失败'))))
+const missingAssetAccounts = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['ASSET_SYNC_PENDING', 'ASSET_SYNC_FAILED', 'ACCOUNTS_REJECTED'].includes(item.code) && item.items?.some((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材正在自动同步' || String(row.reason || '').startsWith('素材同步失败'))))
 const trackingAssetIssues = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['TRACKING_ASSET_UNAVAILABLE', 'TRACKING_ASSET_STALE'].includes(item.code)))
 const preflightActionHint = (code: string) => ({
   TRACKING_ASSET_REQUIRED: '选择 Pixel / 数据集并填写转化事件，或切换为不需要事件源的优化目标。',
   TRACKING_EVENT_INVALID: '检查事件名称格式：以字母开头，仅允许字母、数字和下划线。',
   TRACKING_ASSET_UNAVAILABLE: '重新同步事件源，或缩小目标账户范围后重新选择共同可用资产。',
   TRACKING_ASSET_STALE: '点击“重新同步事件源并预检”，确认最新资产状态。',
-  ASSET_SYNC_FAILED: '点击“立即同步缺失素材”重置失败绑定并重新上传；完成后重新预检。',
+  ASSET_SYNC_FAILED: '系统已自动同步待处理素材。若仍失败，请根据下方 Meta 原因重新上传符合要求的文件，再点击“自动同步/重试素材”。',
   OBJECTIVE_OPTIMIZATION_INCOMPATIBLE: '调整推广目标或优化目标，使两者处于允许的组合。',
   SCHEDULE_END_REQUIRED: '返回模板编辑，补充总预算投放的结束时间。',
   SCHEDULE_TIME_INVALID: '返回模板编辑，重新选择合法的开始/结束时间。',
   SCHEDULE_RANGE_INVALID: '返回模板编辑，确保结束时间晚于开始时间。',
   BID_CONSTRAINT_INVALID: '返回模板编辑，填写大于 0 的 roas_average_floor。',
 }[code] || '')
+const formatPreflightError = (message?: string) => {
+  const raw = String(message || '').trim()
+  if (!raw) return ''
+  const title = raw.match(/error_user_title=([^\s]+)/)?.[1]
+  const detail = raw.match(/error_user_msg=(.*?)(?:\s+fbtrace_id=|$)/)?.[1]
+  if (title && detail) return `${title}：${detail}`
+  if (title) return title
+  return raw
+}
+const preflightAssetHint = (message?: string) => {
+  const raw = String(message || '').toLowerCase()
+  if (raw.includes('文件类型') || raw.includes('unsupported') || raw.includes('mime')) {
+    return 'Meta 不支持当前文件格式，请重新上传 JPG、PNG、WebP 图片或 MP4 视频，并等待素材状态变为 READY。'
+  }
+  return '点击“自动同步/重试素材”；如果仍失败，请根据 Meta 原因重新上传素材。'
+}
 const preflightBlockedAccounts = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])]
   .flatMap((item: any) => item.items || []))
 const preflightReasonByAccount = computed<Record<string, string>>(() => {
@@ -1549,7 +1567,7 @@ const preflightReasonByAccount = computed<Record<string, string>>(() => {
 })
 
 const syncMissingAssets = async () => {
-  const rows = missingAssetAccounts.value.flatMap((warning: any) => warning.items || []).filter((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步' || String(row.reason || '').startsWith('素材同步失败'))
+  const rows = missingAssetAccounts.value.flatMap((warning: any) => warning.items || []).filter((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材正在自动同步' || String(row.reason || '').startsWith('素材同步失败'))
   const assetIds = [...new Set(rows.flatMap((row: any) => row.asset_ids || []))]
   const accountIds = [...new Set(rows.map((row: any) => row.account_id))]
   if (!assetIds.length || !accountIds.length) return

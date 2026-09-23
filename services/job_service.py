@@ -25,6 +25,7 @@ from models import (
     BusinessAssetAccess,
     MetaPage,
     MetaAssetBinding,
+    CreativeAsset,
     Campaign,
     AdGroup,
     User,
@@ -43,6 +44,7 @@ from services.meta.page_access import page_account_access_error
 from services.fb_connector_client import FBConnectorClient
 from services.targeting_catalog import normalize_targeting, placement_preflight_errors, targeting_preflight_errors
 from services.meta_audience_policy import resolve_required_exclusions
+from services.media_binding_service import ensure_asset_bindings, queue_pending_asset_bindings
 from tasks.campaign_tasks import (
     execute_campaign_job,
     retry_failed_job_items,
@@ -405,10 +407,33 @@ class JobService:
         waiting_by_account = {}
         # 页面无效时不继续计算素材状态，避免同时返回页面错误和素材待同步。
         if page and asset_ids and available:
+            # 预检本身负责首次建立账户级素材绑定并派发上传任务。
+            # 这里只认领 PENDING，不自动重置 FAILED：文件格式、尺寸等确定性
+            # 错误反复重试没有意义，前端需要把 Meta 的原始原因展示给用户。
+            try:
+                pending_bindings = ensure_asset_bindings(
+                    self.db,
+                    asset_ids,
+                    available,
+                    reset_failed=False,
+                )
+                queue_pending_asset_bindings(
+                    pending_bindings,
+                    retry_failed=False,
+                    db=self.db,
+                )
+            except Exception as exc:
+                # 队列/Redis 临时不可用时仍返回绑定状态，不把预检变成 500。
+                logger.warning("[Preflight] 自动派发素材同步失败: %s", exc)
+
             binding_rows = self.db.query(MetaAssetBinding).filter(
                 MetaAssetBinding.ad_account_id.in_(available),
                 MetaAssetBinding.asset_id.in_(asset_ids),
             ).all()
+            asset_rows = self.db.query(CreativeAsset).filter(CreativeAsset.id.in_(asset_ids)).all()
+            asset_by_id = {row.id: row for row in asset_rows}
+            account_rows = self.db.query(AdAccount).filter(AdAccount.id.in_(available)).all()
+            account_by_id = {row.id: row for row in account_rows}
             binding_by_account_asset = {
                 (row.ad_account_id, row.asset_id): row for row in binding_rows
             }
@@ -427,9 +452,13 @@ class JobService:
                     if binding and binding.status in {"FAILED", "EXPIRED"} and not binding.meta_asset_id:
                         failed.append({
                             "account_id": account_id,
+                            "account_name": getattr(account_by_id.get(account_id), "account_name", None),
                             "asset_id": asset_id,
+                            "asset_name": getattr(asset_by_id.get(asset_id), "name", None),
+                            "asset_type": getattr(asset_by_id.get(asset_id), "asset_type", None),
+                            "mime_type": getattr(asset_by_id.get(asset_id), "mime_type", None),
                             "asset_ids": [asset_id],
-                            "reason": "素材同步失败，请先重试素材绑定",
+                            "reason": "素材同步失败",
                             "error_message": binding.error_message or binding.error_code,
                         })
                     else:
@@ -438,7 +467,12 @@ class JobService:
                     failed_accounts.extend(failed)
                 if waiting:
                     waiting_by_account[account_id] = waiting
-                    missing_accounts.append({"account_id": account_id, "reason": "素材将于投放前自动同步", "asset_ids": waiting})
+                    missing_accounts.append({
+                        "account_id": account_id,
+                        "account_name": getattr(account_by_id.get(account_id), "account_name", None),
+                        "reason": "素材正在自动同步",
+                        "asset_ids": waiting,
+                    })
             if failed_accounts:
                 errors.append({
                     "code": "ASSET_SYNC_FAILED",
