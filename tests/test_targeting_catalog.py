@@ -48,6 +48,26 @@ def test_meta_targeting_resolves_product_language_to_locale_id(monkeypatch):
     assert calls == ["English"]
 
 
+def test_meta_targeting_accepts_object_shaped_search_data(monkeypatch):
+    from services.meta.client import MetaClient
+
+    client = object.__new__(MetaClient)
+    client._ad_locales_cache = {}
+    monkeypatch.setattr(
+        client,
+        "_get",
+        lambda path, params: {
+            "data": {
+                "6": {"id": "6", "name": "English (All)"},
+            }
+        },
+    )
+
+    assert client.get_ad_locales(query="English") == [
+        {"id": "6", "name": "English (All)"}
+    ]
+
+
 def test_meta_targeting_rejects_missing_remote_locale_as_validation_error(monkeypatch):
     from services.meta.client import MetaClient
     from services.meta.errors import MetaApiError

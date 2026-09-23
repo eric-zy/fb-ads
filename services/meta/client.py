@@ -377,16 +377,37 @@ class MetaClient:
             params["q"] = str(query).strip()
         locales: List[dict] = []
         after = None
+        pages = 0
         for _ in range(max_pages):
+            pages += 1
             if after:
                 params["after"] = after
             else:
                 params.pop("after", None)
             payload = self._get("/search", params)
-            locales.extend(payload.get("data", []) or [])
+            # Targeting Search follows the Graph API/SDK response contract:
+            # ``data`` is normally a list, but some API versions return an
+            # object keyed by the result ID.  Treating that object as an
+            # iterable used to append only its keys (strings), which meant
+            # the resolver could never find English even though Meta had
+            # returned a valid adlocale result.
+            raw_data = payload.get("data", []) if isinstance(payload, dict) else []
+            if isinstance(raw_data, dict):
+                page_items = [item for item in raw_data.values() if isinstance(item, dict)]
+            elif isinstance(raw_data, list):
+                page_items = [item for item in raw_data if isinstance(item, dict)]
+            else:
+                page_items = []
+            locales.extend(page_items)
             after = (payload.get("paging") or {}).get("cursors", {}).get("after")
             if not after:
                 break
+        logger.info(
+            "[MetaTargeting] adlocale search query=%s pages=%s results=%s",
+            query or "",
+            pages,
+            len(locales),
+        )
         self._ad_locales_cache[cache_key] = list(locales)
         return locales
 
