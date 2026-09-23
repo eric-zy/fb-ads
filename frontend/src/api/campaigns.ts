@@ -15,7 +15,7 @@ export interface SyncedAdGroup {
 export interface MetaAd { id: string; adset_id: string; meta_ad_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; effective_status?: string }
 export interface AsyncActionResult { job_id?: string; job_ids?: string[]; task_ids?: string[]; action_ids?: string[]; account_ids?: string[]; object_type?: string; object_ids?: string[]; object_count?: number; status: string }
 export interface AdGroupSyncResult { status: string; task_id: string; ad_group_id: string; account_id: string }
-export interface AsyncTaskStatus { task_id: string; state: string; result?: Record<string, any>; error?: string }
+export interface AsyncTaskStatus { task_id: string; state: string; result?: { status?: string; ad_group_id?: string; updated_at?: string; error?: string; [key: string]: any }; error?: string }
 export interface DeliveryAction { id: string; object_type: string; object_id: string; account_id: string; action: string; status: string; desired_status?: string; remote_status?: string; task_id?: string; error_message?: string; created_at?: string; finished_at?: string }
 export interface SyncAlert { id: string; ad_account_id?: string; alert_type: string; title: string; message: string; is_resolved: boolean; created_at?: string }
 export interface DeliveryObjectDetail { object_type: string; object: MetaCampaign | MetaAdSet | MetaAd; account?: Record<string, any> | null; ancestors: Record<string, any>; children: any[]; recent_actions: DeliveryAction[] }

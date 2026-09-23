@@ -640,6 +640,60 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
         db.close()
 
 
+@shared_task(bind=True, name="meta.sync_single_ad_group", max_retries=2, default_retry_delay=30)
+@tenant_task(lambda self, ad_group_id, account_id: resolve_tenant_of(AdAccount, account_id))
+def sync_single_ad_group_task(self, ad_group_id: str, account_id: str) -> Dict:
+    """只刷新发布页选中的 canonical AdGroup。
+
+    发布页搜索的是 canonical ad_groups，而全量投放同步主要遍历
+    CampaignInstance。两者在历史数据/外部导入场景下可能没有一一对应，
+    因此单独同步必须直接按 Campaign -> AdSet 定位并更新时间。
+    """
+    db = SessionLocal()
+    try:
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        group = db.query(AdGroup).filter(
+            AdGroup.id == ad_group_id,
+            AdGroup.campaign_id.isnot(None),
+        ).first()
+        if not account or not group or not group.campaign:
+            return {"status": "failed", "ad_group_id": ad_group_id, "error": "广告组不存在"}
+
+        ref = CredentialResolver(db).for_account(account.id)
+        campaigns = FBConnectorClient().list_campaigns(account.account_id, ref.credential_id).get("campaigns", [])
+        campaign_id = str(group.campaign.campaign_id)
+        if not any(str(item.get("id")) == campaign_id for item in campaigns):
+            return {"status": "failed", "ad_group_id": ad_group_id, "error": "Meta 未返回父广告系列"}
+
+        remote_adsets = FBConnectorClient().list_adsets(campaign_id, ref.credential_id).get("adsets", [])
+        remote = next((item for item in remote_adsets if str(item.get("id")) == str(group.ad_group_id)), None)
+        if not remote:
+            return {"status": "failed", "ad_group_id": ad_group_id, "error": "Meta 未返回该广告组"}
+
+        now = datetime.utcnow()
+        group.name = remote.get("name") or group.name
+        group.status = remote.get("status") or remote.get("effective_status") or group.status
+        group.updated_at = now
+        group.campaign.updated_at = now
+        db.commit()
+        return {
+            "status": "success",
+            "ad_group_id": ad_group_id,
+            "account_id": account.id,
+            "meta_ad_group_id": group.ad_group_id,
+            "updated_at": now.isoformat(),
+        }
+    except Exception as exc:
+        db.rollback()
+        logger.exception("[meta_sync] 单个广告组同步失败 ad_group_id=%s error=%s", ad_group_id, exc)
+        try:
+            raise self.retry(exc=exc)
+        except self.MaxRetriesExceededError:
+            return {"status": "failed", "ad_group_id": ad_group_id, "error": str(exc)}
+    finally:
+        db.close()
+
+
 @shared_task(bind=True, name="meta.sync_all_delivery_objects")
 @for_all_tenants
 def sync_all_delivery_objects_task(self) -> Dict:

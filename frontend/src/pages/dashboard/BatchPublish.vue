@@ -1169,9 +1169,20 @@ const syncExistingAdGroup = async (targetAccountId: string) => {
         existingAdGroupSyncError[targetAccountId] = task.error || '同步任务失败，请重试'
         return
       }
-      if (String(task.result?.status || '').toLowerCase() === 'failed') {
+      const taskStatus = String(task.result?.status || '').toLowerCase()
+      if (taskStatus === 'failed') {
         existingAdGroupSyncState[targetAccountId] = 'FAILURE'
-        existingAdGroupSyncError[targetAccountId] = task.error || '同步任务失败，请重试'
+        existingAdGroupSyncError[targetAccountId] = task.result?.error || task.error || '同步任务失败，请重试'
+        return
+      }
+      // 新的定向同步任务必须回传本次刷新的 canonical AdGroup。
+      // 如果没有该字段，通常是 Celery Worker 尚未加载新任务代码，
+      // 不能把旧的全量同步结果误认为已刷新当前选中广告组。
+      if (['SUCCESS', 'FAILURE', 'REVOKED'].includes(task.state)
+        && taskStatus !== 'failed'
+        && String(task.result?.ad_group_id || '') !== String(selected.id)) {
+        existingAdGroupSyncState[targetAccountId] = 'FAILURE'
+        existingAdGroupSyncError[targetAccountId] = '同步任务已完成，但 Worker 未返回当前广告组刷新结果，请重启 Celery Worker 后重试'
         return
       }
       await loadExistingAdGroups(targetAccountId)

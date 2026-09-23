@@ -15,7 +15,7 @@ from core.enums import ActionType
 from models import AdAccount, AdGroup, Campaign, AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, AsyncTaskRecord, DeliveryAction, SyncAlert, User
 from services.job_service import JobService
 from services.account_access import accessible_account_ids
-from tasks.meta_sync_tasks import sync_delivery_objects_task, update_delivery_object_task
+from tasks.meta_sync_tasks import sync_delivery_objects_task, sync_single_ad_group_task, update_delivery_object_task
 from celery_app import celery_app
 
 router = APIRouter(prefix="/api/v1", tags=["Meta 投放对象"])
@@ -148,7 +148,7 @@ def sync_synced_ad_group(
         raise HTTPException(status_code=404, detail="广告组不存在或无权同步")
 
     account_id = row.campaign.ad_account_id
-    task = sync_delivery_objects_task.delay(account_id)
+    task = sync_single_ad_group_task.delay(ad_group_id, account_id)
     db.add(AsyncTaskRecord(
         task_id=task.id,
         task_type="META_SYNC",
@@ -218,6 +218,12 @@ def get_async_task_status(task_id: str, db: Session = Depends(get_db), current_u
             "status": value.get("status", "success"),
             "error_count": value.get("error_count", 0),
         }
+        # 单个广告组同步需要让发布页确认刷新的是当前选中对象；
+        # 这里只返回本地 canonical ID 和时间，不暴露 Meta 原始响应或凭据。
+        if value.get("ad_group_id"):
+            payload["result"]["ad_group_id"] = str(value["ad_group_id"])
+        if value.get("updated_at"):
+            payload["result"]["updated_at"] = value["updated_at"]
         if str(value.get("status", "")).lower() == "failed":
             payload["error"] = str(value.get("error") or "Meta 同步任务失败")
     elif result.failed():
