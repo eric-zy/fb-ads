@@ -133,7 +133,7 @@
             <el-button plain type="primary" @click="addDirectAdset">+ 添加广告组</el-button>
             <el-divider content-position="left">广告创意</el-divider>
             <el-form-item label="素材形式">
-              <el-radio-group v-model="creativeFormat">
+              <el-radio-group :model-value="creativeFormat" @change="handleCreativeFormatChange">
                 <el-radio value="SINGLE_IMAGE_VIDEO">单图片或视频</el-radio>
                 <el-radio value="CAROUSEL">轮播</el-radio>
               </el-radio-group>
@@ -157,9 +157,10 @@
                 :placeholder="batchAssetPlaceholder"
                 style="width:100%"
               >
-                <el-option v-for="asset in mediaAssets" :key="asset.id" :label="`${asset.name} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" />
+                <el-option v-for="asset in batchAssetOptions" :key="asset.id" :label="`${asset.name} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" />
               </el-select>
               <el-button plain type="primary" style="margin-top:8px" :disabled="!batchAssetIds.length" @click="addBatchCreatives">{{ batchAssetActionLabel }}</el-button>
+              <div class="tip">{{ creativeFormat === 'CAROUSEL' ? `已选择 ${directForm.creatives.filter(item => item.asset_id).length} 张图片，将生成 1 个轮播广告（2-10 张）` : `批量选择素材后，将按拆分方式生成 ${directForm.creatives.filter(item => item.asset_id).length} 个独立广告` }}</div>
             </el-form-item>
             <el-form-item label="文案模式">
               <el-radio-group v-model="creativeCopyMode">
@@ -174,8 +175,8 @@
             <el-form-item label="公共描述"><el-input v-model="sharedCreative.description" /></el-form-item>
             <el-form-item label="公共行动号召"><el-select v-model="sharedCreative.cta" style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
             <div v-for="(creative, index) in directForm.creatives" :key="creative.key" class="direct-creative">
-              <div class="direct-adset-head"><b>创意 {{ index + 1 }}</b><el-button v-if="directForm.creatives.length > 1" link type="danger" @click="removeDirectCreative(index)">删除</el-button></div>
-              <el-form-item label="素材" required><el-select v-model="creative.asset_id" filterable style="width:100%" placeholder="选择已上传素材"><el-option v-for="asset in mediaAssets" :key="asset.id" :label="`${asset.name} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" /></el-select></el-form-item>
+              <div class="direct-adset-head"><b>{{ creativeFormat === 'CAROUSEL' ? `轮播卡片 ${index + 1}` : `创意 ${index + 1}` }}</b><el-button v-if="directForm.creatives.length > 1" link type="danger" @click="removeDirectCreative(index)">删除</el-button></div>
+              <el-form-item label="素材" required><el-select v-model="creative.asset_id" filterable style="width:100%" :placeholder="creativeFormat === 'CAROUSEL' ? '选择已同步图片' : '选择已上传素材'"><el-option v-for="asset in creativeAssetOptions" :key="asset.id" :label="`${asset.name} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" /></el-select></el-form-item>
               <template v-if="creativeCopyMode === 'INDIVIDUAL'">
                 <el-form-item label="主文案覆盖"><el-input v-model="creative.primary_text" type="textarea" :rows="3" placeholder="可留空，使用公共主文案" /></el-form-item>
                 <el-form-item label="标题覆盖"><el-input v-model="creative.headline" placeholder="可留空，使用公共标题" /></el-form-item>
@@ -184,7 +185,7 @@
                 <el-form-item label="落地页覆盖"><el-input v-model="creative.landing_url" placeholder="可留空，使用公共默认落地页" /></el-form-item>
               </template>
             </div>
-            <el-button plain type="primary" @click="addDirectCreative">+ 添加创意</el-button>
+            <el-button plain type="primary" @click="addDirectCreative">{{ creativeFormat === 'CAROUSEL' ? '+ 添加轮播卡片' : '+ 添加创意' }}</el-button>
             <div class="tip">素材必须先在素材库上传；提交后系统会按目标广告账户分别同步素材。</div>
             <el-checkbox v-model="form.save_as_template">保存为投放模板</el-checkbox>
             <el-form-item v-if="form.save_as_template" label="模板名称" required>
@@ -666,6 +667,11 @@ const batchAssetIds = ref<string[]>([])
 const creativeCopyMode = ref<'SHARED' | 'INDIVIDUAL'>('SHARED')
 const creativeFormat = ref<'SINGLE_IMAGE_VIDEO' | 'CAROUSEL'>('SINGLE_IMAGE_VIDEO')
 const delivery = reactive({ split_level: 'AD' as 'AD' | 'ADSET' | 'CAMPAIGN', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' })
+const readyImageAssets = computed(() => mediaAssets.value.filter(asset =>
+  String(asset.asset_type || '').toLowerCase() === 'image' && String(asset.status || '').toUpperCase() === 'READY',
+))
+const creativeAssetOptions = computed(() => creativeFormat.value === 'CAROUSEL' ? readyImageAssets.value : mediaAssets.value)
+const batchAssetOptions = creativeAssetOptions
 // 按广告拆分时，单图/视频允许一次选择多份素材批量生成广告；
 // 按广告组拆分时，一次只选择一份素材，避免选择器和拆分语义不一致。
 // 轮播本身必须由多张图片组成，并且后端只支持按 AD 拆分。
@@ -695,15 +701,47 @@ const addDirectAdset = () => {
 const removeDirectAdset = (index: number) => { if (directForm.adsets.length > 1) directForm.adsets.splice(index, 1) }
 const addDirectCreative = () => directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
 const removeDirectCreative = (index: number) => { if (directForm.creatives.length > 1) directForm.creatives.splice(index, 1) }
+const resetCreativeItems = () => {
+  directForm.creatives.splice(0, directForm.creatives.length, {
+    key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '',
+  })
+  batchAssetIds.value = []
+}
+const handleCreativeFormatChange = async (value: 'SINGLE_IMAGE_VIDEO' | 'CAROUSEL') => {
+  if (value === creativeFormat.value) return
+  const hasSelectedAssets = directForm.creatives.some(item => !!item.asset_id) || batchAssetIds.value.length > 0
+  if (hasSelectedAssets) {
+    try {
+      await ElMessageBox.confirm(
+        value === 'CAROUSEL'
+          ? '切换为轮播后，当前独立广告素材会清空，请重新选择 2-10 张图片。'
+          : '切换为单图片/视频后，当前轮播卡片会清空，并按独立广告重新选择素材。',
+        '确认切换素材形式',
+        { type: 'warning', confirmButtonText: '确认切换', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+    resetCreativeItems()
+  }
+  creativeFormat.value = value
+  if (value === 'CAROUSEL') delivery.split_level = 'AD'
+}
 const addBatchCreatives = () => {
   const existing = new Set(directForm.creatives.map(item => item.asset_id).filter(Boolean))
-  const added = batchAssetIds.value.filter(id => !existing.has(id))
+  const allowed = new Set(batchAssetOptions.value.map(asset => String(asset.id)))
+  const selected = batchAssetIds.value.filter(id => allowed.has(String(id)))
+  const added = selected.filter(id => !existing.has(id))
   if (!added.length) { ElMessage.warning('所选素材已存在于创意列表中'); return }
+  const capacity = creativeFormat.value === 'CAROUSEL' ? 10 - directForm.creatives.filter(item => item.asset_id).length : added.length
+  if (capacity <= 0) { ElMessage.warning('轮播最多支持 10 张图片卡片'); batchAssetIds.value = []; return }
+  const accepted = added.slice(0, capacity)
   const blank = directForm.creatives.length === 1 && !directForm.creatives[0].asset_id
   if (blank) directForm.creatives.splice(0, 1)
-  for (const asset_id of added) directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}-${asset_id}`, asset_id, primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
+  for (const asset_id of accepted) directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}-${asset_id}`, asset_id, primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
   batchAssetIds.value = []
-  ElMessage.success(`已加入 ${added.length} 个素材创意`)
+  if (accepted.length < added.length) ElMessage.warning('轮播最多支持 10 张图片，超出素材未加入')
+  else ElMessage.success(creativeFormat.value === 'CAROUSEL' ? `已加入 ${accepted.length} 张轮播卡片` : `已加入 ${accepted.length} 个素材创意`)
 }
 
 const buildDirectTargeting = (adset: typeof directForm.adsets[number]) => {
@@ -744,17 +782,18 @@ const directConfig = computed<Record<string, any> | null>(() => {
     creative_format: creativeFormat.value,
     delivery: { ...delivery },
     ...(creativeFormat.value === 'CAROUSEL' ? { carousel_cards: creatives } : {}),
+    ...(creativeFormat.value !== 'CAROUSEL' ? { creatives } : {}),
     optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy,
     // 事件源仅在当前广告组实际使用转化优化时进入请求；切换到互动、展示
     // 或站内线索目标后保留界面草稿，但不把无关 Pixel/Dataset 发送给 Meta。
     ...(directNeedsTrackingAsset.value && directForm.dataset_id ? { dataset_id: directForm.dataset_id } : {}),
     ...(directNeedsTrackingAsset.value && directForm.conversion_event ? { conversion_event: directForm.conversion_event } : {}),
-    creatives,
     adsets: directForm.adsets.map(adset => ({ name: adset.name, budget: adset.budget,
       targeting: buildDirectTargeting(adset),
       placement: { publisher_platforms: adset.publisher_platforms }, optimization_goal: adset.optimization_goal,
       billing_event: adset.billing_event, bid_strategy: adset.bid_strategy,
-      bid_amount: adset.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? undefined : adset.bid_amount, creatives })),
+      bid_amount: adset.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? undefined : adset.bid_amount,
+      ...(creativeFormat.value !== 'CAROUSEL' ? { creatives } : {}) })),
   }
 })
 
@@ -777,7 +816,8 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
   directForm.bid_strategy = config.bid_strategy || directForm.bid_strategy
   creativeFormat.value = config.creative_format === 'CAROUSEL' ? 'CAROUSEL' : 'SINGLE_IMAGE_VIDEO'
   if (config.delivery) Object.assign(delivery, config.delivery)
-  const firstCreative = (config.creatives || [])[0] || {}
+  const sourceCreatives = creativeFormat.value === 'CAROUSEL' ? (config.carousel_cards || []) : (config.creatives || [])
+  const firstCreative = sourceCreatives[0] || {}
   for (const key of ['primary_text', 'headline', 'description', 'cta', 'landing_url']) {
     if (firstCreative[key] != null) (sharedCreative as any)[key] = firstCreative[key]
   }
@@ -803,7 +843,7 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
     }
   }))
   if (!directForm.adsets.length) addDirectAdset()
-  const creatives = Array.isArray(config.creatives) ? config.creatives : []
+  const creatives = Array.isArray(sourceCreatives) ? sourceCreatives : []
   directForm.creatives.splice(0, directForm.creatives.length, ...creatives.map((item: any, index: number) => ({
     key: `edit-creative-${Date.now()}-${index}`,
     asset_id: item.asset_id || '',
@@ -987,7 +1027,7 @@ const existingAdGroupsReady = computed(() => adGroupMode.value === 'NEW'
     return !!selected && !selected.stale && !existingAdGroupSyncing[id]
   })))
 const directCreativesReady = computed(() => {
-  const creatives = directConfig.value?.creatives as any[] | undefined
+  const creatives = (creativeFormat.value === 'CAROUSEL' ? directConfig.value?.carousel_cards : directConfig.value?.creatives) as any[] | undefined
   const countReady = creativeFormat.value === 'CAROUSEL' ? !!creatives && creatives.length >= 2 && creatives.length <= 10 : !!creatives?.length
   const typeReady = creativeFormat.value !== 'CAROUSEL' || creatives?.every(item => mediaAssets.value.find(asset => asset.id === item.asset_id)?.asset_type === 'image')
   return countReady && !!typeReady && !!creatives?.length && creatives.every(item => !!item.asset_id && (
@@ -1352,7 +1392,10 @@ const submit = async () => {
     // 幂等处理。不要在提交 Job 前调用 /prepare：素材仍在 OSS 处理时，
     // 该接口会返回 409，导致真正的 campaign-create 请求永远不会发出。
     // 后端 create_campaign_for_account 会负责创建绑定、派发上传并等待素材就绪。
-    const creatives = selectedTemplate.value?.creative_config_json?.creatives || directConfig.value?.creatives
+    const selectedConfig = selectedTemplate.value?.creative_config_json
+    const creatives = selectedConfig?.creative_format === 'CAROUSEL'
+      ? selectedConfig?.carousel_cards
+      : selectedConfig?.creatives || (creativeFormat.value === 'CAROUSEL' ? directConfig.value?.carousel_cards : directConfig.value?.creatives)
     const assetIds = Array.isArray(creatives)
       ? [...new Set(creatives.map((item: any) => item?.asset_id).filter(Boolean))]
       : []
@@ -1412,7 +1455,6 @@ const runPreflight = async () => {
         creative_config_json: {
           ...directConfig.value,
           page_id: directConfig.value.page_id,
-          creatives: directConfig.value.creatives,
           adsets: directConfig.value.adsets,
         },
       })
@@ -1481,13 +1523,14 @@ watch([form, directForm, sharedCreative, delivery, accessBusinessIds, existingAd
   }
 }, { deep: true })
 
-const missingAssetAccounts = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['ASSET_SYNC_PENDING', 'ACCOUNTS_REJECTED'].includes(item.code) && item.items?.some((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步')))
+const missingAssetAccounts = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['ASSET_SYNC_PENDING', 'ASSET_SYNC_FAILED', 'ACCOUNTS_REJECTED'].includes(item.code) && item.items?.some((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步' || String(row.reason || '').startsWith('素材同步失败'))))
 const trackingAssetIssues = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['TRACKING_ASSET_UNAVAILABLE', 'TRACKING_ASSET_STALE'].includes(item.code)))
 const preflightActionHint = (code: string) => ({
   TRACKING_ASSET_REQUIRED: '选择 Pixel / 数据集并填写转化事件，或切换为不需要事件源的优化目标。',
   TRACKING_EVENT_INVALID: '检查事件名称格式：以字母开头，仅允许字母、数字和下划线。',
   TRACKING_ASSET_UNAVAILABLE: '重新同步事件源，或缩小目标账户范围后重新选择共同可用资产。',
   TRACKING_ASSET_STALE: '点击“重新同步事件源并预检”，确认最新资产状态。',
+  ASSET_SYNC_FAILED: '点击“立即同步缺失素材”重置失败绑定并重新上传；完成后重新预检。',
   OBJECTIVE_OPTIMIZATION_INCOMPATIBLE: '调整推广目标或优化目标，使两者处于允许的组合。',
   SCHEDULE_END_REQUIRED: '返回模板编辑，补充总预算投放的结束时间。',
   SCHEDULE_TIME_INVALID: '返回模板编辑，重新选择合法的开始/结束时间。',
@@ -1506,7 +1549,7 @@ const preflightReasonByAccount = computed<Record<string, string>>(() => {
 })
 
 const syncMissingAssets = async () => {
-  const rows = missingAssetAccounts.value.flatMap((warning: any) => warning.items || []).filter((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步')
+  const rows = missingAssetAccounts.value.flatMap((warning: any) => warning.items || []).filter((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材将于投放前自动同步' || String(row.reason || '').startsWith('素材同步失败'))
   const assetIds = [...new Set(rows.flatMap((row: any) => row.asset_ids || []))]
   const accountIds = [...new Set(rows.map((row: any) => row.account_id))]
   if (!assetIds.length || !accountIds.length) return

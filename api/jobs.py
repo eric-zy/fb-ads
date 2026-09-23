@@ -169,7 +169,17 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
         )
         if bid_errors:
             raise HTTPException(status_code=400, detail=bid_errors[0]["message"])
-    creatives = config.get("creatives") or []
+    creative_format = str(config.get("creative_format") or "SINGLE_IMAGE_VIDEO").upper()
+    if creative_format == "CAROUSEL":
+        creatives = config.get("carousel_cards")
+        if not isinstance(creatives, list) or not creatives:
+            creatives = config.get("creatives") if isinstance(config.get("creatives"), list) else []
+        if not isinstance(creatives, list) or not 2 <= len(creatives) <= 10:
+            raise HTTPException(status_code=400, detail="轮播广告必须配置 2-10 张图片卡片")
+        if any(str(item.get("asset_type") or "image").lower() != "image" for item in creatives if isinstance(item, dict)):
+            raise HTTPException(status_code=400, detail="轮播广告的所有卡片必须使用图片素材")
+    else:
+        creatives = config.get("creatives") or []
     if not isinstance(creatives, list) or not creatives:
         raise HTTPException(status_code=400, detail="至少需要配置一个广告创意")
     for index, creative in enumerate(creatives, 1):
@@ -188,13 +198,31 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     creative_config = dict(config.get("creative_config_json") or {})
     # 直接投放的事件源字段位于 inline_config 顶层；统一收进模板 JSON，
     # 否则预检和最终构建拿不到用户刚选择的 Pixel/Dataset。
-    for key in ("page_id", "creatives", "adsets", "dataset_id", "pixel_id", "conversion_event", "custom_event_type", "promoted_object", "optimization_goal", "creative_format", "delivery"):
+    for key in ("page_id", "creatives", "carousel_cards", "adsets", "dataset_id", "pixel_id", "conversion_event", "custom_event_type", "promoted_object", "optimization_goal", "creative_format", "delivery"):
         if key in config and key not in creative_config:
             creative_config[key] = config[key]
     try:
         creative_config["creative_format"] = normalize_creative_format(creative_config.get("creative_format"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # 轮播的规范结构只有 carousel_cards。兼容早期直接投放版本曾把
+    # 轮播卡片同时写入 creatives 的情况，但保存后不再保留双份数据，
+    # 避免后续编辑或 Connector 把卡片误判成多个独立广告。
+    if creative_config["creative_format"] == "CAROUSEL":
+        cards = creative_config.get("carousel_cards")
+        if not isinstance(cards, list) or not cards:
+            cards = creative_config.get("creatives") if isinstance(creative_config.get("creatives"), list) else []
+        creative_config["carousel_cards"] = cards
+        creative_config.pop("creatives", None)
+        if isinstance(creative_config.get("adsets"), list):
+            creative_config["adsets"] = [
+                {key: value for key, value in item.items() if key != "creatives"}
+                if isinstance(item, dict) else item
+                for item in creative_config["adsets"]
+            ]
+    else:
+        # 防止从轮播切回单素材后把旧卡片带入模板快照。
+        creative_config.pop("carousel_cards", None)
     event_errors = conversion_event_preflight_errors(template_goal, creative_config)
     if event_errors:
         raise HTTPException(status_code=400, detail=event_errors[0]["message"])

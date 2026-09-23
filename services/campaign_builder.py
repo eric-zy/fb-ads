@@ -266,7 +266,9 @@ class CreativeBuilder:
         asset_type = cfg.get("asset_type", "image")
 
         if cfg.get("creative_format") == "CAROUSEL":
-            cards = cfg.get("carousel_cards") or []
+            # 读取旧模板时兼容曾使用 creatives 保存卡片的格式；
+            # 新模板由 API 规范化为 carousel_cards。
+            cards = cfg.get("carousel_cards") or cfg.get("creatives") or []
             if not 2 <= len(cards) <= 10:
                 raise ValueError("轮播广告需要 2-10 张图片卡片")
             child_attachments = []

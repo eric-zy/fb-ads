@@ -259,3 +259,52 @@ def test_template_validation_accepts_video_asset_id_before_account_sync():
             "creatives": [{"asset_type": "video", "asset_id": "asset-1"}],
         },
     })
+
+
+def test_template_validation_migrates_legacy_carousel_creatives():
+    values = {
+        "objective": "OUTCOME_TRAFFIC",
+        "buying_type": "AUCTION",
+        "budget_type": "DAILY",
+        "daily_budget": 10,
+        "targeting_json": {"geo_locations": {"countries": ["US"]}},
+        "creative_config_json": {
+            "creative_format": "CAROUSEL",
+            "delivery": {"split_level": "AD"},
+            "creatives": [
+                {"asset_type": "image", "asset_id": "asset-1", "landing_url": "https://example.com/1"},
+                {"asset_type": "image", "asset_id": "asset-2", "landing_url": "https://example.com/2"},
+            ],
+        },
+    }
+
+    _validate_delivery_config(values)
+
+    config = values["creative_config_json"]
+    assert [card["asset_id"] for card in config["carousel_cards"]] == ["asset-1", "asset-2"]
+    assert "creatives" not in config
+
+
+def test_template_validation_removes_carousel_cards_for_single_format():
+    values = {
+        "objective": "OUTCOME_TRAFFIC",
+        "buying_type": "AUCTION",
+        "budget_type": "DAILY",
+        "daily_budget": 10,
+        "targeting_json": {"geo_locations": {"countries": ["US"]}},
+        "creative_config_json": {
+            "creative_format": "SINGLE_IMAGE_VIDEO",
+            "carousel_cards": [
+                {"asset_type": "image", "asset_id": "stale-card"},
+            ],
+            "creatives": [
+                {"asset_type": "image", "asset_id": "asset-1", "landing_url": "https://example.com/1"},
+            ],
+        },
+    }
+
+    _validate_delivery_config(values)
+
+    config = values["creative_config_json"]
+    assert config["creatives"][0]["asset_id"] == "asset-1"
+    assert "carousel_cards" not in config

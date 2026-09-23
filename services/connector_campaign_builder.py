@@ -70,6 +70,10 @@ def _resolve_asset_refs(
             item["image_hash"] = meta_asset_id
             item.pop("video_id", None)
 
+    if str(resolved.get("creative_format") or "").upper() == "CAROUSEL" and not isinstance(resolved.get("carousel_cards"), list):
+        legacy_cards = resolved.get("creatives")
+        if isinstance(legacy_cards, list):
+            resolved["carousel_cards"] = copy.deepcopy(legacy_cards)
     resolve_one(resolved)
     for card in resolved.get("carousel_cards") or []:
         if isinstance(card, dict):
@@ -103,6 +107,10 @@ def build_connector_payload(template: Any, meta_account_id: str, *, budget_overr
     )
     # Normalize legacy templates before the payload reaches the Connector.
     creative_config["creative_format"] = normalize_creative_format(creative_config.get("creative_format"))
+    if creative_config["creative_format"] == "CAROUSEL" and not isinstance(creative_config.get("carousel_cards"), list):
+        legacy_cards = creative_config.get("creatives")
+        if isinstance(legacy_cards, list):
+            creative_config["carousel_cards"] = copy.deepcopy(legacy_cards)
     delivery = creative_config.get("delivery") or {}
     adset_configs = creative_config.get("adsets") or [{}]
     logical = []

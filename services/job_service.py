@@ -165,8 +165,37 @@ class JobService:
             errors.append({"code": "PAGE_REQUIRED", "message": "模板未选择 Facebook Page"})
         elif not self.db.query(MetaPage).filter(MetaPage.page_id == page_id, MetaPage.status == "ACTIVE").first():
             errors.append({"code": "PAGE_UNAVAILABLE", "message": "Facebook Page 未同步、已失效或不属于当前租户"})
-        creatives = config.get("creatives") if isinstance(config.get("creatives"), list) else [config]
-        if not creatives or all(not (c.get("asset_id") or c.get("image_hash") or c.get("video_id")) for c in creatives):
+        creative_format = str(config.get("creative_format") or "SINGLE_IMAGE_VIDEO").upper()
+        if creative_format == "CAROUSEL":
+            # 兼容早期模板把轮播卡片写入 creatives 的快照；新结构只保存
+            # carousel_cards，避免卡片被当成多个独立广告。
+            creatives = config.get("carousel_cards") if isinstance(config.get("carousel_cards"), list) else (
+                config.get("creatives") if isinstance(config.get("creatives"), list) else []
+            )
+            if not 2 <= len(creatives) <= 10:
+                errors.append({
+                    "code": "CREATIVE_CAROUSEL_CARD_COUNT",
+                    "message": "轮播广告必须配置 2-10 张图片卡片",
+                })
+            invalid_cards = [
+                str(index)
+                for index, creative in enumerate(creatives, 1)
+                if not isinstance(creative, dict)
+                or str(creative.get("asset_type") or "image").lower() != "image"
+                or not (creative.get("asset_id") or creative.get("image_hash"))
+            ]
+            if invalid_cards:
+                errors.append({
+                    "code": "CREATIVE_CAROUSEL_CARD_INVALID",
+                    "message": f"轮播卡片 {', '.join(invalid_cards)} 必须使用有效图片素材",
+                })
+        else:
+            creatives = config.get("creatives") if isinstance(config.get("creatives"), list) else [config]
+        if not creatives or all(
+            not isinstance(c, dict)
+            or not (c.get("asset_id") or c.get("image_hash") or c.get("video_id"))
+            for c in creatives
+        ):
             errors.append({"code": "CREATIVE_REQUIRED", "message": "模板至少需要一个有效素材"})
 
         ids = list(dict.fromkeys(ad_account_ids or []))
@@ -376,21 +405,46 @@ class JobService:
         waiting_by_account = {}
         # 页面无效时不继续计算素材状态，避免同时返回页面错误和素材待同步。
         if page and asset_ids and available:
-            ready_bindings = self.db.query(MetaAssetBinding.ad_account_id, MetaAssetBinding.asset_id).filter(
+            binding_rows = self.db.query(MetaAssetBinding).filter(
                 MetaAssetBinding.ad_account_id.in_(available),
                 MetaAssetBinding.asset_id.in_(asset_ids),
-                MetaAssetBinding.status == "READY",
-                MetaAssetBinding.meta_asset_id.isnot(None),
             ).all()
+            binding_by_account_asset = {
+                (row.ad_account_id, row.asset_id): row for row in binding_rows
+            }
             ready_by_account = {}
-            for account_id, asset_id in ready_bindings:
-                ready_by_account.setdefault(account_id, set()).add(asset_id)
+            for row in binding_rows:
+                if row.status == "READY" and row.meta_asset_id:
+                    ready_by_account.setdefault(row.ad_account_id, set()).add(row.asset_id)
             missing_accounts = []
+            failed_accounts = []
             for account_id in list(available):
                 missing = sorted(set(asset_ids) - ready_by_account.get(account_id, set()))
-                if missing:
-                    waiting_by_account[account_id] = missing
-                    missing_accounts.append({"account_id": account_id, "reason": "素材将于投放前自动同步", "asset_ids": missing})
+                failed = []
+                waiting = []
+                for asset_id in missing:
+                    binding = binding_by_account_asset.get((account_id, asset_id))
+                    if binding and binding.status in {"FAILED", "EXPIRED"} and not binding.meta_asset_id:
+                        failed.append({
+                            "account_id": account_id,
+                            "asset_id": asset_id,
+                            "asset_ids": [asset_id],
+                            "reason": "素材同步失败，请先重试素材绑定",
+                            "error_message": binding.error_message or binding.error_code,
+                        })
+                    else:
+                        waiting.append(asset_id)
+                if failed:
+                    failed_accounts.extend(failed)
+                if waiting:
+                    waiting_by_account[account_id] = waiting
+                    missing_accounts.append({"account_id": account_id, "reason": "素材将于投放前自动同步", "asset_ids": waiting})
+            if failed_accounts:
+                errors.append({
+                    "code": "ASSET_SYNC_FAILED",
+                    "message": f"{len(failed_accounts)} 个账户的素材同步失败，请先重试素材绑定",
+                    "items": failed_accounts,
+                })
             if missing_accounts:
                 warnings.append({
                     "code": "ASSET_SYNC_PENDING",

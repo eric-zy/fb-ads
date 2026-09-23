@@ -257,20 +257,20 @@
           <el-radio value="CAMPAIGN" disabled>按广告系列拆分（后续开放）</el-radio>
           </el-radio-group>
         </el-form-item>
-        <div class="tip">公共配置应用到全部创意；单个创意留空时继承公共配置。轮播广告需要 2-10 张图片。</div>
+        <div class="tip">公共配置应用到全部素材；单图/视频会生成独立广告，轮播会把 2-10 张图片组合为 1 个广告。</div>
         <el-form-item label="公共主文案"><el-input v-model="creativeForm.shared.primary_text" type="textarea" :rows="2" placeholder="可不填" /></el-form-item>
         <el-form-item label="默认落地页"><el-input v-model="creativeForm.shared.landing_url" placeholder="https://example.com/landing" /></el-form-item>
         <el-form-item label="公共标题"><el-input v-model="creativeForm.shared.headline" /></el-form-item>
         <el-form-item label="公共描述"><el-input v-model="creativeForm.shared.description" /></el-form-item>
         <el-form-item label="公共行动号召"><el-select v-model="creativeForm.shared.cta" style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
         <div v-for="(creative, index) in creativeForm.creatives" :key="index" class="creative-block">
-          <div class="creative-head"><b>创意 {{ index + 1 }}</b><el-button v-if="creativeForm.creatives.length > 1" link type="danger" @click="removeCreative(index)">删除</el-button></div>
-          <el-form-item label="素材类型">
+          <div class="creative-head"><b>{{ creativeForm.creative_format === 'CAROUSEL' ? `轮播卡片 ${index + 1}` : `创意 ${index + 1}` }}</b><el-button v-if="creativeForm.creatives.length > 1" link type="danger" @click="removeCreative(index)">删除</el-button></div>
+          <el-form-item v-if="creativeForm.creative_format !== 'CAROUSEL'" label="素材类型">
             <el-radio-group v-model="creative.asset_type"><el-radio value="image">图片</el-radio><el-radio value="video">视频</el-radio></el-radio-group>
           </el-form-item>
           <el-form-item label="素材库素材" required>
-            <el-select v-model="creative.asset_id" filterable style="width:100%" placeholder="选择已上传素材">
-              <el-option v-for="asset in availableAssets(creative.asset_type)" :key="asset.id" :label="asset.name" :value="asset.id">
+            <el-select v-model="creative.asset_id" filterable style="width:100%" :placeholder="creativeForm.creative_format === 'CAROUSEL' ? '选择已同步图片' : '选择已上传素材'">
+              <el-option v-for="asset in availableAssets(creativeForm.creative_format === 'CAROUSEL' ? 'image' : creative.asset_type)" :key="asset.id" :label="asset.name" :value="asset.id">
                 <span>{{ asset.name }}</span><small class="asset-option-meta">{{ asset.asset_type === 'image' ? '图片' : '视频' }} · {{ asset.fb_hash || asset.fb_video_id || '待同步' }}</small>
               </el-option>
             </el-select>
@@ -288,7 +288,7 @@
             <el-form-item label="落地页覆盖"><el-input v-model="creative.landing_url" placeholder="可留空，使用公共默认落地页" /></el-form-item>
           </template>
         </div>
-        <el-button class="add-creative" plain type="primary" @click="addCreative">+ 添加创意</el-button>
+        <el-button class="add-creative" plain type="primary" @click="addCreative">{{ creativeForm.creative_format === 'CAROUSEL' ? '+ 添加轮播卡片' : '+ 添加创意' }}</el-button>
         </section>
       </el-form>
 
@@ -403,25 +403,38 @@ const availableAssets = (type: string) => mediaAssets.value.filter(
 const selectedAsset = (id: string) => mediaAssets.value.find(asset => asset.id === id)
 const addCreative = () => creativeForm.creatives.push(newCreative())
 const removeCreative = (index: number) => creativeForm.creatives.splice(index, 1)
+watch(() => creativeForm.creative_format, format => {
+  if (format === 'CAROUSEL') {
+    creativeForm.delivery.split_level = 'AD'
+    creativeForm.creatives.forEach(item => {
+      if (item.asset_type === 'video') {
+        item.asset_type = 'image'
+        item.asset_id = ''
+        item.video_id = ''
+      }
+    })
+  }
+})
 const buildCreativeJson = () => {
+  const creativeItems = creativeForm.creatives.map(item => {
+    const asset = selectedAsset(item.asset_id)
+    const merged = { ...creativeForm.shared, ...item }
+    for (const field of ['headline', 'primary_text', 'description', 'cta', 'landing_url']) if (item[field] === '' || item[field] == null) merged[field] = creativeForm.shared[field]
+    const result = { ...merged } as Record<string, any>
+    if (asset?.fb_hash || item.image_hash) result.image_hash = asset?.fb_hash || item.image_hash
+    else delete result.image_hash
+    if (asset?.fb_video_id || item.video_id) result.video_id = asset?.fb_video_id || item.video_id
+    else delete result.video_id
+    return result
+  })
   const config: Record<string, any> = {
     page_id: creativeForm.page_id,
     shared_creative: { ...creativeForm.shared },
-    creatives: creativeForm.creatives.map(item => {
-      const asset = selectedAsset(item.asset_id)
-      const merged = { ...creativeForm.shared, ...item }
-      for (const field of ['headline', 'primary_text', 'description', 'cta', 'landing_url']) if (item[field] === '' || item[field] == null) merged[field] = creativeForm.shared[field]
-      const result = { ...merged } as Record<string, any>
-      if (asset?.fb_hash || item.image_hash) result.image_hash = asset?.fb_hash || item.image_hash
-      else delete result.image_hash
-      if (asset?.fb_video_id || item.video_id) result.video_id = asset?.fb_video_id || item.video_id
-      else delete result.video_id
-      return result
-    }),
     creative_format: creativeForm.creative_format,
     delivery: { ...creativeForm.delivery },
   }
-  if (creativeForm.creative_format === 'CAROUSEL') config.carousel_cards = config.creatives
+  if (creativeForm.creative_format === 'CAROUSEL') config.carousel_cards = creativeItems
+  else config.creatives = creativeItems
   if (form.budget_type === 'LIFETIME') {
     config.schedule = { start_time: form.schedule_start || undefined, end_time: form.schedule_end }
   }
@@ -459,7 +472,10 @@ const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
   creativeForm.creative_format = cfg.creative_format === 'CAROUSEL' ? 'CAROUSEL' : 'SINGLE_IMAGE_VIDEO'
   creativeForm.delivery.split_level = ['AD', 'ADSET', 'CAMPAIGN'].includes(cfg.delivery?.split_level) ? cfg.delivery.split_level : 'AD'
   creativeForm.delivery.combination_mode = cfg.delivery?.combination_mode || 'ACCOUNT_X_ADSET_X_CREATIVE'
-  const first = Array.isArray(cfg.creatives) && cfg.creatives.length ? cfg.creatives[0] : {}
+  const source = creativeForm.creative_format === 'CAROUSEL'
+    ? (Array.isArray(cfg.carousel_cards) ? cfg.carousel_cards : cfg.creatives)
+    : cfg.creatives
+  const first = Array.isArray(source) && source.length ? source[0] : {}
   creativeForm.shared = { headline: cfg.shared_creative?.headline || first.headline || '', primary_text: cfg.shared_creative?.primary_text || first.primary_text || '', description: cfg.shared_creative?.description || first.description || '', cta: cfg.shared_creative?.cta || first.cta || 'LEARN_MORE', landing_url: cfg.shared_creative?.landing_url || first.landing_url || '' }
   form.schedule_start = cfg.schedule?.start_time || ''
   form.schedule_end = cfg.schedule?.end_time || ''
@@ -469,7 +485,6 @@ const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
   form.dataset_id = datasetId
   form.pixel_id = pixelId
   form.custom_event_type = cfg.promoted_object?.conversion_event || cfg.promoted_object?.custom_event_type || cfg.conversion_event || 'PURCHASE'
-  const source = creativeForm.creative_format === 'CAROUSEL' ? cfg.carousel_cards : cfg.creatives
   creativeForm.creatives.splice(0, creativeForm.creatives.length, ...(Array.isArray(source) && source.length ? source.map((item: any) => ({ ...newCreative(), ...item })) : [newCreative()]))
 }
 const buildTargetingJson = () => {

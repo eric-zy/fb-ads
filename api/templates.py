@@ -130,6 +130,23 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     # Persist the canonical value when this config is passed through create/update.
     config["creative_format"] = creative_format
+    # Keep the stored shape mode-specific. Older templates used ``creatives``
+    # for carousel cards; migrate that shape on create/update so downstream
+    # publish code never has to interpret two competing lists.
+    if creative_format == "CAROUSEL":
+        cards = config.get("carousel_cards")
+        if not isinstance(cards, list) or not cards:
+            cards = config.get("creatives") if isinstance(config.get("creatives"), list) else []
+        config["carousel_cards"] = cards
+        config.pop("creatives", None)
+        if isinstance(config.get("adsets"), list):
+            config["adsets"] = [
+                {key: value for key, value in item.items() if key != "creatives"}
+                if isinstance(item, dict) else item
+                for item in config["adsets"]
+            ]
+    else:
+        config.pop("carousel_cards", None)
     delivery = config.get("delivery") or {}
     split_level = str(delivery.get("split_level") or "AD").upper()
     combination_mode = str(delivery.get("combination_mode") or "ACCOUNT_X_ADSET_X_CREATIVE").upper()
@@ -306,6 +323,7 @@ def update_template(
     merged.update(values)
     _validate_delivery_config(merged)
     if "creative_config_json" in values:
+        values["creative_config_json"] = merged["creative_config_json"]
         _validate_page_for_tenant(db, values["creative_config_json"])
     for field, value in values.items():
         setattr(template, field, value)
