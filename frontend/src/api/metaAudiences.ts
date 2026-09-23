@@ -12,7 +12,15 @@ export interface MetaAudienceAsset {
   source: string
   is_required_exclusion: boolean
   last_synced_at?: string | null
+  last_seen_at?: string | null
+  sync_status?: string | null
+  meta_time_updated?: string | null
   last_sync_error?: string | null
+  policy_reason_code?: string | null
+  policy_reason_note?: string | null
+  policy_version?: number | null
+  policy_effective_from?: string | null
+  policy_effective_until?: string | null
 }
 
 export const metaAudiencesApi = {
@@ -20,6 +28,6 @@ export const metaAudiencesApi = {
     request.get<MetaAudienceAsset[]>('/api/v1/meta-audiences', { params: { account_pk: accountPk, ...params } }),
   sync: (accountPk: string) => request.post<{ status: string; task_id: string; account_pk: string; account_id: string }>(`/api/v1/meta-audiences/${accountPk}/sync`),
   taskStatus: (taskId: string) => request.get<{ task_id: string; state: string; result?: Record<string, any>; error?: string }>(`/api/v1/tasks/${taskId}`),
-  setRequiredExclusions: (accountPk: string, audience_ids: string[]) =>
-    request.put(`/api/v1/meta-audiences/${accountPk}/required-exclusions`, { audience_ids }),
+  setRequiredExclusions: (accountPk: string, payload: { audience_ids: string[]; reason_code?: string; reason_note?: string; effective_from?: string; effective_until?: string }) =>
+    request.put(`/api/v1/meta-audiences/${accountPk}/required-exclusions`, payload),
 }

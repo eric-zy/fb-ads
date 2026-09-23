@@ -30,6 +30,7 @@ from models import Campaign, AdGroup, CampaignInstance, AdSetInstance, AdInstanc
 from services.credential_service import CredentialService
 from services.credential_resolver import CredentialResolver
 from services.connector_campaign_builder import build_connector_payload
+from services.meta_audience_policy import resolve_required_exclusions
 from services.fb_connector_client import FBConnectorClient
 from services.media_usage import extract_asset_ids, record_template_usage
 from services.media_binding_service import ensure_asset_bindings, queue_pending_asset_bindings
@@ -675,6 +676,14 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 ad_account_id=item.ad_account_id,
                 details={"mode": "connector", "job_item_id": job_item_id},
             )
+            job_payload = item.request_payload if isinstance(item.request_payload, dict) else {}
+            policy_by_account = job_payload.get("params", {}).get("audience_policy_by_account", {})
+            policy_snapshot = policy_by_account.get(item.ad_account_id) or {}
+            if not policy_snapshot:
+                # 定时任务和旧任务可能没有预检快照；兼容读取当前策略，
+                # 但新任务优先使用不可变预检快照。
+                policy_snapshot = resolve_required_exclusions(db, item.ad_account_id)["snapshot"]
+            required_audience_ids = policy_snapshot.get("required_excluded_audience_ids") or []
             protocol_payload = build_connector_payload(
                 template, account.account_id, budget_override=budget_override,
                 status=status, campaign_name=sinan.get("campaign_name"),
@@ -682,10 +691,7 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 asset_bindings=asset_bindings,
                 asset_types=asset_types,
                 asset_thumbnail_hashes=asset_thumbnail_hashes,
-                required_excluded_audience_ids=[row.meta_audience_id for row in db.query(MetaAudienceAsset).filter(
-                    MetaAudienceAsset.ad_account_id == account.id,
-                    MetaAudienceAsset.is_required_exclusion.is_(True),
-                ).all()],
+                required_excluded_audience_ids=required_audience_ids,
                 existing_campaign_id=(reuse_context or {}).get("campaign_id"),
                 existing_ad_group_id=(reuse_context or {}).get("ad_group_id"),
                 copy_ad_group=copy_context,
@@ -699,6 +705,7 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 "credential_id": ref.credential_id,
                 "account_id": account.account_id,
                 "idempotency_key": f"deploy:{job_item_id}:v1",
+                "policy_snapshot": policy_snapshot,
             })
             logger.info(
                 "[JobItem %s] dispatch connector deploy account=%s idempotency_key=%s",

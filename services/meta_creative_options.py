@@ -30,6 +30,20 @@ META_CTA_VALUES = frozenset({
     "CALL_NOW",
     "EVENT_RSVP",
     "FIND_OUT_MORE",
+    # Video / interactive ad CTA values exposed by Ads Manager.  Availability
+    # is still decided by Meta according to objective, destination and placement.
+    "PAY_TO_ACCESS",
+    "REQUEST_TIME",
+    "SEE_MENU",
+    "SEND_UPDATES",
+    "BROWSE_SHOP",
+    "WATCH_VIDEO",
+    "WATCH_LIVE_VIDEO",
+    "JOIN_LIVE_VIDEO",
+    "LISTEN_NOW",
+    "GET_SHOWTIMES",
+    "VISIT_WEBSITE",
+    "MAKE_AN_APPOINTMENT",
 })
 
 

@@ -54,11 +54,37 @@
         <span class="hint">只同步受众元数据，不读取受众成员</span>
         <span v-if="syncTaskState" class="sync-state">任务：{{ syncTaskState }}</span>
       </div>
+      <div v-if="selectedAccountId" class="policy-fields">
+        <div class="field">
+          <label>策略原因</label>
+          <select v-model="policyReasonCode" class="input">
+            <option value="LEGAL">法律 / 合规</option>
+            <option value="PRIVACY">隐私 / 用户请求</option>
+            <option value="OPERATIONS">运营策略</option>
+            <option value="BRAND_SAFETY">品牌安全</option>
+            <option value="LEGACY_MIGRATION">历史策略待确认</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>策略备注（内部）</label>
+          <input v-model="policyReasonNote" class="input" maxlength="2000" placeholder="记录依据或运营说明，不会发送给 Meta" />
+        </div>
+        <div class="policy-dates">
+          <div class="field">
+            <label>生效日期</label>
+            <input v-model="policyEffectiveFrom" class="input" type="date" />
+          </div>
+          <div class="field">
+            <label>失效日期</label>
+            <input v-model="policyEffectiveUntil" class="input" type="date" />
+          </div>
+        </div>
+      </div>
       <div v-if="selectedAccountId && audiences.length" class="audience-list">
         <label v-for="audience in audiences" :key="audience.id" class="audience-row">
           <input v-model="requiredAudienceIds" type="checkbox" :value="audience.meta_audience_id" />
           <span>{{ audience.name }}</span>
-          <small>{{ audience.subtype || 'CUSTOM' }} · {{ audience.meta_audience_id }} · 最近同步 {{ formatDate(audience.last_synced_at) }}</small>
+          <small>{{ audience.subtype || 'CUSTOM' }} · {{ audience.meta_audience_id }} · 最近同步 {{ formatDate(audience.last_synced_at) }} · {{ audienceStatus(audience) }}</small>
         </label>
         <button class="btn btn-primary" :disabled="savingAudiencePolicy" @click="saveAudiencePolicy">保存强制排除策略</button>
       </div>
@@ -91,6 +117,10 @@ const requiredAudienceIds = ref<string[]>([])
 const syncingAudiences = ref(false)
 const savingAudiencePolicy = ref(false)
 const syncTaskState = ref('')
+const policyReasonCode = ref('LEGACY_MIGRATION')
+const policyReasonNote = ref('')
+const policyEffectiveFrom = ref('')
+const policyEffectiveUntil = ref('')
 
 function roleLabel(r?: string) {
   return { admin: '管理员', manager: '经理', user: '普通用户' }[r || ''] || r || '-'
@@ -117,11 +147,23 @@ async function loadAudiences() {
     const { data } = await metaAudiencesApi.list(selectedAccountId.value)
     audiences.value = data || []
     requiredAudienceIds.value = audiences.value.filter(item => item.is_required_exclusion).map(item => item.meta_audience_id)
+    const activePolicy = audiences.value.find(item => item.is_required_exclusion && item.policy_reason_code)
+    policyReasonCode.value = activePolicy?.policy_reason_code || 'LEGACY_MIGRATION'
+    policyReasonNote.value = activePolicy?.policy_reason_note || ''
+    policyEffectiveFrom.value = activePolicy?.policy_effective_from?.slice(0, 10) || ''
+    policyEffectiveUntil.value = activePolicy?.policy_effective_until?.slice(0, 10) || ''
   } catch { audiences.value = [] }
 }
 
 function formatDate(value?: string | null) {
   return value ? new Date(value).toLocaleString() : '未同步'
+}
+
+function audienceStatus(audience: MetaAudienceAsset) {
+  const status = String(audience.sync_status || '').toUpperCase()
+  if (status === 'MISSING') return 'Meta 未返回，发布将阻断'
+  if (['DELETED', 'EXPIRED', 'UNAVAILABLE'].includes(status)) return '已失效，发布将阻断'
+  return status === 'ACTIVE' ? '可用' : (status || '待同步')
 }
 
 async function waitForAudienceSync(taskId: string) {
@@ -157,7 +199,13 @@ async function saveAudiencePolicy() {
   if (!selectedAccountId.value) return
   savingAudiencePolicy.value = true
   try {
-    await metaAudiencesApi.setRequiredExclusions(selectedAccountId.value, requiredAudienceIds.value)
+    await metaAudiencesApi.setRequiredExclusions(selectedAccountId.value, {
+      audience_ids: requiredAudienceIds.value,
+      reason_code: policyReasonCode.value,
+      reason_note: policyReasonNote.value || undefined,
+      effective_from: policyEffectiveFrom.value ? `${policyEffectiveFrom.value}T00:00:00` : undefined,
+      effective_until: policyEffectiveUntil.value ? `${policyEffectiveUntil.value}T23:59:59` : undefined,
+    })
     await loadAudiences()
     alert('强制排除策略已保存')
   } catch (e: any) {

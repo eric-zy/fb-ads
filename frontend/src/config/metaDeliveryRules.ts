@@ -54,6 +54,19 @@ export const CTA_OPTIONS = [
   { value: 'CALL_NOW', label: '立即致电' },
   { value: 'EVENT_RSVP', label: '参加活动' },
   { value: 'FIND_OUT_MORE', label: '了解更多' },
+  // 视频广告/互动场景常用 CTA；可用项仍会受到 Meta 目标和版位限制。
+  { value: 'PAY_TO_ACCESS', label: '获取访问权限' },
+  { value: 'REQUEST_TIME', label: '预约时间' },
+  { value: 'SEE_MENU', label: '查看菜单' },
+  { value: 'SEND_UPDATES', label: '接收动态更新' },
+  { value: 'BROWSE_SHOP', label: '去逛逛' },
+  { value: 'WATCH_VIDEO', label: '观看视频' },
+  { value: 'WATCH_LIVE_VIDEO', label: '观看直播' },
+  { value: 'JOIN_LIVE_VIDEO', label: '加入直播' },
+  { value: 'LISTEN_NOW', label: '立即收听' },
+  { value: 'GET_SHOWTIMES', label: '查看场次' },
+  { value: 'VISIT_WEBSITE', label: '访问网站' },
+  { value: 'MAKE_AN_APPOINTMENT', label: '立即预约' },
 ] as const
 
 export const OPTIMIZATION_GOAL_LABELS: Record<string, string> = {

@@ -27,6 +27,9 @@ class MetaAudienceAsset(TenantMixin, Base):
     source = Column(String(32), nullable=False, default="META", comment="META / LOCAL")
     is_required_exclusion = Column(Boolean, nullable=False, default=False, server_default="false")
     last_synced_at = Column(DateTime, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    sync_status = Column(String(20), nullable=False, default="ACTIVE", server_default="ACTIVE")
+    meta_time_updated = Column(DateTime, nullable=True)
     last_sync_error = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -44,6 +47,9 @@ class MetaAudienceAsset(TenantMixin, Base):
             "source": self.source,
             "is_required_exclusion": bool(self.is_required_exclusion),
             "last_synced_at": self.last_synced_at.isoformat() if self.last_synced_at else None,
+            "last_seen_at": self.last_seen_at.isoformat() if self.last_seen_at else None,
+            "sync_status": self.sync_status,
+            "meta_time_updated": self.meta_time_updated.isoformat() if self.meta_time_updated else None,
             "last_sync_error": self.last_sync_error,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

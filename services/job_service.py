@@ -28,7 +28,6 @@ from models import (
     Campaign,
     AdGroup,
     User,
-    MetaAudienceAsset,
     MetaTrackingAsset,
 )
 from services.account_access import accessible_account_ids
@@ -43,6 +42,7 @@ from services.meta_delivery_rules import (
 from services.meta.page_access import page_account_access_error
 from services.fb_connector_client import FBConnectorClient
 from services.targeting_catalog import normalize_targeting, placement_preflight_errors, targeting_preflight_errors
+from services.meta_audience_policy import resolve_required_exclusions
 from tasks.campaign_tasks import (
     execute_campaign_job,
     retry_failed_job_items,
@@ -262,30 +262,37 @@ class JobService:
         for label, placement in placement_configs:
             errors.extend(placement_preflight_errors(label, placement))
 
-        required_rows = self.db.query(MetaAudienceAsset).filter(
-            MetaAudienceAsset.ad_account_id.in_(ids),
-            MetaAudienceAsset.is_required_exclusion.is_(True),
-        ).all() if ids else []
+        audience_policy_by_account = {}
         now = datetime.utcnow()
-        for row in required_rows:
-            status_text = str(row.delivery_status or "").upper()
-            if any(marker in status_text for marker in ("DELETED", "EXPIRED", "UNAVAILABLE")):
-                errors.append({
-                    "code": "REQUIRED_AUDIENCE_UNAVAILABLE",
-                    "message": f"账户 {row.meta_ad_account_id} 的强制排除受众 {row.meta_audience_id} 已失效，请更新策略",
-                })
-            elif not row.last_synced_at:
-                errors.append({
-                    "code": "REQUIRED_AUDIENCE_NOT_SYNCED",
-                    "message": f"账户 {row.meta_ad_account_id} 的强制排除受众 {row.meta_audience_id} 尚未完成同步",
-                })
-            elif row.last_synced_at < now - timedelta(days=7):
-                warnings.append({
-                    "code": "REQUIRED_AUDIENCE_STALE",
-                    "message": f"账户 {row.meta_ad_account_id} 的强制排除受众同步已超过 7 天，建议重新同步",
-                    "account_id": row.ad_account_id,
-                    "audience_id": row.meta_audience_id,
-                })
+        for account_id in ids:
+            resolved = resolve_required_exclusions(self.db, account_id, now=now)
+            snapshot = resolved["snapshot"]
+            audience_policy_by_account[account_id] = snapshot
+            for row in resolved["assets"]:
+                status_text = str(row.delivery_status or "").upper()
+                if row.sync_status in {"MISSING", "DELETED", "EXPIRED", "UNAVAILABLE"} or any(
+                    marker in status_text for marker in ("DELETED", "EXPIRED", "UNAVAILABLE")
+                ):
+                    errors.append({
+                        "code": "REQUIRED_AUDIENCE_POLICY_BLOCKED",
+                        "message": f"账户 {row.meta_ad_account_id} 的强制排除受众 {row.meta_audience_id} 已失效或缺失，请更新策略",
+                        "account_id": account_id,
+                        "audience_id": row.meta_audience_id,
+                    })
+                elif not row.last_synced_at:
+                    errors.append({
+                        "code": "REQUIRED_AUDIENCE_NOT_SYNCED",
+                        "message": f"账户 {row.meta_ad_account_id} 的强制排除受众 {row.meta_audience_id} 尚未完成同步",
+                        "account_id": account_id,
+                        "audience_id": row.meta_audience_id,
+                    })
+                elif row.last_synced_at < now - timedelta(days=7):
+                    errors.append({
+                        "code": "REQUIRED_AUDIENCE_STALE",
+                        "message": f"账户 {row.meta_ad_account_id} 的强制排除受众同步已超过 7 天，请重新同步后再投放",
+                        "account_id": account_id,
+                        "audience_id": row.meta_audience_id,
+                    })
 
         available, rejected = AdAccountService(self.db).filter_available_ids(
             ids,
@@ -395,6 +402,7 @@ class JobService:
             {
                 "account_id": x,
                 "status": "WAITING_ASSET_SYNC" if x in waiting_by_account else "READY",
+                "audience_policy": audience_policy_by_account.get(x),
                 **({"asset_ids": waiting_by_account[x]} if x in waiting_by_account else {}),
             }
             for x in available
@@ -422,6 +430,7 @@ class JobService:
             "ready_account_ids": available,
             "ad_group_mode": ad_group_mode,
             "existing_ad_groups": existing_ad_groups,
+            "audience_policy_by_account": audience_policy_by_account,
         }
 
     # 创建

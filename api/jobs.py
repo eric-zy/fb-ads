@@ -560,6 +560,7 @@ def create_campaign_batch(
             "source_job_id": parent_job_id,
             "edit_mode": edit_mode,
             "revision_id": req.revision_id,
+            "audience_policy_by_account": (preview.result_snapshot or {}).get("audience_policy_by_account", {}),
         },
         created_by=current_user,
         parent_job_id=parent_job_id,

@@ -141,18 +141,25 @@
             <el-form-item label="拆分方式">
               <el-radio-group v-model="delivery.split_level">
                 <el-radio value="AD">每个素材生成一个广告</el-radio>
-                <el-radio value="ADSET">按广告组拆分</el-radio>
+                <el-radio value="ADSET" :disabled="creativeFormat === 'CAROUSEL'">按广告组拆分</el-radio>
                 <el-radio value="CAMPAIGN" disabled>按广告系列拆分（后续开放）</el-radio>
               </el-radio-group>
             </el-form-item>
             <el-alert type="info" :closable="false" show-icon :title="creativeFormat === 'CAROUSEL' ? '轮播广告' : '单图片或视频广告'">
-              {{ creativeFormat === 'CAROUSEL' ? '2-10 张图片组成 1 个轮播广告；所有图片同步完成后才允许发布。' : `每个广告使用一张图片或一个视频；选择多份素材时可按拆分方式生成多个广告，共 ${directForm.creatives.length} 个。` }}
+              {{ creativeFormat === 'CAROUSEL' ? '2-10 张图片组成 1 个轮播广告；所有图片同步完成后才允许发布。' : delivery.split_level === 'AD' ? `每个广告使用一张图片或一个视频；可一次选择多份素材批量生成广告，共 ${directForm.creatives.length} 个。` : '按广告组拆分时一次选择一份素材；每份素材会单独生成一个广告组。' }}
             </el-alert>
             <el-form-item label="批量选素材">
-              <el-select v-model="batchAssetIds" multiple filterable collapse-tags placeholder="选择多张素材后批量加入" style="width:100%">
+              <el-select
+                v-model="batchAssetSelection"
+                :multiple="batchAssetMultiple"
+                filterable
+                :collapse-tags="batchAssetMultiple"
+                :placeholder="batchAssetPlaceholder"
+                style="width:100%"
+              >
                 <el-option v-for="asset in mediaAssets" :key="asset.id" :label="`${asset.name} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" />
               </el-select>
-              <el-button plain type="primary" style="margin-top:8px" :disabled="!batchAssetIds.length" @click="addBatchCreatives">加入为独立广告</el-button>
+              <el-button plain type="primary" style="margin-top:8px" :disabled="!batchAssetIds.length" @click="addBatchCreatives">{{ batchAssetActionLabel }}</el-button>
             </el-form-item>
             <el-form-item label="文案模式">
               <el-radio-group v-model="creativeCopyMode">
@@ -659,6 +666,21 @@ const batchAssetIds = ref<string[]>([])
 const creativeCopyMode = ref<'SHARED' | 'INDIVIDUAL'>('SHARED')
 const creativeFormat = ref<'SINGLE_IMAGE_VIDEO' | 'CAROUSEL'>('SINGLE_IMAGE_VIDEO')
 const delivery = reactive({ split_level: 'AD' as 'AD' | 'ADSET' | 'CAMPAIGN', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' })
+// 按广告拆分时，单图/视频允许一次选择多份素材批量生成广告；
+// 按广告组拆分时，一次只选择一份素材，避免选择器和拆分语义不一致。
+// 轮播本身必须由多张图片组成，并且后端只支持按 AD 拆分。
+const batchAssetMultiple = computed(() => creativeFormat.value === 'CAROUSEL' || delivery.split_level === 'AD')
+const batchAssetSelection = computed<string | string[]>({
+  get: () => batchAssetMultiple.value ? batchAssetIds.value : (batchAssetIds.value[0] || ''),
+  set: value => {
+    const ids = Array.isArray(value) ? value : (value ? [value] : [])
+    batchAssetIds.value = batchAssetMultiple.value ? ids : ids.slice(0, 1)
+  },
+})
+const batchAssetPlaceholder = computed(() => batchAssetMultiple.value ? '选择多份素材后批量加入' : '选择一份素材后加入')
+const batchAssetActionLabel = computed(() => creativeFormat.value === 'CAROUSEL'
+  ? '加入轮播卡片'
+  : delivery.split_level === 'AD' ? '加入独立广告' : '加入广告组拆分')
 const previewAdsetCount = computed(() => delivery.split_level === 'ADSET' && creativeFormat.value !== 'CAROUSEL'
   ? directForm.adsets.length * directForm.creatives.length
   : directForm.adsets.length)
@@ -1434,6 +1456,12 @@ watch(directNeedsTrackingAsset, (required) => {
 })
 watch(() => form.save_as_template, enabled => {
   if (!enabled) form.template_name = ''
+})
+watch([creativeFormat, () => delivery.split_level], () => {
+  // 轮播只能按 AD 生成；切换到 ADSET 时立即纠正，而不是等到预检才报错。
+  if (creativeFormat.value === 'CAROUSEL' && delivery.split_level !== 'AD') delivery.split_level = 'AD'
+  // 从多选切换到单选时保留第一份素材，避免隐藏的多余选择继续被批量加入。
+  if (!batchAssetMultiple.value && batchAssetIds.value.length > 1) batchAssetIds.value = batchAssetIds.value.slice(0, 1)
 })
 watch([form, directForm, sharedCreative, delivery, accessBusinessIds, existingAdGroupSelections, adGroupMode, creativeFormat], () => {
   if (editRevisionId.value && !restoringRevision) {

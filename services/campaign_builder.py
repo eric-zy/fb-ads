@@ -31,9 +31,9 @@ from models import (
     AdSetInstance,
     CampaignInstance,
     CampaignTemplate,
-    MetaAudienceAsset,
 )
 from services.meta.service import MetaAdsService
+from services.meta_audience_policy import resolve_required_exclusions
 from services.targeting_catalog import normalize_targeting
 from services.meta_delivery_rules import default_optimization_goal, is_pixel_required
 from services.meta_creative_options import normalize_cta
@@ -515,12 +515,8 @@ class CampaignDeploymentBuilder:
         if split_level not in {"AD", "ADSET"}:
             raise ValueError("当前支持按 AD 或 ADSET 拆分；按 CAMPAIGN 拆分将在后续版本开放")
         adset_configs = creative_config.get("adsets") or [{}]
-        required_exclusions = [
-            row.meta_audience_id
-            for row in self.db.query(MetaAudienceAsset).filter(
-                MetaAudienceAsset.ad_account_id == self.ad_account_id,
-                MetaAudienceAsset.is_required_exclusion.is_(True),
-            ).all()
+        required_exclusions = resolve_required_exclusions(self.db, self.ad_account_id)["snapshot"][
+            "required_excluded_audience_ids"
         ]
         if required_exclusions:
             # 账户级合规策略在部署快照阶段合并，保证 direct Meta 模式与

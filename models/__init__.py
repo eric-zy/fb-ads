@@ -47,6 +47,7 @@ from models.sinan_credential import SinanCredential
 from models.publish_preview import PublishPreview
 from models.delivery_action import DeliveryAction
 from models.meta_audience import MetaAudienceAsset
+from models.meta_audience_policy import MetaAudienceExclusionPolicy
 from models.meta_tracking_asset import MetaTrackingAsset
 
 __all__ = [
@@ -106,5 +107,6 @@ __all__ = [
     'PublishPreview',
     'DeliveryAction',
     'MetaAudienceAsset',
+    'MetaAudienceExclusionPolicy',
     'MetaTrackingAsset',
 ]
