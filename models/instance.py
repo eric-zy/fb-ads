@@ -79,6 +79,11 @@ class AdSetInstance(TenantMixin, Base):
 
     __tablename__ = "adset_instances"
     __table_args__ = (
+        UniqueConstraint(
+            "campaign_instance_id",
+            "meta_adset_id",
+            name="uq_campaign_instance_meta_adset",
+        ),
         Index("ix_adset_instances_tenant_campaign", "tenant_id", "campaign_instance_id"),
     )
 
@@ -129,6 +134,11 @@ class AdInstance(TenantMixin, Base):
 
     __tablename__ = "ad_instances"
     __table_args__ = (
+        UniqueConstraint(
+            "adset_instance_id",
+            "meta_ad_id",
+            name="uq_adset_instance_meta_ad",
+        ),
         Index("ix_ad_instances_tenant_adset", "tenant_id", "adset_instance_id"),
     )
 

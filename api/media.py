@@ -10,7 +10,7 @@ import mimetypes
 from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func, case, or_
+from sqlalchemy import desc, func, case, or_, and_, select
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
@@ -18,7 +18,9 @@ from core.database import get_db
 from core.tenant import effective_tenant_id
 from core.auth import get_current_active_user
 from core.logger import logger
+from core.money import to_major
 from models import CreativeAsset, AdAccount, MetaAssetBinding, CreativeAssetUsageEvent, CreativeAssetUsageDailyStat, CreativeAssetUsageAccountDailyStat, User, CreativeAssetGroup, MediaUploadSession
+from models import Ad, AdGroup, AdInsight, AdInstance, Campaign, PublishedAd
 from models.creative_asset_group import creative_asset_group_members
 from models.creative_asset_tag import creative_asset_tag_links
 from config.settings import settings
@@ -26,6 +28,7 @@ from tasks.media_tasks import process_oss_asset_task, delete_oss_asset_task
 from services.storage import AliyunOSSStorage, StorageError
 from services.account_access import accessible_account_ids
 from services.media_binding_service import ensure_asset_bindings, queue_pending_asset_bindings
+from core.audit import record_audit
 
 router = APIRouter(prefix="/api/v1/media", tags=["素材库"])
 
@@ -53,6 +56,10 @@ class MediaItem(BaseModel):
     mime_type: Optional[str]
     duration: Optional[float]
     status: str
+    review_status: str = "APPROVED"
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    review_note: Optional[str] = None
     retry_count: int = 0
     error: Optional[str]
     created_at: Optional[str]
@@ -68,12 +75,17 @@ class MediaItem(BaseModel):
     processing_status: Optional[str] = None
     thumbnail_key: Optional[str] = None
     cover_key: Optional[str] = None
+    version_group_id: Optional[str] = None
+    version_number: int = 1
+    is_current: bool = True
+    previous_version_id: Optional[str] = None
     md5: Optional[str] = None
     sha256: Optional[str] = None
     uploader_name: Optional[str] = None
     uploader_email: Optional[str] = None
     uploaded_at: Optional[str] = None
     can_edit: bool = False
+    is_owner: bool = False
     binding_count: int = 0
     ready_binding_count: int = 0
     failed_binding_count: int = 0
@@ -91,6 +103,10 @@ class MediaItem(BaseModel):
 class AssetPrepareRequest(BaseModel):
     ad_account_ids: List[str]
 
+class AssetReviewRequest(BaseModel):
+    review_status: str = Field(..., pattern="^(APPROVED|REJECTED|PENDING)$")
+    review_note: Optional[str] = Field(None, max_length=500)
+
 class MediaUploadSessionRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     asset_type: str = Field(..., pattern="^(image|video)$")
@@ -102,6 +118,7 @@ class MediaUploadSessionRequest(BaseModel):
     meta_account_id: Optional[str] = None
     group_id: Optional[str] = None
     asset_id: Optional[str] = None
+    version_of_asset_id: Optional[str] = None
 
 
 def _oss_extension(name: str, mime_type: str) -> str:
@@ -190,23 +207,100 @@ def _accessible_account_keys(db: Session, user: User) -> Optional[set[str]]:
     return keys
 
 
-def _asset_query(db: Session, user: User):
+def _asset_query(db: Session, user: User, include_archived: bool = False):
     # 素材库按租户共享：created_by、visibility 和素材归属账户不参与可见性判断。
     # 用户是否能操作具体广告账户，仍由 _assert_account_access 单独校验。
-    return db.query(CreativeAsset).filter(CreativeAsset.status != "ARCHIVED")
+    query = db.query(CreativeAsset)
+    return query if include_archived else query.filter(CreativeAsset.status != "ARCHIVED")
 
 
-def _get_asset_or_404(db: Session, asset_id: str, user: User) -> CreativeAsset:
-    asset = _asset_query(db, user).filter(CreativeAsset.id == asset_id).first()
+def _apply_asset_view_filters(
+    query,
+    db: Session,
+    user: User,
+    *,
+    group_id: Optional[str] = None,
+    tag_id: Optional[str] = None,
+    workspace_mode: Optional[str] = None,
+    status_filter: Optional[str] = None,
+):
+    """Apply the structured material-library filters shared by list and stats.
+
+    Keyword search remains a client-side presentation filter because it also
+    searches uploader and tag labels. All structural filters that affect the
+    visible inventory must use this helper so counts and rankings cannot drift
+    from the list view.
+    """
+    if group_id:
+        query = query.filter(CreativeAsset.group_id == group_id)
+    if tag_id:
+        query = query.join(
+            creative_asset_tag_links,
+            creative_asset_tag_links.c.asset_id == CreativeAsset.id,
+        ).filter(creative_asset_tag_links.c.tag_id == tag_id)
+
+    if workspace_mode == "mine":
+        query = query.filter(CreativeAsset.created_by == user.id)
+    elif workspace_mode == "testing":
+        used_asset_ids = select(CreativeAssetUsageDailyStat.asset_id).group_by(
+            CreativeAssetUsageDailyStat.asset_id
+        ).having(func.sum(CreativeAssetUsageDailyStat.usage_count) > 0)
+        query = query.filter(CreativeAsset.id.in_(used_asset_ids))
+    elif workspace_mode == "archive":
+        query = query.filter(CreativeAsset.status == "ARCHIVED")
+
+    if status_filter in {"unused", "delivering"}:
+        used_asset_ids = select(CreativeAssetUsageDailyStat.asset_id).group_by(
+            CreativeAssetUsageDailyStat.asset_id
+        ).having(func.sum(CreativeAssetUsageDailyStat.usage_count) > 0)
+        if status_filter == "unused":
+            query = query.filter(~CreativeAsset.id.in_(used_asset_ids))
+        else:
+            query = query.filter(CreativeAsset.id.in_(used_asset_ids))
+    elif status_filter == "processing":
+        query = query.filter(or_(
+            CreativeAsset.status.in_(["UPLOADING", "PENDING", "PROCESSING"]),
+            CreativeAsset.processing_status.in_(["PENDING", "PROCESSING"]),
+        ))
+    elif status_filter == "failed":
+        query = query.filter(CreativeAsset.status.in_(["FAILED", "failed"]))
+    elif status_filter == "ready":
+        query = query.filter(or_(
+            CreativeAsset.processing_status == "READY",
+            and_(CreativeAsset.processing_status.is_(None), CreativeAsset.status == "READY"),
+        ))
+    return query
+
+
+def _get_asset_or_404(db: Session, asset_id: str, user: User, include_archived: bool = False) -> CreativeAsset:
+    asset = _asset_query(db, user, include_archived=include_archived).filter(CreativeAsset.id == asset_id).first()
     if not asset:
         raise HTTPException(status_code=404, detail="素材不存在或无权访问")
     return asset
 
 
-def _assert_asset_edit_access(asset: CreativeAsset, user: User) -> None:
+def _assert_asset_edit_access(db_or_asset, asset_or_user, user: Optional[User] = None) -> None:
+    """校验素材编辑权限，并兼容旧的二参数内部调用。"""
+    if user is None:
+        db = None
+        asset = db_or_asset
+        user = asset_or_user
+    else:
+        db = db_or_asset
+        asset = asset_or_user
     if user.is_admin() or asset.created_by == user.id:
         return
-    raise HTTPException(status_code=403, detail="素材已共享，只有上传人或管理员可以修改")
+    if db is not None and asset.group_id:
+        group = db.query(CreativeAssetGroup).filter(CreativeAssetGroup.id == asset.group_id).first()
+        if group and group.owner_id == user.id:
+            return
+        member = db.execute(creative_asset_group_members.select().where(
+            creative_asset_group_members.c.group_id == asset.group_id,
+            creative_asset_group_members.c.user_id == user.id,
+        )).first()
+        if member and bool(member.can_edit):
+            return
+    raise HTTPException(status_code=403, detail="无权修改该素材：仅上传人、管理员或工作区可编辑成员可操作")
 
 
 def _asset_response_list(db: Session, assets: list[CreativeAsset], user: Optional[User] = None) -> list[dict]:
@@ -221,6 +315,25 @@ def _asset_response_list(db: Session, assets: list[CreativeAsset], user: Optiona
                 User.id.in_(uploader_ids)
             ).all()
         }
+    editable_group_ids: set[str] = set()
+    if user:
+        asset_group_ids = {asset.group_id for asset in assets if asset.group_id}
+        if asset_group_ids:
+            if user.is_admin():
+                editable_group_ids.update(asset_group_ids)
+            else:
+                editable_group_ids.update(
+                    group_id for group_id, in db.query(CreativeAssetGroup.id).filter(
+                        CreativeAssetGroup.id.in_(asset_group_ids), CreativeAssetGroup.owner_id == user.id,
+                    ).all()
+                )
+                editable_group_ids.update(
+                    row.group_id for row in db.execute(creative_asset_group_members.select().where(
+                        creative_asset_group_members.c.group_id.in_(asset_group_ids),
+                        creative_asset_group_members.c.user_id == user.id,
+                        creative_asset_group_members.c.can_edit.is_(True),
+                    )).all()
+                )
     binding_stats = {}
     usage_stats = {}
     if asset_ids:
@@ -258,7 +371,8 @@ def _asset_response_list(db: Session, assets: list[CreativeAsset], user: Optiona
         data["uploader_name"] = username or ("已删除用户" if asset.created_by else "系统")
         data["uploader_email"] = email
         data["uploaded_at"] = asset.created_at.isoformat() + "Z" if asset.created_at else None
-        data["can_edit"] = bool(user and (user.is_admin() or asset.created_by == user.id))
+        data["can_edit"] = bool(user and (user.is_admin() or asset.created_by == user.id or asset.group_id in editable_group_ids))
+        data["is_owner"] = bool(user and asset.created_by == user.id)
         data["binding_count"] = binding_count
         data["ready_binding_count"] = ready_binding_count
         data["failed_binding_count"] = failed_binding_count
@@ -417,6 +531,16 @@ def create_media_upload_session(
         raise HTTPException(status_code=400, detail="当前用户未绑定租户")
 
     retry_asset = None
+    version_base = None
+    if payload.version_of_asset_id:
+        version_base = _get_asset_or_404(db, payload.version_of_asset_id, user)
+        _assert_asset_edit_access(db, version_base, user)
+        if version_base.asset_type != payload.asset_type:
+            raise HTTPException(status_code=400, detail="新版本的素材类型必须与原素材一致")
+        if version_base.tenant_id != tenant_id:
+            raise HTTPException(status_code=403, detail="无权为该素材创建新版本")
+        if not payload.group_id:
+            payload.group_id = version_base.group_id
     if payload.asset_id:
         retry_asset = _get_asset_or_404(db, payload.asset_id, user)
         if not user.is_admin() and retry_asset.created_by != user.id:
@@ -489,7 +613,7 @@ def create_media_upload_session(
         MediaUploadSession.status == "UPLOADING",
         MediaUploadSession.expires_at > datetime.utcnow(),
     ).order_by(MediaUploadSession.updated_at.desc()).first()
-    if pending_session:
+    if pending_session and not version_base:
         pending_asset = db.query(CreativeAsset).filter(CreativeAsset.id == pending_session.asset_id).first()
         if pending_asset:
             binding = _upsert_asset_binding(db, pending_asset, account) if account else None
@@ -528,6 +652,17 @@ def create_media_upload_session(
         user, asset_id, payload.name, payload.md5, payload.mime_type, payload.sha256
     )
     now = datetime.utcnow()
+    version_group_id = None
+    version_number = 1
+    is_current = True
+    previous_version_id = None
+    if version_base:
+        version_group_id = version_base.version_group_id or version_base.id
+        latest_version = db.query(CreativeAsset).filter(
+            CreativeAsset.version_group_id == version_group_id,
+        ).order_by(CreativeAsset.version_number.desc()).first()
+        version_number = (latest_version.version_number if latest_version else version_base.version_number or 1) + 1
+        previous_version_id = version_base.id
     asset = retry_asset or CreativeAsset(
         id=asset_id,
         tenant_id=tenant_id,
@@ -550,6 +685,10 @@ def create_media_upload_session(
         status="PENDING",
         md5=payload.md5.lower() if payload.md5 else None,
         sha256=payload.sha256.lower(),
+        version_group_id=version_group_id or asset_id,
+        version_number=version_number,
+        is_current=not bool(version_base),
+        previous_version_id=previous_version_id,
     )
     use_multipart = payload.size >= settings.OSS_MULTIPART_THRESHOLD_BYTES
     part_size = settings.OSS_MULTIPART_PART_SIZE_BYTES if use_multipart else None
@@ -731,6 +870,12 @@ def complete_media_upload_session(
     asset.storage_status = "READY"
     asset.processing_status = "PROCESSING"
     asset.status = "PROCESSING"
+    if asset.previous_version_id:
+        db.query(CreativeAsset).filter(
+            CreativeAsset.version_group_id == asset.version_group_id,
+            CreativeAsset.id != asset.id,
+        ).update({CreativeAsset.is_current: False}, synchronize_session=False)
+        asset.is_current = True
     session.status = "COMPLETED"
     session.completed_at = datetime.utcnow()
     db.commit()
@@ -754,21 +899,33 @@ def list_media(
     asset_type: Optional[str] = None,
     group_id: Optional[str] = None,
     tag_id: Optional[str] = None,
+    workspace_mode: Optional[str] = Query(None, pattern="^(mine|team|testing|archive)$"),
+    status_filter: Optional[str] = Query(None, pattern="^(unused|delivering|processing|failed|ready)$"),
+    include_archived: bool = False,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_active_user),
 ):
     """素材列表，可按主账号 / 账户 / 类型过滤"""
-    q = _asset_query(db, user)
+    q = _asset_query(
+        db,
+        user,
+        include_archived=include_archived or workspace_mode == "archive",
+    )
     if meta_account_id:
         q = q.filter(CreativeAsset.meta_account_id == meta_account_id)
     if account_id:
         q = q.filter(CreativeAsset.account_id == account_id)
     if asset_type:
         q = q.filter(CreativeAsset.asset_type == asset_type)
-    if group_id:
-        q = q.filter(CreativeAsset.group_id == group_id)
-    if tag_id:
-        q = q.join(creative_asset_tag_links, creative_asset_tag_links.c.asset_id == CreativeAsset.id).filter(creative_asset_tag_links.c.tag_id == tag_id)
+    q = _apply_asset_view_filters(
+        q,
+        db,
+        user,
+        group_id=group_id,
+        tag_id=tag_id,
+        workspace_mode=workspace_mode,
+        status_filter=status_filter,
+    )
     items = q.order_by(desc(CreativeAsset.created_at)).all()
     return _asset_response_list(db, items, user)
 
@@ -782,7 +939,7 @@ def get_media_stats(
     user: User = Depends(get_current_active_user),
 ):
     """返回素材使用统计，支持按时间范围和广告账户拆分。"""
-    _get_asset_or_404(db, asset_id, user)
+    _get_asset_or_404(db, asset_id, user, include_archived=True)
     if start_date and end_date and start_date > end_date:
         raise HTTPException(status_code=400, detail="统计开始日期不能晚于结束日期")
 
@@ -896,30 +1053,56 @@ def get_media_stats_overview(
     end_date: Optional[date] = Query(None),
     asset_type: Optional[str] = Query(None),
     account_id: Optional[str] = Query(None),
+    group_id: Optional[str] = Query(None),
+    tag_id: Optional[str] = Query(None),
+    workspace_mode: Optional[str] = Query(None, pattern="^(mine|team|testing|archive)$"),
+    status_filter: Optional[str] = Query(None, pattern="^(unused|delivering|processing|failed|ready)$"),
+    include_archived: bool = Query(False),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_active_user),
 ):
     """素材库级使用统计，按当前用户可见范围汇总。"""
     if start_date and end_date and start_date > end_date:
         raise HTTPException(status_code=400, detail="统计开始日期不能晚于结束日期")
-    asset_query = _asset_query(db, user)
+    asset_query = _asset_query(
+        db,
+        user,
+        include_archived=include_archived or workspace_mode == "archive",
+    )
     if asset_type:
         asset_query = asset_query.filter(CreativeAsset.asset_type == asset_type)
     account = _assert_account_access(db, account_id, user) if account_id else None
     if account_id:
         asset_query = asset_query.filter(CreativeAsset.account_id == account_id)
+    asset_query = _apply_asset_view_filters(
+        asset_query,
+        db,
+        user,
+        group_id=group_id,
+        tag_id=tag_id,
+        workspace_mode=workspace_mode,
+        status_filter=status_filter,
+    )
     assets = asset_query.all()
     asset_ids = [asset.id for asset in assets]
     if not asset_ids:
         return {
             "asset_count": 0,
             "ready_asset_count": 0,
+            "used_asset_count": 0,
+            "unused_asset_count": 0,
+            "inventory_usage_rate": 0,
+            "bound_asset_count": 0,
+            "bound_account_count": 0,
+            "available_account_count": 0,
+            "account_coverage_rate": 0,
             "binding_count": 0,
             "ready_binding_count": 0,
             "usage_count": 0,
             "successful_usage_count": 0,
             "failed_usage_count": 0,
             "success_rate": 0,
+            "funnel": [],
             "top_assets": [],
         }
 
@@ -936,6 +1119,18 @@ def get_media_stats_overview(
         func.count(MetaAssetBinding.id),
         func.sum(case((MetaAssetBinding.status == "READY", 1), else_=0)),
     ).filter(*binding_filters).one()
+    bound_asset_count = db.query(
+        func.count(func.distinct(MetaAssetBinding.asset_id))
+    ).filter(*binding_filters).scalar() or 0
+    bound_account_count = db.query(
+        func.count(func.distinct(MetaAssetBinding.ad_account_id))
+    ).filter(*binding_filters).scalar() or 0
+    if account_id:
+        available_account_count = 1
+    elif account_ids is not None:
+        available_account_count = len(account_ids)
+    else:
+        available_account_count = db.query(func.count(AdAccount.id)).scalar() or 0
     if account:
         event_filters = [
             CreativeAssetUsageAccountDailyStat.asset_id.in_(asset_ids),
@@ -957,6 +1152,14 @@ def get_media_stats_overview(
         ).filter(*event_filters).group_by(
             CreativeAssetUsageAccountDailyStat.asset_id,
         ).order_by(func.sum(CreativeAssetUsageAccountDailyStat.usage_count).desc()).limit(10).all()
+        used_asset_count = db.query(
+            func.count(func.distinct(CreativeAssetUsageAccountDailyStat.asset_id))
+        ).filter(*event_filters).scalar() or 0
+        converted_asset_count = db.query(
+            func.count(func.distinct(CreativeAssetUsageAccountDailyStat.asset_id))
+        ).filter(*event_filters).filter(
+            CreativeAssetUsageAccountDailyStat.successful_usage_count > 0
+        ).scalar() or 0
     elif account_scope_keys is not None:
         account_daily_filters = [
             CreativeAssetUsageAccountDailyStat.asset_id.in_(asset_ids),
@@ -978,6 +1181,14 @@ def get_media_stats_overview(
         ).filter(*account_daily_filters).group_by(
             CreativeAssetUsageAccountDailyStat.asset_id,
         ).order_by(func.sum(CreativeAssetUsageAccountDailyStat.usage_count).desc()).limit(10).all()
+        used_asset_count = db.query(
+            func.count(func.distinct(CreativeAssetUsageAccountDailyStat.asset_id))
+        ).filter(*account_daily_filters).scalar() or 0
+        converted_asset_count = db.query(
+            func.count(func.distinct(CreativeAssetUsageAccountDailyStat.asset_id))
+        ).filter(*account_daily_filters).filter(
+            CreativeAssetUsageAccountDailyStat.successful_usage_count > 0
+        ).scalar() or 0
     else:
         daily_filters = [CreativeAssetUsageDailyStat.asset_id.in_(asset_ids)]
         if start_date:
@@ -996,6 +1207,14 @@ def get_media_stats_overview(
         ).filter(*daily_filters).group_by(
             CreativeAssetUsageDailyStat.asset_id,
         ).order_by(func.sum(CreativeAssetUsageDailyStat.usage_count).desc()).limit(10).all()
+        used_asset_count = db.query(
+            func.count(func.distinct(CreativeAssetUsageDailyStat.asset_id))
+        ).filter(*daily_filters).scalar() or 0
+        converted_asset_count = db.query(
+            func.count(func.distinct(CreativeAssetUsageDailyStat.asset_id))
+        ).filter(*daily_filters).filter(
+            CreativeAssetUsageDailyStat.successful_usage_count > 0
+        ).scalar() or 0
     assets_by_id = {asset.id: asset for asset in assets}
     top_assets = []
     for top_asset_id, asset_usage_count, asset_success_count in top_rows:
@@ -1011,24 +1230,397 @@ def get_media_stats_overview(
         })
     usage_count = int(total or 0)
     successful_usage_count = int(success or 0)
+    asset_count = len(assets)
+    ready_asset_count = sum(
+        1 for asset in assets
+        if asset.processing_status == "READY" or asset.status == "READY"
+    )
+    used_asset_count = int(used_asset_count)
+    converted_asset_count = int(converted_asset_count)
+    unused_asset_count = max(asset_count - used_asset_count, 0)
+    inventory_usage_rate = round(used_asset_count * 100 / asset_count, 2) if asset_count else 0
+    account_coverage_rate = round(
+        int(bound_account_count) * 100 / available_account_count, 2
+    ) if available_account_count else 0
+    funnel = [
+        {"key": "inventory", "label": "库存素材", "count": asset_count, "rate": 100 if asset_count else 0},
+        {"key": "ready", "label": "就绪素材", "count": ready_asset_count, "rate": round(ready_asset_count * 100 / asset_count, 2) if asset_count else 0},
+        {"key": "bound", "label": "已绑定素材", "count": int(bound_asset_count), "rate": round(int(bound_asset_count) * 100 / asset_count, 2) if asset_count else 0},
+        {"key": "used", "label": "已使用素材", "count": used_asset_count, "rate": inventory_usage_rate},
+        {"key": "converted", "label": "产生成功记录", "count": converted_asset_count, "rate": round(converted_asset_count * 100 / asset_count, 2) if asset_count else 0},
+    ]
     return {
         "range_start": start_date.isoformat() if start_date else None,
         "range_end": end_date.isoformat() if end_date else None,
-        "asset_count": len(assets),
-        "ready_asset_count": sum(1 for asset in assets if asset.processing_status == "READY" or asset.status == "READY"),
+        "asset_count": asset_count,
+        "ready_asset_count": ready_asset_count,
+        "used_asset_count": used_asset_count,
+        "unused_asset_count": unused_asset_count,
+        "inventory_usage_rate": inventory_usage_rate,
+        "bound_asset_count": int(bound_asset_count),
+        "bound_account_count": int(bound_account_count),
+        "available_account_count": int(available_account_count),
+        "account_coverage_rate": account_coverage_rate,
         "binding_count": int(binding_count or 0),
         "ready_binding_count": int(ready_binding_count or 0),
         "usage_count": usage_count,
         "successful_usage_count": successful_usage_count,
         "failed_usage_count": int(failed or 0),
         "success_rate": round(successful_usage_count * 100 / usage_count, 2) if usage_count else 0,
+        "funnel": funnel,
         "top_assets": top_assets,
     }
+
+
+@router.get("/stats/performance")
+def get_media_performance_stats(
+    asset_id: Optional[str] = Query(None),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
+    asset_type: Optional[str] = Query(None),
+    account_id: Optional[str] = Query(None),
+    group_id: Optional[str] = Query(None),
+    tag_id: Optional[str] = Query(None),
+    workspace_mode: Optional[str] = Query(None, pattern="^(mine|team|testing|archive)$"),
+    status_filter: Optional[str] = Query(None, pattern="^(unused|delivering|processing|failed|ready)$"),
+    include_archived: bool = Query(False),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_active_user),
+):
+    """返回有真实 AdInsight 映射的素材级平台效果指标。
+
+    AdInsight 本身只关联规范化的 Ad；素材通过新版 AdInstance 或旧版
+    PublishedAd 反查。金额按广告账户币种分组，禁止跨币种直接相加。
+    """
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=400, detail="统计开始日期不能晚于结束日期")
+    if account_id:
+        _assert_account_access(db, account_id, user)
+
+    asset_query = _asset_query(
+        db,
+        user,
+        include_archived=include_archived or workspace_mode == "archive",
+    )
+    if asset_id:
+        asset_query = asset_query.filter(CreativeAsset.id == asset_id)
+    if asset_type:
+        asset_query = asset_query.filter(CreativeAsset.asset_type == asset_type)
+    asset_query = _apply_asset_view_filters(
+        asset_query,
+        db,
+        user,
+        group_id=group_id,
+        tag_id=tag_id,
+        workspace_mode=workspace_mode,
+        status_filter=status_filter,
+    )
+    assets = asset_query.all()
+    if asset_id and not assets:
+        raise HTTPException(status_code=404, detail="素材不存在或无权访问")
+    asset_ids = {asset.id for asset in assets}
+    assets_by_id = {asset.id: asset for asset in assets}
+    empty_response = {
+        "asset_id": asset_id,
+        "account_id": account_id,
+        "range_start": start_date.isoformat() if start_date else None,
+        "range_end": end_date.isoformat() if end_date else None,
+        "has_data": False,
+        "mapped_asset_count": 0,
+        "unmapped_asset_count": len(asset_ids),
+        "mapping_count": 0,
+        "insight_row_count": 0,
+        "latest_synced_at": None,
+        "currency_totals": [],
+        "items": [],
+        "series": [],
+        "data_scope_note": "金额按账户币种分组；未同步或未建立广告映射的素材不计算平台效果指标",
+    }
+    if not asset_ids:
+        return empty_response
+
+    accessible_ids = _accessible_account_ids(db, user)
+    account_filters = []
+    if account_id:
+        account_filters.append(Campaign.ad_account_id == account_id)
+    elif accessible_ids is not None:
+        account_filters.append(Campaign.ad_account_id.in_(accessible_ids or {"__no_accounts__"}))
+
+    # 新投放链路：AdInstance 保存素材库 asset_id，规范 Ad 保存 Meta ad_id。
+    instance_query = db.query(Ad.id, AdInstance.creative_id).join(
+        AdInstance, AdInstance.meta_ad_id == Ad.ad_id
+    ).join(
+        AdGroup, Ad.ad_group_id == AdGroup.id
+    ).join(
+        Campaign, AdGroup.campaign_id == Campaign.id
+    ).filter(
+        AdInstance.creative_id.in_(asset_ids),
+        *account_filters,
+    )
+    instance_mappings = instance_query.all()
+
+    ad_to_asset: dict[str, str] = {}
+    for canonical_ad_id, mapped_asset_id in instance_mappings:
+        if mapped_asset_id in assets_by_id:
+            ad_to_asset[str(canonical_ad_id)] = mapped_asset_id
+
+    # 兼容旧发布链路：仅在同一个 Ad 尚未由 AdInstance 映射时补充。
+    published_query = db.query(Ad.id, PublishedAd.asset_id).join(
+        PublishedAd, PublishedAd.fb_ad_id == Ad.ad_id
+    ).join(
+        AdGroup, Ad.ad_group_id == AdGroup.id
+    ).join(
+        Campaign, AdGroup.campaign_id == Campaign.id
+    ).filter(
+        PublishedAd.asset_id.in_(asset_ids),
+        *account_filters,
+    )
+    for canonical_ad_id, published_asset_id in published_query.all():
+        canonical_ad_id = str(canonical_ad_id)
+        if canonical_ad_id not in ad_to_asset and published_asset_id in assets_by_id:
+            ad_to_asset[canonical_ad_id] = published_asset_id
+
+    if not ad_to_asset:
+        empty_response["unmapped_asset_count"] = len(asset_ids)
+        return empty_response
+
+    insight_query = db.query(
+        Ad.id,
+        AdAccount.currency,
+        func.sum(AdInsight.spend),
+        func.sum(AdInsight.impressions),
+        func.sum(AdInsight.clicks),
+        func.sum(AdInsight.conversions),
+        func.sum(AdInsight.conversion_value),
+        func.max(AdInsight.date),
+        func.max(AdInsight.synced_at),
+        func.count(AdInsight.id),
+    ).join(
+        AdInsight, AdInsight.ad_id == Ad.id
+    ).join(
+        AdGroup, Ad.ad_group_id == AdGroup.id
+    ).join(
+        Campaign, AdGroup.campaign_id == Campaign.id
+    ).join(
+        AdAccount, Campaign.ad_account_id == AdAccount.id
+    ).filter(
+        Ad.id.in_(set(ad_to_asset)),
+    )
+    if account_filters:
+        insight_query = insight_query.filter(*account_filters)
+    if start_date:
+        insight_query = insight_query.filter(AdInsight.date >= start_date)
+    if end_date:
+        insight_query = insight_query.filter(AdInsight.date <= end_date)
+    insight_rows = insight_query.group_by(Ad.id, AdAccount.currency).all()
+
+    grouped: dict[tuple[str, str], dict] = {}
+    latest_synced_at = None
+    for canonical_ad_id, currency, spend, impressions, clicks, conversions, conversion_value, insight_date, synced_at, insight_row_count in insight_rows:
+        mapped_asset_id = ad_to_asset.get(str(canonical_ad_id))
+        if not mapped_asset_id:
+            continue
+        currency = str(currency or "USD").upper()
+        key = (mapped_asset_id, currency)
+        item = grouped.setdefault(key, {
+            "asset_id": mapped_asset_id,
+            "name": assets_by_id[mapped_asset_id].name,
+            "currency": currency,
+            "mapping_count": 0,
+            "spend": 0.0,
+            "conversion_value": 0.0,
+            "impressions": 0,
+            "clicks": 0,
+            "conversions": 0,
+            "insight_row_count": 0,
+            "_mapping_ad_ids": set(),
+            "latest_date": None,
+            "latest_synced_at": None,
+        })
+        item["_mapping_ad_ids"].add(str(canonical_ad_id))
+        item["spend"] += to_major(spend or 0, currency)
+        item["conversion_value"] += to_major(conversion_value or 0, currency)
+        item["impressions"] += int(impressions or 0)
+        item["clicks"] += int(clicks or 0)
+        item["conversions"] += int(conversions or 0)
+        item["insight_row_count"] += int(insight_row_count or 0)
+        if insight_date and (not item["latest_date"] or insight_date > item["latest_date"]):
+            item["latest_date"] = insight_date
+        if synced_at and (not item["latest_synced_at"] or synced_at > item["latest_synced_at"]):
+            item["latest_synced_at"] = synced_at
+        if synced_at and (not latest_synced_at or synced_at > latest_synced_at):
+            latest_synced_at = synced_at
+
+    items = []
+    for item in grouped.values():
+        spend = item.pop("spend")
+        conversion_value = item.pop("conversion_value")
+        impressions = item["impressions"]
+        clicks = item["clicks"]
+        conversions = item["conversions"]
+        mapping_count = len(item.pop("_mapping_ad_ids"))
+        latest_date = item.pop("latest_date")
+        synced_at = item.pop("latest_synced_at")
+        item.update({
+            "mapping_count": mapping_count,
+            "spend": round(spend, 4),
+            "conversion_value": round(conversion_value, 4),
+            "ctr": round(clicks * 100 / impressions, 4) if impressions else None,
+            "cpc": round(spend / clicks, 4) if clicks else None,
+            "cpm": round(spend * 1000 / impressions, 4) if impressions else None,
+            "cpa": round(spend / conversions, 4) if conversions else None,
+            "roas": round(conversion_value / spend, 4) if spend else None,
+            "latest_date": str(latest_date) if latest_date else None,
+            "latest_synced_at": synced_at.isoformat() if synced_at else None,
+        })
+        items.append(item)
+
+    currency_totals: dict[str, dict] = {}
+    for item in items:
+        total = currency_totals.setdefault(item["currency"], {
+            "currency": item["currency"],
+            "spend": 0.0,
+            "conversion_value": 0.0,
+            "impressions": 0,
+            "clicks": 0,
+            "conversions": 0,
+        })
+        for field in ("spend", "conversion_value", "impressions", "clicks", "conversions"):
+            total[field] += item[field]
+    for total in currency_totals.values():
+        total.update({
+            "spend": round(total["spend"], 4),
+            "conversion_value": round(total["conversion_value"], 4),
+            "ctr": round(total["clicks"] * 100 / total["impressions"], 4) if total["impressions"] else None,
+            "cpc": round(total["spend"] / total["clicks"], 4) if total["clicks"] else None,
+            "cpm": round(total["spend"] * 1000 / total["impressions"], 4) if total["impressions"] else None,
+            "cpa": round(total["spend"] / total["conversions"], 4) if total["conversions"] else None,
+            "roas": round(total["conversion_value"] / total["spend"], 4) if total["spend"] else None,
+        })
+
+    series = []
+    if asset_id:
+        trend_query = db.query(
+            AdInsight.date,
+            AdAccount.currency,
+            func.sum(AdInsight.spend),
+            func.sum(AdInsight.conversion_value),
+            func.sum(AdInsight.impressions),
+            func.sum(AdInsight.clicks),
+            func.sum(AdInsight.conversions),
+        ).join(
+            Ad, AdInsight.ad_id == Ad.id
+        ).join(
+            AdGroup, Ad.ad_group_id == AdGroup.id
+        ).join(
+            Campaign, AdGroup.campaign_id == Campaign.id
+        ).join(
+            AdAccount, Campaign.ad_account_id == AdAccount.id
+        ).filter(
+            Ad.id.in_(set(ad_to_asset)),
+        )
+        if account_filters:
+            trend_query = trend_query.filter(*account_filters)
+        if start_date:
+            trend_query = trend_query.filter(AdInsight.date >= start_date)
+        if end_date:
+            trend_query = trend_query.filter(AdInsight.date <= end_date)
+        trend_rows = trend_query.group_by(
+            AdInsight.date, AdAccount.currency,
+        ).order_by(AdInsight.date.asc(), AdAccount.currency.asc()).all()
+        for trend_date, currency, spend, conversion_value, impressions, clicks, conversions in trend_rows:
+            currency = str(currency or "USD").upper()
+            spend = to_major(spend or 0, currency)
+            conversion_value = to_major(conversion_value or 0, currency)
+            impressions = int(impressions or 0)
+            clicks = int(clicks or 0)
+            conversions = int(conversions or 0)
+            series.append({
+                "date": str(trend_date),
+                "currency": currency,
+                "spend": round(spend, 4),
+                "conversion_value": round(conversion_value, 4),
+                "impressions": impressions,
+                "clicks": clicks,
+                "conversions": conversions,
+                "ctr": round(clicks * 100 / impressions, 4) if impressions else None,
+                "cpc": round(spend / clicks, 4) if clicks else None,
+                "cpm": round(spend * 1000 / impressions, 4) if impressions else None,
+                "cpa": round(spend / conversions, 4) if conversions else None,
+                "roas": round(conversion_value / spend, 4) if spend else None,
+            })
+
+    mapped_asset_ids = set(ad_to_asset.values())
+    return {
+        "asset_id": asset_id,
+        "account_id": account_id,
+        "range_start": start_date.isoformat() if start_date else None,
+        "range_end": end_date.isoformat() if end_date else None,
+        "has_data": bool(items),
+        "mapped_asset_count": len(mapped_asset_ids),
+        "unmapped_asset_count": len(asset_ids - mapped_asset_ids),
+        "mapping_count": len(ad_to_asset),
+        "insight_row_count": len(insight_rows),
+        "latest_synced_at": latest_synced_at.isoformat() if latest_synced_at else None,
+        "currency_totals": sorted(currency_totals.values(), key=lambda row: row["spend"], reverse=True),
+        "items": sorted(items, key=lambda row: (row["impressions"], row["clicks"]), reverse=True),
+        "series": series,
+        "data_scope_note": "金额按账户币种分组；指标来自本地已同步的广告级 AdInsight，不跨币种求和",
+    }
+
+
+@router.get("/{asset_id}/versions", response_model=List[MediaItem])
+def list_media_versions(asset_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
+    asset = _get_asset_or_404(db, asset_id, user, include_archived=True)
+    version_group_id = asset.version_group_id or asset.id
+    versions = _asset_query(db, user, include_archived=True).filter(
+        CreativeAsset.version_group_id == version_group_id,
+    ).order_by(CreativeAsset.version_number.desc(), CreativeAsset.created_at.desc()).all()
+    return _asset_response_list(db, versions, user)
+
+
+@router.post("/{asset_id}/versions/{version_id}/current", response_model=MediaItem)
+def set_current_media_version(asset_id: str, version_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
+    source = _get_asset_or_404(db, asset_id, user, include_archived=True)
+    target = _get_asset_or_404(db, version_id, user, include_archived=True)
+    source_group = source.version_group_id or source.id
+    target_group = target.version_group_id or target.id
+    if source_group != target_group:
+        raise HTTPException(status_code=400, detail="目标素材不属于当前版本链")
+    _assert_asset_edit_access(db, target, user)
+    db.query(CreativeAsset).filter(CreativeAsset.version_group_id == source_group).update(
+        {CreativeAsset.is_current: False}, synchronize_session=False,
+    )
+    target.is_current = True
+    db.commit()
+    db.refresh(target)
+    record_audit(db, action="SET_CREATIVE_ASSET_CURRENT_VERSION", resource_type="creative_asset", resource_id=target.id, user_id=user.id, request_data={"version_id": target.id, "version_number": target.version_number}, response_data={"version_group_id": target.version_group_id})
+    return _asset_response_list(db, [target], user)[0]
 
 
 @router.get("/{asset_id}", response_model=MediaItem)
 def get_media(asset_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_active_user)):
     return _asset_response_list(db, [_get_asset_or_404(db, asset_id, user)], user)[0]
+
+
+@router.post("/{asset_id}/review", response_model=MediaItem)
+def review_media(
+    asset_id: str,
+    payload: AssetReviewRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_active_user),
+):
+    """更新素材审核状态；当前上传默认 APPROVED，接口供后续启用人工审核。"""
+    asset = _get_asset_or_404(db, asset_id, user)
+    _assert_asset_edit_access(db, asset, user)
+    asset.review_status = payload.review_status
+    asset.reviewed_by = user.id
+    asset.reviewed_at = datetime.utcnow()
+    asset.review_note = payload.review_note
+    db.commit()
+    db.refresh(asset)
+    record_audit(db, action="REVIEW_CREATIVE_ASSET", resource_type="creative_asset", resource_id=asset.id, user_id=user.id, request_data=payload.model_dump(), response_data={"review_status": asset.review_status})
+    return _asset_response_list(db, [asset], user)[0]
 
 
 @router.delete("/{asset_id}")
@@ -1039,11 +1631,12 @@ def delete_media(
 ):
     """软删除素材，并异步清理 OSS 原始文件和衍生文件。"""
     asset = _get_asset_or_404(db, asset_id, user)
-    _assert_asset_edit_access(asset, user)
+    _assert_asset_edit_access(db, asset, user)
     asset.status = "ARCHIVED"
     asset.storage_status = "DELETING"
     asset.deleted_at = datetime.utcnow()
     db.commit()
+    record_audit(db, action="ARCHIVE_CREATIVE_ASSET", resource_type="creative_asset", resource_id=asset.id, user_id=user.id, request_data={}, response_data={"status": asset.status})
     task_id = delete_oss_asset_task.delay(asset.id).id
     return {"success": True, "status": "DELETING", "task_id": task_id}
 
@@ -1056,7 +1649,7 @@ def refresh_metadata(
 ):
     """重新解析 OSS 素材元数据，不触发 Meta 上传。"""
     asset = _get_asset_or_404(db, asset_id, user)
-    _assert_asset_edit_access(asset, user)
+    _assert_asset_edit_access(db, asset, user)
     if not asset.object_key or asset.storage_status != "READY":
         raise HTTPException(status_code=409, detail="素材尚未完成 OSS 处理")
     asset.processing_status = "PROCESSING"

@@ -87,7 +87,7 @@ export const tenantApi = {
 export const operationsApi = {
   syncTasks: (params?: { status?: string; limit?: number }) => request.get('/api/v1/operations/sync-tasks', { params }),
   credentialHealth: () => request.get('/api/v1/operations/credential-health'),
-  auditLogs: (params?: { action?: string; resource_type?: string; limit?: number }) => request.get('/api/v1/operations/audit-logs', { params }),
+  auditLogs: (params?: { action?: string; resource_type?: string; resource_id?: string; limit?: number }) => request.get('/api/v1/operations/audit-logs', { params }),
 }
 export const roleApi = {
   list: () => request.get('/api/v1/roles'),

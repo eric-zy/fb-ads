@@ -165,6 +165,45 @@ def test_build_connector_payload_resolves_account_scoped_video_binding():
     assert creative["object_story_spec"]["video_data"]["image_hash"] == "cover-1"
 
 
+def test_build_connector_payload_allows_video_without_landing_url():
+    template = SimpleNamespace(
+        name="Video Views Demo",
+        objective="OUTCOME_ENGAGEMENT",
+        special_ad_categories=[],
+        is_adset_budget_sharing_enabled=False,
+        buying_type="AUCTION",
+        budget_type="DAILY",
+        daily_budget=10,
+        lifetime_budget=None,
+        billing_event="IMPRESSIONS",
+        optimization_goal="THRUPLAY",
+        targeting_json={"geo_locations": {"countries": ["US"]}},
+        placement_json={},
+        bid_strategy=None,
+        creative_config_json={
+            "page_id": "page-1",
+            "creatives": [{
+                "asset_id": "asset-1",
+                "asset_type": "video",
+                "primary_text": "观看视频",
+                "cta": "NO_BUTTON",
+            }],
+        },
+    )
+
+    payload = build_connector_payload(
+        template,
+        "act_1",
+        asset_bindings={"asset-1": "video-1"},
+        asset_thumbnail_hashes={"asset-1": "cover-1"},
+    )
+    media_data = payload["adsets"][0]["creatives"][0]["object_story_spec"]["video_data"]
+
+    assert media_data["video_id"] == "video-1"
+    assert media_data["message"] == "观看视频"
+    assert "call_to_action" not in media_data
+
+
 def test_build_connector_payload_uses_binding_asset_type_when_template_omits_it():
     template = SimpleNamespace(
         name="Video Demo",
@@ -308,3 +347,70 @@ def test_template_validation_removes_carousel_cards_for_single_format():
     config = values["creative_config_json"]
     assert config["creatives"][0]["asset_id"] == "asset-1"
     assert "carousel_cards" not in config
+
+
+def test_template_validation_allows_empty_placement_for_auto_placement():
+    values = {
+        "objective": "OUTCOME_TRAFFIC",
+        "buying_type": "AUCTION",
+        "budget_type": "DAILY",
+        "daily_budget": 10,
+        "targeting_json": {"geo_locations": {"countries": ["US"]}},
+        "creative_config_json": {
+            "creative_format": "CAROUSEL",
+            "delivery": {"split_level": "AD"},
+            "carousel_cards": [
+                {"asset_type": "image", "asset_id": "asset-1", "landing_url": "https://example.com/1"},
+                {"asset_type": "image", "asset_id": "asset-2", "landing_url": "https://example.com/2"},
+            ],
+            "adsets": [{
+                "name": "US",
+                "budget": 10,
+                "targeting": {"geo_locations": {"countries": ["US"]}},
+                "placement": {},
+            }],
+        },
+    }
+
+    _validate_delivery_config(values)
+
+
+def test_build_connector_payload_uses_shared_creative_for_carousel():
+    template = SimpleNamespace(
+        name="Carousel Shared Creative",
+        objective="OUTCOME_TRAFFIC",
+        special_ad_categories=[],
+        is_adset_budget_sharing_enabled=False,
+        buying_type="AUCTION",
+        budget_type="DAILY",
+        daily_budget=10,
+        lifetime_budget=None,
+        billing_event="IMPRESSIONS",
+        optimization_goal="LINK_CLICKS",
+        targeting_json={"geo_locations": {"countries": ["US"]}},
+        placement_json={},
+        bid_strategy=None,
+        creative_config_json={
+            "creative_format": "CAROUSEL",
+            "page_id": "page-1",
+            "shared_creative": {"primary_text": "公共主文案", "cta": "LEARN_MORE"},
+            "carousel_cards": [
+                {"asset_id": "asset-1", "asset_type": "image", "landing_url": "https://example.com/1"},
+                {"asset_id": "asset-2", "asset_type": "image", "landing_url": "https://example.com/2"},
+            ],
+            "delivery": {"split_level": "AD"},
+        },
+    )
+
+    payload = build_connector_payload(
+        template,
+        "act_1",
+        asset_bindings={"asset-1": "hash-1", "asset-2": "hash-2"},
+    )
+    media_data = payload["adsets"][0]["creatives"][0]["object_story_spec"]["link_data"]
+
+    assert media_data["message"] == "公共主文案"
+    assert media_data["call_to_action"] == {
+        "type": "LEARN_MORE",
+        "value": {"link": "https://example.com/1"},
+    }

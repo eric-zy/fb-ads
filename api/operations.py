@@ -66,6 +66,7 @@ def credential_health(
 @router.get("/audit-logs")
 def list_audit_logs(
     resource_type: Optional[str] = Query(None),
+    resource_id: Optional[str] = Query(None),
     action: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -74,6 +75,8 @@ def list_audit_logs(
     query = db.query(AuditLog)
     if resource_type:
         query = query.filter(AuditLog.resource_type == resource_type)
+    if resource_id:
+        query = query.filter(AuditLog.resource_id == resource_id)
     if action:
         query = query.filter(AuditLog.action == action)
     return [row.to_dict() for row in query.order_by(AuditLog.created_at.desc()).limit(limit).all()]

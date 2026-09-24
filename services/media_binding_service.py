@@ -15,6 +15,24 @@ from sqlalchemy.orm import Session
 from models import AdAccount, CreativeAsset, MetaAssetBinding
 
 
+def find_missing_asset_ids(
+    db: Session,
+    asset_ids: Iterable[str],
+    *,
+    tenant_id: str | None = None,
+) -> list[str]:
+    """返回不存在或不属于目标租户的素材 ID。"""
+    requested = list(dict.fromkeys(str(value) for value in asset_ids if value))
+    if not requested:
+        return []
+
+    query = db.query(CreativeAsset).filter(CreativeAsset.id.in_(requested))
+    if tenant_id:
+        query = query.filter(CreativeAsset.tenant_id == tenant_id)
+    found = {asset.id for asset in query.all()}
+    return [asset_id for asset_id in requested if asset_id not in found]
+
+
 def ensure_asset_bindings(
     db: Session,
     asset_ids: Iterable[str],
@@ -48,6 +66,10 @@ def ensure_asset_bindings(
         for account_id in account_ids:
             account = accounts.get(account_id)
             if not account:
+                continue
+            # 即使调用方处于跨租户/系统任务上下文，也不能把素材绑定到
+            # 另一个租户的广告账户；预检会把这类引用报告为素材无权访问。
+            if asset.tenant_id != account.tenant_id:
                 continue
             binding = db.query(MetaAssetBinding).filter(
                 MetaAssetBinding.asset_id == asset_id,

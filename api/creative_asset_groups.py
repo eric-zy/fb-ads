@@ -9,6 +9,7 @@ from core.auth import get_current_active_user
 from core.database import get_db
 from models import CreativeAsset, CreativeAssetGroup, User
 from models.creative_asset_group import creative_asset_group_members
+from core.audit import record_audit
 
 router = APIRouter(prefix="/api/v1/creative-asset-groups", tags=["素材分组"])
 
@@ -153,8 +154,9 @@ def move_assets(req: MoveAssetsRequest, db: Session = Depends(get_db), user: Use
     # 素材在租户内可读/可用，但分组归类仍属于素材元数据修改，不能因为
     # 共享可见性而让其他用户改动上传人的素材。
     for asset in assets:
-        _assert_asset_edit_access(asset, user)
+        _assert_asset_edit_access(db, asset, user)
     for asset in assets:
         asset.group_id = req.group_id
     db.commit()
+    record_audit(db, action="MOVE_CREATIVE_ASSETS", resource_type="creative_asset_group", resource_id=req.group_id, user_id=user.id, request_data={"asset_ids": list(req.asset_ids), "group_id": req.group_id}, response_data={"count": len(assets)})
     return {"success": True, "count": len(assets)}

@@ -364,16 +364,41 @@ def list_campaigns(
         )
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
-    total = query.count()
-    rows = (
-        query.order_by(CampaignInstance.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    result = []
+    # CampaignInstance 是账户级对象，同一模板发布到多个账户会有多条记录。
+    # 列表按“模板 + 名称”合并为一个逻辑广告系列，但保留全部实例 ID，
+    # 这样展示不重复，批量操作仍可准确作用于每个广告账户。
+    rows = query.order_by(CampaignInstance.created_at.desc()).all()
+    grouped = {}
     for row in rows:
+        key = (row.template_id, row.name or "")
+        grouped.setdefault(key, []).append(row)
+    groups = list(grouped.values())
+    total = len(groups)
+    groups = groups[(page - 1) * page_size: page * page_size]
+    result = []
+    for group in groups:
+        row = group[0]
         payload = row.to_dict()
+        payload["grouped"] = len(group) > 1
+        payload["grouped_ids"] = [item.id for item in group]
+        payload["account_count"] = len(group)
+        payload["grouped_accounts"] = [
+            {
+                "id": item.ad_account_id,
+                "name": item.ad_account.account_name if item.ad_account else item.ad_account_id,
+                "meta_campaign_id": item.meta_campaign_id,
+                "status": item.status,
+                "meta_status": item.meta_status,
+            }
+            for item in group
+        ]
+        if len(group) > 1:
+            payload["account_name"] = "、".join(dict.fromkeys(
+                item.ad_account.account_name if item.ad_account else item.ad_account_id
+                for item in group
+            ))
+            payload["meta_campaign_ids"] = [item.meta_campaign_id for item in group if item.meta_campaign_id]
+            payload["meta_campaign_id"] = f"{len(group)} 个账户"
         publisher = None
         for job in reversed(row.template.jobs if row.template else []):
             item = next((item for item in job.items if item.campaign_instance_id == row.id), None)

@@ -44,7 +44,11 @@ from services.meta.page_access import page_account_access_error
 from services.fb_connector_client import FBConnectorClient
 from services.targeting_catalog import normalize_targeting, placement_preflight_errors, targeting_preflight_errors
 from services.meta_audience_policy import resolve_required_exclusions
-from services.media_binding_service import ensure_asset_bindings, queue_pending_asset_bindings
+from services.media_binding_service import (
+    ensure_asset_bindings,
+    find_missing_asset_ids,
+    queue_pending_asset_bindings,
+)
 from tasks.campaign_tasks import (
     execute_campaign_job,
     retry_failed_job_items,
@@ -405,8 +409,27 @@ class JobService:
         # ASSET_SYNC_PENDING，给前端返回互相矛盾的预检结果。
         asset_ids = [str(item.get("asset_id")) for item in creatives if item.get("asset_id")]
         waiting_by_account = {}
+        missing_asset_ids = find_missing_asset_ids(
+            self.db,
+            asset_ids,
+            tenant_id=template.tenant_id,
+        )
+        if missing_asset_ids:
+            errors.append(
+                {
+                    "code": "ASSET_NOT_FOUND",
+                    "message": "存在不存在或无权访问的素材，请重新选择素材",
+                    "items": [
+                        {
+                            "asset_id": asset_id,
+                            "reason": "素材不存在或不属于当前租户",
+                        }
+                        for asset_id in missing_asset_ids
+                    ],
+                }
+            )
         # 页面无效时不继续计算素材状态，避免同时返回页面错误和素材待同步。
-        if page and asset_ids and available:
+        if page and asset_ids and available and not missing_asset_ids:
             # 预检本身负责首次建立账户级素材绑定并派发上传任务。
             # 这里只认领 PENDING，不自动重置 FAILED：文件格式、尺寸等确定性
             # 错误反复重试没有意义，前端需要把 Meta 的原始原因展示给用户。

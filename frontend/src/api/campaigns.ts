@@ -1,5 +1,5 @@
 import request from '@/utils/request'
-export interface MetaCampaign { id: string; ad_account_id: string; account_name?: string; meta_campaign_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; objective?: string; template_name?: string; updated_at?: string; publisher?: { id: string; username: string; email?: string | null } | null }
+export interface MetaCampaign { id: string; ad_account_id: string; account_name?: string; meta_campaign_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; objective?: string; template_name?: string; updated_at?: string; publisher?: { id: string; username: string; email?: string | null } | null; grouped?: boolean; grouped_ids?: string[]; account_count?: number; meta_campaign_ids?: string[]; grouped_accounts?: Array<{ id: string; name: string; meta_campaign_id?: string | null; status?: string; meta_status?: string | null }> }
 export interface MetaAdSet { id: string; campaign_id: string; meta_adset_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; optimization_goal?: string; daily_budget?: number }
 export interface SyncedAdGroup {
   id: string

@@ -30,6 +30,7 @@
               accept="image/*,video/*"
               @change="onRetryFileSelected"
             />
+            <input ref="versionFileInput" class="retry-file-input" type="file" accept="image/*,video/*" @change="onVersionFileSelected" />
             <el-button @click="createGroupVisible = true">新建分组</el-button>
             <el-button :disabled="!groups.length" @click="openMembers">成员管理</el-button>
           </div>
@@ -48,8 +49,36 @@
         </div>
       </template>
 
+      <div class="workspace-tabs">
+        <button :class="{ active: workspaceMode === 'mine' }" @click="workspaceMode = 'mine'">我的素材</button>
+        <button :class="{ active: workspaceMode === 'team' }" @click="workspaceMode = 'team'">团队素材</button>
+        <button :class="{ active: workspaceMode === 'testing' }" @click="workspaceMode = 'testing'">正在测试</button>
+        <button :class="{ active: workspaceMode === 'archive' }" @click="workspaceMode = 'archive'">已归档</button>
+      </div>
+      <div class="workspace-context">
+        <div>
+          <span class="context-label">当前项目工作区</span>
+          <el-select v-model="filterGroup" clearable filterable placeholder="全部团队素材" class="workspace-select" @change="load">
+            <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id">
+              <span>{{ group.name }}</span><el-tag size="small" effect="plain" class="visibility-tag">{{ group.visibility === 'PRIVATE' ? '私有' : '团队共享' }}</el-tag>
+            </el-option>
+          </el-select>
+        </div>
+        <span class="context-help">工作区成员决定谁可以查看和编辑素材</span>
+        <el-button size="small" plain :disabled="!groups.length" @click="openMembers">管理成员与授权</el-button>
+      </div>
+
       <div class="filters">
         <div class="filter-title">素材筛选</div>
+        <el-input v-model="searchKeyword" clearable class="filter-search" placeholder="搜索素材名 / 上传人 / 标签" />
+        <el-select v-model="filterStatus" placeholder="投放状态" clearable class="filter-status" @change="load">
+          <el-option label="全部状态" value="" />
+          <el-option label="可投放" value="ready" />
+          <el-option label="处理中" value="processing" />
+          <el-option label="正在投放" value="delivering" />
+          <el-option label="未使用" value="unused" />
+          <el-option label="失败" value="failed" />
+        </el-select>
         <el-select v-model="filterType" placeholder="类型" clearable class="filter-type" @change="load">
           <el-option label="全部" value="" />
           <el-option label="图片" value="image" />
@@ -58,13 +87,14 @@
         <el-select v-model="filterAccount" placeholder="归属账户筛选（可选）" clearable filterable class="filter-account" @change="load">
             <el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} (${account.account_id})`" :value="account.id" />
         </el-select>
-        <el-select v-model="filterGroup" placeholder="素材分组" clearable filterable class="filter-group" @change="load">
-          <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
-        </el-select>
         <el-select v-model="filterTag" placeholder="素材标签" clearable filterable class="filter-tag" @change="load">
           <el-option v-for="tag in tags" :key="tag.id" :label="tag.name" :value="tag.id" />
         </el-select>
         <el-button class="new-tag" @click="createTagVisible = true">新建标签</el-button>
+        <el-radio-group v-model="viewMode" size="small" class="view-switch">
+          <el-radio-button value="card">卡片</el-radio-button>
+          <el-radio-button value="list">列表</el-radio-button>
+        </el-radio-group>
         <el-date-picker
           class="overview-picker"
           v-model="overviewRange"
@@ -84,14 +114,51 @@
       <div v-if="overview" class="overview-section">
         <div class="overview-grid">
           <div class="overview-item"><span>可见素材</span><strong>{{ overview.asset_count }}</strong><small>就绪 {{ overview.ready_asset_count }}</small></div>
+          <div class="overview-item highlight"><span>库存使用率</span><strong>{{ overview.inventory_usage_rate }}<em>%</em></strong><small>已使用 {{ overview.used_asset_count }} / 未使用 {{ overview.unused_asset_count }}</small></div>
+          <div class="overview-item"><span>账户覆盖率</span><strong>{{ overview.account_coverage_rate }}<em>%</em></strong><small>已覆盖 {{ overview.bound_account_count }} / {{ overview.available_account_count }} 个账户</small></div>
           <div class="overview-item"><span>账户绑定</span><strong>{{ overview.ready_binding_count }}<em>/{{ overview.binding_count }}</em></strong><small>已就绪 / 总数</small></div>
           <div class="overview-item"><span>使用次数</span><strong>{{ overview.usage_count }}</strong><small>成功 {{ overview.successful_usage_count }}</small></div>
           <div class="overview-item success"><span>投放成功率</span><strong>{{ overview.success_rate }}<em>%</em></strong><small>失败 {{ overview.failed_usage_count }}</small></div>
         </div>
-        <div v-if="overview.top_assets.length" class="overview-top" title="按使用次数排序">
-          <span class="top-label">热门素材</span>
-          {{ overview.top_assets.slice(0, 3).map(item => `${item.name} (${item.usage_count})`).join('、') }}
+        <div v-if="overview.funnel.length" class="overview-funnel">
+          <div class="funnel-title">素材使用漏斗 <span>统计区间内按素材去重，成功记录不代表平台转化效果</span></div>
+          <div class="funnel-list">
+            <div v-for="step in overview.funnel" :key="step.key" class="funnel-step">
+              <div class="funnel-label"><span>{{ step.label }}</span><b>{{ step.count }}</b></div>
+              <el-progress :percentage="Math.min(step.rate, 100)" :show-text="false" :stroke-width="7" />
+              <small>{{ step.rate }}%</small>
+            </div>
+          </div>
         </div>
+        <div v-if="overview.top_assets.length" class="overview-top" title="按使用次数排序">
+          <span class="top-label">使用次数排行</span>
+          <el-table :data="overview.top_assets.slice(0, 5)" size="small" class="top-assets-table">
+            <el-table-column type="index" width="48" />
+            <el-table-column prop="name" label="素材" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="usage_count" label="使用次数" width="100" />
+            <el-table-column prop="successful_usage_count" label="成功次数" width="100" />
+            <el-table-column label="成功率" width="100"><template #default="{ row }">{{ row.usage_count ? Math.round(row.successful_usage_count * 100 / row.usage_count) : 0 }}%</template></el-table-column>
+          </el-table>
+        </div>
+        <div v-if="performanceOverview?.has_data" class="overview-performance">
+          <div class="performance-title">平台效果排行 <span>按展示量排序 · {{ performanceOverview.latest_synced_at ? `最近同步 ${formatUploadedAt(performanceOverview.latest_synced_at)}` : '同步时间未知' }}</span></div>
+          <el-table :data="performanceOverview.items.slice(0, 10)" size="small">
+            <el-table-column type="index" width="48" />
+            <el-table-column prop="name" label="素材" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="currency" label="币种" width="70" />
+            <el-table-column label="消耗" width="105"><template #default="{ row }">{{ formatMajorMoney(row.spend, row.currency) }}</template></el-table-column>
+            <el-table-column prop="impressions" label="展示" width="90" />
+            <el-table-column prop="clicks" label="点击" width="80" />
+            <el-table-column label="CTR" width="75"><template #default="{ row }">{{ formatPercent(row.ctr) }}</template></el-table-column>
+            <el-table-column label="CPA" width="90"><template #default="{ row }">{{ formatMajorMoney(row.cpa, row.currency) }}</template></el-table-column>
+            <el-table-column label="ROAS" width="75"><template #default="{ row }">{{ formatRatio(row.roas) }}</template></el-table-column>
+          </el-table>
+        </div>
+        <div v-else-if="performanceOverviewError" class="platform-empty platform-error">
+          平台 Insights 加载失败，请稍后重试。
+          <el-button link type="primary" size="small" @click="loadOverview">重试</el-button>
+        </div>
+        <div v-else-if="performanceOverview" class="platform-empty">暂无平台 Insights：素材尚未建立广告映射，或所选区间内尚未完成数据同步。</div>
       </div>
 
       <div v-if="selectedIds.length" class="bulk-bar">
@@ -100,11 +167,16 @@
           <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
         </el-select>
         <el-button type="primary" size="small" @click="moveSelected">移动</el-button>
+        <el-button size="small" :loading="bulkSyncing" @click="syncSelected">同步账户</el-button>
+        <el-select v-model="batchTagId" placeholder="覆盖标签" clearable style="width: 160px">
+          <el-option v-for="tag in tags" :key="tag.id" :label="tag.name" :value="tag.id" />
+        </el-select>
+        <el-button size="small" :disabled="!batchTagId" @click="applyBatchTag">覆盖标签</el-button>
         <el-button size="small" @click="selectedIds = []">取消选择</el-button>
       </div>
-      <div v-loading="loading" class="grid">
-        <el-empty v-if="!list.length" description="暂无素材，点击右上角上传" />
-        <div v-for="item in list" :key="item.id" class="card">
+      <div v-loading="loading" v-if="viewMode === 'card'" class="grid">
+        <el-empty v-if="!filteredList.length" description="暂无符合条件的素材" />
+        <div v-for="item in filteredList" :key="item.id" class="card">
           <el-checkbox v-if="item.can_edit" v-model="selectedIds" :label="item.id" class="asset-check"><span /></el-checkbox>
           <div class="thumb" @click="openPreview(item)">
             <img v-if="item.asset_type === 'image' && previewUrls[item.id]?.url" :src="previewUrls[item.id].url" alt="" />
@@ -118,9 +190,9 @@
             </div>
           </div>
           <div class="info">
-            <div class="name-row"><div class="name" :title="item.name">{{ item.name }}</div><span class="ready-dot" :class="{ failed: !isAssetReady(item) }" /></div>
+            <div class="name-row"><div class="name" :title="item.name">{{ item.name }}</div><el-tag size="small" effect="plain">V{{ item.version_number || 1 }}</el-tag><span class="ready-dot" :class="{ failed: !isAssetReady(item) }" /></div>
             <div class="uploader" :title="item.uploader_email || undefined">
-              上传人：{{ item.uploader_name || '系统' }} · {{ formatUploadedAt(item.uploaded_at || item.created_at) }}
+              负责人：{{ item.uploader_name || '系统' }} · {{ formatUploadedAt(item.uploaded_at || item.created_at) }}
             </div>
             <div class="asset-stats clickable" @click.stop="openStats(item)">
               <span>绑定 <b>{{ item.ready_binding_count || 0 }}/{{ item.binding_count || 0 }}</b></span>
@@ -157,6 +229,7 @@
             <el-button link type="primary" size="small" :disabled="!isAssetReady(item)" @click="openBindings(item)">查看映射</el-button>
             <el-button link type="success" size="small" :disabled="!isAssetReady(item)" @click="syncAllAccounts(item)">同步账户</el-button>
             <el-button v-if="item.can_edit" link size="small" @click="refreshMetadata(item)">刷新</el-button>
+            <el-button v-if="item.can_edit && isAssetReady(item)" link type="primary" size="small" @click="beginNewVersion(item)">新版本</el-button>
             <el-button
               v-if="item.can_edit && ['FAILED', 'PENDING', 'UPLOADING'].includes(String(item.status || '').toUpperCase())"
               link
@@ -169,6 +242,17 @@
           </div>
         </div>
       </div>
+      <el-table v-else v-loading="loading" :data="filteredList" class="asset-table" row-key="id" @row-click="openStats" @selection-change="onTableSelectionChange">
+        <el-table-column type="selection" width="48" />
+        <el-table-column label="素材" min-width="280">
+          <template #default="{ row }"><div class="table-asset"><img v-if="row.asset_type === 'image' && (previewUrls[row.id]?.url || row.url)" :src="previewUrls[row.id]?.url || row.url || ''" /><div><b>{{ row.name }} <el-tag size="small" effect="plain">V{{ row.version_number || 1 }}</el-tag></b><small>{{ row.asset_type === 'image' ? '图片' : '视频' }} · {{ formatSize(row.size) }}</small></div></div></template>
+        </el-table-column>
+        <el-table-column label="负责人" width="140"><template #default="{ row }">{{ row.uploader_name || '系统' }}</template></el-table-column>
+        <el-table-column label="使用关系" width="180"><template #default="{ row }"><span>账户 {{ row.ready_binding_count || 0 }}/{{ row.binding_count || 0 }}</span><br /><span>投放 {{ row.successful_publish_count || 0 }}/{{ row.publish_count || 0 }}</span></template></el-table-column>
+        <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag size="small" :type="statusTagType(row)">{{ statusLabel(row) }}</el-tag></template></el-table-column>
+        <el-table-column label="最近使用" width="170"><template #default="{ row }">{{ formatUploadedAt(row.last_used_at) }}</template></el-table-column>
+        <el-table-column label="操作" width="110" fixed="right"><template #default="{ row }"><el-button link type="primary" @click.stop="openStats(row)">使用详情</el-button></template></el-table-column>
+      </el-table>
     </el-card>
     <el-dialog v-model="createGroupVisible" title="新建素材分组" width="420px">
       <el-form label-width="80px">
@@ -231,6 +315,49 @@
           <el-descriptions-item label="失败">{{ usageStats.failed_usage_count }}</el-descriptions-item>
           <el-descriptions-item label="最近使用">{{ formatUploadedAt(usageStats.last_used_at) }}</el-descriptions-item>
         </el-descriptions>
+        <div class="stats-section-title">平台效果 <span class="stats-section-note">真实广告级 Insights，金额按币种分组</span></div>
+        <el-alert
+          v-if="performanceStatsError"
+          type="error"
+          :closable="false"
+          show-icon
+          title="平台 Insights 加载失败"
+          description="请稍后重试，当前显示的本地使用统计不受影响。"
+        />
+        <el-alert
+          v-else-if="!performanceStats?.has_data"
+          type="info"
+          :closable="false"
+          show-icon
+          title="暂无平台 Insights"
+          description="当前素材尚未建立广告级数据映射，或所选区间内尚未完成平台数据同步。"
+        />
+        <template v-else>
+          <div class="platform-data-note">{{ performanceStats?.data_scope_note }}<span v-if="performanceStats?.latest_synced_at"> · 最近同步 {{ formatUploadedAt(performanceStats.latest_synced_at) }}</span></div>
+          <el-table :data="performanceStats?.items || []" size="small">
+            <el-table-column prop="currency" label="币种" width="75" />
+            <el-table-column label="消耗" width="105"><template #default="{ row }">{{ formatMajorMoney(row.spend, row.currency) }}</template></el-table-column>
+            <el-table-column prop="impressions" label="展示" width="85" />
+            <el-table-column prop="clicks" label="点击" width="75" />
+            <el-table-column label="CTR" width="75"><template #default="{ row }">{{ formatPercent(row.ctr) }}</template></el-table-column>
+            <el-table-column label="转化" width="75"><template #default="{ row }">{{ row.conversions }}</template></el-table-column>
+            <el-table-column label="CPA" width="90"><template #default="{ row }">{{ formatMajorMoney(row.cpa, row.currency) }}</template></el-table-column>
+            <el-table-column label="ROAS" width="75"><template #default="{ row }">{{ formatRatio(row.roas) }}</template></el-table-column>
+            <el-table-column prop="latest_date" label="数据日期" min-width="110" />
+          </el-table>
+          <div v-if="performanceStats?.series.length" class="stats-section-title">平台每日趋势</div>
+          <el-table v-if="performanceStats?.series.length" :data="performanceStats.series" size="small" max-height="260">
+            <el-table-column prop="date" label="日期" width="110" />
+            <el-table-column prop="currency" label="币种" width="70" />
+            <el-table-column label="消耗" width="105"><template #default="{ row }">{{ formatMajorMoney(row.spend, row.currency) }}</template></el-table-column>
+            <el-table-column prop="impressions" label="展示" width="85" />
+            <el-table-column prop="clicks" label="点击" width="75" />
+            <el-table-column label="CTR" width="75"><template #default="{ row }">{{ formatPercent(row.ctr) }}</template></el-table-column>
+            <el-table-column label="转化" width="75"><template #default="{ row }">{{ row.conversions }}</template></el-table-column>
+            <el-table-column label="CPA" width="90"><template #default="{ row }">{{ formatMajorMoney(row.cpa, row.currency) }}</template></el-table-column>
+            <el-table-column label="ROAS" width="75"><template #default="{ row }">{{ formatRatio(row.roas) }}</template></el-table-column>
+          </el-table>
+        </template>
         <el-table :data="usageStats.by_account" size="small" style="margin-top:16px">
           <el-table-column prop="account_name" label="广告账户" min-width="180" />
           <el-table-column prop="usage_count" label="使用次数" width="100" />
@@ -247,6 +374,14 @@
           <el-table-column prop="failed_usage_count" label="失败" width="90" />
         </el-table>
         <el-empty v-if="!usageStats.daily.length" description="所选区间暂无每日使用记录" />
+        <div v-if="versions.length" class="stats-section-title">版本历史</div>
+        <el-table v-if="versions.length" :data="versions" size="small">
+          <el-table-column label="版本" width="100"><template #default="{ row }"><el-tag size="small" :type="row.is_current ? 'success' : 'info'">V{{ row.version_number || 1 }}</el-tag></template></el-table-column>
+          <el-table-column prop="name" label="文件" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="status" label="状态" width="100" />
+          <el-table-column label="上传时间" width="170"><template #default="{ row }">{{ formatUploadedAt(row.created_at) }}</template></el-table-column>
+          <el-table-column label="操作" width="110"><template #default="{ row }"><el-button v-if="!row.is_current && row.can_edit" link type="primary" @click="setCurrentVersion(row)">设为当前</el-button><span v-else-if="row.is_current" class="current-version">当前版本</span></template></el-table-column>
+        </el-table>
       </template>
     </el-dialog>
     <el-dialog v-model="failureVisible" title="素材上传失败原因" width="620px">
@@ -268,10 +403,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { UploadFilled, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { mediaApi, type MediaItem, type MediaOverviewStats, type MediaUsageStats, type CreativeAssetGroup, type CreativeAssetTag } from '@/api/media'
+import { mediaApi, type MediaItem, type MediaOverviewStats, type MediaUsageStats, type MediaPerformanceStats, type CreativeAssetGroup, type CreativeAssetTag, type MediaStatusFilter } from '@/api/media'
 import { accountApi, type AdAccountItem } from '@/api/admin'
 
 const list = ref<MediaItem[]>([])
@@ -281,12 +416,53 @@ const filterAccount = ref('')
 const uploadAccountId = ref('')
 const filterGroup = ref('')
 const filterTag = ref('')
-const overviewRange = ref<[string, string] | null>(null)
+const filterStatus = ref<MediaStatusFilter | ''>('')
+const searchKeyword = ref('')
+const viewMode = ref<'card' | 'list'>('card')
+const workspaceMode = ref<'mine' | 'team' | 'testing' | 'archive'>('team')
+const savedFilterKey = 'fb-ads-material-view'
+const restoreSavedView = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(savedFilterKey) || '{}')
+    if (['mine', 'team', 'testing', 'archive'].includes(saved.workspaceMode)) workspaceMode.value = saved.workspaceMode
+    if (['card', 'list'].includes(saved.viewMode)) viewMode.value = saved.viewMode
+    if (typeof saved.searchKeyword === 'string') searchKeyword.value = saved.searchKeyword
+    if (typeof saved.filterType === 'string') filterType.value = saved.filterType
+    if (typeof saved.filterAccount === 'string') filterAccount.value = saved.filterAccount
+    if (typeof saved.filterGroup === 'string') filterGroup.value = saved.filterGroup
+    if (typeof saved.filterStatus === 'string') filterStatus.value = saved.filterStatus
+    if (typeof saved.filterTag === 'string') filterTag.value = saved.filterTag
+  } catch { /* 忽略损坏的本地视图配置 */ }
+}
+watch([workspaceMode, viewMode, searchKeyword, filterType, filterAccount, filterGroup, filterStatus, filterTag], () => {
+  localStorage.setItem(savedFilterKey, JSON.stringify({
+    workspaceMode: workspaceMode.value, viewMode: viewMode.value, searchKeyword: searchKeyword.value,
+    filterType: filterType.value, filterAccount: filterAccount.value, filterGroup: filterGroup.value,
+    filterStatus: filterStatus.value, filterTag: filterTag.value,
+  }))
+})
+const toDateInput = (value: Date) => {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+const recentDateRange = (days = 30): [string, string] => {
+  const end = new Date()
+  const start = new Date(end)
+  start.setDate(end.getDate() - days + 1)
+  return [toDateInput(start), toDateInput(end)]
+}
+const overviewRange = ref<[string, string] | null>(recentDateRange())
 const overview = ref<MediaOverviewStats | null>(null)
+const performanceOverview = ref<MediaPerformanceStats | null>(null)
+const performanceOverviewError = ref(false)
 const groups = ref<CreativeAssetGroup[]>([])
 const tags = ref<CreativeAssetTag[]>([])
 const selectedIds = ref<string[]>([])
 const moveTargetGroup = ref('')
+const batchTagId = ref('')
+const bulkSyncing = ref(false)
 const createGroupVisible = ref(false)
 const createTagVisible = ref(false)
 const newTagName = ref('')
@@ -304,6 +480,7 @@ const uploadProgress = ref(0)
 const uploadStage = ref('准备上传')
 const retryAssetId = ref('')
 const retryFileInput = ref<HTMLInputElement | null>(null)
+const versionFileInput = ref<HTMLInputElement | null>(null)
 const bindingVisible = ref(false)
 const bindingLoading = ref(false)
 const bindings = ref<any[]>([])
@@ -312,7 +489,10 @@ const statsVisible = ref(false)
 const statsLoading = ref(false)
 const statsAsset = ref<MediaItem | null>(null)
 const usageStats = ref<MediaUsageStats | null>(null)
-const statsRange = ref<[string, string] | null>(null)
+const performanceStats = ref<MediaPerformanceStats | null>(null)
+const performanceStatsError = ref(false)
+const versions = ref<MediaItem[]>([])
+const statsRange = ref<[string, string] | null>(recentDateRange())
 const failureVisible = ref(false)
 const failureAsset = ref<MediaItem | null>(null)
 const previewUrls = reactive<Record<string, { url: string; expiresAt: number }>>({})
@@ -321,6 +501,39 @@ const previewAsset = ref<MediaItem | null>(null)
 const previewOriginalUrl = ref('')
 let bindingTimer: number | null = null
 let assetPollingTimer: number | null = null
+
+const filteredList = computed(() => {
+  const keyword = searchKeyword.value.trim().toLowerCase()
+  return list.value.filter((item) => {
+    const text = [item.name, item.original_name, item.uploader_name, ...(item.tag_ids || []).map(tagName)].filter(Boolean).join(' ').toLowerCase()
+    if (keyword && !text.includes(keyword)) return false
+    const publishCount = item.publish_count || 0
+    if (filterStatus.value === 'unused' && (item.usage_count || publishCount) > 0) return false
+    if (filterStatus.value === 'delivering' && publishCount === 0) return false
+    if (filterStatus.value === 'processing' && !isAssetProcessing(item)) return false
+    if (filterStatus.value === 'failed' && !['FAILED', 'failed'].includes(item.status)) return false
+    if (filterStatus.value === 'ready' && !isAssetReady(item)) return false
+    if (workspaceMode.value === 'testing' && publishCount === 0) return false
+    if (workspaceMode.value === 'mine' && !item.is_owner) return false
+    if (workspaceMode.value === 'archive' && item.status !== 'ARCHIVED') return false
+    return true
+  })
+})
+
+const statusLabel = (item: MediaItem) => {
+  if (item.status === 'ARCHIVED') return '已归档'
+  if (isAssetProcessing(item)) return '处理中'
+  if (['FAILED', 'failed'].includes(item.status)) return '失败'
+  if ((item.publish_count || 0) > 0) return '正在投放'
+  return isAssetReady(item) ? '可投放' : '待处理'
+}
+const statusTagType = (item: MediaItem) => {
+  const label = statusLabel(item)
+  return label === '正在投放' || label === '可投放' ? 'success' : label === '失败' ? 'danger' : label === '处理中' ? 'info' : 'warning'
+}
+const onTableSelectionChange = (rows: MediaItem[]) => {
+  selectedIds.value = rows.filter(item => item.can_edit).map(item => item.id)
+}
 
 const isAssetReady = (item: MediaItem) => item.processing_status === 'READY' || (!item.processing_status && item.status === 'READY')
 const isAssetProcessing = (item: MediaItem) =>
@@ -347,16 +560,41 @@ const syncAssetPolling = () => {
 }
 
 const loadOverview = async () => {
+  performanceOverviewError.value = false
   try {
     const [start_date, end_date] = overviewRange.value || []
-    overview.value = (await mediaApi.statsOverview({
+    const params = {
       start_date,
       end_date,
       asset_type: filterType.value || undefined,
       account_id: filterAccount.value || undefined,
-    })).data
+      group_id: filterGroup.value || undefined,
+      tag_id: filterTag.value || undefined,
+      workspace_mode: workspaceMode.value,
+      status_filter: filterStatus.value || undefined,
+      include_archived: workspaceMode.value === 'archive' || undefined,
+    }
+    const [overviewResponse, performanceResponse] = await Promise.all([
+      mediaApi.statsOverview(params),
+      mediaApi.performance({
+        start_date,
+        end_date,
+        asset_type: filterType.value || undefined,
+        account_id: filterAccount.value || undefined,
+        group_id: filterGroup.value || undefined,
+        tag_id: filterTag.value || undefined,
+        workspace_mode: workspaceMode.value,
+        status_filter: filterStatus.value || undefined,
+        include_archived: workspaceMode.value === 'archive' || undefined,
+      }).catch(() => null),
+    ])
+    overview.value = overviewResponse.data
+    performanceOverview.value = performanceResponse?.data || null
+    performanceOverviewError.value = !performanceResponse
   } catch {
     overview.value = null
+    performanceOverview.value = null
+    performanceOverviewError.value = true
   }
 }
 
@@ -368,6 +606,9 @@ const load = async () => {
       account_id: filterAccount.value || undefined,
       group_id: filterGroup.value || undefined,
       tag_id: filterTag.value || undefined,
+      workspace_mode: workspaceMode.value,
+      status_filter: filterStatus.value || undefined,
+      include_archived: workspaceMode.value === 'archive' || undefined,
     })
     list.value = data
     await loadOverview()
@@ -392,9 +633,13 @@ const load = async () => {
   }
 }
 
+watch(workspaceMode, (next, previous) => {
+  if (next !== previous) void load()
+})
+
 // Element Plus 的 change 回调第二个参数是当前文件列表，不能当成 asset_id 传给后端。
 // 重传场景走独立的原生 file input，由 uploadFile 显式传入原素材 ID。
-const uploadFile = async (file: any, assetId = '') => {
+const uploadFile = async (file: any, assetId = '', versionOfAssetId = '') => {
   const raw: File = file.raw
   if (!raw) return
   const validation = await validateMediaFile(raw)
@@ -411,6 +656,7 @@ const uploadFile = async (file: any, assetId = '') => {
       account_id: uploadAccountId.value || undefined,
       group_id: filterGroup.value || undefined,
       asset_id: assetId || undefined,
+      version_of_asset_id: versionOfAssetId || undefined,
     }, (event) => {
       uploadStage.value = '上传 OSS'
       if (event.total) uploadProgress.value = Math.min(99, 20 + Math.round((event.loaded / event.total) * 80))
@@ -439,6 +685,22 @@ const uploadFile = async (file: any, assetId = '') => {
     uploading.value = false
     if (assetId) retryAssetId.value = ''
   }
+}
+
+const versionAssetId = ref('')
+const beginNewVersion = (item: MediaItem) => {
+  versionAssetId.value = item.id
+  ElMessage.info(`请选择 ${item.name} 的新版本文件`)
+  versionFileInput.value?.click()
+}
+const onVersionFileSelected = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const raw = input.files?.[0]
+  const assetId = versionAssetId.value
+  input.value = ''
+  versionAssetId.value = ''
+  if (!raw || !assetId) return
+  await uploadFile({ raw }, '', assetId)
 }
 
 const onSelect = async (file: any) => uploadFile(file)
@@ -546,7 +808,7 @@ const createTag = async () => {
 }
 
 const openMembers = () => {
-  memberGroupId.value = groups.value[0]?.id || ''
+  memberGroupId.value = filterGroup.value || groups.value[0]?.id || ''
   membersVisible.value = true
   loadMembers()
 }
@@ -577,6 +839,34 @@ const moveSelected = async () => {
     moveTargetGroup.value = ''
     await load()
   } catch { /* 全局拦截器提示错误 */ }
+}
+
+const applyBatchTag = async () => {
+  if (!batchTagId.value || !selectedIds.value.length) return
+  try {
+    await mediaApi.tags.setBatch(selectedIds.value, [batchTagId.value])
+    const tagId = batchTagId.value
+    list.value.forEach((item) => {
+      if (selectedIds.value.includes(item.id)) item.tag_ids = [tagId]
+    })
+    selectedIds.value = []
+    batchTagId.value = ''
+    ElMessage.success('已为选中素材设置标签')
+  } catch { /* 全局拦截器提示错误 */ }
+}
+
+const syncSelected = async () => {
+  if (!selectedIds.value.length) return
+  if (!accounts.value.length) { ElMessage.warning('暂无可用广告账户'); return }
+  const readyIds = new Set(list.value.filter(item => selectedIds.value.includes(item.id) && isAssetReady(item)).map(item => item.id))
+  if (!readyIds.size) { ElMessage.warning('选中的素材均未就绪，无法同步'); return }
+  bulkSyncing.value = true
+  try {
+    await Promise.all(Array.from(readyIds).map(id => mediaApi.syncToAccounts(id, accounts.value.map(account => account.id))))
+    ElMessage.success(`已提交 ${readyIds.size} 个素材的账户同步任务`)
+    await load()
+  } catch { /* 全局拦截器提示错误 */ }
+  finally { bulkSyncing.value = false }
 }
 
 const syncAllAccounts = async (item: MediaItem) => {
@@ -619,9 +909,25 @@ const refreshBindings = async () => { if (!bindingAssetId.value) return; const {
 const reloadStats = async () => {
   if (!statsAsset.value) return
   statsLoading.value = true
+  performanceStatsError.value = false
   try {
     const [start_date, end_date] = statsRange.value || []
-    usageStats.value = (await mediaApi.stats(statsAsset.value.id, { start_date, end_date })).data
+    const params = { start_date, end_date }
+    const [usageResponse] = await Promise.all([
+      mediaApi.stats(statsAsset.value.id, params),
+      mediaApi.performance({
+        asset_id: statsAsset.value.id,
+        start_date,
+        end_date,
+        include_archived: statsAsset.value.status === 'ARCHIVED' || undefined,
+      }).then(({ data }) => {
+        performanceStats.value = data
+      }).catch(() => {
+        performanceStats.value = null
+        performanceStatsError.value = true
+      }),
+    ])
+    usageStats.value = usageResponse.data
   } catch {
     ElMessage.error('素材统计加载失败')
   } finally {
@@ -630,10 +936,22 @@ const reloadStats = async () => {
 }
 const openStats = async (item: MediaItem) => {
   statsAsset.value = item
-  statsRange.value = null
+  statsRange.value = recentDateRange()
   usageStats.value = null
+  performanceStats.value = null
+  performanceStatsError.value = false
+  versions.value = []
   statsVisible.value = true
-  await reloadStats()
+  await Promise.all([reloadStats(), mediaApi.versions(item.id).then(({ data }) => { versions.value = data }).catch(() => { versions.value = [] })])
+}
+const setCurrentVersion = async (version: MediaItem) => {
+  if (!statsAsset.value) return
+  try {
+    await mediaApi.setCurrentVersion(statsAsset.value.id, version.id)
+    versions.value = versions.value.map(item => ({ ...item, is_current: item.id === version.id }))
+    await load()
+    ElMessage.success(`已将 V${version.version_number || 1} 设为当前版本`)
+  } catch { /* 全局拦截器提示错误 */ }
 }
 const openBindings = async (item: MediaItem) => {
   bindingAssetId.value = item.id
@@ -682,8 +1000,16 @@ const formatUploadedAt = (value?: string | null) => {
     minute: '2-digit',
   }).format(date)
 }
+const formatPercent = (value?: number | null) => value == null ? '—' : `${Number(value).toFixed(2)}%`
+const formatRatio = (value?: number | null) => value == null ? '—' : Number(value).toFixed(2)
+const formatMajorMoney = (value?: number | null, currency?: string | null) => {
+  if (value == null) return '—'
+  const noDecimal = ['JPY', 'KRW', 'VND'].includes(String(currency || '').toUpperCase())
+  return `${currency || ''} ${Number(value).toFixed(noDecimal ? 0 : 2)}`.trim()
+}
 
 onMounted(async () => {
+  restoreSavedView()
   try {
     const { data } = await accountApi.list({ page: 1, page_size: 100 })
     accounts.value = data || []
@@ -727,6 +1053,14 @@ onMounted(async () => {
 }
 .shared-hint { display: flex; align-items: center; gap: 7px; margin-top: 16px; color: #718096; font-size: 12px; }
 .hint-dot { width: 7px; height: 7px; border-radius: 50%; background: #35b779; box-shadow: 0 0 0 4px #e8f7ef; }
+.workspace-tabs { display: flex; gap: 4px; margin: 18px 0 12px; border-bottom: 1px solid #edf1f7; }
+.workspace-tabs button { padding: 9px 16px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #718096; cursor: pointer; font-size: 13px; }
+.workspace-tabs button:hover, .workspace-tabs button.active { border-bottom-color: #409eff; color: #2f75c5; font-weight: 600; }
+.workspace-context { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; padding: 12px 14px; border: 1px solid #e4ecf7; border-radius: 10px; background: #f8fbff; }
+.context-label { margin-right: 8px; color: #52657f; font-size: 12px; }
+.workspace-select { width: 245px; }
+.visibility-tag { margin-left: 10px; }
+.context-help { flex: 1; color: #8796a9; font-size: 12px; }
 .upload-progress-panel { margin-top: 14px; padding: 12px 14px; border: 1px solid #dbeafe; border-radius: 10px; background: #f6faff; }
 .upload-progress-head { display: flex; justify-content: space-between; margin-bottom: 7px; color: #486581; font-size: 12px; font-weight: 600; }
 .upload-progress-panel small { display: block; margin-top: 7px; color: #8a9aad; font-size: 11px; }
@@ -741,11 +1075,14 @@ onMounted(async () => {
   border-radius: 12px;
   background: #f8fafc;
   .filter-title { margin-right: 2px; color: #506176; font-size: 13px; font-weight: 600; }
+  .filter-search { width: 235px; }
+  .filter-status { width: 125px; }
   .filter-type { width: 110px; }
   .filter-account { width: 245px; }
   .filter-group { width: 170px; }
   .filter-tag { width: 150px; }
   .overview-picker { width: 250px; margin-left: auto; }
+  .view-switch { margin-left: auto; }
 }
 .overview-section { margin-bottom: 20px; }
 .overview-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
@@ -757,11 +1094,30 @@ onMounted(async () => {
   span, small { display: block; color: #8a98aa; font-size: 12px; }
   strong { display: block; margin: 8px 0 4px; color: #172b4d; font-size: 26px; line-height: 1; }
   em { color: #9aa8b9; font-size: 14px; font-style: normal; font-weight: 500; }
+  &.highlight strong { color: #3678d4; }
   &.success strong { color: #16a36a; }
 }
+.overview-funnel { margin-top: 12px; padding: 14px 16px; border: 1px solid #edf1f7; border-radius: 12px; background: #fff; }
+.funnel-title { color: #344b6a; font-size: 13px; font-weight: 600; }
+.funnel-title span { margin-left: 8px; color: #97a4b5; font-size: 11px; font-weight: 400; }
+.funnel-list { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 16px; margin-top: 14px; }
+.funnel-step { position: relative; min-width: 0; }
+.funnel-label { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 7px; color: #718198; font-size: 12px; }
+.funnel-label b { color: #29486e; font-size: 13px; }
+.funnel-step small { display: block; margin-top: 5px; color: #91a0b3; font-size: 11px; text-align: right; }
 .overview-top { overflow: hidden; margin-top: 12px; padding: 10px 14px; border-radius: 9px; background: #f5f8fc; color: #65758b; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .top-label { margin-right: 8px; color: #344b6a; font-weight: 600; }
+.overview-performance { margin-top: 12px; padding: 12px 14px; border: 1px solid #e6eef9; border-radius: 10px; background: #fbfdff; }
+.performance-title { margin-bottom: 8px; color: #344b6a; font-size: 13px; font-weight: 600; }
+.performance-title span { margin-left: 8px; color: #97a4b5; font-size: 11px; font-weight: 400; }
+.platform-empty { margin-top: 12px; padding: 13px 16px; border-radius: 9px; background: #f7f9fc; color: #8a98aa; font-size: 12px; }
 .bulk-bar { display:flex; align-items:center; gap:10px; margin-bottom:12px; padding: 10px 14px; border: 1px solid #dbeafe; border-radius: 10px; background: #f5f9ff; color:#506176; font-size:13px; }
+.asset-table { margin-top: 4px; }
+.table-asset { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.table-asset img { width: 54px; height: 42px; border-radius: 6px; object-fit: cover; background: #eef3f9; }
+.table-asset b, .table-asset small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.table-asset b { color: #203552; font-size: 13px; }
+.table-asset small { margin-top: 4px; color: #94a1b2; font-size: 11px; }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
@@ -813,6 +1169,8 @@ onMounted(async () => {
 }
 .stats-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; color: #606266; font-size: 13px; }
 .stats-section-title { margin: 18px 0 8px; color: #303133; font-size: 14px; font-weight: 600; }
+.stats-section-note { margin-left: 7px; color: #97a4b5; font-size: 11px; font-weight: 400; }
+.platform-data-note { margin-bottom: 8px; color: #8292a6; font-size: 11px; line-height: 1.5; }
 .member-add { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
 .clickable { cursor: pointer; }
 .error-detail { white-space: pre-wrap; word-break: break-word; margin: 0; font-family: inherit; color: #f56c6c; }
@@ -822,6 +1180,7 @@ onMounted(async () => {
   .header-actions { justify-content: flex-start; }
   .filters .overview-picker { margin-left: 0; }
   .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .funnel-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 680px) {
   .library-shell :deep(.el-card__header), .library-shell :deep(.el-card__body) { padding-right: 16px; padding-left: 16px; }
@@ -829,6 +1188,8 @@ onMounted(async () => {
   .header-actions .el-upload .el-button { width: 100%; }
   .filters > * { width: 100% !important; margin-left: 0 !important; }
   .overview-grid { grid-template-columns: 1fr 1fr; }
+  .funnel-title span { display: block; margin: 5px 0 0; line-height: 1.4; }
+  .funnel-list { grid-template-columns: 1fr; gap: 10px; }
   .grid { grid-template-columns: 1fr; }
 }
 </style>

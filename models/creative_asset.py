@@ -20,6 +20,10 @@ class CreativeAsset(TenantMixin, Base):
     created_by = Column(String(50), ForeignKey("users.id"), nullable=True, index=True, comment="上传用户")
     visibility = Column(String(20), nullable=False, default="TENANT", server_default="TENANT", comment="当前按租户共享；保留字段供后续扩展")
     group_id = Column(String(50), ForeignKey("creative_asset_groups.id", ondelete="SET NULL"), nullable=True, index=True)
+    version_group_id = Column(String(50), nullable=True, index=True, comment="同一素材版本链 ID")
+    version_number = Column(Integer, nullable=False, default=1, server_default="1", comment="素材版本号")
+    is_current = Column(Boolean, nullable=False, default=True, server_default="true", comment="版本链当前使用版本")
+    previous_version_id = Column(String(50), ForeignKey("creative_assets.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # 素材类型
     asset_type = Column(String(20), nullable=False, comment="image / video")
@@ -58,6 +62,10 @@ class CreativeAsset(TenantMixin, Base):
     duration = Column(Float, comment="视频时长（秒）")
 
     status = Column(String(20), default="PENDING", comment="PENDING/UPLOADING/PROCESSING/READY/FAILED/ARCHIVED")
+    review_status = Column(String(20), nullable=False, default="APPROVED", server_default="APPROVED", comment="PENDING/APPROVED/REJECTED；当前默认通过")
+    reviewed_by = Column(String(50), ForeignKey("users.id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    review_note = Column(Text, nullable=True)
     retry_count = Column(Integer, default=0, nullable=False)
     error = Column(Text, comment="上传失败原因")
 
@@ -81,6 +89,10 @@ class CreativeAsset(TenantMixin, Base):
             "created_by": self.created_by,
             "visibility": self.visibility,
             "group_id": self.group_id,
+            "version_group_id": self.version_group_id or self.id,
+            "version_number": self.version_number or 1,
+            "is_current": bool(self.is_current),
+            "previous_version_id": self.previous_version_id,
             "tag_ids": [tag.id for tag in getattr(self, "tags", [])],
             "asset_type": self.asset_type,
             "meta_account_id": self.meta_account_id,
@@ -103,6 +115,10 @@ class CreativeAsset(TenantMixin, Base):
             "mime_type": self.mime_type,
             "duration": self.duration,
             "status": self.status,
+            "review_status": self.review_status or "APPROVED",
+            "reviewed_by": self.reviewed_by,
+            "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "review_note": self.review_note,
             "retry_count": self.retry_count,
             "error": self.error,
             "created_at": self.created_at.isoformat() if self.created_at else None,

@@ -18,7 +18,12 @@ from models import CampaignTemplate, MetaPage, User
 from services.creative_format import normalize_creative_format
 from services.meta_creative_options import normalize_cta
 from services.meta_delivery_rules import default_optimization_goal
-from services.targeting_catalog import normalize_targeting, validate_audience_refs
+from services.targeting_catalog import (
+    normalize_targeting,
+    placement_preflight_errors,
+    targeting_preflight_errors,
+    validate_audience_refs,
+)
 
 router = APIRouter(prefix="/api/v1/templates", tags=["投放模板"])
 
@@ -63,9 +68,12 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         normalize_targeting(targeting)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    countries = ((targeting.get("geo_locations") or {}).get("countries") or [])
-    if not countries:
-        raise HTTPException(status_code=400, detail="定向必须至少选择一个国家")
+    targeting_errors = targeting_preflight_errors("模板定向", targeting)
+    if targeting_errors:
+        raise HTTPException(status_code=400, detail=targeting_errors[0]["message"])
+    geo_locations = targeting.get("geo_locations") or {}
+    if not any(geo_locations.get(field) for field in ("countries", "regions", "cities", "zips", "custom_locations")):
+        raise HTTPException(status_code=400, detail="定向必须至少选择一个国家、地区、城市、邮编或自定义位置")
     if targeting.get("age_min") is not None and targeting.get("age_max") is not None and int(targeting["age_min"]) > int(targeting["age_max"]):
         raise HTTPException(status_code=400, detail="年龄范围无效：最小年龄不能大于最大年龄")
 
@@ -107,9 +115,12 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
             normalize_targeting(adset_targeting)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"广告组 {index}：{exc}") from exc
-        adset_geo = (adset_targeting.get("geo_locations") or {}).get("countries") or []
-        if not adset_geo:
-            raise HTTPException(status_code=400, detail=f"广告组 {index} 至少配置一个国家/地区")
+        targeting_errors = targeting_preflight_errors(f"广告组 {index} 定向", adset_targeting)
+        if targeting_errors:
+            raise HTTPException(status_code=400, detail=targeting_errors[0]["message"])
+        adset_geo = adset_targeting.get("geo_locations") or {}
+        if not any(adset_geo.get(field) for field in ("countries", "regions", "cities", "zips", "custom_locations")):
+            raise HTTPException(status_code=400, detail=f"广告组 {index} 至少配置一个国家、地区、城市、邮编或自定义位置")
         if adset_targeting.get("age_min") is not None and adset_targeting.get("age_max") is not None and int(adset_targeting["age_min"]) > int(adset_targeting["age_max"]):
             raise HTTPException(status_code=400, detail=f"广告组 {index} 年龄范围无效")
         automation = adset_targeting.get("targeting_automation") or {"advantage_audience": adset.get("advantage_audience", 1)}
@@ -120,6 +131,9 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         if adset_strategy in {"LOWEST_COST_WITH_BID_CAP", "COST_CAP"} and (adset_amount is None or float(adset_amount) <= 0):
             raise HTTPException(status_code=400, detail=f"广告组 {index} 的 {adset_strategy} 必须配置 bid_amount")
         adset_placements = adset.get("placement") or {}
+        placement_errors = placement_preflight_errors(f"广告组 {index} 版位", adset_placements)
+        if placement_errors:
+            raise HTTPException(status_code=400, detail=placement_errors[0]["message"])
         for key in ("publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions"):
             if adset_placements.get(key) is not None and not isinstance(adset_placements.get(key), list):
                 raise HTTPException(status_code=400, detail=f"广告组 {index} 的版位字段 {key} 必须是数组")

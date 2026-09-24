@@ -9,6 +9,7 @@
             <template #title><el-icon><Collection /></el-icon><span>内容管理</span></template>
             <el-menu-item index="material"><el-icon><Picture /></el-icon><span>素材库</span></el-menu-item>
             <el-menu-item index="templates"><el-icon><Collection /></el-icon><span>投放模板</span></el-menu-item>
+            <el-menu-item index="targeting"><el-icon><Collection /></el-icon><span>定向资产</span></el-menu-item>
             <el-menu-item v-if="canSeeSinanPromotions" index="sinan-promotions"><el-icon><Promotion /></el-icon><span>司南推广链</span></el-menu-item>
           </el-sub-menu>
           <el-sub-menu index="delivery">

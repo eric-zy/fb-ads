@@ -60,6 +60,7 @@
       </el-tab-pane>
 
       <el-tab-pane label="操作审计" name="audit">
+        <div class="filters"><el-input v-model="auditResourceId" clearable placeholder="资源 ID（可选）" /><el-input v-model="auditAction" clearable placeholder="动作（可选）" /><el-select v-model="auditResourceType" clearable placeholder="资源类型"><el-option label="素材" value="creative_asset" /><el-option label="素材分组" value="creative_asset_group" /></el-select><el-button @click="load">筛选</el-button></div>
         <el-table :data="audits" stripe>
           <el-table-column prop="action" label="操作" />
           <el-table-column prop="resource_type" label="资源类型" />
@@ -87,6 +88,9 @@ const alerts = ref<SyncAlert[]>([])
 const deliveryActions = ref<DeliveryAction[]>([])
 const actionStatus = ref('')
 const connectorMode = ref(false)
+const auditResourceId = ref('')
+const auditAction = ref('')
+const auditResourceType = ref('')
 
 async function load() {
   loading.value = true
@@ -95,7 +99,7 @@ async function load() {
     if (tab.value === 'credentials' && connectorMode.value) tab.value = 'tasks'
     if (tab.value === 'tasks') tasks.value = (await operationsApi.syncTasks()).data
     if (tab.value === 'credentials') credentials.value = (await operationsApi.credentialHealth()).data
-    if (tab.value === 'audit') audits.value = (await operationsApi.auditLogs()).data
+    if (tab.value === 'audit') audits.value = (await operationsApi.auditLogs({ resource_id: auditResourceId.value || undefined, action: auditAction.value || undefined, resource_type: auditResourceType.value || undefined })).data
     if (tab.value === 'alerts') alerts.value = (await campaignsApi.alerts(100)).data
     if (tab.value === 'delivery-actions') deliveryActions.value = (await campaignsApi.deliveryActions(100, actionStatus.value || undefined)).data
   } finally {

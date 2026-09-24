@@ -210,6 +210,13 @@ docker compose run --rm api python -m alembic upgrade head
 docker compose run --rm api python -m alembic current
 ```
 
+包含投放实例幂等约束的版本会在迁移前检查本地 Campaign/AdSet/Ad 映射是否存在重复；
+检查失败时部署会停止，不会重启 API、Worker 或 Beat。处理重复映射后再重新执行部署：
+
+```bash
+docker compose run --rm api python scripts/check_reconciliation_duplicates.py
+```
+
 > 若 `alembic` 提示找不到，改用项目的初始化命令：
 > ```bash
 > docker compose exec api python cli.py init-database

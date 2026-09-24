@@ -185,9 +185,8 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     for index, creative in enumerate(creatives, 1):
         if not isinstance(creative, dict) or not creative.get("asset_id"):
             raise HTTPException(status_code=400, detail=f"广告创意 {index} 缺少素材 ID")
-        if not str(creative.get("primary_text") or "").strip():
-            raise HTTPException(status_code=400, detail=f"广告创意 {index} 缺少主文案")
-        if not str(creative.get("landing_url") or "").startswith(("http://", "https://")):
+        asset_type = str(creative.get("asset_type") or "image").lower()
+        if asset_type != "video" and not str(creative.get("landing_url") or "").startswith(("http://", "https://")):
             raise HTTPException(status_code=400, detail=f"广告创意 {index} 的落地页必须是 http/https 地址")
         try:
             normalized_cta = normalize_cta(creative.get("cta"))

@@ -48,6 +48,7 @@ from api import risk_control as risk_control_api
 from api import meta_targeting as meta_targeting_api
 from api import meta_audiences as meta_audiences_api
 from api import meta_tracking_assets as meta_tracking_assets_api
+from api.targeting_packages import region_router as region_groups_api_router, package_router as targeting_packages_api_router
 from core.auth import get_current_active_user, require_admin
 from core.middleware import (
     AuthEnforcementMiddleware,
@@ -205,6 +206,8 @@ app.include_router(risk_control_api.router)
 app.include_router(meta_targeting_api.router)
 app.include_router(meta_audiences_api.router)
 app.include_router(meta_tracking_assets_api.router)
+app.include_router(region_groups_api_router)
+app.include_router(targeting_packages_api_router)
 
 # ==================== 认证API ====================
 

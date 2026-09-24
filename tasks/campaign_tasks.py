@@ -43,6 +43,39 @@ from core.security import decrypt_token
 # 未到达终态的子项状态
 _ACTIVE_ITEM_STATUSES = [JobItemStatus.PENDING.value, JobItemStatus.RUNNING.value]
 
+
+def _resolve_adset_for_remote_ad(
+    remote_ad: dict,
+    *,
+    adsets_by_id: dict[str, AdSetInstance],
+    adsets_by_key: dict[str, AdSetInstance],
+    ordered_adsets: list[AdSetInstance],
+) -> AdSetInstance | None:
+    """按 Connector 返回的父级信息解析广告所属广告组。
+
+    新协议会在对象快照中保留 ``adset_id``；旧快照则可从稳定的
+    ``ad-{adset_index}-{creative_index}`` client_key 推导。多广告组场景
+    不再使用全局广告序号兜底，避免把广告静默挂到错误的广告组。
+    """
+    remote_adset_id = remote_ad.get("adset_id")
+    if remote_adset_id and str(remote_adset_id) in adsets_by_id:
+        return adsets_by_id[str(remote_adset_id)]
+
+    parent_key = remote_ad.get("adset_client_key")
+    if parent_key and str(parent_key) in adsets_by_key:
+        return adsets_by_key[str(parent_key)]
+
+    client_key = str(remote_ad.get("client_key") or "")
+    parts = client_key.split("-")
+    if len(parts) >= 3 and parts[0] == "ad" and parts[1].isdigit():
+        derived_key = f"adset-{parts[1]}"
+        if derived_key in adsets_by_key:
+            return adsets_by_key[derived_key]
+
+    # 单广告组的历史响应没有父级字段时仍可安全兼容；多广告组必须拒绝猜测。
+    return ordered_adsets[0] if len(ordered_adsets) == 1 else None
+
+
 @shared_task(
     bind=True,
     name="campaign.poll_connector_deployment",
@@ -87,6 +120,35 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
             remote_id,
             status or "EMPTY",
         )
+
+        # 回调和定时轮询可能同时拿到 SUCCESS。远程查询完成后再锁定本地
+        # 子项，避免两个 worker 同时创建 AdSet/Ad 实例。
+        item = (
+            db.query(CampaignJobItem)
+            .populate_existing()
+            .with_for_update()
+            .filter(CampaignJobItem.id == job_item_id)
+            .first()
+        )
+        if not item:
+            return {"status": "failed", "error": "任务项不存在"}
+        if item.status == JobItemStatus.SUCCESS.value:
+            return {
+                "status": "success",
+                "job_item_id": job_item_id,
+                "meta_campaign_id": item.meta_campaign_id,
+                "skipped": True,
+            }
+        persisted_status = (item.response_payload or {}).get("connector_status") or {}
+        persisted_value = str(persisted_status.get("status") or "").upper()
+        if (
+            persisted_status.get("source") == "callback"
+            and persisted_value in {"SUCCESS", "FAILED", "ERROR"}
+            and status not in {"SUCCESS", "FAILED", "ERROR"}
+        ):
+            # 防止较早发出的轮询结果覆盖较新的终态回调。
+            result = persisted_status
+            status = persisted_value
         item.response_payload = {**(item.response_payload or {}), "connector_status": result}
         if status in {"QUEUED", "RETRY", "RUNNING", "CAMPAIGN_CREATED", "ADSETS_CREATED", "CREATIVES_CREATED"}:
             db.commit()
@@ -170,14 +232,29 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
                 instance.name = campaign_name
         item.campaign_instance_id = instance.id
         adsets_by_key = {}
+        adsets_by_id = {}
+        ordered_adsets = []
         for pos, remote in enumerate(objects.get("adsets", []), 1):
             row = AdSetInstance(id=uuid.uuid4().hex, campaign_instance_id=instance.id, meta_adset_id=remote.get("id"), name=remote.get("client_key") or f"AdSet {pos}", status="PAUSED")
-            db.add(row); adsets_by_key[remote.get("client_key")] = row
+            db.add(row)
+            ordered_adsets.append(row)
+            if remote.get("client_key"):
+                adsets_by_key[str(remote["client_key"])] = row
+            if remote.get("id"):
+                adsets_by_id[str(remote["id"])] = row
         for pos, remote in enumerate(objects.get("ads", []), 1):
-            # 当前协议返回的 Ad client_key 为 ad-{adset}-{creative}，按顺序兜底挂到对应 AdSet。
-            adset = list(adsets_by_key.values())[min(pos - 1, len(adsets_by_key) - 1)] if adsets_by_key else None
-            if adset:
-                db.add(AdInstance(id=uuid.uuid4().hex, adset_instance_id=adset.id, meta_ad_id=remote.get("id"), name=remote.get("client_key") or f"Ad {pos}", status="PAUSED"))
+            adset = _resolve_adset_for_remote_ad(
+                remote,
+                adsets_by_id=adsets_by_id,
+                adsets_by_key=adsets_by_key,
+                ordered_adsets=ordered_adsets,
+            )
+            if not adset:
+                raise RuntimeError(
+                    "Connector 返回广告缺少可确认的父广告组: "
+                    f"{remote.get('client_key') or remote.get('id') or pos}"
+                )
+            db.add(AdInstance(id=uuid.uuid4().hex, adset_instance_id=adset.id, meta_ad_id=remote.get("id"), name=remote.get("client_key") or f"Ad {pos}", status="PAUSED"))
         template = item.job.template if item.job else None
         record_template_usage(
             db,

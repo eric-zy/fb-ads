@@ -209,6 +209,22 @@
             <el-option label="Instagram 信息流" value="instagram_stream" />
             <el-option label="Facebook 快拍" value="facebook_story" />
             <el-option label="Instagram 快拍" value="instagram_story" />
+            <el-option label="Facebook Marketplace" value="facebook_marketplace" />
+            <el-option label="Facebook 视频源" value="facebook_video_feeds" />
+            <el-option label="Facebook 右侧栏" value="facebook_right_hand_column" />
+            <el-option label="Facebook 搜索结果" value="facebook_search" />
+            <el-option label="Facebook Reels" value="facebook_reels" />
+            <el-option label="Facebook 插播视频" value="facebook_instream_video" />
+            <el-option label="Facebook 主页动态" value="facebook_profile_feed" />
+            <el-option label="Instagram Reels" value="instagram_reels" />
+            <el-option label="Instagram 探索" value="instagram_explore" />
+            <el-option label="Instagram 探索主页" value="instagram_explore_home" />
+            <el-option label="Instagram 主页动态" value="instagram_profile_feed" />
+            <el-option label="Audience Network 原生/横幅" value="audience_network_classic" />
+            <el-option label="Audience Network 激励视频" value="audience_network_rewarded_video" />
+            <el-option label="Audience Network 插播视频" value="audience_network_instream_video" />
+            <el-option label="Messenger 主页" value="messenger_messenger_home" />
+            <el-option label="Messenger 快拍" value="messenger_story" />
           </el-select>
         </el-form-item>
         <el-form-item label="多个广告组">
@@ -217,13 +233,28 @@
               <div class="creative-head"><b>广告组 {{ index + 1 }}</b><el-button v-if="adsetForms.length > 1" link type="danger" @click="removeAdset(index)">删除</el-button></div>
               <el-form-item label="名称"><el-input v-model="adset.name" placeholder="例如 US 广告组" /></el-form-item>
               <div class="inline-fields"><el-form-item label="预算"><el-input-number v-model="adset.budget" :min="1" :step="10" /><span class="field-code">Meta: daily_budget</span></el-form-item><el-form-item label="国家/地区"><el-input v-model="adset.countries" placeholder="US,CA" /><span class="field-code">Meta: geo_locations</span></el-form-item></div>
+              <el-collapse class="adset-advanced-settings">
+                <el-collapse-item title="受众、地区排除与设备设置" name="targeting">
+                  <div class="inline-fields"><el-form-item label="地区组"><el-select v-model="adset.region_group_id" filterable clearable style="width:100%" placeholder="选择已保存地区组" :loading="targetingResourcesLoading" @change="applyRegionGroup(adset, $event)"><el-option v-for="group in regionGroups" :key="group.id" :label="group.name" :value="group.id" /></el-select></el-form-item><el-form-item label="定向包"><el-select v-model="adset.targeting_package_id" filterable clearable style="width:100%" placeholder="选择已保存定向包" :loading="targetingResourcesLoading" @change="applyTargetingPackage(adset, $event)"><el-option v-for="item in targetingPackages" :key="item.id" :label="item.name" :value="item.id" /></el-select></el-form-item></div>
+                  <div class="inline-fields"><el-form-item label="包含州/省"><el-input v-model="adset.regions" placeholder="Meta region key，多个值用逗号分隔" /></el-form-item><el-form-item label="包含城市"><el-input v-model="adset.cities" placeholder="Meta city key，多个值用逗号分隔" /></el-form-item></div>
+                  <div class="inline-fields"><el-form-item label="包含邮编"><el-input v-model="adset.zips" placeholder="多个邮编用逗号分隔" /></el-form-item><el-form-item label="排除国家/地区"><el-input v-model="adset.excluded_countries" placeholder="CA,GB" /></el-form-item></div>
+                  <div class="inline-fields"><el-form-item label="排除州/省"><el-input v-model="adset.excluded_regions" placeholder="Meta region key，多个值用逗号分隔" /></el-form-item><el-form-item label="排除城市"><el-input v-model="adset.excluded_cities" placeholder="Meta city key，多个值用逗号分隔" /></el-form-item></div>
+                  <div class="inline-fields"><el-form-item label="排除邮编"><el-input v-model="adset.excluded_zips" placeholder="多个邮编用逗号分隔" /></el-form-item><el-form-item label="位置类型"><el-checkbox-group v-model="adset.location_types"><el-checkbox label="home">居住地</el-checkbox><el-checkbox label="recent">最近位置</el-checkbox></el-checkbox-group></el-form-item></div>
+                  <el-form-item label="自定义位置 JSON"><el-input v-model="adset.custom_locations_json" type="textarea" :rows="2" placeholder='可选，Meta custom_locations 数组 JSON' /></el-form-item>
+                  <el-form-item label="排除自定义位置 JSON"><el-input v-model="adset.excluded_custom_locations_json" type="textarea" :rows="2" placeholder='可选，Meta custom_locations 数组 JSON' /></el-form-item>
+                  <el-form-item label="包含自定义受众"><el-input v-model="adset.custom_audiences" placeholder="Meta Audience ID；多账户用 account_id::audience_id" /></el-form-item>
+                  <el-form-item label="排除自定义受众"><el-input v-model="adset.excluded_custom_audiences" placeholder="Meta Audience ID；多账户用 account_id::audience_id" /></el-form-item>
+                  <div class="inline-fields"><el-form-item label="设备"><el-checkbox-group v-model="adset.device_platforms"><el-checkbox label="mobile">移动端</el-checkbox><el-checkbox label="desktop">桌面端</el-checkbox></el-checkbox-group></el-form-item><el-form-item label="系统"><el-input v-model="adset.user_os" placeholder="iOS,Android" /></el-form-item></div>
+                  <div class="inline-fields"><el-form-item label="设备型号"><el-input v-model="adset.user_device" placeholder="iPhone 等，可选" /></el-form-item><el-form-item label="网络"><el-input v-model="adset.wireless_carrier" placeholder="WIFI 等，可选" /></el-form-item></div>
+                </el-collapse-item>
+              </el-collapse>
               <div class="inline-fields"><el-form-item label="年龄"><el-input-number v-model="adset.age_min" :min="13" :max="65" /><span>至</span><el-input-number v-model="adset.age_max" :min="13" :max="65" /></el-form-item><el-form-item label="性别"><el-checkbox-group v-model="adset.genders"><el-checkbox :label="1">男</el-checkbox><el-checkbox :label="2">女</el-checkbox></el-checkbox-group></el-form-item></div>
               <el-form-item label="兴趣"><el-input v-model="adset.interests" placeholder="可选，多个兴趣用逗号分隔" /></el-form-item>
               <el-form-item label="语言"><MetaLanguageSelect v-model="adset.languages" /></el-form-item>
               <div class="inline-fields"><el-form-item label="成效目标"><el-select v-model="adset.optimization_goal" style="width:100%"><el-option v-for="goal in optimizationGoalOptions(form.objective)" :key="goal.value" :label="goal.label" :value="goal.value" /></el-select><span class="field-code">Meta: optimization_goal</span></el-form-item><el-form-item label="计费事件"><el-select v-model="adset.billing_event" style="width:100%"><el-option label="展示次数" value="IMPRESSIONS" /><el-option label="链接点击" value="LINK_CLICKS" /></el-select><span class="field-code">Meta: billing_event</span></el-form-item></div>
               <div class="inline-fields"><el-form-item label="出价策略"><el-select v-model="adset.bid_strategy" style="width:100%"><el-option label="最低成本（无上限）" value="LOWEST_COST_WITHOUT_CAP" /><el-option label="最低成本（含竞价上限）" value="LOWEST_COST_WITH_BID_CAP" /><el-option label="成本上限" value="COST_CAP" /></el-select><span class="field-code">Meta: bid_strategy</span></el-form-item><el-form-item v-if="['LOWEST_COST_WITH_BID_CAP','COST_CAP'].includes(adset.bid_strategy)" label="竞价上限"><el-input-number v-model="adset.bid_amount" :min="1" :step="100" /><span class="field-code">Meta: bid_amount</span></el-form-item></div>
               <el-form-item label="Advantage+ 受众"><el-switch v-model="adset.advantage_audience" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="关闭" /></el-form-item>
-              <el-form-item label="版位"><el-select v-model="adset.placements" multiple collapse-tags style="width:100%" placeholder="默认自动版位"><el-option label="Facebook 信息流" value="facebook_feed" /><el-option label="Instagram 信息流" value="instagram_stream" /><el-option label="Facebook 快拍" value="facebook_story" /><el-option label="Instagram 快拍" value="instagram_story" /></el-select></el-form-item>
+              <el-form-item label="版位"><el-select v-model="adset.placements" multiple collapse-tags style="width:100%" placeholder="默认自动版位"><el-option label="Facebook 信息流" value="facebook_feed" /><el-option label="Instagram 信息流" value="instagram_stream" /><el-option label="Facebook 快拍" value="facebook_story" /><el-option label="Instagram 快拍" value="instagram_story" /><el-option label="Facebook Marketplace" value="facebook_marketplace" /><el-option label="Facebook 视频源" value="facebook_video_feeds" /><el-option label="Facebook 右侧栏" value="facebook_right_hand_column" /><el-option label="Facebook 搜索结果" value="facebook_search" /><el-option label="Facebook Reels" value="facebook_reels" /><el-option label="Facebook 插播视频" value="facebook_instream_video" /><el-option label="Facebook 主页动态" value="facebook_profile_feed" /><el-option label="Instagram Reels" value="instagram_reels" /><el-option label="Instagram 探索" value="instagram_explore" /><el-option label="Instagram 探索主页" value="instagram_explore_home" /><el-option label="Instagram 主页动态" value="instagram_profile_feed" /><el-option label="Audience Network 原生/横幅" value="audience_network_classic" /><el-option label="Audience Network 激励视频" value="audience_network_rewarded_video" /><el-option label="Audience Network 插播视频" value="audience_network_instream_video" /><el-option label="Messenger 主页" value="messenger_messenger_home" /><el-option label="Messenger 快拍" value="messenger_story" /></el-select></el-form-item>
             </div>
             <el-button type="primary" plain @click="addAdset">+ 添加广告组</el-button>
           </div>
@@ -309,6 +340,7 @@ import { templatesApi, type CampaignTemplate } from '@/api/templates'
 import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
 import { mediaApi, type MediaItem } from '@/api/media'
 import { metaPagesApi, type MetaPage } from '@/api/metaPages'
+import { regionGroupsApi, targetingPackagesApi, type RegionGroup, type TargetingPackage } from '@/api/targetingPackages'
 import { useLocale } from '@/stores/localeStore'
 import {
   CTA_OPTIONS,
@@ -324,6 +356,9 @@ const { t } = useLocale()
 const templates = ref<CampaignTemplate[]>([])
 const mediaAssets = ref<MediaItem[]>([])
 const metaPages = ref<MetaPage[]>([])
+const regionGroups = ref<RegionGroup[]>([])
+const targetingPackages = ref<TargetingPackage[]>([])
+const targetingResourcesLoading = ref(false)
 const pagesSyncing = ref(false)
 const loading = ref(false)
 const saving = ref(false)
@@ -382,11 +417,132 @@ const targetingForm = reactive({
   languages: [] as string[],
   placements: [] as string[],
 })
-type AdsetForm = { name: string; budget: number; countries: string; age_min: number; age_max: number; genders: number[]; interests: string; languages: string[]; placements: string[]; optimization_goal: string; billing_event: string; bid_strategy: string; bid_amount: number; advantage_audience: number }
-const newAdset = (): AdsetForm => ({ name: '', budget: 50, countries: 'US', age_min: 18, age_max: 65, genders: [1, 2], interests: '', languages: [], placements: [], optimization_goal: defaultOptimizationGoal(form.objective), billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 0, advantage_audience: 1 })
+type AdsetForm = { name: string; budget: number; countries: string; regions: string; cities: string; zips: string; excluded_countries: string; excluded_regions: string; excluded_cities: string; excluded_zips: string; custom_locations_json: string; excluded_custom_locations_json: string; region_group_id: string; targeting_package_id: string; location_types: string[]; age_min: number; age_max: number; genders: number[]; interests: string; languages: string[]; custom_audiences: string; excluded_custom_audiences: string; device_platforms: string[]; user_os: string; user_device: string; wireless_carrier: string; placements: string[]; optimization_goal: string; billing_event: string; bid_strategy: string; bid_amount: number; advantage_audience: number }
+const newAdset = (): AdsetForm => ({ name: '', budget: 50, countries: 'US', regions: '', cities: '', zips: '', excluded_countries: '', excluded_regions: '', excluded_cities: '', excluded_zips: '', custom_locations_json: '', excluded_custom_locations_json: '', region_group_id: '', targeting_package_id: '', location_types: ['home', 'recent'], age_min: 18, age_max: 65, genders: [1, 2], interests: '', languages: [], custom_audiences: '', excluded_custom_audiences: '', device_platforms: [], user_os: '', user_device: '', wireless_carrier: '', placements: [], optimization_goal: defaultOptimizationGoal(form.objective), billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 0, advantage_audience: 1 })
+const placementGroups = [
+  { platform: 'facebook', prefix: 'facebook', field: 'facebook_positions' },
+  { platform: 'instagram', prefix: 'instagram', field: 'instagram_positions' },
+  { platform: 'audience_network', prefix: 'audience_network', field: 'audience_network_positions' },
+  { platform: 'messenger', prefix: 'messenger', field: 'messenger_positions' },
+] as const
+const placementPlatform = (value: string) => {
+  if (value.startsWith('audience_network_')) return 'audience_network'
+  if (value.startsWith('messenger_')) return 'messenger'
+  if (value.startsWith('instagram_')) return 'instagram'
+  return 'facebook'
+}
+const placementConfigFromValues = (values: string[]) => {
+  const uniqueValues = [...new Set(values)]
+  if (!uniqueValues.length) return {}
+  const placement: Record<string, any> = { publisher_platforms: [...new Set(uniqueValues.map(placementPlatform))] }
+  for (const group of placementGroups) {
+    const positions = uniqueValues.filter(value => value.startsWith(`${group.prefix}_`)).map(value => value.slice(group.prefix.length + 1))
+    if (positions.length) placement[group.field] = positions
+  }
+  return placement
+}
+const placementValuesFromConfig = (placement: Record<string, any> | null | undefined, withDefaults = false) => {
+  const config = placement || {}
+  const values: string[] = []
+  for (const group of placementGroups) {
+    const positions = Array.isArray(config[group.field]) ? config[group.field] : []
+    if (positions.length) values.push(...positions.map((value: string) => `${group.prefix}_${value}`))
+    else if (withDefaults && (config.publisher_platforms || []).includes(group.platform)) {
+      if (group.platform === 'facebook') values.push('facebook_feed')
+      if (group.platform === 'instagram') values.push('instagram_stream')
+    }
+  }
+  return [...new Set(values)]
+}
 const adsetForms = reactive<AdsetForm[]>([newAdset()])
 const addAdset = () => adsetForms.push(newAdset())
 const removeAdset = (index: number) => adsetForms.splice(index, 1)
+const splitTargetingValues = (value: string | string[]) => (Array.isArray(value) ? value : value.split(','))
+  .map(item => String(item).trim()).filter(Boolean)
+const stringifyGeoValues = (value: any) => {
+  if (!Array.isArray(value) || !value.length) return ''
+  return value.some(item => item && typeof item === 'object') ? JSON.stringify(value) : value.join(',')
+}
+const parseGeoValues = (value: string, label: string, allowObjects = false) => {
+  const text = String(value || '').trim()
+  if (!text) return []
+  if (!text.startsWith('[')) return splitTargetingValues(text)
+  try {
+    const parsed = JSON.parse(text)
+    if (!Array.isArray(parsed) || (!allowObjects && parsed.some(item => item && typeof item === 'object'))) throw new Error('invalid')
+    return parsed
+  } catch {
+    throw new Error(`${label}必须是数组 JSON`)
+  }
+}
+const audienceToken = (value: any) => {
+  const raw = typeof value === 'string' ? value.trim() : ''
+  if (raw.includes('::')) return raw
+  const id = value?.id || value?.meta_audience_id || value
+  const account = value?.ad_account_id || value?.account_id
+  return account && id ? `${account}::${id}` : id
+}
+const audienceRef = (value: any) => {
+  const token = String(audienceToken(value) || '')
+  const separator = token.indexOf('::')
+  return separator > 0
+    ? { id: token.slice(separator + 2), ad_account_id: token.slice(0, separator) }
+    : token
+}
+const applyRegionGroup = (adset: AdsetForm, groupId: string) => {
+  const group = regionGroups.value.find(item => item.id === groupId)
+  if (!group) return
+  const geo = group.geo_locations || {}
+  if (!Object.keys(geo).some(key => ['countries', 'regions', 'cities', 'zips', 'custom_locations'].includes(key) && Array.isArray(geo[key]) && geo[key].length)) {
+    adset.region_group_id = ''
+    ElMessage.warning('该地区组没有可用的包含地区配置')
+    return
+  }
+  adset.countries = stringifyGeoValues(geo.countries)
+  adset.regions = stringifyGeoValues(geo.regions)
+  adset.cities = stringifyGeoValues(geo.cities)
+  adset.zips = stringifyGeoValues(geo.zips)
+  adset.custom_locations_json = Array.isArray(geo.custom_locations) ? JSON.stringify(geo.custom_locations) : ''
+  adset.excluded_countries = stringifyGeoValues(group.excluded_geo_locations?.countries)
+  adset.excluded_regions = stringifyGeoValues(group.excluded_geo_locations?.regions)
+  adset.excluded_cities = stringifyGeoValues(group.excluded_geo_locations?.cities)
+  adset.excluded_zips = stringifyGeoValues(group.excluded_geo_locations?.zips)
+  adset.excluded_custom_locations_json = Array.isArray(group.excluded_geo_locations?.custom_locations) ? JSON.stringify(group.excluded_geo_locations.custom_locations) : ''
+  adset.location_types = Array.isArray(geo.location_types) && geo.location_types.length ? [...geo.location_types] : ['home', 'recent']
+  ElMessage.success(`已加载地区组：${group.name}`)
+}
+const applyTargetingPackage = (adset: AdsetForm, packageId: string) => {
+  const item = targetingPackages.value.find(packageItem => packageItem.id === packageId)
+  if (!item) return
+  const targeting = item.targeting_json || {}
+  const geo = targeting.geo_locations || {}
+  const hasGeo = ['countries', 'regions', 'cities', 'zips', 'custom_locations'].some(field => Array.isArray(geo[field]) && geo[field].length)
+  adset.region_group_id = item.region_group_ids?.length === 1 ? item.region_group_ids[0] : ''
+  adset.countries = stringifyGeoValues(geo.countries) || (hasGeo ? '' : 'US')
+  adset.regions = stringifyGeoValues(geo.regions)
+  adset.cities = stringifyGeoValues(geo.cities)
+  adset.zips = stringifyGeoValues(geo.zips)
+  adset.custom_locations_json = Array.isArray(geo.custom_locations) ? JSON.stringify(geo.custom_locations) : ''
+  adset.excluded_countries = stringifyGeoValues(targeting.excluded_geo_locations?.countries)
+  adset.excluded_regions = stringifyGeoValues(targeting.excluded_geo_locations?.regions)
+  adset.excluded_cities = stringifyGeoValues(targeting.excluded_geo_locations?.cities)
+  adset.excluded_zips = stringifyGeoValues(targeting.excluded_geo_locations?.zips)
+  adset.excluded_custom_locations_json = Array.isArray(targeting.excluded_geo_locations?.custom_locations) ? JSON.stringify(targeting.excluded_geo_locations.custom_locations) : ''
+  adset.location_types = Array.isArray(geo.location_types) && geo.location_types.length ? [...geo.location_types] : ['home', 'recent']
+  adset.age_min = Number(targeting.age_min || 18)
+  adset.age_max = Number(targeting.age_max || 65)
+  adset.genders = Array.isArray(targeting.genders) ? [...targeting.genders] : [1, 2]
+  adset.interests = (targeting.flexible_spec?.[0]?.interests || []).map((value: any) => value.name || '').filter(Boolean).join(',')
+  adset.languages = Array.isArray(targeting.languages) ? [...targeting.languages] : []
+  adset.custom_audiences = (targeting.custom_audiences || []).map(audienceToken).filter(Boolean).join(',')
+  adset.excluded_custom_audiences = (targeting.excluded_custom_audiences || targeting.excluded_audiences || []).map(audienceToken).filter(Boolean).join(',')
+  adset.device_platforms = Array.isArray(targeting.device_platforms) ? [...targeting.device_platforms] : []
+  adset.user_os = Array.isArray(targeting.user_os) ? targeting.user_os.join(',') : String(targeting.user_os || '')
+  adset.user_device = Array.isArray(targeting.user_device) ? targeting.user_device.join(',') : String(targeting.user_device || '')
+  adset.wireless_carrier = Array.isArray(targeting.wireless_carrier) ? targeting.wireless_carrier.join(',') : String(targeting.wireless_carrier || '')
+  adset.placements = placementValuesFromConfig(item.placement_json, true)
+  ElMessage.success(`已加载定向包：${item.name}`)
+}
 watch(() => form.objective, objective => {
   if (!isOptimizationGoalAllowed(objective, form.optimization_goal)) form.optimization_goal = defaultOptimizationGoal(objective)
   adsetForms.forEach(item => {
@@ -446,17 +602,35 @@ const buildCreativeJson = () => {
     if (form.tracking_asset_type === 'DATASET') config.dataset_id = trackingAssetId
   }
   const adsets = adsetForms.map(adset => {
-    const targeting: Record<string, any> = { geo_locations: { countries: adset.countries.split(',').map(v => v.trim()).filter(Boolean) }, age_min: adset.age_min, age_max: adset.age_max, genders: adset.genders }
+    const geo_locations: Record<string, any> = {}
+    for (const [field, value] of [['countries', adset.countries], ['regions', adset.regions], ['cities', adset.cities], ['zips', adset.zips]] as const) {
+      const parsed = parseGeoValues(value, `广告组${field}`, field !== 'countries')
+      if (parsed.length) geo_locations[field] = parsed
+    }
+    if (adset.custom_locations_json.trim()) geo_locations.custom_locations = parseGeoValues(adset.custom_locations_json, '自定义位置', true)
+    const targeting: Record<string, any> = { geo_locations, age_min: adset.age_min, age_max: adset.age_max, genders: adset.genders }
+    if (adset.location_types.length) targeting.geo_locations.location_types = [...adset.location_types]
+    const excluded_geo_locations: Record<string, any> = {}
+    for (const [field, value] of [['countries', adset.excluded_countries], ['regions', adset.excluded_regions], ['cities', adset.excluded_cities], ['zips', adset.excluded_zips]] as const) {
+      const parsed = parseGeoValues(value, `排除广告组${field}`, field !== 'countries')
+      if (parsed.length) excluded_geo_locations[field] = parsed
+    }
+    if (adset.excluded_custom_locations_json.trim()) excluded_geo_locations.custom_locations = parseGeoValues(adset.excluded_custom_locations_json, '排除自定义位置', true)
+    if (Object.keys(excluded_geo_locations).length) targeting.excluded_geo_locations = excluded_geo_locations
     if (adset.languages.length) targeting.languages = [...adset.languages]
     if (adset.interests.trim()) targeting.flexible_spec = [{ interests: adset.interests.split(',').map(v => ({ name: v.trim() })).filter(v => v.name) }]
-    const placement: Record<string, any> = { publisher_platforms: [...new Set(adset.placements.map(v => v.split('_')[0]))] }
-    const facebook = adset.placements.filter(v => v.startsWith('facebook_')).map(v => v.replace('facebook_', ''))
-    const instagram = adset.placements.filter(v => v.startsWith('instagram_')).map(v => v.replace('instagram_', ''))
-    if (facebook.length) placement.facebook_positions = facebook
-    if (instagram.length) placement.instagram_positions = instagram
+    const audiences = splitTargetingValues(adset.custom_audiences).map(audienceRef)
+    const excludedAudiences = splitTargetingValues(adset.excluded_custom_audiences).map(audienceRef)
+    if (audiences.length) targeting.custom_audiences = audiences
+    if (excludedAudiences.length) targeting.excluded_custom_audiences = excludedAudiences
+    if (adset.device_platforms.length) targeting.device_platforms = [...adset.device_platforms]
+    if (adset.user_os.trim()) targeting.user_os = splitTargetingValues(adset.user_os)
+    if (adset.user_device.trim()) targeting.user_device = splitTargetingValues(adset.user_device)
+    if (adset.wireless_carrier.trim()) targeting.wireless_carrier = splitTargetingValues(adset.wireless_carrier)
+    const placement = placementConfigFromValues(adset.placements)
     targeting.targeting_automation = { advantage_audience: adset.advantage_audience }
     return { name: adset.name, budget: adset.budget, optimization_goal: adset.optimization_goal, billing_event: adset.billing_event, bid_strategy: adset.bid_strategy, bid_amount: adset.bid_amount || undefined, targeting, placement }
-  }).filter(adset => adset.name || adset.countries)
+  }).filter(adset => adset.name || Object.keys(adset.targeting?.geo_locations || {}).some(key => key !== 'location_types'))
   if (adsets.length) config.adsets = adsets
   if (form.bid_strategy) {
     config.bidding = { bid_amount: form.bid_amount || undefined }
@@ -497,11 +671,7 @@ const buildTargetingJson = () => {
   if (targetingForm.languages.length) targeting.languages = [...targetingForm.languages]
   if (targetingForm.interests.trim()) targeting.flexible_spec = [{ interests: targetingForm.interests.split(',').map(v => ({ name: v.trim() })).filter(v => v.name) }]
   if (targetingForm.placements.length) {
-    const facebook = targetingForm.placements.filter(v => v.startsWith('facebook_')).map(v => v.replace('facebook_', ''))
-    const instagram = targetingForm.placements.filter(v => v.startsWith('instagram_')).map(v => v.replace('instagram_', ''))
-    targeting.publisher_platforms = [facebook.length ? 'facebook' : '', instagram.length ? 'instagram' : ''].filter(Boolean)
-    if (facebook.length) targeting.facebook_positions = facebook
-    if (instagram.length) targeting.instagram_positions = instagram
+    Object.assign(targeting, placementConfigFromValues(targetingForm.placements))
   }
   form.targeting_json = JSON.stringify(targeting, null, 2)
 }
@@ -513,10 +683,7 @@ const loadTargetingForm = (value: Record<string, any> | null | undefined) => {
   targetingForm.genders = targeting.genders?.length ? targeting.genders : [1, 2]
   targetingForm.interests = (targeting.flexible_spec?.[0]?.interests || []).map((v: any) => v.name || '').filter(Boolean).join(',')
   targetingForm.languages = Array.isArray(targeting.languages) ? [...targeting.languages] : []
-  targetingForm.placements = [
-    ...(targeting.facebook_positions || []).map((v: string) => `facebook_${v}`),
-    ...(targeting.instagram_positions || []).map((v: string) => `instagram_${v}`),
-  ]
+  targetingForm.placements = placementValuesFromConfig(targeting)
 }
 
 const loadTemplates = async () => {
@@ -552,6 +719,22 @@ const loadMediaAssets = async () => {
 }
 const loadMetaPages = async () => {
   try { const { data } = await metaPagesApi.list(); metaPages.value = data } catch { metaPages.value = [] }
+}
+const loadTargetingResources = async () => {
+  targetingResourcesLoading.value = true
+  try {
+    const [regions, packages] = await Promise.all([
+      regionGroupsApi.list(),
+      targetingPackagesApi.list(),
+    ])
+    regionGroups.value = regions.data || []
+    targetingPackages.value = packages.data || []
+  } catch {
+    regionGroups.value = []
+    targetingPackages.value = []
+  } finally {
+    targetingResourcesLoading.value = false
+  }
 }
 const syncMetaPages = async () => {
   pagesSyncing.value = true
@@ -605,6 +788,7 @@ const openCreate = () => {
   resetForm()
   loadMediaAssets()
   loadMetaPages()
+  loadTargetingResources()
   dialogVisible.value = true
 }
 
@@ -631,10 +815,44 @@ const openEdit = (row: CampaignTemplate) => {
   form.creative_config_json = JSON.stringify(row.creative_config_json ?? {}, null, 2)
   form.adsets_json = JSON.stringify(row.creative_config_json?.adsets ?? [], null, 2)
   const savedAdsets = row.creative_config_json?.adsets
-  adsetForms.splice(0, adsetForms.length, ...(Array.isArray(savedAdsets) && savedAdsets.length ? savedAdsets.map((item: any) => ({ ...newAdset(), name: item.name || '', budget: item.budget || 50, countries: item.targeting?.geo_locations?.countries?.join(',') || 'US', age_min: item.targeting?.age_min || 18, age_max: item.targeting?.age_max || 65, genders: item.targeting?.genders || [1, 2], interests: (item.targeting?.flexible_spec?.[0]?.interests || []).map((v: any) => v.name || '').join(','), languages: Array.isArray(item.targeting?.languages) ? [...item.targeting.languages] : [], placements: [...(item.placement?.facebook_positions || []).map((v: string) => `facebook_${v}`), ...(item.placement?.instagram_positions || []).map((v: string) => `instagram_${v}`)] })) : [newAdset()]))
+  adsetForms.splice(0, adsetForms.length, ...(Array.isArray(savedAdsets) && savedAdsets.length ? savedAdsets.map((item: any) => {
+    const targeting = item.targeting || {}
+    const hasGeo = ['countries', 'regions', 'cities', 'zips', 'custom_locations'].some(field => Array.isArray(targeting.geo_locations?.[field]) && targeting.geo_locations[field].length)
+    const audiences = (targeting.custom_audiences || []).map(audienceToken).filter(Boolean)
+    const excludedAudiences = (targeting.excluded_custom_audiences || targeting.excluded_audiences || []).map(audienceToken).filter(Boolean)
+    return {
+      ...newAdset(),
+      name: item.name || '',
+      budget: item.budget || 50,
+      countries: stringifyGeoValues(targeting.geo_locations?.countries) || (hasGeo ? '' : 'US'),
+      regions: stringifyGeoValues(targeting.geo_locations?.regions),
+      cities: stringifyGeoValues(targeting.geo_locations?.cities),
+      zips: stringifyGeoValues(targeting.geo_locations?.zips),
+      excluded_countries: stringifyGeoValues(targeting.excluded_geo_locations?.countries),
+      excluded_regions: stringifyGeoValues(targeting.excluded_geo_locations?.regions),
+      excluded_cities: stringifyGeoValues(targeting.excluded_geo_locations?.cities),
+      excluded_zips: stringifyGeoValues(targeting.excluded_geo_locations?.zips),
+      custom_locations_json: Array.isArray(targeting.geo_locations?.custom_locations) ? JSON.stringify(targeting.geo_locations.custom_locations) : '',
+      excluded_custom_locations_json: Array.isArray(targeting.excluded_geo_locations?.custom_locations) ? JSON.stringify(targeting.excluded_geo_locations.custom_locations) : '',
+      location_types: Array.isArray(targeting.geo_locations?.location_types) ? [...targeting.geo_locations.location_types] : ['home', 'recent'],
+      age_min: targeting.age_min || 18,
+      age_max: targeting.age_max || 65,
+      genders: targeting.genders || [1, 2],
+      interests: (targeting.flexible_spec?.[0]?.interests || []).map((v: any) => v.name || '').join(','),
+      languages: Array.isArray(targeting.languages) ? [...targeting.languages] : [],
+      custom_audiences: audiences.join(','),
+      excluded_custom_audiences: excludedAudiences.join(','),
+      device_platforms: Array.isArray(targeting.device_platforms) ? [...targeting.device_platforms] : [],
+      user_os: Array.isArray(targeting.user_os) ? targeting.user_os.join(',') : String(targeting.user_os || ''),
+      user_device: Array.isArray(targeting.user_device) ? targeting.user_device.join(',') : String(targeting.user_device || ''),
+      wireless_carrier: Array.isArray(targeting.wireless_carrier) ? targeting.wireless_carrier.join(',') : String(targeting.wireless_carrier || ''),
+      placements: placementValuesFromConfig(item.placement),
+    }
+  }) : [newAdset()]))
   loadCreativeForm(row.creative_config_json)
   loadMediaAssets()
   loadMetaPages()
+  loadTargetingResources()
   dialogVisible.value = true
 }
 
@@ -647,6 +865,78 @@ const parseJsonField = (text: string, label: string) => {
     ElMessage.error(`${label} 不是合法的 JSON，请检查后重试`)
     throw new Error(`invalid json: ${label}`)
   }
+}
+
+const validateAdsetTargeting = () => {
+  for (let index = 0; index < adsetForms.length; index++) {
+    const adset = adsetForms[index]
+    const label = `广告组 ${index + 1}`
+    let geo: Record<string, any> = {}
+    let excludedGeo: Record<string, any> = {}
+    try {
+      for (const [field, value] of [['countries', adset.countries], ['regions', adset.regions], ['cities', adset.cities], ['zips', adset.zips]] as const) {
+        const parsed = parseGeoValues(value, `${label} ${field}`, field !== 'countries')
+        if (parsed.length) geo[field] = parsed
+      }
+      if (adset.custom_locations_json.trim()) geo.custom_locations = parseGeoValues(adset.custom_locations_json, `${label} 自定义位置`, true)
+      for (const [field, value] of [['countries', adset.excluded_countries], ['regions', adset.excluded_regions], ['cities', adset.excluded_cities], ['zips', adset.excluded_zips]] as const) {
+        const parsed = parseGeoValues(value, `${label} 排除${field}`, field !== 'countries')
+        if (parsed.length) excludedGeo[field] = parsed
+      }
+      if (adset.excluded_custom_locations_json.trim()) excludedGeo.custom_locations = parseGeoValues(adset.excluded_custom_locations_json, `${label} 排除自定义位置`, true)
+    } catch (error: any) {
+      ElMessage.warning(error?.message || `${label}地区 JSON 格式无效`)
+      templateStep.value = 2
+      return false
+    }
+    const geoFields = ['countries', 'regions', 'cities', 'zips', 'custom_locations']
+    if (!geoFields.some(field => Array.isArray(geo[field]) && geo[field].length)) {
+      ElMessage.warning(`${label}至少需要配置一个国家、地区、城市、邮编或自定义位置`)
+      templateStep.value = 2
+      return false
+    }
+    const countries = Array.isArray(geo.countries) ? geo.countries.map(value => String(value)) : []
+    const excludedCountries = Array.isArray(excludedGeo.countries) ? excludedGeo.countries.map(value => String(value)) : []
+    const countryOverlap = countries.map(value => value.toUpperCase()).filter(value => excludedCountries.map(item => item.toUpperCase()).includes(value))
+    if (countryOverlap.length) {
+      ElMessage.warning(`${label}包含和排除的国家/地区重复：${[...new Set(countryOverlap)].join(', ')}`)
+      templateStep.value = 2
+      return false
+    }
+    if (adset.age_min < 13 || adset.age_max > 65 || adset.age_min > adset.age_max) {
+      ElMessage.warning(`${label}年龄范围必须在 13 至 65 岁之间，且最小年龄不能大于最大年龄`)
+      templateStep.value = 2
+      return false
+    }
+    if (!adset.genders.length) {
+      ElMessage.warning(`${label}至少需要选择一个性别`)
+      templateStep.value = 2
+      return false
+    }
+    const included = splitTargetingValues(adset.custom_audiences)
+    const excluded = splitTargetingValues(adset.excluded_custom_audiences)
+    const audienceId = (value: string) => value.includes('::') ? value.slice(value.indexOf('::') + 2).trim() : value
+    const invalidScoped = [...included, ...excluded].find(value => value.includes('::') && value.split('::').length !== 2)
+    if (invalidScoped) {
+      ElMessage.warning(`${label}的受众格式无效，请使用 account_id::audience_id`)
+      templateStep.value = 2
+      return false
+    }
+    const includedIds = new Set(included.map(audienceId))
+    const audienceOverlap = excluded.map(audienceId).filter(value => includedIds.has(value))
+    if (audienceOverlap.length) {
+      ElMessage.warning(`${label}包含和排除的自定义受众重复：${[...new Set(audienceOverlap)].join(', ')}`)
+      templateStep.value = 2
+      return false
+    }
+    const invalidDevices = adset.device_platforms.filter(value => !['mobile', 'desktop'].includes(value))
+    if (invalidDevices.length) {
+      ElMessage.warning(`${label}的设备只能选择移动端或桌面端`)
+      templateStep.value = 2
+      return false
+    }
+  }
+  return true
 }
 
 const submit = async () => {
@@ -664,6 +954,7 @@ const submit = async () => {
     templateStep.value = 1
     return
   }
+  if (!validateAdsetTargeting()) return
   if (!creativeForm.page_id) {
     ElMessage.warning('请选择已授权的 Facebook 页面')
     templateStep.value = 3
@@ -789,7 +1080,10 @@ const creativeCount = (cfg: any) => {
   return cfg && Object.keys(cfg).length ? 1 : 0
 }
 
-onMounted(loadTemplates)
+onMounted(() => {
+  loadTemplates()
+  loadTargetingResources()
+})
 </script>
 
 <style scoped lang="scss">

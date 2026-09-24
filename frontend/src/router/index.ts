@@ -22,6 +22,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'overview', name: 'Overview', component: () => import('@/pages/dashboard/Overview.vue'), meta: { title: '仪表板' } },
       { path: 'campaigns', name: 'Campaigns', component: () => import('@/pages/dashboard/Campaigns.vue'), meta: { title: '广告系列', permissions: ['campaign:read'] } },
       { path: 'templates', name: 'Templates', component: () => import('@/pages/dashboard/Templates.vue'), meta: { title: '投放模板' } },
+      { path: 'targeting', name: 'Targeting', component: () => import('@/pages/dashboard/Targeting.vue'), meta: { title: '定向资产' } },
       { path: 'batch-publish', name: 'BatchPublish', component: () => import('@/pages/dashboard/BatchPublish.vue'), meta: { title: '批量投放' } },
       { path: 'jobs', name: 'Jobs', component: () => import('@/pages/dashboard/Jobs.vue'), meta: { title: '任务中心' } },
       { path: 'material', name: 'Material', component: () => import('@/pages/dashboard/Material.vue'), meta: { title: '素材库' } },

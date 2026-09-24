@@ -21,6 +21,13 @@ export interface MediaItem {
   mime_type: string | null
   duration: number | null
   status: string
+  review_status?: 'PENDING' | 'APPROVED' | 'REJECTED' | string
+  reviewed_by?: string | null
+  reviewed_at?: string | null
+  review_note?: string | null
+  version_group_id?: string | null
+  version_number?: number
+  previous_version_id?: string | null
   error: string | null
   retry_count?: number
   created_at: string | null
@@ -36,6 +43,7 @@ export interface MediaItem {
   uploader_email?: string | null
   uploaded_at?: string | null
   can_edit?: boolean
+  is_owner?: boolean
   binding_count?: number
   ready_binding_count?: number
   failed_binding_count?: number
@@ -86,18 +94,91 @@ export interface MediaOverviewStats {
   range_end: string | null
   asset_count: number
   ready_asset_count: number
+  used_asset_count: number
+  unused_asset_count: number
+  inventory_usage_rate: number
+  bound_asset_count: number
+  bound_account_count: number
+  available_account_count: number
+  account_coverage_rate: number
   binding_count: number
   ready_binding_count: number
   usage_count: number
   successful_usage_count: number
   failed_usage_count: number
   success_rate: number
+  funnel: Array<{
+    key: string
+    label: string
+    count: number
+    rate: number
+  }>
   top_assets: Array<{
     asset_id: string
     name: string
     asset_type: string
     usage_count: number
     successful_usage_count: number
+  }>
+}
+
+export interface MediaPerformanceStats {
+  asset_id: string | null
+  account_id: string | null
+  range_start: string | null
+  range_end: string | null
+  has_data: boolean
+  mapped_asset_count: number
+  unmapped_asset_count: number
+  mapping_count: number
+  insight_row_count: number
+  latest_synced_at: string | null
+  data_scope_note: string
+  currency_totals: Array<{
+    currency: string
+    spend: number
+    conversion_value: number
+    impressions: number
+    clicks: number
+    conversions: number
+    ctr: number | null
+    cpc: number | null
+    cpm: number | null
+    cpa: number | null
+    roas: number | null
+  }>
+  items: Array<{
+    asset_id: string
+    name: string
+    currency: string
+    mapping_count: number
+    spend: number
+    conversion_value: number
+    impressions: number
+    clicks: number
+    conversions: number
+    insight_row_count: number
+    ctr: number | null
+    cpc: number | null
+    cpm: number | null
+    cpa: number | null
+    roas: number | null
+    latest_date: string | null
+    latest_synced_at: string | null
+  }>
+  series: Array<{
+    date: string
+    currency: string
+    spend: number
+    conversion_value: number
+    impressions: number
+    clicks: number
+    conversions: number
+    ctr: number | null
+    cpc: number | null
+    cpm: number | null
+    cpa: number | null
+    roas: number | null
   }>
 }
 
@@ -147,22 +228,39 @@ export interface UploadResult {
   task_id?: string | null
 }
 
+export type MediaWorkspaceMode = 'mine' | 'team' | 'testing' | 'archive'
+export type MediaStatusFilter = 'unused' | 'delivering' | 'processing' | 'failed' | 'ready'
+
+export interface MediaViewParams {
+  asset_type?: string
+  account_id?: string
+  group_id?: string
+  tag_id?: string
+  workspace_mode?: MediaWorkspaceMode
+  status_filter?: MediaStatusFilter
+  include_archived?: boolean
+}
+
 export const mediaApi = {
   get: (id: string) => request.get<MediaItem>(`/api/v1/media/${id}`),
+  versions: (id: string) => request.get<MediaItem[]>(`/api/v1/media/${id}/versions`),
+  setCurrentVersion: (assetId: string, versionId: string) => request.post<MediaItem>(`/api/v1/media/${assetId}/versions/${versionId}/current`),
   stats: (id: string, params?: { start_date?: string; end_date?: string }) =>
     request.get<MediaUsageStats>(`/api/v1/media/${id}/stats`, { params }),
-  statsOverview: (params?: { start_date?: string; end_date?: string; asset_type?: string; account_id?: string }) =>
+  performance: (params?: { asset_id?: string; start_date?: string; end_date?: string } & MediaViewParams) =>
+    request.get<MediaPerformanceStats>('/api/v1/media/stats/performance', { params }),
+  statsOverview: (params?: { start_date?: string; end_date?: string } & MediaViewParams) =>
     request.get<MediaOverviewStats>('/api/v1/media/stats/overview', { params }),
   getDownloadUrl: (id: string, kind: 'original' | 'thumbnail' | 'cover' = 'original') =>
     request.get<{ asset_id: string; url: string; expires_in: number }>(
       `/api/v1/media/${id}/download-url`,
       { params: { kind }, skipErrorMessage: true },
     ),
-  list: (params?: { meta_account_id?: string; account_id?: string; asset_type?: string; group_id?: string; tag_id?: string }) =>
+  list: (params?: { meta_account_id?: string } & MediaViewParams) =>
     request.get<MediaItem[]>('/api/v1/media', { params }),
   upload: (
     file: File,
-    extra?: { meta_account_id?: string; account_id?: string; group_id?: string; asset_id?: string },
+    extra?: { meta_account_id?: string; account_id?: string; group_id?: string; asset_id?: string; version_of_asset_id?: string },
     onProgress?: (e: AxiosProgressEvent) => void,
     onHashProgress?: (loaded: number, total: number) => void,
   ): Promise<UploadResult> => {
@@ -179,6 +277,7 @@ export const mediaApi = {
         meta_account_id: extra?.meta_account_id,
         group_id: extra?.group_id,
         asset_id: extra?.asset_id,
+        version_of_asset_id: extra?.version_of_asset_id,
       })
       if (session.data.duplicate) {
         if (!session.data.asset) throw new Error('重复素材响应缺少素材信息')
@@ -290,9 +389,12 @@ export const mediaApi = {
     list: () => request.get<CreativeAssetTag[]>('/api/v1/creative-asset-tags'),
     create: (data: { name: string; color?: string }) => request.post<CreativeAssetTag>('/api/v1/creative-asset-tags', data),
     setAssetTags: (assetId: string, tag_ids: string[]) => request.put(`/api/v1/creative-asset-tags/assets/${assetId}`, { tag_ids }),
+    setBatch: (asset_ids: string[], tag_ids: string[]) => request.put('/api/v1/creative-asset-tags/assets/batch', { asset_ids, tag_ids }),
   },
   remove: (id: string) => request.delete('/api/v1/media/' + id),
   refreshMetadata: (id: string) => request.post<MediaItem | { asset: MediaItem; status: string; task_id?: string }>(`/api/v1/media/${id}/refresh-metadata`),
+  review: (id: string, review_status: 'PENDING' | 'APPROVED' | 'REJECTED', review_note?: string) =>
+    request.post<MediaItem>(`/api/v1/media/${id}/review`, { review_status, review_note }),
   bindings: (assetId: string) =>
     request.get<MetaAssetBinding[]>(`/api/v1/media/${assetId}/bindings`),
   prepare: (assetId: string, adAccountIds: string[]) =>

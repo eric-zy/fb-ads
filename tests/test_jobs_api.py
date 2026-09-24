@@ -107,3 +107,44 @@ def test_ensure_template_migrates_legacy_carousel_creatives(db):
     template = db.get(CampaignTemplate, template_id)
     assert [item["asset_id"] for item in template.creative_config_json["carousel_cards"]] == ["asset-1", "asset-2"]
     assert "creatives" not in template.creative_config_json
+
+
+def test_ensure_template_allows_carousel_without_primary_text(db):
+    card = {
+        "asset_id": "asset-1",
+        "asset_type": "image",
+        "landing_url": "https://example.com/1",
+    }
+    request = _direct_request(
+        creative_format="CAROUSEL",
+        carousel_cards=[card, {**card, "asset_id": "asset-2", "landing_url": "https://example.com/2"}],
+    )
+
+    template_id = _ensure_template(db, request, "test_tenant")
+    template = db.get(CampaignTemplate, template_id)
+    assert [item["asset_id"] for item in template.creative_config_json["carousel_cards"]] == ["asset-1", "asset-2"]
+
+
+def test_ensure_template_allows_video_without_landing_url(db):
+    request = _direct_request(
+        objective="OUTCOME_ENGAGEMENT",
+        optimization_goal="THRUPLAY",
+        adsets=[{
+            "name": "AdSet 1",
+            "budget": 20,
+            "targeting": {"geo_locations": {"countries": ["US"]}},
+            "placement": {"publisher_platforms": ["facebook"]},
+            "optimization_goal": "THRUPLAY",
+        }],
+        creatives=[{
+            "asset_id": "video-1",
+            "asset_type": "video",
+            "primary_text": "Video creative",
+            "cta": "NO_BUTTON",
+        }],
+    )
+
+    template_id = _ensure_template(db, request, "test_tenant")
+    template = db.get(CampaignTemplate, template_id)
+    assert template.creative_config_json["creatives"][0]["asset_type"] == "video"
+    assert "landing_url" not in template.creative_config_json["creatives"][0]

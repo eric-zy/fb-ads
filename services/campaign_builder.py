@@ -281,12 +281,15 @@ class CreativeBuilder:
                 if card.get("headline"): child["name"] = card["headline"]
                 if card.get("description"): child["description"] = card["description"]
                 child_attachments.append(child)
+            shared_creative = cfg.get("shared_creative") if isinstance(cfg.get("shared_creative"), dict) else {}
+            primary_text = cfg.get("primary_text") or shared_creative.get("primary_text") or cards[0].get("primary_text", "")
+            cta_value = cfg.get("cta") or shared_creative.get("cta") or cards[0].get("cta")
             media_data = {
-                "message": cfg.get("primary_text", ""),
+                "message": primary_text,
                 "link": cards[0]["landing_url"],
                 "child_attachments": child_attachments,
             }
-            cta = normalize_cta(cfg.get("cta"))
+            cta = normalize_cta(cta_value)
             if cta and cta != "NO_BUTTON":
                 media_data["call_to_action"] = {"type": cta, "value": {"link": cards[0]["landing_url"]}}
             story_key = "link_data"

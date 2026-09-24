@@ -40,6 +40,9 @@ echo "[deploy] 迁移前数据库版本："
   exit 1
 }
 
+echo "[deploy] 检查投放实例重复映射："
+"${compose[@]}" run --rm api python scripts/check_reconciliation_duplicates.py
+
 echo "[deploy] 执行数据库迁移：python -m alembic upgrade head"
 "${compose[@]}" run --rm api python -m alembic upgrade head
 

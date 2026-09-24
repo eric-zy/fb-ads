@@ -49,6 +49,7 @@ from models.delivery_action import DeliveryAction
 from models.meta_audience import MetaAudienceAsset
 from models.meta_audience_policy import MetaAudienceExclusionPolicy
 from models.meta_tracking_asset import MetaTrackingAsset
+from models.targeting_package import RegionGroup, TargetingPackage
 
 __all__ = [
     # 租户
@@ -109,4 +110,6 @@ __all__ = [
     'MetaAudienceAsset',
     'MetaAudienceExclusionPolicy',
     'MetaTrackingAsset',
+    'RegionGroup',
+    'TargetingPackage',
 ]

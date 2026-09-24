@@ -71,3 +71,45 @@ def test_campaign_hierarchy_lists_return_page_metadata_and_slice(db):
     ads_page = list_ads(adsets[0].id, page=3, page_size=1, db=db, current_user=admin)
     assert ads_page["total"] == 3
     assert ads_page["items"][0]["name"] == "Ad 1"
+
+
+def test_campaign_list_merges_same_template_campaigns_across_accounts(db):
+    admin = User(
+        id="campaign-merge-admin",
+        tenant_id="test_tenant",
+        email="campaign-merge-admin@test.local",
+        username="campaign-merge-admin",
+        hashed_password="unused",
+        role="tenant_admin",
+        is_active=True,
+    )
+    db.add(admin)
+    db.add_all([
+        CampaignInstance(
+            id="campaign-merge-a",
+            tenant_id="test_tenant",
+            template_id="merge-template",
+            ad_account_id="merge-account-a",
+            meta_campaign_id="meta-merge-a",
+            name="轮播图",
+            created_at=datetime(2026, 4, 2),
+        ),
+        CampaignInstance(
+            id="campaign-merge-b",
+            tenant_id="test_tenant",
+            template_id="merge-template",
+            ad_account_id="merge-account-b",
+            meta_campaign_id="meta-merge-b",
+            name="轮播图",
+            created_at=datetime(2026, 4, 1),
+        ),
+    ])
+    db.commit()
+
+    result = list_campaigns(db=db, current_user=admin)
+
+    assert result["total"] == 1
+    assert len(result["items"]) == 1
+    assert result["items"][0]["grouped"] is True
+    assert result["items"][0]["grouped_ids"] == ["campaign-merge-a", "campaign-merge-b"]
+    assert result["items"][0]["meta_campaign_ids"] == ["meta-merge-a", "meta-merge-b"]

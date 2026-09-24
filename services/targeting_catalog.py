@@ -9,6 +9,7 @@ Meta targeting 使用的稳定 ID。目录可以在后续由 Meta ``adlocale`` �
 from __future__ import annotations
 
 import re
+import json
 from typing import Any, Iterable
 
 
@@ -42,6 +43,12 @@ PLACEMENT_POSITION_OPTIONS = {
     "audience_network": frozenset({"classic", "rewarded_video", "instream_video"}),
     "messenger": frozenset({"messenger_home", "story"}),
 }
+
+GEO_LOCATION_LIST_FIELDS = frozenset({
+    "countries", "regions", "cities", "zips", "custom_locations",
+})
+LOCATION_TYPE_OPTIONS = frozenset({"home", "recent"})
+DEVICE_PLATFORM_OPTIONS = frozenset({"mobile", "desktop"})
 
 _LANGUAGE_BY_ID = {item["id"].lower(): item for item in LANGUAGE_CATALOG}
 _LANGUAGE_ALIASES = {
@@ -143,6 +150,36 @@ def normalize_targeting(targeting: dict[str, Any] | None) -> dict[str, Any]:
     for field in ("custom_audiences", "excluded_custom_audiences", "excluded_audiences"):
         if result.get(field) is not None:
             result[field] = validate_audience_refs(result.get(field), field)
+    for field in ("geo_locations", "excluded_geo_locations"):
+        value = result.get(field)
+        if not isinstance(value, dict):
+            continue
+        normalized_geo = dict(value)
+        for geo_field in GEO_LOCATION_LIST_FIELDS:
+            items = normalized_geo.get(geo_field)
+            if isinstance(items, list):
+                seen = set()
+                normalized = []
+                for item in items:
+                    if geo_field == "custom_locations" and isinstance(item, dict):
+                        key = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                    else:
+                        key = str(item.get("key") if isinstance(item, dict) else item).strip()
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    normalized.append(item)
+                normalized_geo[geo_field] = normalized
+        if isinstance(normalized_geo.get("location_types"), list):
+            normalized_geo["location_types"] = list(dict.fromkeys(
+                str(item).strip() for item in normalized_geo["location_types"] if str(item).strip()
+            ))
+        result[field] = normalized_geo
+    for field in ("device_platforms", "user_os", "user_device", "wireless_carrier"):
+        if isinstance(result.get(field), list):
+            result[field] = list(dict.fromkeys(
+                str(item).strip() for item in result[field] if str(item).strip()
+            ))
     return result
 
 
@@ -159,11 +196,30 @@ def targeting_preflight_errors(scope: str, targeting: dict[str, Any] | None) -> 
     geo_locations = targeting.get("geo_locations")
     if geo_locations is not None:
         countries = geo_locations.get("countries") if isinstance(geo_locations, dict) else None
-        if not isinstance(countries, list) or not any(str(country).strip() for country in countries):
+        if not isinstance(geo_locations, dict):
+            errors.append({"code": "TARGETING_GEO_INVALID", "message": f"{scope}的 geo_locations 必须是对象"})
+        elif not any(geo_locations.get(field) for field in GEO_LOCATION_LIST_FIELDS):
             errors.append({
                 "code": "TARGETING_COUNTRY_REQUIRED",
-                "message": f"{scope}至少需要选择一个国家/地区",
+                "message": f"{scope}至少需要选择一个国家、地区、城市或邮编",
             })
+        elif isinstance(geo_locations.get("location_types"), list):
+            invalid = sorted({
+                str(value).strip() for value in geo_locations["location_types"]
+                if str(value).strip() not in LOCATION_TYPE_OPTIONS
+            })
+            if invalid:
+                errors.append({"code": "TARGETING_LOCATION_TYPE_INVALID", "message": f"{scope}包含不支持的 location_types：{', '.join(invalid)}"})
+
+    excluded_geo = targeting.get("excluded_geo_locations")
+    if excluded_geo is not None and not isinstance(excluded_geo, dict):
+        errors.append({"code": "TARGETING_EXCLUDED_GEO_INVALID", "message": f"{scope}的 excluded_geo_locations 必须是对象"})
+    if isinstance(geo_locations, dict) and isinstance(excluded_geo, dict):
+        included_countries = {str(value).strip().upper() for value in geo_locations.get("countries") or []}
+        excluded_countries = {str(value).strip().upper() for value in excluded_geo.get("countries") or []}
+        overlap = sorted(included_countries & excluded_countries)
+        if overlap:
+            errors.append({"code": "TARGETING_GEO_CONFLICT", "message": f"{scope}包含和排除的国家/地区重复：{', '.join(overlap)}"})
 
     age_min = targeting.get("age_min")
     age_max = targeting.get("age_max")
@@ -189,6 +245,23 @@ def targeting_preflight_errors(scope: str, targeting: dict[str, Any] | None) -> 
     if genders is not None:
         if not isinstance(genders, list) or not genders or any(str(gender) not in {"1", "2"} for gender in genders):
             errors.append({"code": "TARGETING_GENDER_INVALID", "message": f"{scope}的性别定向无效，请至少选择男性或女性"})
+
+    included_audiences = {
+        str(item.get("id") if isinstance(item, dict) else item).strip()
+        for item in targeting.get("custom_audiences") or []
+    }
+    excluded_audiences = {
+        str(item.get("id") if isinstance(item, dict) else item).strip()
+        for item in (targeting.get("excluded_custom_audiences") or []) + (targeting.get("excluded_audiences") or [])
+    }
+    overlap = sorted(value for value in included_audiences & excluded_audiences if value)
+    if overlap:
+        errors.append({"code": "TARGETING_AUDIENCE_CONFLICT", "message": f"{scope}的包含和排除受众重复：{', '.join(overlap)}"})
+
+    devices = targeting.get("device_platforms")
+    if devices is not None:
+        if not isinstance(devices, list) or any(str(value).strip() not in DEVICE_PLATFORM_OPTIONS for value in devices):
+            errors.append({"code": "TARGETING_DEVICE_INVALID", "message": f"{scope}的 device_platforms 只能是 mobile 或 desktop"})
     return errors
 
 

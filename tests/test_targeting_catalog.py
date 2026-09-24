@@ -142,3 +142,47 @@ def test_placement_preflight_rejects_unknown_platform_and_position():
         "facebook_positions": ["unknown_position"],
     })
     assert {item["code"] for item in errors} == {"PLACEMENT_PLATFORM_INVALID", "PLACEMENT_POSITION_INVALID"}
+
+
+def test_targeting_preflight_rejects_audience_and_geo_conflicts():
+    errors = targeting_preflight_errors("广告组 1 定向", {
+        "geo_locations": {"countries": ["US"], "location_types": ["home"]},
+        "excluded_geo_locations": {"countries": ["US"]},
+        "custom_audiences": [{"id": "aud-1", "ad_account_id": "act_1"}],
+        "excluded_custom_audiences": [{"id": "aud-1", "ad_account_id": "act_1"}],
+    })
+    assert {item["code"] for item in errors} == {"TARGETING_GEO_CONFLICT", "TARGETING_AUDIENCE_CONFLICT"}
+
+
+def test_targeting_normalization_deduplicates_geo_and_device_values():
+    result = normalize_targeting({
+        "geo_locations": {
+            "countries": ["US", "US"],
+            "location_types": ["home", "home", "recent"],
+        },
+        "device_platforms": ["mobile", "mobile"],
+    })
+    assert result["geo_locations"] == {
+        "countries": ["US"],
+        "location_types": ["home", "recent"],
+    }
+    assert result["device_platforms"] == ["mobile"]
+
+
+def test_targeting_normalization_preserves_custom_location_objects():
+    locations = [
+        {"latitude": 37.77, "longitude": -122.42, "radius": 10, "distance_unit": "mile"},
+        {"latitude": 37.77, "longitude": -122.42, "radius": 10, "distance_unit": "mile"},
+    ]
+
+    result = normalize_targeting({"geo_locations": {"custom_locations": locations}})
+
+    assert result["geo_locations"]["custom_locations"] == locations[:1]
+
+
+def test_targeting_preflight_rejects_unknown_device_platform():
+    errors = targeting_preflight_errors("广告组 1 定向", {
+        "geo_locations": {"countries": ["US"]},
+        "device_platforms": ["console"],
+    })
+    assert {item["code"] for item in errors} == {"TARGETING_DEVICE_INVALID"}
