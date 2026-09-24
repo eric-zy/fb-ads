@@ -15,10 +15,18 @@ from services.request_signer import build_signature_headers
 
 
 class FBConnectorError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None, request_id: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        request_id: str | None = None,
+        detail: Any = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.request_id = request_id
+        self.detail = detail
 
 
 class FBConnectorClient:
@@ -96,7 +104,12 @@ class FBConnectorClient:
                     response.status_code,
                     str(detail)[:300],
                 )
-                raise FBConnectorError(str(detail), status_code=response.status_code, request_id=rid)
+                raise FBConnectorError(
+                    str(detail),
+                    status_code=response.status_code,
+                    request_id=rid,
+                    detail=detail,
+                )
             return result if isinstance(result, dict) else {"data": result}
         except FBConnectorError:
             raise
@@ -157,6 +170,7 @@ class FBConnectorClient:
         query: str = "",
         *,
         locale: str | None = None,
+        country_code: str | None = None,
         limit: int = 30,
         request_id: str | None = None,
     ) -> dict[str, Any]:
@@ -170,6 +184,8 @@ class FBConnectorClient:
         }
         if locale:
             payload["locale"] = locale
+        if country_code:
+            payload["country_code"] = country_code.upper()
         return self._request(
             "POST",
             "/internal/meta/targeting/search",

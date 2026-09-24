@@ -94,46 +94,46 @@
         </el-form-item>
         <el-form-item label="包含国家/地区" required>
           <el-select v-model="regionForm.countries" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchCountries" :loading="targetingSearchLoading.countries" style="width:100%" placeholder="搜索并选择国家/地区" @focus="searchCountries('')">
-            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${item.name} (${countryValue(item)})`" :value="countryValue(item)" />
+            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${optionLabel(item)} (${countryValue(item)})`" :value="countryValue(item)" />
           </el-select>
         </el-form-item>
         <div class="inline-fields">
           <el-form-item label="包含地区">
             <el-select v-model="regionForm.regions" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchRegions" :loading="targetingSearchLoading.regions" style="width:100%" placeholder="搜索 Meta 地区" @focus="searchRegions('')">
-              <el-option v-for="item in regionOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+              <el-option v-for="item in regionOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
             </el-select>
           </el-form-item>
           <el-form-item label="包含城市">
             <el-select v-model="regionForm.cities" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchCities" :loading="targetingSearchLoading.cities" style="width:100%" placeholder="搜索 Meta 城市" @focus="searchCities('')">
-              <el-option v-for="item in cityOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+              <el-option v-for="item in cityOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
             </el-select>
           </el-form-item>
         </div>
         <el-form-item label="包含邮编">
           <el-select v-model="regionForm.zips" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchZips" :loading="targetingSearchLoading.zips" style="width:100%" placeholder="搜索 Meta 邮编" @focus="searchZips('')">
-            <el-option v-for="item in zipOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            <el-option v-for="item in zipOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
           </el-select>
         </el-form-item>
         <el-form-item label="排除国家/地区">
           <el-select v-model="regionForm.excluded_countries" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchCountries" :loading="targetingSearchLoading.countries" style="width:100%" placeholder="搜索要排除的国家/地区" @focus="searchCountries('')">
-            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${item.name} (${countryValue(item)})`" :value="countryValue(item)" />
+            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${optionLabel(item)} (${countryValue(item)})`" :value="countryValue(item)" />
           </el-select>
         </el-form-item>
         <div class="inline-fields">
           <el-form-item label="排除地区">
             <el-select v-model="regionForm.excluded_regions" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedRegions" :loading="targetingSearchLoading.excludedRegions" style="width:100%" placeholder="搜索要排除的 Meta 地区" @focus="searchExcludedRegions('')">
-              <el-option v-for="item in excludedRegionOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+              <el-option v-for="item in excludedRegionOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
             </el-select>
           </el-form-item>
           <el-form-item label="排除城市">
             <el-select v-model="regionForm.excluded_cities" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedCities" :loading="targetingSearchLoading.excludedCities" style="width:100%" placeholder="搜索要排除的 Meta 城市" @focus="searchExcludedCities('')">
-              <el-option v-for="item in excludedCityOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+              <el-option v-for="item in excludedCityOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
             </el-select>
           </el-form-item>
         </div>
         <el-form-item label="排除邮编">
           <el-select v-model="regionForm.excluded_zips" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedZips" :loading="targetingSearchLoading.excludedZips" style="width:100%" placeholder="搜索要排除的 Meta 邮编" @focus="searchExcludedZips('')">
-            <el-option v-for="item in excludedZipOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            <el-option v-for="item in excludedZipOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
           </el-select>
         </el-form-item>
         <el-form-item label="自定义位置 JSON（高级）"><el-input v-model="regionForm.custom_locations_json" type="textarea" :rows="2" placeholder='仅用于 Meta 目录未覆盖的半径/坐标位置；格式为 custom_locations 数组 JSON' /></el-form-item>
@@ -171,47 +171,47 @@
         </el-form-item>
         <el-form-item label="包含国家/地区">
           <el-select v-model="packageForm.countries" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchCountries" :loading="targetingSearchLoading.countries" style="width:100%" placeholder="搜索并选择国家/地区">
-            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${item.name} (${countryValue(item)})`" :value="countryValue(item)" />
+            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${optionLabel(item)} (${countryValue(item)})`" :value="countryValue(item)" />
           </el-select>
         </el-form-item>
         <el-form-item label="排除国家/地区">
           <el-select v-model="packageForm.excluded_countries" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchCountries" :loading="targetingSearchLoading.countries" style="width:100%" placeholder="搜索并选择要排除的国家/地区">
-            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${item.name} (${countryValue(item)})`" :value="countryValue(item)" />
+            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${optionLabel(item)} (${countryValue(item)})`" :value="countryValue(item)" />
           </el-select>
         </el-form-item>
         <div class="inline-fields">
           <el-form-item label="包含地区">
             <el-select v-model="packageForm.regions" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchRegions" :loading="targetingSearchLoading.regions" style="width:100%" placeholder="搜索 Meta 地区" @focus="searchRegions('')">
-              <el-option v-for="item in regionOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+              <el-option v-for="item in regionOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
             </el-select>
           </el-form-item>
           <el-form-item label="包含城市">
             <el-select v-model="packageForm.cities" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchCities" :loading="targetingSearchLoading.cities" style="width:100%" placeholder="搜索 Meta 城市" @focus="searchCities('')">
-              <el-option v-for="item in cityOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+              <el-option v-for="item in cityOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
             </el-select>
           </el-form-item>
         </div>
         <div class="inline-fields">
           <el-form-item label="包含邮编">
             <el-select v-model="packageForm.zips" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchZips" :loading="targetingSearchLoading.zips" style="width:100%" placeholder="搜索 Meta 邮编" @focus="searchZips('')">
-              <el-option v-for="item in zipOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+              <el-option v-for="item in zipOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
             </el-select>
           </el-form-item>
           <el-form-item label="排除地区">
             <el-select v-model="packageForm.excluded_regions" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedRegions" :loading="targetingSearchLoading.excludedRegions" style="width:100%" placeholder="搜索要排除的 Meta 地区" @focus="searchExcludedRegions('')">
-              <el-option v-for="item in excludedRegionOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+              <el-option v-for="item in excludedRegionOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
             </el-select>
           </el-form-item>
         </div>
         <div class="inline-fields">
           <el-form-item label="排除城市">
             <el-select v-model="packageForm.excluded_cities" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedCities" :loading="targetingSearchLoading.excludedCities" style="width:100%" placeholder="搜索要排除的 Meta 城市" @focus="searchExcludedCities('')">
-              <el-option v-for="item in excludedCityOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            <el-option v-for="item in excludedCityOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
             </el-select>
           </el-form-item>
           <el-form-item label="排除邮编">
             <el-select v-model="packageForm.excluded_zips" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedZips" :loading="targetingSearchLoading.excludedZips" style="width:100%" placeholder="搜索要排除的 Meta 邮编" @focus="searchExcludedZips('')">
-              <el-option v-for="item in excludedZipOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+              <el-option v-for="item in excludedZipOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
             </el-select>
           </el-form-item>
         </div>
@@ -246,7 +246,7 @@
         </el-form-item>
         <el-form-item label="兴趣">
           <el-select v-model="packageForm.interests" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip value-key="id" :remote-method="searchInterests" :loading="targetingSearchLoading.interests" style="width:100%" placeholder="搜索并选择 Meta 兴趣" @focus="searchInterests('')">
-            <el-option v-for="item in interestOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            <el-option v-for="item in interestOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
           </el-select>
         </el-form-item>
         <el-form-item label="语言">
@@ -373,7 +373,18 @@ const optionId = (value: any) => String(
 ).trim()
 const optionName = (value: any) => String(
   typeof value === 'object' && value
-    ? (value.name || value.label || value.title || value.id || value.key || '')
+    ? (
+      value.name_zh
+      || value.name_cn
+      || value.localized_name
+      || (value.labels && (value.labels.zh_CN || value.labels['zh-CN']))
+      || value.name
+      || value.label
+      || value.title
+      || value.id
+      || value.key
+      || ''
+    )
     : value || '',
 ).trim()
 const toOption = (value: any): MetaTargetingOption => {
@@ -387,6 +398,23 @@ const stringValues = (value: any) => Array.isArray(value)
   ? value.map(item => optionId(item)).filter(Boolean)
   : []
 const countryValue = (item: MetaTargetingOption) => String(item.key || item.code || item.id || '').trim()
+const countryNameZh = (code: string) => {
+  const normalized = String(code || '').trim().toUpperCase()
+  if (!/^[A-Z]{2}$/.test(normalized)) return ''
+  try {
+    return new Intl.DisplayNames(['zh-CN'], { type: 'region' }).of(normalized) || ''
+  } catch {
+    return ''
+  }
+}
+const optionLabel = (value: MetaTargetingOption) => {
+  const localized = optionName(value)
+  const countryCode = countryValue(value)
+  if (value.search_type === 'adcountry' || /^[A-Z]{2}$/i.test(countryCode)) {
+    return countryNameZh(countryCode) || localized
+  }
+  return localized
+}
 const preserveOptions = (target: { value: MetaTargetingOption[] }, values: any) => {
   const incoming = toOptions(values)
   const merged = [...target.value]
@@ -417,7 +445,12 @@ const joinValues = (value: unknown) => Array.isArray(value)
   ? value.map(item => typeof item === 'object' && item ? ((item as any).key || (item as any).id || (item as any).name || '') : String(item)).filter(Boolean).join(', ')
   : ''
 const accountLabel = (account: DeployableAccount) => `${account.account_name || account.account_id} (${account.account_id})`
-const errorMessage = (error: any, fallback: string) => error?.response?.data?.detail || fallback
+const errorMessage = (error: any, fallback: string) => {
+  const detail = error?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail.message === 'string') return detail.message
+  return fallback
+}
 const geoSummary = (geo: Record<string, any> | null | undefined) => {
   if (!geo) return ''
   const parts = [
@@ -463,17 +496,30 @@ const catalogAccountPk = () => {
   const accountIds = regionDialogVisible.value ? regionForm.account_ids : packageForm.account_ids
   return accountIds[0] || accounts.value[0]?.id || ''
 }
+const activeGeoCountries = () => regionDialogVisible.value ? regionForm.countries : packageForm.countries
+const selectedCountryCode = () => {
+  const country = activeGeoCountries()[0]
+  return country ? String(country).trim().toUpperCase() : undefined
+}
 const searchMetaOptions = async (
   type: string,
   target: { value: MetaTargetingOption[] },
   loadingKey: string,
   query = '',
+  countryCode?: string,
 ) => {
   const accountPk = catalogAccountPk()
   if (!accountPk) { target.value = []; return }
   targetingSearchLoading[loadingKey] = true
   try {
-    const { data } = await metaTargetingApi.search({ account_pk: accountPk, type, q: query, limit: 50 })
+    const { data } = await metaTargetingApi.search({
+      account_pk: accountPk,
+      type,
+      q: query,
+      locale: 'zh_CN',
+      country_code: countryCode,
+      limit: 50,
+    })
     target.value = (data.items || []).map(toOption)
   } catch (error: any) {
     target.value = []
@@ -483,12 +529,18 @@ const searchMetaOptions = async (
   }
 }
 const searchCountries = (query = '') => searchMetaOptions('adcountry', countryOptions, 'countries', query)
-const searchRegions = (query = '') => searchMetaOptions('adregion', regionOptions, 'regions', query)
-const searchExcludedRegions = (query = '') => searchMetaOptions('adregion', excludedRegionOptions, 'excludedRegions', query)
-const searchCities = (query = '') => searchMetaOptions('adcity', cityOptions, 'cities', query)
-const searchExcludedCities = (query = '') => searchMetaOptions('adcity', excludedCityOptions, 'excludedCities', query)
-const searchZips = (query = '') => searchMetaOptions('adzipcode', zipOptions, 'zips', query)
-const searchExcludedZips = (query = '') => searchMetaOptions('adzipcode', excludedZipOptions, 'excludedZips', query)
+const searchRegions = (query = '') => searchMetaOptions('adregion', regionOptions, 'regions', query, selectedCountryCode())
+const searchExcludedRegions = (query = '') => searchMetaOptions('adregion', excludedRegionOptions, 'excludedRegions', query, selectedCountryCode())
+const searchCities = (query = '') => searchMetaOptions('adcity', cityOptions, 'cities', query, selectedCountryCode())
+const searchExcludedCities = (query = '') => searchMetaOptions('adcity', excludedCityOptions, 'excludedCities', query, selectedCountryCode())
+const searchZips = (query = '') => {
+  if (!query.trim()) return Promise.resolve()
+  return searchMetaOptions('adzipcode', zipOptions, 'zips', query, selectedCountryCode())
+}
+const searchExcludedZips = (query = '') => {
+  if (!query.trim()) return Promise.resolve()
+  return searchMetaOptions('adzipcode', excludedZipOptions, 'excludedZips', query, selectedCountryCode())
+}
 const searchInterests = (query = '') => searchMetaOptions('adinterest', interestOptions, 'interests', query)
 
 const audienceScope = () => {

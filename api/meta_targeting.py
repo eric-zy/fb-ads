@@ -16,8 +16,8 @@ from config.settings import settings
 from models import AdAccount, User
 from services.account_access import can_access_account
 from services.credential_service import CredentialService
-from services.fb_connector_client import FBConnectorClient
-from services.meta import MetaClient
+from services.fb_connector_client import FBConnectorClient, FBConnectorError
+from services.meta import MetaApiError, MetaClient
 from services.targeting_catalog import (
     TARGETING_SEARCH_TYPE_OPTIONS,
     normalize_targeting,
@@ -52,8 +52,18 @@ def _search_item(raw: dict, search_type: str) -> dict:
         or item.get("title")
         or key
     )
+    labels = item.get("labels") if isinstance(item.get("labels"), dict) else {}
+    localized_name = (
+        item.get("name_zh")
+        or item.get("name_cn")
+        or item.get("localized_name")
+        or labels.get("zh_CN")
+        or labels.get("zh-CN")
+    )
     item["id"] = str(key) if key is not None else ""
     item["name"] = str(name or item["id"])
+    if localized_name:
+        item["name_zh"] = str(localized_name)
     item["search_type"] = search_type
     return item
 
@@ -64,6 +74,7 @@ def search_targeting(
     type: str = Query(..., description="Meta Targeting Search type"),
     q: str = Query("", max_length=255),
     locale: Optional[str] = Query(None, max_length=64),
+    country_code: Optional[str] = Query(None, max_length=8),
     limit: int = Query(30, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
@@ -90,6 +101,7 @@ def search_targeting(
                 search_type,
                 q,
                 locale=locale,
+                country_code=country_code,
                 limit=limit,
             )
         else:
@@ -98,9 +110,24 @@ def search_targeting(
                 search_type,
                 q,
                 locale=locale,
+                country_code=country_code,
                 limit=limit,
             )
     except Exception as exc:
+        if isinstance(exc, MetaApiError) and exc.code == 100 and exc.subcode == 33:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "TARGETING_SEARCH_UNSUPPORTED",
+                    "message": "Meta 当前不支持该目录查询，请输入更具体的关键词，或改用国家/地区和高级自定义位置。",
+                    "search_type": search_type,
+                },
+            ) from exc
+        if isinstance(exc, FBConnectorError) and exc.detail is not None:
+            raise HTTPException(
+                status_code=exc.status_code or 400,
+                detail=exc.detail,
+            ) from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raw_data = payload.get("data", []) if isinstance(payload, dict) else []
     if isinstance(raw_data, dict):

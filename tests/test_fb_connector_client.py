@@ -117,10 +117,17 @@ def test_client_search_targeting_uses_catalog_endpoint(monkeypatch):
     monkeypatch.setattr("services.fb_connector_client.requests.request", fake_request)
     client = FBConnectorClient(base_url="https://connector.test", signing_key="secret")
     result = client.search_targeting(
-        "act_1", "credential-1", "adinterest", "movie", locale="en_US", limit=20,
+        "act_1",
+        "credential-1",
+        "adregion",
+        "new",
+        locale="zh_CN",
+        country_code="us",
+        limit=20,
     )
 
     assert result["data"][0]["id"] == "6001"
     assert captured["url"].endswith("/internal/meta/targeting/search")
-    assert '"type":"adinterest"' in captured["kwargs"]["data"].decode()
-    assert '"q":"movie"' in captured["kwargs"]["data"].decode()
+    assert '"type":"adregion"' in captured["kwargs"]["data"].decode()
+    assert '"q":"new"' in captured["kwargs"]["data"].decode()
+    assert '"country_code":"US"' in captured["kwargs"]["data"].decode()

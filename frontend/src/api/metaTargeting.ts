@@ -17,7 +17,7 @@ export interface MetaTargetingOption {
 
 export const metaTargetingApi = {
   languages: (q = '') => request.get<{ items: MetaLanguageOption[] }>('/api/v1/meta-targeting/languages', { params: { q, limit: 50 } }),
-  search: (params: { account_pk: string; type: string; q?: string; locale?: string; limit?: number }) =>
+  search: (params: { account_pk: string; type: string; q?: string; locale?: string; country_code?: string; limit?: number }) =>
     request.get<{ items: MetaTargetingOption[]; type: string }>('/api/v1/meta-targeting/search', { params }),
   validate: (targeting: Record<string, any>) => request.post('/api/v1/meta-targeting/validate', { targeting }),
 }

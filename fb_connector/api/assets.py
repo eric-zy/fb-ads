@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 from fb_connector.credential_store import DatabaseCredentialVault, report_meta_auth_failure
 from core.logger import logger
-from services.meta import MetaClient
+from services.meta import MetaApiError, MetaClient
 
 router = APIRouter(prefix="/internal/meta", tags=["Meta Assets"])
 
@@ -24,6 +24,7 @@ class TargetingSearchRequest(AudienceListRequest):
     type: str = Field(..., min_length=1, max_length=32)
     q: str = Field(default="", max_length=255)
     locale: str | None = Field(default=None, max_length=64)
+    country_code: str | None = Field(default=None, max_length=8)
     limit: int = Field(default=30, ge=1, le=100)
 
 class TrackingAssetsRequest(AudienceListRequest):
@@ -144,6 +145,7 @@ async def search_targeting(payload: TargetingSearchRequest):
             payload.q,
             limit=payload.limit,
             locale=payload.locale,
+            country_code=payload.country_code,
         )
         return {"account_id": payload.account_id, **result}
     except Exception as exc:
@@ -154,6 +156,17 @@ async def search_targeting(payload: TargetingSearchRequest):
             payload.account_id,
             payload.type,
         )
+        if isinstance(exc, MetaApiError):
+            if exc.code == 100 and exc.subcode == 33:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "TARGETING_SEARCH_UNSUPPORTED",
+                        "message": "Meta 当前不支持该目录查询，请输入更具体的关键词，或改用国家/地区和高级自定义位置。",
+                        "search_type": payload.type,
+                    },
+                ) from exc
+            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/tracking-assets/list")

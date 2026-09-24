@@ -59,12 +59,24 @@ def test_meta_targeting_search_uses_official_search_parameters(monkeypatch):
         return {"data": [{"id": "6001", "name": "Movies"}]}
 
     monkeypatch.setattr(client, "_get", fake_get)
-    result = client.search_targeting("adinterest", "movie", locale="en_US", limit=20)
+    result = client.search_targeting(
+        "adregion",
+        "new",
+        locale="zh_CN",
+        country_code="us",
+        limit=20,
+    )
 
     assert result["data"][0]["id"] == "6001"
     assert captured == {
         "path": "/search",
-        "params": {"type": "adinterest", "limit": 20, "q": "movie", "locale": "en_US"},
+        "params": {
+            "type": "adregion",
+            "limit": 20,
+            "q": "new",
+            "locale": "zh_CN",
+            "country_code": "US",
+        },
     }
 
 
