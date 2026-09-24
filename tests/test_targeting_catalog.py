@@ -48,6 +48,26 @@ def test_meta_targeting_resolves_product_language_to_locale_id(monkeypatch):
     assert calls == ["English"]
 
 
+def test_meta_targeting_search_uses_official_search_parameters(monkeypatch):
+    from services.meta.client import MetaClient
+
+    client = object.__new__(MetaClient)
+    captured = {}
+
+    def fake_get(path, params):
+        captured.update(path=path, params=params)
+        return {"data": [{"id": "6001", "name": "Movies"}]}
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    result = client.search_targeting("adinterest", "movie", locale="en_US", limit=20)
+
+    assert result["data"][0]["id"] == "6001"
+    assert captured == {
+        "path": "/search",
+        "params": {"type": "adinterest", "limit": 20, "q": "movie", "locale": "en_US"},
+    }
+
+
 def test_meta_targeting_accepts_object_shaped_search_data(monkeypatch):
     from services.meta.client import MetaClient
 

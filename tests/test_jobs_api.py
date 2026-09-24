@@ -1,10 +1,15 @@
 """Job API 直接投放配置的契约回归测试。"""
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import HTTPException
 
 from api.jobs import CampaignCreateRequest, _ensure_template
-from models import CampaignTemplate
+from core.enums import ActionType
+from models import AdAccount, CampaignTemplate
+from services import job_service
+from services.job_service import JobService
 
 
 def _direct_request(**overrides):
@@ -148,3 +153,43 @@ def test_ensure_template_allows_video_without_landing_url(db):
     template = db.get(CampaignTemplate, template_id)
     assert template.creative_config_json["creatives"][0]["asset_type"] == "video"
     assert "landing_url" not in template.creative_config_json["creatives"][0]
+
+
+def test_existing_campaign_action_does_not_require_page(monkeypatch, db):
+    """启停已有 Campaign 不应复用新建投放的 Page 校验。"""
+    template = CampaignTemplate(
+        id="template-without-page",
+        tenant_id="test_tenant",
+        name="Legacy template",
+        creative_config_json={},
+    )
+    account = AdAccount(
+        id="action-account",
+        tenant_id="test_tenant",
+        account_id="act_action",
+        account_name="Action account",
+        connector_credential_id="connector-credential",
+        account_status="1",
+        system_status="ACTIVE",
+    )
+    db.add_all([template, account])
+    db.commit()
+
+    monkeypatch.setattr(
+        "services.meta.AdAccountService.filter_available_ids",
+        lambda self, ids, **kwargs: (list(ids), []),
+    )
+    monkeypatch.setattr(
+        job_service,
+        "execute_campaign_job",
+        SimpleNamespace(delay=lambda job_id: SimpleNamespace(id="celery-action-task")),
+    )
+
+    job = JobService(db).create_job(
+        template_id=template.id,
+        ad_account_ids=[account.id],
+        action_type=ActionType.ENABLE,
+    )
+
+    assert job.action_type == ActionType.ENABLE.value
+    assert job.total_accounts == 1

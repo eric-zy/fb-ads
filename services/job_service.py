@@ -602,16 +602,9 @@ class JobService:
                 ).count() + 1
             )
 
-        # XMP 式投放前置校验：模板引用的 Page 必须属于当前租户且仍有效。
-        page_id = (template.creative_config_json or {}).get("page_id")
-        if not page_id:
-            raise ValueError("投放模板未选择 Facebook 页面，请先编辑模板选择已同步页面")
-        page = self.db.query(MetaPage).filter(
-            MetaPage.page_id == str(page_id),
-            MetaPage.status == "ACTIVE",
-        ).first()
-        if not page:
-            raise ValueError("模板引用的 Facebook 页面已失效或不属于当前租户，请重新同步并选择页面")
+        action_value = (
+            action_type.value if isinstance(action_type, ActionType) else action_type
+        )
 
         # 文档 §19：可投放判断统一由后端 AdAccountService 完成，
         # 前端/调用方不得自行拼接规则。此处把不可投放的账户直接剔除，
@@ -629,6 +622,22 @@ class JobService:
             )
             if existing:
                 return existing
+
+        # Facebook Page 只属于“新建投放”校验。启停、归档、删除、恢复和改预算
+        # 作用于已经存在的 Meta Campaign，不应因为历史模板没有 page_id 或 Page
+        # 授权已变更而在 HTTP 层失败；实际写操作仍由 Connector/Meta 返回结果。
+        page = None
+        if action_value == ActionType.CREATE.value:
+            page_id = (template.creative_config_json or {}).get("page_id")
+            if not page_id:
+                raise ValueError("投放模板未选择 Facebook 页面，请先编辑模板选择已同步页面")
+            page = self.db.query(MetaPage).filter(
+                MetaPage.page_id == str(page_id),
+                MetaPage.status == "ACTIVE",
+            ).first()
+            if not page:
+                raise ValueError("模板引用的 Facebook 页面已失效或不属于当前租户，请重新同步并选择页面")
+
         requested_status = params.get("status", InstanceStatus.PAUSED.value)
         # 投放账户资格由 AdAccountService 统一判断；用户支付状态不参与拦截。
         ad_account_ids, rejected = AdAccountService(self.db).filter_available_ids(
@@ -640,13 +649,16 @@ class JobService:
             ),
         )
         compatible_ids = []
-        for account_pk in ad_account_ids:
-            account = self.db.query(AdAccount).filter(AdAccount.id == account_pk).first()
-            reason = page_account_access_error(page, account) if account else "账户不存在"
-            if reason:
-                rejected.append({"account_id": account_pk, "reason": reason})
-            else:
-                compatible_ids.append(account_pk)
+        if page is not None:
+            for account_pk in ad_account_ids:
+                account = self.db.query(AdAccount).filter(AdAccount.id == account_pk).first()
+                reason = page_account_access_error(page, account) if account else "账户不存在"
+                if reason:
+                    rejected.append({"account_id": account_pk, "reason": reason})
+                else:
+                    compatible_ids.append(account_pk)
+        else:
+            compatible_ids = list(ad_account_ids)
         ad_account_ids = compatible_ids
         if not ad_account_ids:
             detail = "；".join(f"{r['account_id']}: {r['reason']}" for r in rejected[:5])
@@ -657,9 +669,6 @@ class JobService:
                 + "；".join(f"{r['account_id']}({r['reason']})" for r in rejected[:5])
             )
 
-        action_value = (
-            action_type.value if isinstance(action_type, ActionType) else action_type
-        )
         access_map = params.get("access_business_ids") or {}
         if not isinstance(access_map, dict):
             raise ValueError("access_business_ids 必须是对象")

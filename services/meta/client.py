@@ -23,7 +23,11 @@ from config.settings import settings
 from core.logger import logger
 from services.meta.errors import MetaApiError, classify, classify_facebook_error
 from core.enums import ErrorCategory
-from services.targeting_catalog import LANGUAGE_CATALOG, normalize_languages
+from services.targeting_catalog import (
+    LANGUAGE_CATALOG,
+    TARGETING_SEARCH_TYPE_OPTIONS,
+    normalize_languages,
+)
 
 
 def _retry_after_seconds(response: requests.Response) -> float | None:
@@ -459,6 +463,33 @@ class MetaClient:
         )
         self._ad_locales_cache[cache_key] = list(locales)
         return locales
+
+    def search_targeting(
+        self,
+        targeting_type: str,
+        query: str | None = None,
+        *,
+        locale: str | None = None,
+        limit: int = 30,
+    ) -> dict:
+        """调用 Meta 官方 Targeting Search 返回定向目录候选项。
+
+        这里只允许产品明确支持的 search type，避免把任意 Graph 路径或
+        参数暴露给上层。结果仍按 Meta 原样保留，供 UI 显示 ``id/key/name``
+        并在提交时使用稳定 ID。
+        """
+        search_type = str(targeting_type or "").strip().lower()
+        if search_type not in TARGETING_SEARCH_TYPE_OPTIONS:
+            raise ValueError(f"不支持的 Meta 定向搜索类型：{targeting_type}")
+        params: dict[str, object] = {
+            "type": search_type,
+            "limit": max(1, min(int(limit or 30), 100)),
+        }
+        if str(query or "").strip():
+            params["q"] = str(query).strip()
+        if str(locale or "").strip():
+            params["locale"] = str(locale).strip()
+        return self._get("/search", params)
 
     def resolve_targeting_locales(self, targeting: dict | None) -> dict:
         """把产品层 languages 别名解析成 Meta targeting.locales ID。"""

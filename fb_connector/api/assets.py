@@ -20,6 +20,12 @@ class AccountVerifyRequest(BusinessRequest):
 class AudienceListRequest(CredentialRequest):
     account_id: str = Field(..., min_length=1, max_length=64)
 
+class TargetingSearchRequest(AudienceListRequest):
+    type: str = Field(..., min_length=1, max_length=32)
+    q: str = Field(default="", max_length=255)
+    locale: str | None = Field(default=None, max_length=64)
+    limit: int = Field(default=30, ge=1, le=100)
+
 class TrackingAssetsRequest(AudienceListRequest):
     pass
 
@@ -119,6 +125,34 @@ async def list_custom_audiences(payload: AudienceListRequest):
             "[ConnectorAssets] list audiences failed credential_id=%s account_id=%s",
             payload.credential_id,
             payload.account_id,
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@router.post("/targeting/search")
+async def search_targeting(payload: TargetingSearchRequest):
+    """返回 Meta Targeting Search 的目录元数据，不返回任何受众成员数据。"""
+    try:
+        logger.info(
+            "[ConnectorAssets] targeting search start credential_id=%s account_id=%s type=%s q=%s",
+            payload.credential_id,
+            payload.account_id,
+            payload.type,
+            payload.q,
+        )
+        result = _client(payload.credential_id).search_targeting(
+            payload.type,
+            payload.q,
+            limit=payload.limit,
+            locale=payload.locale,
+        )
+        return {"account_id": payload.account_id, **result}
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception(
+            "[ConnectorAssets] targeting search failed credential_id=%s account_id=%s type=%s",
+            payload.credential_id,
+            payload.account_id,
+            payload.type,
         )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -99,3 +99,28 @@ def test_cleanup_client_can_limit_to_orphaned_objects(monkeypatch):
 
     assert captured["url"].endswith("/internal/meta/campaigns/cleanup")
     assert '"orphaned_only":true' in captured["kwargs"]["data"].decode()
+
+
+def test_client_search_targeting_uses_catalog_endpoint(monkeypatch):
+    captured = {}
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"data": [{"id": "6001", "name": "Movies"}]}
+
+    def fake_request(method, url, **kwargs):
+        captured.update(method=method, url=url, kwargs=kwargs)
+        return Response()
+
+    monkeypatch.setattr("services.fb_connector_client.requests.request", fake_request)
+    client = FBConnectorClient(base_url="https://connector.test", signing_key="secret")
+    result = client.search_targeting(
+        "act_1", "credential-1", "adinterest", "movie", locale="en_US", limit=20,
+    )
+
+    assert result["data"][0]["id"] == "6001"
+    assert captured["url"].endswith("/internal/meta/targeting/search")
+    assert '"type":"adinterest"' in captured["kwargs"]["data"].decode()
+    assert '"q":"movie"' in captured["kwargs"]["data"].decode()

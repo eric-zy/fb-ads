@@ -13,7 +13,7 @@ from core.audit import record_audit
 from core.database import get_db
 from core.enums import ActionType
 from models import AdAccount, AdGroup, Campaign, AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, AsyncTaskRecord, DeliveryAction, SyncAlert, User
-from services.job_service import JobService
+from services.job_service import JobDispatchError, JobService
 from services.account_access import accessible_account_ids
 from tasks.meta_sync_tasks import sync_delivery_objects_task, sync_single_ad_group_task, update_delivery_object_task
 from celery_app import celery_app
@@ -737,17 +737,24 @@ def campaign_action(
         grouped[instance.template_id].append(instance.ad_account_id)
 
     jobs = []
-    for template_id, account_ids in grouped.items():
-        params = {"budget_override": req.budget} if action_type == ActionType.UPDATE_BUDGET else {}
-        if req.idempotency_key:
-            params["_idempotency_key"] = f"{req.idempotency_key}:{template_id}"
-        jobs.append(JobService(db).create_job(
-            template_id=template_id,
-            ad_account_ids=account_ids,
-            action_type=action_type,
-            params=params,
-            created_by=current_user.id,
-        ))
+    try:
+        for template_id, account_ids in grouped.items():
+            params = {"budget_override": req.budget} if action_type == ActionType.UPDATE_BUDGET else {}
+            if req.idempotency_key:
+                params["_idempotency_key"] = f"{req.idempotency_key}:{template_id}"
+            jobs.append(JobService(db).create_job(
+                template_id=template_id,
+                ad_account_ids=account_ids,
+                action_type=action_type,
+                params=params,
+                created_by=current_user.id,
+            ))
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except JobDispatchError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     record_audit(
         db,
         action=f"{action}_CAMPAIGNS",

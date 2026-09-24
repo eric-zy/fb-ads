@@ -50,6 +50,19 @@ GEO_LOCATION_LIST_FIELDS = frozenset({
 LOCATION_TYPE_OPTIONS = frozenset({"home", "recent"})
 DEVICE_PLATFORM_OPTIONS = frozenset({"mobile", "desktop"})
 
+# Meta Targeting Search 的公开 type。目录结果会随账户、地区、API 版本和
+# Meta 产品策略变化，前端只传 type/q，不在本地复制一份易过期的全量目录。
+TARGETING_SEARCH_TYPE_OPTIONS = frozenset({
+    "adinterest",
+    "adbehavior",
+    "addemographic",
+    "adlocale",
+    "adcountry",
+    "adregion",
+    "adcity",
+    "adzipcode",
+})
+
 _LANGUAGE_BY_ID = {item["id"].lower(): item for item in LANGUAGE_CATALOG}
 _LANGUAGE_ALIASES = {
     "中文": ("zh_CN", "zh_TW"),

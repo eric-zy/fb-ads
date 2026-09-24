@@ -93,24 +93,51 @@
           </el-select>
         </el-form-item>
         <el-form-item label="包含国家/地区" required>
-          <el-input v-model="regionForm.countries" placeholder="例如 US,CA；多个值用逗号分隔" />
+          <el-select v-model="regionForm.countries" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchCountries" :loading="targetingSearchLoading.countries" style="width:100%" placeholder="搜索并选择国家/地区" @focus="searchCountries('')">
+            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${item.name} (${countryValue(item)})`" :value="countryValue(item)" />
+          </el-select>
         </el-form-item>
-        <el-form-item label="包含地区 ID">
-          <el-input v-model="regionForm.regions" placeholder="可选，例如 Meta region key" />
-        </el-form-item>
-        <el-form-item label="包含城市 ID">
-          <el-input v-model="regionForm.cities" placeholder="可选，多个值用逗号分隔" />
-        </el-form-item>
+        <div class="inline-fields">
+          <el-form-item label="包含地区">
+            <el-select v-model="regionForm.regions" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchRegions" :loading="targetingSearchLoading.regions" style="width:100%" placeholder="搜索 Meta 地区" @focus="searchRegions('')">
+              <el-option v-for="item in regionOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="包含城市">
+            <el-select v-model="regionForm.cities" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchCities" :loading="targetingSearchLoading.cities" style="width:100%" placeholder="搜索 Meta 城市" @focus="searchCities('')">
+              <el-option v-for="item in cityOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            </el-select>
+          </el-form-item>
+        </div>
         <el-form-item label="包含邮编">
-          <el-input v-model="regionForm.zips" placeholder="可选，多个值用逗号分隔" />
+          <el-select v-model="regionForm.zips" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchZips" :loading="targetingSearchLoading.zips" style="width:100%" placeholder="搜索 Meta 邮编" @focus="searchZips('')">
+            <el-option v-for="item in zipOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+          </el-select>
         </el-form-item>
         <el-form-item label="排除国家/地区">
-          <el-input v-model="regionForm.excluded_countries" placeholder="例如 CA；多个值用逗号分隔" />
+          <el-select v-model="regionForm.excluded_countries" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchCountries" :loading="targetingSearchLoading.countries" style="width:100%" placeholder="搜索要排除的国家/地区" @focus="searchCountries('')">
+            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${item.name} (${countryValue(item)})`" :value="countryValue(item)" />
+          </el-select>
         </el-form-item>
-        <div class="inline-fields"><el-form-item label="排除地区 ID"><el-input v-model="regionForm.excluded_regions" placeholder="Meta region key" /></el-form-item><el-form-item label="排除城市 ID"><el-input v-model="regionForm.excluded_cities" placeholder="Meta city key" /></el-form-item></div>
-        <el-form-item label="排除邮编"><el-input v-model="regionForm.excluded_zips" placeholder="多个值用逗号分隔" /></el-form-item>
-        <el-form-item label="自定义位置 JSON"><el-input v-model="regionForm.custom_locations_json" type="textarea" :rows="2" placeholder='可选，Meta custom_locations 数组 JSON' /></el-form-item>
-        <el-form-item label="排除自定义位置 JSON"><el-input v-model="regionForm.excluded_custom_locations_json" type="textarea" :rows="2" placeholder='可选，Meta custom_locations 数组 JSON' /></el-form-item>
+        <div class="inline-fields">
+          <el-form-item label="排除地区">
+            <el-select v-model="regionForm.excluded_regions" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedRegions" :loading="targetingSearchLoading.excludedRegions" style="width:100%" placeholder="搜索要排除的 Meta 地区" @focus="searchExcludedRegions('')">
+              <el-option v-for="item in excludedRegionOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="排除城市">
+            <el-select v-model="regionForm.excluded_cities" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedCities" :loading="targetingSearchLoading.excludedCities" style="width:100%" placeholder="搜索要排除的 Meta 城市" @focus="searchExcludedCities('')">
+              <el-option v-for="item in excludedCityOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <el-form-item label="排除邮编">
+          <el-select v-model="regionForm.excluded_zips" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedZips" :loading="targetingSearchLoading.excludedZips" style="width:100%" placeholder="搜索要排除的 Meta 邮编" @focus="searchExcludedZips('')">
+            <el-option v-for="item in excludedZipOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="自定义位置 JSON（高级）"><el-input v-model="regionForm.custom_locations_json" type="textarea" :rows="2" placeholder='仅用于 Meta 目录未覆盖的半径/坐标位置；格式为 custom_locations 数组 JSON' /></el-form-item>
+        <el-form-item label="排除自定义位置 JSON（高级）"><el-input v-model="regionForm.excluded_custom_locations_json" type="textarea" :rows="2" placeholder='仅用于 Meta 目录未覆盖的半径/坐标位置；格式为 custom_locations 数组 JSON' /></el-form-item>
         <el-form-item label="位置类型">
           <el-checkbox-group v-model="regionForm.location_types">
             <el-checkbox label="home">居住地</el-checkbox>
@@ -143,16 +170,53 @@
           </el-select>
         </el-form-item>
         <el-form-item label="包含国家/地区">
-          <el-input v-model="packageForm.countries" placeholder="不使用地区组时填写，例如 US,GB" />
+          <el-select v-model="packageForm.countries" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchCountries" :loading="targetingSearchLoading.countries" style="width:100%" placeholder="搜索并选择国家/地区">
+            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${item.name} (${countryValue(item)})`" :value="countryValue(item)" />
+          </el-select>
         </el-form-item>
         <el-form-item label="排除国家/地区">
-          <el-input v-model="packageForm.excluded_countries" placeholder="例如 CA；多个值用逗号分隔" />
+          <el-select v-model="packageForm.excluded_countries" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchCountries" :loading="targetingSearchLoading.countries" style="width:100%" placeholder="搜索并选择要排除的国家/地区">
+            <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${item.name} (${countryValue(item)})`" :value="countryValue(item)" />
+          </el-select>
         </el-form-item>
-        <div class="inline-fields"><el-form-item label="包含地区 ID"><el-input v-model="packageForm.regions" placeholder="Meta region key" /></el-form-item><el-form-item label="包含城市 ID"><el-input v-model="packageForm.cities" placeholder="Meta city key" /></el-form-item></div>
-        <div class="inline-fields"><el-form-item label="包含邮编"><el-input v-model="packageForm.zips" placeholder="多个值用逗号分隔" /></el-form-item><el-form-item label="排除地区 ID"><el-input v-model="packageForm.excluded_regions" placeholder="Meta region key" /></el-form-item></div>
-        <div class="inline-fields"><el-form-item label="排除城市 ID"><el-input v-model="packageForm.excluded_cities" placeholder="Meta city key" /></el-form-item><el-form-item label="排除邮编"><el-input v-model="packageForm.excluded_zips" placeholder="多个值用逗号分隔" /></el-form-item></div>
-        <el-form-item label="自定义位置 JSON"><el-input v-model="packageForm.custom_locations_json" type="textarea" :rows="2" placeholder='可选，Meta custom_locations 数组 JSON' /></el-form-item>
-        <el-form-item label="排除自定义位置 JSON"><el-input v-model="packageForm.excluded_custom_locations_json" type="textarea" :rows="2" placeholder='可选，Meta custom_locations 数组 JSON' /></el-form-item>
+        <div class="inline-fields">
+          <el-form-item label="包含地区">
+            <el-select v-model="packageForm.regions" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchRegions" :loading="targetingSearchLoading.regions" style="width:100%" placeholder="搜索 Meta 地区" @focus="searchRegions('')">
+              <el-option v-for="item in regionOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="包含城市">
+            <el-select v-model="packageForm.cities" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchCities" :loading="targetingSearchLoading.cities" style="width:100%" placeholder="搜索 Meta 城市" @focus="searchCities('')">
+              <el-option v-for="item in cityOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <div class="inline-fields">
+          <el-form-item label="包含邮编">
+            <el-select v-model="packageForm.zips" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchZips" :loading="targetingSearchLoading.zips" style="width:100%" placeholder="搜索 Meta 邮编" @focus="searchZips('')">
+              <el-option v-for="item in zipOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="排除地区">
+            <el-select v-model="packageForm.excluded_regions" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedRegions" :loading="targetingSearchLoading.excludedRegions" style="width:100%" placeholder="搜索要排除的 Meta 地区" @focus="searchExcludedRegions('')">
+              <el-option v-for="item in excludedRegionOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <div class="inline-fields">
+          <el-form-item label="排除城市">
+            <el-select v-model="packageForm.excluded_cities" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedCities" :loading="targetingSearchLoading.excludedCities" style="width:100%" placeholder="搜索要排除的 Meta 城市" @focus="searchExcludedCities('')">
+              <el-option v-for="item in excludedCityOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="排除邮编">
+            <el-select v-model="packageForm.excluded_zips" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchExcludedZips" :loading="targetingSearchLoading.excludedZips" style="width:100%" placeholder="搜索要排除的 Meta 邮编" @focus="searchExcludedZips('')">
+              <el-option v-for="item in excludedZipOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+            </el-select>
+          </el-form-item>
+        </div>
+        <el-form-item label="自定义位置 JSON（高级）"><el-input v-model="packageForm.custom_locations_json" type="textarea" :rows="2" placeholder='仅用于 Meta 目录未覆盖的半径/坐标位置；格式为 custom_locations 数组 JSON' /></el-form-item>
+        <el-form-item label="排除自定义位置 JSON（高级）"><el-input v-model="packageForm.excluded_custom_locations_json" type="textarea" :rows="2" placeholder='仅用于 Meta 目录未覆盖的半径/坐标位置；格式为 custom_locations 数组 JSON' /></el-form-item>
         <el-form-item label="位置类型">
           <el-checkbox-group v-model="packageForm.location_types">
             <el-checkbox label="home">居住地</el-checkbox>
@@ -171,16 +235,22 @@
           </el-checkbox-group>
         </el-form-item>
         <el-form-item label="包含自定义受众">
-          <el-input v-model="packageForm.custom_audiences" placeholder="Meta Audience ID；跨账户用 account_id::audience_id" />
+          <el-select v-model="packageForm.custom_audiences" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchAudiences" :loading="audiencesLoading" style="width:100%" placeholder="先选择适用账户，再搜索已同步受众" @focus="searchAudiences('')">
+            <el-option v-for="item in audienceOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
         </el-form-item>
         <el-form-item label="排除自定义受众">
-          <el-input v-model="packageForm.excluded_custom_audiences" placeholder="Meta Audience ID；跨账户用 account_id::audience_id" />
+          <el-select v-model="packageForm.excluded_custom_audiences" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchAudiences" :loading="audiencesLoading" style="width:100%" placeholder="搜索要排除的已同步受众" @focus="searchAudiences('')">
+            <el-option v-for="item in audienceOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
         </el-form-item>
         <el-form-item label="兴趣">
-          <el-input v-model="packageForm.interests" placeholder="兴趣名称，多个值用逗号分隔" />
+          <el-select v-model="packageForm.interests" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip value-key="id" :remote-method="searchInterests" :loading="targetingSearchLoading.interests" style="width:100%" placeholder="搜索并选择 Meta 兴趣" @focus="searchInterests('')">
+            <el-option v-for="item in interestOptions" :key="item.id" :label="`${item.name} (${item.id})`" :value="item" />
+          </el-select>
         </el-form-item>
         <el-form-item label="语言">
-          <el-input v-model="packageForm.languages" placeholder="语言 ID，多个值用逗号分隔" />
+          <MetaLanguageSelect v-model="packageForm.languages" />
         </el-form-item>
         <el-form-item label="设备">
           <el-checkbox-group v-model="packageForm.device_platforms">
@@ -189,13 +259,19 @@
           </el-checkbox-group>
         </el-form-item>
         <el-form-item label="系统">
-          <el-input v-model="packageForm.user_os" placeholder="例如 iOS,Android" />
+          <el-select v-model="packageForm.user_os" multiple filterable collapse-tags style="width:100%" placeholder="选择操作系统">
+            <el-option v-for="item in userOsOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
         </el-form-item>
         <el-form-item label="设备型号">
-          <el-input v-model="packageForm.user_device" placeholder="例如 iPhone" />
+          <el-select v-model="packageForm.user_device" multiple filterable collapse-tags style="width:100%" placeholder="选择设备类型">
+            <el-option v-for="item in userDeviceOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
         </el-form-item>
         <el-form-item label="网络">
-          <el-input v-model="packageForm.wireless_carrier" placeholder="例如 WIFI" />
+          <el-select v-model="packageForm.wireless_carrier" multiple filterable collapse-tags style="width:100%" placeholder="选择网络类型">
+            <el-option v-for="item in wirelessCarrierOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
         </el-form-item>
         <el-form-item label="版位">
           <el-checkbox-group v-model="packageForm.publisher_platforms">
@@ -221,9 +297,12 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { accountApi, type DeployableAccount } from '@/api/admin'
+import { metaAudiencesApi, type MetaAudienceAsset } from '@/api/metaAudiences'
+import { metaTargetingApi, type MetaTargetingOption } from '@/api/metaTargeting'
+import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
 import {
   regionGroupsApi,
   targetingPackagesApi,
@@ -241,22 +320,88 @@ const regionDialogVisible = ref(false)
 const packageDialogVisible = ref(false)
 const editingRegion = ref<RegionGroup | null>(null)
 const editingPackage = ref<TargetingPackage | null>(null)
+const audienceOptions = ref<{ value: string; label: string }[]>([])
+const audiencesLoading = ref(false)
+const countryOptions = ref<MetaTargetingOption[]>([])
+const regionOptions = ref<MetaTargetingOption[]>([])
+const excludedRegionOptions = ref<MetaTargetingOption[]>([])
+const cityOptions = ref<MetaTargetingOption[]>([])
+const excludedCityOptions = ref<MetaTargetingOption[]>([])
+const zipOptions = ref<MetaTargetingOption[]>([])
+const excludedZipOptions = ref<MetaTargetingOption[]>([])
+const interestOptions = ref<MetaTargetingOption[]>([])
+const targetingSearchLoading = reactive<Record<string, boolean>>({
+  countries: false, regions: false, excludedRegions: false, cities: false, excludedCities: false,
+  zips: false, excludedZips: false, interests: false,
+})
+
+const userOsOptions = [
+  { value: 'iOS', label: 'iOS' }, { value: 'Android', label: 'Android' },
+  { value: 'Windows', label: 'Windows' }, { value: 'OS X', label: 'macOS' },
+  { value: 'Other', label: '其他' },
+]
+const userDeviceOptions = [
+  { value: 'iPhone', label: 'iPhone' }, { value: 'iPad', label: 'iPad' },
+  { value: 'Android_Smartphone', label: 'Android 手机' }, { value: 'Android_Tablet', label: 'Android 平板' },
+  { value: 'Windows_Phone', label: 'Windows Phone' }, { value: 'Other', label: '其他设备' },
+]
+const wirelessCarrierOptions = [
+  { value: 'wifi', label: 'Wi-Fi' }, { value: '2G', label: '2G' },
+  { value: '3G', label: '3G' }, { value: '4G', label: '4G' },
+  { value: '5G', label: '5G' },
+]
 
 const newRegionForm = () => ({
-  name: '', description: '', account_ids: [] as string[], countries: '', regions: '', cities: '', zips: '',
-  excluded_countries: '', excluded_regions: '', excluded_cities: '', excluded_zips: '', custom_locations_json: '', excluded_custom_locations_json: '', location_types: ['home', 'recent'] as string[],
+  name: '', description: '', account_ids: [] as string[], countries: [] as string[], regions: [] as MetaTargetingOption[], cities: [] as MetaTargetingOption[], zips: [] as MetaTargetingOption[],
+  excluded_countries: [] as string[], excluded_regions: [] as MetaTargetingOption[], excluded_cities: [] as MetaTargetingOption[], excluded_zips: [] as MetaTargetingOption[], custom_locations_json: '', excluded_custom_locations_json: '', location_types: ['home', 'recent'] as string[],
 })
 const newPackageForm = () => ({
   name: '', description: '', account_ids: [] as string[], region_group_ids: [] as string[],
-  countries: '', regions: '', cities: '', zips: '', excluded_countries: '', excluded_regions: '', excluded_cities: '', excluded_zips: '', custom_locations_json: '', excluded_custom_locations_json: '', location_types: ['home', 'recent'] as string[],
-  age_min: 18, age_max: 65, genders: [1, 2] as number[], custom_audiences: '', excluded_custom_audiences: '',
-  interests: '', languages: '', device_platforms: [] as string[], user_os: '', user_device: '', wireless_carrier: '',
+  countries: [] as string[], regions: [] as MetaTargetingOption[], cities: [] as MetaTargetingOption[], zips: [] as MetaTargetingOption[], excluded_countries: [] as string[], excluded_regions: [] as MetaTargetingOption[], excluded_cities: [] as MetaTargetingOption[], excluded_zips: [] as MetaTargetingOption[], custom_locations_json: '', excluded_custom_locations_json: '', location_types: ['home', 'recent'] as string[],
+  age_min: 18, age_max: 65, genders: [1, 2] as number[], custom_audiences: [] as string[], excluded_custom_audiences: [] as string[],
+  interests: [] as MetaTargetingOption[], languages: [] as string[], device_platforms: [] as string[], user_os: [] as string[], user_device: [] as string[], wireless_carrier: [] as string[],
   publisher_platforms: [] as string[], facebook_positions: [] as string[], instagram_positions: [] as string[], audience_network_positions: [] as string[], messenger_positions: [] as string[],
 })
 const regionForm = reactive(newRegionForm())
 const packageForm = reactive(newPackageForm())
 
 const splitValues = (value: string) => value.split(',').map(item => item.trim()).filter(Boolean)
+const optionId = (value: any) => String(
+  typeof value === 'object' && value
+    ? (value.id || value.key || value.value || value.name || '')
+    : value || '',
+).trim()
+const optionName = (value: any) => String(
+  typeof value === 'object' && value
+    ? (value.name || value.label || value.title || value.id || value.key || '')
+    : value || '',
+).trim()
+const toOption = (value: any): MetaTargetingOption => {
+  const id = optionId(value)
+  return typeof value === 'object' && value
+    ? { ...value, id, name: optionName(value) || id }
+    : { id, name: optionName(value) || id }
+}
+const toOptions = (value: any) => Array.isArray(value) ? value.map(toOption).filter(item => item.id) : []
+const stringValues = (value: any) => Array.isArray(value)
+  ? value.map(item => optionId(item)).filter(Boolean)
+  : []
+const countryValue = (item: MetaTargetingOption) => String(item.key || item.code || item.id || '').trim()
+const preserveOptions = (target: { value: MetaTargetingOption[] }, values: any) => {
+  const incoming = toOptions(values)
+  const merged = [...target.value]
+  incoming.forEach(item => {
+    if (!merged.some(existing => existing.id === item.id)) merged.push(item)
+  })
+  target.value = merged
+}
+const preserveCountryOptions = (values: any) => {
+  stringValues(values).forEach(value => {
+    if (!countryOptions.value.some(item => countryValue(item) === value)) {
+      countryOptions.value.push({ id: value, key: value, name: value })
+    }
+  })
+}
 const parseJsonArray = (value: string, label: string) => {
   const text = String(value || '').trim()
   if (!text) return []
@@ -314,38 +459,114 @@ const loadAll = async () => {
   }
 }
 
+const catalogAccountPk = () => {
+  const accountIds = regionDialogVisible.value ? regionForm.account_ids : packageForm.account_ids
+  return accountIds[0] || accounts.value[0]?.id || ''
+}
+const searchMetaOptions = async (
+  type: string,
+  target: { value: MetaTargetingOption[] },
+  loadingKey: string,
+  query = '',
+) => {
+  const accountPk = catalogAccountPk()
+  if (!accountPk) { target.value = []; return }
+  targetingSearchLoading[loadingKey] = true
+  try {
+    const { data } = await metaTargetingApi.search({ account_pk: accountPk, type, q: query, limit: 50 })
+    target.value = (data.items || []).map(toOption)
+  } catch (error: any) {
+    target.value = []
+    if (query) ElMessage.warning(errorMessage(error, 'Meta 定向目录搜索失败'))
+  } finally {
+    targetingSearchLoading[loadingKey] = false
+  }
+}
+const searchCountries = (query = '') => searchMetaOptions('adcountry', countryOptions, 'countries', query)
+const searchRegions = (query = '') => searchMetaOptions('adregion', regionOptions, 'regions', query)
+const searchExcludedRegions = (query = '') => searchMetaOptions('adregion', excludedRegionOptions, 'excludedRegions', query)
+const searchCities = (query = '') => searchMetaOptions('adcity', cityOptions, 'cities', query)
+const searchExcludedCities = (query = '') => searchMetaOptions('adcity', excludedCityOptions, 'excludedCities', query)
+const searchZips = (query = '') => searchMetaOptions('adzipcode', zipOptions, 'zips', query)
+const searchExcludedZips = (query = '') => searchMetaOptions('adzipcode', excludedZipOptions, 'excludedZips', query)
+const searchInterests = (query = '') => searchMetaOptions('adinterest', interestOptions, 'interests', query)
+
+const audienceScope = () => {
+  const selected = new Set(packageForm.account_ids)
+  return accounts.value.filter(account => !selected.size || selected.has(account.id))
+}
+const searchAudiences = async (query = '') => {
+  const scope = audienceScope()
+  if (!scope.length) { audienceOptions.value = []; return }
+  audiencesLoading.value = true
+  try {
+    const responses = await Promise.allSettled(scope.map(account => metaAudiencesApi.list(account.id, { q: query || undefined })))
+    const seen = new Set<string>()
+    const options: { value: string; label: string }[] = []
+    responses.forEach((response, index) => {
+      if (response.status !== 'fulfilled') return
+      const account = scope[index]
+      const items = (response.value.data || []) as MetaAudienceAsset[]
+      items.forEach(item => {
+        const value = `${item.meta_ad_account_id || account.account_id}::${item.meta_audience_id}`
+        if (seen.has(value)) return
+        seen.add(value)
+        options.push({ value, label: `${item.name || item.meta_audience_id} · ${account.account_name || account.account_id}` })
+      })
+    })
+    audienceOptions.value = options
+  } catch (error: any) {
+    audienceOptions.value = []
+    if (query) ElMessage.warning(errorMessage(error, '自定义受众目录加载失败'))
+  } finally {
+    audiencesLoading.value = false
+  }
+}
+const reloadPackageCatalog = async () => {
+  await Promise.all([searchCountries(''), searchAudiences('')])
+}
+
 const openCreateRegion = () => {
   editingRegion.value = null
   Object.assign(regionForm, newRegionForm())
   regionDialogVisible.value = true
+  void searchCountries('')
 }
 const openEditRegion = (row: RegionGroup) => {
   editingRegion.value = row
   const geo = row.geo_locations || {}
   const excluded = row.excluded_geo_locations || {}
+  preserveCountryOptions([...(geo.countries || []), ...(excluded.countries || [])])
+  preserveOptions(regionOptions, geo.regions)
+  preserveOptions(excludedRegionOptions, excluded.regions)
+  preserveOptions(cityOptions, geo.cities)
+  preserveOptions(excludedCityOptions, excluded.cities)
+  preserveOptions(zipOptions, geo.zips)
+  preserveOptions(excludedZipOptions, excluded.zips)
   Object.assign(regionForm, {
     name: row.name,
     description: row.description || '',
     account_ids: [...(row.account_ids || [])],
-    countries: joinValues(geo.countries), regions: joinValues(geo.regions), cities: joinValues(geo.cities), zips: joinValues(geo.zips),
-    excluded_countries: joinValues(excluded.countries), excluded_regions: joinValues(excluded.regions), excluded_cities: joinValues(excluded.cities), excluded_zips: joinValues(excluded.zips),
+    countries: stringValues(geo.countries), regions: toOptions(geo.regions), cities: toOptions(geo.cities), zips: toOptions(geo.zips),
+    excluded_countries: stringValues(excluded.countries), excluded_regions: toOptions(excluded.regions), excluded_cities: toOptions(excluded.cities), excluded_zips: toOptions(excluded.zips),
     custom_locations_json: Array.isArray(geo.custom_locations) ? JSON.stringify(geo.custom_locations) : '',
     excluded_custom_locations_json: Array.isArray(excluded.custom_locations) ? JSON.stringify(excluded.custom_locations) : '',
     location_types: Array.isArray(geo.location_types) && geo.location_types.length ? [...geo.location_types] : ['home', 'recent'],
   })
   regionDialogVisible.value = true
+  void searchCountries('')
 }
 const buildRegionPayload = () => {
   const geo: Record<string, any> = {}
   for (const [field, value] of [['countries', regionForm.countries], ['regions', regionForm.regions], ['cities', regionForm.cities], ['zips', regionForm.zips]] as const) {
-    const values = splitValues(value)
+    const values = Array.isArray(value) ? value : []
     if (values.length) geo[field] = values
   }
   if (regionForm.location_types.length) geo.location_types = [...regionForm.location_types]
   if (regionForm.custom_locations_json.trim()) geo.custom_locations = parseJsonArray(regionForm.custom_locations_json, '自定义位置')
   const excluded: Record<string, any> = {}
   for (const [field, value] of [['countries', regionForm.excluded_countries], ['regions', regionForm.excluded_regions], ['cities', regionForm.excluded_cities], ['zips', regionForm.excluded_zips]] as const) {
-    const values = splitValues(value)
+    const values = Array.isArray(value) ? value : []
     if (values.length) excluded[field] = values
   }
   if (regionForm.excluded_custom_locations_json.trim()) excluded.custom_locations = parseJsonArray(regionForm.excluded_custom_locations_json, '排除自定义位置')
@@ -391,6 +612,7 @@ const openCreatePackage = () => {
   editingPackage.value = null
   Object.assign(packageForm, newPackageForm())
   packageDialogVisible.value = true
+  void reloadPackageCatalog()
 }
 const audienceTokens = (values: any[]) => (values || []).map(value => {
   const id = typeof value === 'object' && value ? (value.id || value.meta_audience_id || '') : String(value)
@@ -403,18 +625,33 @@ const openEditPackage = (row: TargetingPackage) => {
   const geo = targeting.geo_locations || {}
   const excluded = targeting.excluded_geo_locations || {}
   const interests = targeting.flexible_spec?.[0]?.interests || []
+  const selectedAudienceTokens = [
+    ...audienceTokens(targeting.custom_audiences),
+    ...audienceTokens(targeting.excluded_custom_audiences || targeting.excluded_audiences),
+  ]
+  selectedAudienceTokens.forEach(value => {
+    if (!audienceOptions.value.some(item => item.value === value)) audienceOptions.value.push({ value, label: value })
+  })
+  preserveCountryOptions([...(geo.countries || []), ...(excluded.countries || [])])
+  preserveOptions(regionOptions, geo.regions)
+  preserveOptions(excludedRegionOptions, excluded.regions)
+  preserveOptions(cityOptions, geo.cities)
+  preserveOptions(excludedCityOptions, excluded.cities)
+  preserveOptions(zipOptions, geo.zips)
+  preserveOptions(excludedZipOptions, excluded.zips)
+  preserveOptions(interestOptions, interests)
   Object.assign(packageForm, {
     name: row.name, description: row.description || '', account_ids: [...(row.account_ids || [])], region_group_ids: [...(row.region_group_ids || [])],
-    countries: joinValues(geo.countries), regions: joinValues(geo.regions), cities: joinValues(geo.cities), zips: joinValues(geo.zips),
-    excluded_countries: joinValues(excluded.countries), excluded_regions: joinValues(excluded.regions), excluded_cities: joinValues(excluded.cities), excluded_zips: joinValues(excluded.zips),
+    countries: stringValues(geo.countries), regions: toOptions(geo.regions), cities: toOptions(geo.cities), zips: toOptions(geo.zips),
+    excluded_countries: stringValues(excluded.countries), excluded_regions: toOptions(excluded.regions), excluded_cities: toOptions(excluded.cities), excluded_zips: toOptions(excluded.zips),
     custom_locations_json: Array.isArray(geo.custom_locations) ? JSON.stringify(geo.custom_locations) : '',
     excluded_custom_locations_json: Array.isArray(excluded.custom_locations) ? JSON.stringify(excluded.custom_locations) : '',
     location_types: Array.isArray(geo.location_types) && geo.location_types.length ? [...geo.location_types] : ['home', 'recent'],
     age_min: Number(targeting.age_min || 18), age_max: Number(targeting.age_max || 65), genders: Array.isArray(targeting.genders) ? [...targeting.genders] : [1, 2],
-    custom_audiences: audienceTokens(targeting.custom_audiences).join(','), excluded_custom_audiences: audienceTokens(targeting.excluded_custom_audiences || targeting.excluded_audiences).join(','),
-    interests: interests.map((item: any) => item.name || '').filter(Boolean).join(','), languages: joinValues(targeting.languages),
+    custom_audiences: audienceTokens(targeting.custom_audiences), excluded_custom_audiences: audienceTokens(targeting.excluded_custom_audiences || targeting.excluded_audiences),
+    interests: toOptions(interests), languages: stringValues(targeting.languages),
     device_platforms: Array.isArray(targeting.device_platforms) ? [...targeting.device_platforms] : [],
-    user_os: joinValues(targeting.user_os), user_device: joinValues(targeting.user_device), wireless_carrier: joinValues(targeting.wireless_carrier),
+    user_os: stringValues(targeting.user_os), user_device: stringValues(targeting.user_device), wireless_carrier: stringValues(targeting.wireless_carrier),
     publisher_platforms: Array.isArray(row.placement_json?.publisher_platforms) ? [...row.placement_json.publisher_platforms] : [],
     facebook_positions: Array.isArray(row.placement_json?.facebook_positions) ? [...row.placement_json.facebook_positions] : [],
     instagram_positions: Array.isArray(row.placement_json?.instagram_positions) ? [...row.placement_json.instagram_positions] : [],
@@ -422,6 +659,7 @@ const openEditPackage = (row: TargetingPackage) => {
     messenger_positions: Array.isArray(row.placement_json?.messenger_positions) ? [...row.placement_json.messenger_positions] : [],
   })
   packageDialogVisible.value = true
+  void reloadPackageCatalog()
 }
 const mergeGeo = () => {
   const groups = regionGroups.value.filter(group => packageForm.region_group_ids.includes(group.id))
@@ -441,18 +679,18 @@ const mergeGeo = () => {
     for (const key of ['countries', 'regions', 'cities', 'zips', 'custom_locations']) append(geo, key, group.geo_locations?.[key])
     for (const key of ['countries', 'regions', 'cities', 'zips', 'custom_locations']) append(excluded, key, group.excluded_geo_locations?.[key])
   }
-  append(geo, 'countries', splitValues(packageForm.countries))
-  append(geo, 'regions', splitValues(packageForm.regions))
-  append(geo, 'cities', splitValues(packageForm.cities))
-  append(geo, 'zips', splitValues(packageForm.zips))
+  append(geo, 'countries', packageForm.countries)
+  append(geo, 'regions', packageForm.regions)
+  append(geo, 'cities', packageForm.cities)
+  append(geo, 'zips', packageForm.zips)
   if (packageForm.custom_locations_json.trim()) append(geo, 'custom_locations', parseJsonArray(packageForm.custom_locations_json, '自定义位置'))
-  for (const [field, value] of [['countries', packageForm.excluded_countries], ['regions', packageForm.excluded_regions], ['cities', packageForm.excluded_cities], ['zips', packageForm.excluded_zips]] as const) append(excluded, field, splitValues(value))
+  for (const [field, value] of [['countries', packageForm.excluded_countries], ['regions', packageForm.excluded_regions], ['cities', packageForm.excluded_cities], ['zips', packageForm.excluded_zips]] as const) append(excluded, field, value)
   if (packageForm.excluded_custom_locations_json.trim()) append(excluded, 'custom_locations', parseJsonArray(packageForm.excluded_custom_locations_json, '排除自定义位置'))
   if (packageForm.location_types.length) geo.location_types = [...packageForm.location_types]
   return { geo, excluded }
 }
-const toAudienceRefs = (value: string) => {
-  const ids = splitValues(value)
+const toAudienceRefs = (value: string[]) => {
+  const ids = Array.isArray(value) ? value : []
   const account = packageForm.account_ids.length === 1 ? accounts.value.find(item => item.id === packageForm.account_ids[0]) : null
   return ids.map(id => {
     const separator = id.indexOf('::')
@@ -469,9 +707,9 @@ const buildPackagePayload = () => {
     genders: [...packageForm.genders],
   }
   if (Object.keys(excluded).length) targeting.excluded_geo_locations = excluded
-  const interests = splitValues(packageForm.interests)
-  if (interests.length) targeting.flexible_spec = [{ interests: interests.map(name => ({ name })) }]
-  const languages = splitValues(packageForm.languages)
+  const interests = packageForm.interests || []
+  if (interests.length) targeting.flexible_spec = [{ interests: interests.map(item => ({ id: optionId(item), name: optionName(item) })) }]
+  const languages = packageForm.languages || []
   if (languages.length) targeting.languages = languages
   const included = toAudienceRefs(packageForm.custom_audiences)
   const excludedAudiences = toAudienceRefs(packageForm.excluded_custom_audiences)
@@ -479,7 +717,7 @@ const buildPackagePayload = () => {
   if (excludedAudiences.length) targeting.excluded_custom_audiences = excludedAudiences
   if (packageForm.device_platforms.length) targeting.device_platforms = [...packageForm.device_platforms]
   for (const [field, value] of [['user_os', packageForm.user_os], ['user_device', packageForm.user_device], ['wireless_carrier', packageForm.wireless_carrier]] as const) {
-    const values = splitValues(value)
+    const values = Array.isArray(value) ? value.filter(Boolean) : []
     if (values.length) targeting[field] = values
   }
   const positions = [
@@ -536,6 +774,13 @@ const archivePackage = async (row: TargetingPackage) => {
     if (error !== 'cancel' && error !== 'close') ElMessage.error(errorMessage(error, '定向包归档失败'))
   }
 }
+
+watch(() => packageForm.account_ids, () => {
+  if (packageDialogVisible.value) void reloadPackageCatalog()
+})
+watch(() => regionForm.account_ids, () => {
+  if (regionDialogVisible.value) void searchCountries('')
+})
 
 onMounted(async () => {
   await Promise.all([loadAccounts(), loadAll()])

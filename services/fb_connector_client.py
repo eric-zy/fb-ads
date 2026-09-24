@@ -149,6 +149,34 @@ class FBConnectorClient:
             request_id=request_id,
         )
 
+    def search_targeting(
+        self,
+        account_id: str,
+        credential_id: str,
+        targeting_type: str,
+        query: str = "",
+        *,
+        locale: str | None = None,
+        limit: int = 30,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """通过海外 Connector 调用 Meta Targeting Search。"""
+        payload: dict[str, Any] = {
+            "account_id": account_id,
+            "credential_id": credential_id,
+            "type": targeting_type,
+            "q": query,
+            "limit": limit,
+        }
+        if locale:
+            payload["locale"] = locale
+        return self._request(
+            "POST",
+            "/internal/meta/targeting/search",
+            payload,
+            request_id=request_id,
+        )
+
     def list_tracking_assets(self, account_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         """读取 Pixel / Dataset 元数据，不返回事件或用户数据。"""
         return self._request(
