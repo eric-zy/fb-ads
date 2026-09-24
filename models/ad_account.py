@@ -131,6 +131,19 @@ class AdAccount(TenantMixin, Base):
     last_synced_at = Column(DateTime)
     last_sync_error = Column(Text)
 
+    # ---------- 报表洞察同步 ----------
+    # 与账户元数据同步分开记录。Meta 在无消耗时可能返回空结果，
+    # 不能仅依赖 account_insights 行判断报表是否同步成功。
+    insights_sync_status = Column(
+        String(32),
+        nullable=False,
+        default="NEVER",
+        server_default="NEVER",
+        comment="账户报表同步状态：NEVER/PENDING/SYNCING/SUCCESS/FAILED",
+    )
+    insights_last_synced_at = Column(DateTime, comment="最近一次成功同步账户报表时间")
+    insights_last_sync_error = Column(Text, comment="最近一次账户报表同步错误")
+
     # ---------- 关联 ----------
     campaigns = relationship("Campaign", back_populates="ad_account", cascade="all, delete-orphan")
     insights = relationship("AccountInsight", back_populates="ad_account", cascade="all, delete-orphan")

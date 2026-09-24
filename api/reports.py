@@ -35,6 +35,8 @@ def sync_report_data(
     # 否则 Meta 已返回数据，但本地缺少父对象时，洞察会被安全地跳过。
     task_ids = []
     for account in accounts:
+        account.insights_sync_status = "PENDING"
+        account.insights_last_sync_error = None
         task_id = chain(
             sync_delivery_objects_task.si(account.id),
             fetch_account_insights.si(account.id, days),
@@ -86,7 +88,10 @@ def account_overview(
             "account_name": account.account_name or account.account_id,
             "currency": account.currency or "USD", "system_status": account.system_status,
             "spend": 0, "impressions": 0, "clicks": 0, "conversions": 0,
-            "conversion_value": 0, "latest_synced_at": None,
+            "conversion_value": 0,
+            "latest_synced_at": None,
+            "sync_status": account.insights_sync_status or "NEVER",
+            "sync_error": account.insights_last_sync_error,
         } for account in accounts
     }
     for row in q.all():
@@ -111,11 +116,27 @@ def account_overview(
         total["impressions"] += item["impressions"]
         total["clicks"] += item["clicks"]
         total["conversions"] += item["conversions"]
-        if item["latest_synced_at"]:
-            age_hours = (datetime.utcnow() - item["latest_synced_at"]).total_seconds() / 3600
+        account = account_map[item["account_id"]]
+        # 有消耗时使用报表行的实际同步时间；无消耗时使用任务成功时间。
+        # 这样不会把合法的空报表误显示成“未同步”。
+        report_synced_at = item["latest_synced_at"]
+        if account.insights_last_synced_at and (
+            not report_synced_at or account.insights_last_synced_at > report_synced_at
+        ):
+            report_synced_at = account.insights_last_synced_at
+        item["latest_synced_at"] = report_synced_at
+        current_status = str(account.insights_sync_status or "NEVER").upper()
+        if current_status == "FAILED":
+            item["sync_status"] = "FAILED"
+            item["sync_age_hours"] = None
+        elif current_status in {"PENDING", "SYNCING"}:
+            item["sync_status"] = current_status
+            item["sync_age_hours"] = None
+        elif report_synced_at:
+            age_hours = (datetime.utcnow() - report_synced_at).total_seconds() / 3600
             item["sync_status"] = "FRESH" if age_hours <= 3 else "STALE"
             item["sync_age_hours"] = round(max(age_hours, 0), 1)
-            item["latest_synced_at"] = item["latest_synced_at"].isoformat()
+            item["latest_synced_at"] = report_synced_at.isoformat()
         else:
             item["sync_status"] = "NEVER"
             item["sync_age_hours"] = None

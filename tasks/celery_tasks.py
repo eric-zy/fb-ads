@@ -69,8 +69,18 @@ def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
             logger.error("Failed to acquire insights sync lock for %s: %s", account_id, lock_exc)
             raise lock_exc
 
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        if not account:
+            logger.warning("[Insights] 账户不存在，跳过同步: %s", account_id)
+            return {"status": "skipped", "account_id": account_id, "reason": "account_not_found"}
+
+        # 即使 Meta 返回空报表，也要让页面知道任务正在执行。
+        account.insights_sync_status = "SYNCING"
+        account.insights_last_sync_error = None
+        db.commit()
+
         logger.info(f"Fetching insights for account {account_id}")
-        
+
         ads_manager = AdsManager(db)
         # days 表示包含今天在内的自然日数量。
         start_date = (date.today() - timedelta(days=max(days - 1, 0))).strftime('%Y-%m-%d')
@@ -78,7 +88,13 @@ def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
         
         insights_count = ads_manager.fetch_insights(account_id, start_date, end_date)
         delivery_counts = ads_manager.fetch_delivery_insights(account_id, start_date, end_date)
-        
+
+        # 不能用 insights_count 判断成功：无消耗账户可能合法返回 0 行。
+        account.insights_sync_status = "SUCCESS"
+        account.insights_last_synced_at = datetime.utcnow()
+        account.insights_last_sync_error = None
+        db.commit()
+
         logger.info(f"Successfully fetched {insights_count} insights for {account_id}")
         return {
             "status": "success",
@@ -89,6 +105,15 @@ def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
         }
     except Exception as exc:
         logger.error(f"Failed to fetch insights for {account_id}: {str(exc)}")
+        try:
+            db.rollback()
+            account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+            if account:
+                account.insights_sync_status = "FAILED"
+                account.insights_last_sync_error = str(exc)[:2000]
+                db.commit()
+        except Exception:
+            db.rollback()
         # 重试
         raise self.retry(exc=exc, countdown=60)
     finally:
