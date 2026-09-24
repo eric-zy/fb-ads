@@ -1,6 +1,6 @@
 import pytest
 
-from services.targeting_catalog import normalize_languages, normalize_targeting, placement_preflight_errors, targeting_preflight_errors, validate_audience_refs
+from services.targeting_catalog import normalize_country_code, normalize_languages, normalize_targeting, placement_preflight_errors, targeting_preflight_errors, validate_audience_refs
 
 
 def test_language_alias_expands_and_deduplicates():
@@ -29,6 +29,67 @@ def test_targeting_normalization_preserves_other_fields():
     assert result["geo_locations"] == {"countries": ["HK"]}
     assert result["languages"] == ["en"]
     assert result["excluded_custom_audiences"][0]["ad_account_id"] == "act_2"
+
+
+def test_country_names_are_normalized_to_meta_codes():
+    assert normalize_country_code("美国") == "US"
+    assert normalize_country_code("加拿大") == "CA"
+    assert normalize_country_code("英国") == "GB"
+    assert normalize_targeting({
+        "geo_locations": {"countries": ["美国", "ca", "英国"]},
+        "excluded_geo_locations": {"countries": ["加拿大"]},
+    })["geo_locations"]["countries"] == ["US", "CA", "GB"]
+
+
+def test_targeting_preflight_accepts_country_names_but_rejects_unknown_values():
+    assert targeting_preflight_errors("广告组 1 定向", {
+        "geo_locations": {"countries": ["美国", "加拿大", "英国"]},
+    }) == []
+    errors = targeting_preflight_errors("广告组 1 定向", {
+        "geo_locations": {"countries": ["不存在的国家"]},
+    })
+    assert {item["code"] for item in errors} == {"TARGETING_COUNTRY_CODE_INVALID"}
+
+
+def test_geo_reference_objects_are_reduced_to_meta_keys():
+    result = normalize_targeting({
+        "geo_locations": {
+            "regions": [{"id": "3847", "name": "Alberta", "search_type": "adgeolocation"}],
+            "cities": [{"key": "2420600", "name": "Toronto"}],
+            "zips": ["US:10001"],
+        },
+    })
+    assert result["geo_locations"] == {
+        "regions": [{"key": "3847"}],
+        "cities": [{"key": "2420600"}],
+        "zips": [{"key": "US:10001"}],
+    }
+
+
+def test_geo_reference_display_names_are_rejected():
+    with pytest.raises(ValueError, match="稳定 key"):
+        normalize_targeting({"geo_locations": {"regions": ["Alberta"]}})
+    errors = targeting_preflight_errors("广告组 1 定向", {
+        "geo_locations": {"cities": ["Toronto"]},
+        "excluded_geo_locations": {"regions": ["Alberta"]},
+    })
+    assert {item["code"] for item in errors} == {"TARGETING_GEO_KEY_INVALID"}
+
+
+def test_interest_refs_require_meta_id_and_are_normalized():
+    result = normalize_targeting({
+        "flexible_spec": [{
+            "interests": [{"id": 6001, "name": "Movies", "search_type": "adinterest"}],
+        }],
+    })
+    assert result["flexible_spec"] == [{"interests": [{"id": "6001", "name": "Movies"}]}]
+
+    with pytest.raises(ValueError, match="兴趣必须从 Meta 兴趣目录选择"):
+        normalize_targeting({"flexible_spec": [{"interests": [{"name": "Movies"}]}]})
+    errors = targeting_preflight_errors("广告组 1 定向", {
+        "flexible_spec": [{"interests": [{"name": "Movies"}]}],
+    })
+    assert {item["code"] for item in errors} == {"TARGETING_INTEREST_INVALID"}
 
 
 def test_meta_targeting_resolves_product_language_to_locale_id(monkeypatch):

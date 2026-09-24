@@ -1942,6 +1942,9 @@ const preflightActionHint = (code: string) => ({
   SCHEDULE_TIME_INVALID: '返回模板编辑，重新选择合法的开始/结束时间。',
   SCHEDULE_RANGE_INVALID: '返回模板编辑，确保结束时间晚于开始时间。',
   BID_CONSTRAINT_INVALID: '返回模板编辑，填写大于 0 的 roas_average_floor。',
+  TARGETING_COUNTRY_CODE_INVALID: '国家/地区可填写中文名称，系统会转换为 Meta 国家代码；无法识别时请使用 ISO 两位代码，例如 US、CA、GB。',
+  TARGETING_GEO_KEY_INVALID: '地区、城市和邮编必须从 Meta 定向目录选择，或填写 Meta 返回的稳定 key；不要直接填写显示名称。',
+  TARGETING_INTEREST_INVALID: '兴趣必须从 Meta 兴趣目录选择并携带 ID；请删除手填名称后重新选择。',
 }[code] || '')
 const formatPreflightError = (message?: string) => {
   const raw = String(message || '').trim()

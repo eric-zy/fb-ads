@@ -277,23 +277,23 @@ class JobService:
                     adset.get("bid_strategy") or template.bid_strategy,
                     adset.get("bid_amount"),
                 ))
-        audience_errors = set()
+        targeting_normalization_errors = set()
         for label, raw_targeting in targeting_configs:
             errors.extend(targeting_preflight_errors(label, raw_targeting))
             try:
                 targeting = normalize_targeting(raw_targeting)
             except ValueError as exc:
-                audience_errors.add(("AUDIENCE_TARGETING_INVALID", f"{label}：{exc}"))
+                targeting_normalization_errors.add(("TARGETING_NORMALIZE_INVALID", f"{label}：{exc}"))
                 continue
             for field in ("custom_audiences", "excluded_custom_audiences", "excluded_audiences"):
                 for audience in targeting.get(field) or []:
                     audience_id = str(audience.get("id") or "").strip()
                     scoped = str(audience.get("ad_account_id") or audience.get("account_id") or "").strip()
                     if not scoped or audience.get("resolution") == "UNRESOLVED":
-                        audience_errors.add(("AUDIENCE_SCOPE_REQUIRED", f"{label} 的受众 {audience_id} 必须绑定广告账户"))
+                        targeting_normalization_errors.add(("AUDIENCE_SCOPE_REQUIRED", f"{label} 的受众 {audience_id} 必须绑定广告账户"))
                     elif scoped.replace("act_", "") not in account_scope and scoped not in account_scope:
-                        audience_errors.add(("AUDIENCE_ACCOUNT_MISMATCH", f"{label} 的受众 {audience_id} 不属于本次投放账户"))
-        errors.extend({"code": code, "message": message} for code, message in sorted(audience_errors))
+                        targeting_normalization_errors.add(("AUDIENCE_ACCOUNT_MISMATCH", f"{label} 的受众 {audience_id} 不属于本次投放账户"))
+        errors.extend({"code": code, "message": message} for code, message in sorted(targeting_normalization_errors))
         for label, placement in placement_configs:
             errors.extend(placement_preflight_errors(label, placement))
 
