@@ -171,6 +171,7 @@ class FBConnectorClient:
         *,
         locale: str | None = None,
         country_code: str | None = None,
+        location_type: str | None = None,
         limit: int = 30,
         request_id: str | None = None,
     ) -> dict[str, Any]:
@@ -186,6 +187,8 @@ class FBConnectorClient:
             payload["locale"] = locale
         if country_code:
             payload["country_code"] = country_code.upper()
+        if location_type:
+            payload["location_type"] = location_type.lower()
         return self._request(
             "POST",
             "/internal/meta/targeting/search",

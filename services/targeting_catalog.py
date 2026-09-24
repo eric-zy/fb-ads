@@ -58,6 +58,7 @@ TARGETING_SEARCH_TYPE_OPTIONS = frozenset({
     "addemographic",
     "adlocale",
     "adcountry",
+    "adgeolocation",
     "adregion",
     "adcity",
     "adzipcode",

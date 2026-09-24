@@ -64,6 +64,7 @@ def test_meta_targeting_search_uses_official_search_parameters(monkeypatch):
         "new",
         locale="zh_CN",
         country_code="us",
+        location_type="region",
         limit=20,
     )
 
@@ -76,6 +77,7 @@ def test_meta_targeting_search_uses_official_search_parameters(monkeypatch):
             "q": "new",
             "locale": "zh_CN",
             "country_code": "US",
+            "location_types": ["region"],
         },
     }
 

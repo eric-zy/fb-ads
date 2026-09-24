@@ -97,7 +97,9 @@
             <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${optionLabel(item)} (${countryValue(item)})`" :value="countryValue(item)" />
           </el-select>
         </el-form-item>
-        <div class="inline-fields">
+        <el-collapse v-model="regionPanels" class="config-collapse">
+          <el-collapse-item title="细分地区与排除项" name="geo">
+          <div class="inline-fields">
           <el-form-item label="包含地区">
             <el-select v-model="regionForm.regions" multiple filterable remote reserve-keyword collapse-tags value-key="id" :remote-method="searchRegions" :loading="targetingSearchLoading.regions" style="width:100%" placeholder="搜索 Meta 地区" @focus="searchRegions('')">
               <el-option v-for="item in regionOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
@@ -136,6 +138,8 @@
             <el-option v-for="item in excludedZipOptions" :key="item.id" :label="`${optionLabel(item)} (${item.id})`" :value="item" />
           </el-select>
         </el-form-item>
+          </el-collapse-item>
+          <el-collapse-item title="高级位置与说明" name="advanced">
         <el-form-item label="自定义位置 JSON（高级）"><el-input v-model="regionForm.custom_locations_json" type="textarea" :rows="2" placeholder='仅用于 Meta 目录未覆盖的半径/坐标位置；格式为 custom_locations 数组 JSON' /></el-form-item>
         <el-form-item label="排除自定义位置 JSON（高级）"><el-input v-model="regionForm.excluded_custom_locations_json" type="textarea" :rows="2" placeholder='仅用于 Meta 目录未覆盖的半径/坐标位置；格式为 custom_locations 数组 JSON' /></el-form-item>
         <el-form-item label="位置类型">
@@ -147,6 +151,8 @@
         <el-form-item label="说明">
           <el-input v-model="regionForm.description" type="textarea" :rows="3" maxlength="2000" show-word-limit />
         </el-form-item>
+          </el-collapse-item>
+        </el-collapse>
       </el-form>
       <template #footer>
         <el-button @click="regionDialogVisible = false">取消</el-button>
@@ -174,6 +180,8 @@
             <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${optionLabel(item)} (${countryValue(item)})`" :value="countryValue(item)" />
           </el-select>
         </el-form-item>
+        <el-collapse v-model="packagePanels" class="config-collapse">
+          <el-collapse-item title="地区细分与排除项" name="geo">
         <el-form-item label="排除国家/地区">
           <el-select v-model="packageForm.excluded_countries" multiple filterable remote reserve-keyword collapse-tags collapse-tags-tooltip :remote-method="searchCountries" :loading="targetingSearchLoading.countries" style="width:100%" placeholder="搜索并选择要排除的国家/地区">
             <el-option v-for="item in countryOptions" :key="countryValue(item)" :label="`${optionLabel(item)} (${countryValue(item)})`" :value="countryValue(item)" />
@@ -223,6 +231,8 @@
             <el-checkbox label="recent">最近位置</el-checkbox>
           </el-checkbox-group>
         </el-form-item>
+          </el-collapse-item>
+          <el-collapse-item title="受众与人口属性" name="audience">
         <el-form-item label="年龄范围">
           <el-input-number v-model="packageForm.age_min" :min="13" :max="65" />
           <span class="range-separator">至</span>
@@ -252,6 +262,8 @@
         <el-form-item label="语言">
           <MetaLanguageSelect v-model="packageForm.languages" />
         </el-form-item>
+          </el-collapse-item>
+          <el-collapse-item title="设备与版位" name="delivery">
         <el-form-item label="设备">
           <el-checkbox-group v-model="packageForm.device_platforms">
             <el-checkbox label="mobile">移动端</el-checkbox>
@@ -284,6 +296,8 @@
         </el-form-item>
         <div class="inline-fields"><el-form-item label="Facebook 位置"><el-select v-model="packageForm.facebook_positions" multiple collapse-tags style="width:100%"><el-option label="信息流" value="feed" /><el-option label="快拍" value="story" /><el-option label="Marketplace" value="marketplace" /><el-option label="视频流" value="video_feeds" /><el-option label="右边栏" value="right_hand_column" /><el-option label="搜索结果" value="search" /><el-option label="Reels" value="reels" /><el-option label="插播视频" value="instream_video" /><el-option label="主页动态" value="profile_feed" /></el-select></el-form-item><el-form-item label="Instagram 位置"><el-select v-model="packageForm.instagram_positions" multiple collapse-tags style="width:100%"><el-option label="信息流" value="stream" /><el-option label="快拍" value="story" /><el-option label="Reels" value="reels" /><el-option label="探索" value="explore" /><el-option label="探索首页" value="explore_home" /><el-option label="主页动态" value="profile_feed" /></el-select></el-form-item></div>
         <div class="inline-fields"><el-form-item label="Audience Network"><el-select v-model="packageForm.audience_network_positions" multiple collapse-tags style="width:100%"><el-option label="标准版位" value="classic" /><el-option label="激励视频" value="rewarded_video" /><el-option label="插播视频" value="instream_video" /></el-select></el-form-item><el-form-item label="Messenger 位置"><el-select v-model="packageForm.messenger_positions" multiple collapse-tags style="width:100%"><el-option label="主页" value="messenger_home" /><el-option label="快拍" value="story" /></el-select></el-form-item></div>
+          </el-collapse-item>
+        </el-collapse>
         <el-form-item label="说明">
           <el-input v-model="packageForm.description" type="textarea" :rows="3" maxlength="2000" show-word-limit />
         </el-form-item>
@@ -318,6 +332,8 @@ const regionGroups = ref<RegionGroup[]>([])
 const targetingPackages = ref<TargetingPackage[]>([])
 const regionDialogVisible = ref(false)
 const packageDialogVisible = ref(false)
+const regionPanels = ref<string[]>([])
+const packagePanels = ref<string[]>([])
 const editingRegion = ref<RegionGroup | null>(null)
 const editingPackage = ref<TargetingPackage | null>(null)
 const audienceOptions = ref<{ value: string; label: string }[]>([])
@@ -426,7 +442,7 @@ const preserveOptions = (target: { value: MetaTargetingOption[] }, values: any) 
 const preserveCountryOptions = (values: any) => {
   stringValues(values).forEach(value => {
     if (!countryOptions.value.some(item => countryValue(item) === value)) {
-      countryOptions.value.push({ id: value, key: value, name: value })
+      countryOptions.value.push({ id: value, key: value, name: value, search_type: 'adcountry' })
     }
   })
 }
@@ -446,9 +462,17 @@ const joinValues = (value: unknown) => Array.isArray(value)
   : ''
 const accountLabel = (account: DeployableAccount) => `${account.account_name || account.account_id} (${account.account_id})`
 const errorMessage = (error: any, fallback: string) => {
-  const detail = error?.response?.data?.detail
+  let detail = error?.response?.data?.detail
+  if (typeof detail === 'string') {
+    const text = detail.trim()
+    if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
+      try { detail = JSON.parse(text) } catch { /* 保留原始字符串 */ }
+    }
+  }
   if (typeof detail === 'string') return detail
   if (detail && typeof detail.message === 'string') return detail.message
+  if (detail?.error && typeof detail.error.message === 'string') return detail.error.message
+  if (typeof error?.response?.data?.message === 'string') return error.response.data.message
   return fallback
 }
 const geoSummary = (geo: Record<string, any> | null | undefined) => {
@@ -507,6 +531,7 @@ const searchMetaOptions = async (
   loadingKey: string,
   query = '',
   countryCode?: string,
+  locationType?: string,
 ) => {
   const accountPk = catalogAccountPk()
   if (!accountPk) { target.value = []; return }
@@ -518,30 +543,51 @@ const searchMetaOptions = async (
       q: query,
       locale: 'zh_CN',
       country_code: countryCode,
+      location_type: locationType,
       limit: 50,
     })
     target.value = (data.items || []).map(toOption)
   } catch (error: any) {
     target.value = []
-    if (query) ElMessage.warning(errorMessage(error, 'Meta 定向目录搜索失败'))
+    if (query.trim()) {
+      ElMessage({
+        message: errorMessage(error, 'Meta 定向目录搜索失败'),
+        type: 'warning',
+        grouping: true,
+      })
+    }
   } finally {
     targetingSearchLoading[loadingKey] = false
   }
 }
 const searchCountries = (query = '') => searchMetaOptions('adcountry', countryOptions, 'countries', query)
-const searchRegions = (query = '') => searchMetaOptions('adregion', regionOptions, 'regions', query, selectedCountryCode())
-const searchExcludedRegions = (query = '') => searchMetaOptions('adregion', excludedRegionOptions, 'excludedRegions', query, selectedCountryCode())
-const searchCities = (query = '') => searchMetaOptions('adcity', cityOptions, 'cities', query, selectedCountryCode())
-const searchExcludedCities = (query = '') => searchMetaOptions('adcity', excludedCityOptions, 'excludedCities', query, selectedCountryCode())
+const searchRegions = (query = '') => searchMetaOptions('adgeolocation', regionOptions, 'regions', query, selectedCountryCode(), 'region')
+const searchExcludedRegions = (query = '') => searchMetaOptions('adgeolocation', excludedRegionOptions, 'excludedRegions', query, selectedCountryCode(), 'region')
+const searchCities = (query = '') => searchMetaOptions('adgeolocation', cityOptions, 'cities', query, selectedCountryCode(), 'city')
+const searchExcludedCities = (query = '') => searchMetaOptions('adgeolocation', excludedCityOptions, 'excludedCities', query, selectedCountryCode(), 'city')
 const searchZips = (query = '') => {
   if (!query.trim()) return Promise.resolve()
-  return searchMetaOptions('adzipcode', zipOptions, 'zips', query, selectedCountryCode())
+  return searchMetaOptions('adgeolocation', zipOptions, 'zips', query, selectedCountryCode(), 'zip')
 }
 const searchExcludedZips = (query = '') => {
   if (!query.trim()) return Promise.resolve()
-  return searchMetaOptions('adzipcode', excludedZipOptions, 'excludedZips', query, selectedCountryCode())
+  return searchMetaOptions('adgeolocation', excludedZipOptions, 'excludedZips', query, selectedCountryCode(), 'zip')
 }
 const searchInterests = (query = '') => searchMetaOptions('adinterest', interestOptions, 'interests', query)
+const clearDependentGeoSelections = (form: any) => {
+  form.regions = []
+  form.cities = []
+  form.zips = []
+  form.excluded_regions = []
+  form.excluded_cities = []
+  form.excluded_zips = []
+  regionOptions.value = []
+  excludedRegionOptions.value = []
+  cityOptions.value = []
+  excludedCityOptions.value = []
+  zipOptions.value = []
+  excludedZipOptions.value = []
+}
 
 const audienceScope = () => {
   const selected = new Set(packageForm.account_ids)
@@ -580,12 +626,14 @@ const reloadPackageCatalog = async () => {
 
 const openCreateRegion = () => {
   editingRegion.value = null
+  regionPanels.value = []
   Object.assign(regionForm, newRegionForm())
   regionDialogVisible.value = true
   void searchCountries('')
 }
 const openEditRegion = (row: RegionGroup) => {
   editingRegion.value = row
+  regionPanels.value = []
   const geo = row.geo_locations || {}
   const excluded = row.excluded_geo_locations || {}
   preserveCountryOptions([...(geo.countries || []), ...(excluded.countries || [])])
@@ -662,6 +710,7 @@ const archiveRegion = async (row: RegionGroup) => {
 
 const openCreatePackage = () => {
   editingPackage.value = null
+  packagePanels.value = []
   Object.assign(packageForm, newPackageForm())
   packageDialogVisible.value = true
   void reloadPackageCatalog()
@@ -673,6 +722,7 @@ const audienceTokens = (values: any[]) => (values || []).map(value => {
 }).filter(Boolean)
 const openEditPackage = (row: TargetingPackage) => {
   editingPackage.value = row
+  packagePanels.value = []
   const targeting = row.targeting_json || {}
   const geo = targeting.geo_locations || {}
   const excluded = targeting.excluded_geo_locations || {}
@@ -833,6 +883,12 @@ watch(() => packageForm.account_ids, () => {
 watch(() => regionForm.account_ids, () => {
   if (regionDialogVisible.value) void searchCountries('')
 })
+watch(() => [...regionForm.countries], () => {
+  if (regionDialogVisible.value) clearDependentGeoSelections(regionForm)
+})
+watch(() => [...packageForm.countries], () => {
+  if (packageDialogVisible.value) clearDependentGeoSelections(packageForm)
+})
 
 onMounted(async () => {
   await Promise.all([loadAccounts(), loadAll()])
@@ -848,5 +904,8 @@ onMounted(async () => {
 .targeting-tabs { margin-top: 18px; }
 .table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
 .toolbar-hint { color: #909399; font-size: 13px; }
+.config-collapse { margin: 6px 0 12px; border-top: 1px solid var(--el-border-color-lighter); border-bottom: 0; }
+.config-collapse :deep(.el-collapse-item__header) { color: var(--el-color-primary); font-weight: 500; }
+.config-collapse :deep(.el-collapse-item__wrap) { border-bottom: 0; }
 .range-separator { margin: 0 10px; color: #909399; }
 </style>

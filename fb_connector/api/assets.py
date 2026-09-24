@@ -25,6 +25,7 @@ class TargetingSearchRequest(AudienceListRequest):
     q: str = Field(default="", max_length=255)
     locale: str | None = Field(default=None, max_length=64)
     country_code: str | None = Field(default=None, max_length=8)
+    location_type: str | None = Field(default=None, max_length=16)
     limit: int = Field(default=30, ge=1, le=100)
 
 class TrackingAssetsRequest(AudienceListRequest):
@@ -146,6 +147,7 @@ async def search_targeting(payload: TargetingSearchRequest):
             limit=payload.limit,
             locale=payload.locale,
             country_code=payload.country_code,
+            location_type=payload.location_type,
         )
         return {"account_id": payload.account_id, **result}
     except Exception as exc:

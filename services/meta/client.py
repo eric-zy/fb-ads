@@ -471,6 +471,7 @@ class MetaClient:
         *,
         locale: str | None = None,
         country_code: str | None = None,
+        location_type: str | None = None,
         limit: int = 30,
     ) -> dict:
         """调用 Meta 官方 Targeting Search 返回定向目录候选项。
@@ -492,6 +493,8 @@ class MetaClient:
             params["locale"] = str(locale).strip()
         if str(country_code or "").strip():
             params["country_code"] = str(country_code).strip().upper()
+        if str(location_type or "").strip():
+            params["location_types"] = [str(location_type).strip().lower()]
         return self._get("/search", params)
 
     def resolve_targeting_locales(self, targeting: dict | None) -> dict:

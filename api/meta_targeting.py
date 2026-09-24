@@ -75,6 +75,7 @@ def search_targeting(
     q: str = Query("", max_length=255),
     locale: Optional[str] = Query(None, max_length=64),
     country_code: Optional[str] = Query(None, max_length=8),
+    location_type: Optional[str] = Query(None, max_length=16),
     limit: int = Query(30, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
@@ -83,6 +84,9 @@ def search_targeting(
     search_type = str(type or "").strip().lower()
     if search_type not in TARGETING_SEARCH_TYPE_OPTIONS:
         raise HTTPException(status_code=400, detail=f"不支持的 Meta 定向搜索类型：{type}")
+    normalized_location_type = str(location_type or "").strip().lower() or None
+    if normalized_location_type and normalized_location_type not in {"country", "region", "city", "zip"}:
+        raise HTTPException(status_code=400, detail=f"不支持的地理目录类型：{location_type}")
     account = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
     if not account:
         raise HTTPException(status_code=404, detail="广告账户不存在")
@@ -102,6 +106,7 @@ def search_targeting(
                 q,
                 locale=locale,
                 country_code=country_code,
+                location_type=normalized_location_type,
                 limit=limit,
             )
         else:
@@ -111,6 +116,7 @@ def search_targeting(
                 q,
                 locale=locale,
                 country_code=country_code,
+                location_type=normalized_location_type,
                 limit=limit,
             )
     except Exception as exc:

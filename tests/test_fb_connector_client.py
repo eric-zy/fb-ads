@@ -123,6 +123,7 @@ def test_client_search_targeting_uses_catalog_endpoint(monkeypatch):
         "new",
         locale="zh_CN",
         country_code="us",
+        location_type="region",
         limit=20,
     )
 
@@ -131,3 +132,4 @@ def test_client_search_targeting_uses_catalog_endpoint(monkeypatch):
     assert '"type":"adregion"' in captured["kwargs"]["data"].decode()
     assert '"q":"new"' in captured["kwargs"]["data"].decode()
     assert '"country_code":"US"' in captured["kwargs"]["data"].decode()
+    assert '"location_type":"region"' in captured["kwargs"]["data"].decode()
