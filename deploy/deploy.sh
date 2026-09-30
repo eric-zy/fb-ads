@@ -12,12 +12,20 @@ if grep -Eiq 'change-me|replace-with|example\.com|your-secret|your_app|your_acce
   exit 1
 fi
 if grep -Eiq '^ENVIRONMENT=production' .env && grep -Eiq '^FRONTEND_BASE_URL=http://' .env; then
-  echo "[deploy] production frontend must use HTTPS; configure FRONTEND_BASE_URL=https://..." >&2
-  exit 1
+  if ! grep -Eiq '^ALLOW_INSECURE_HTTP=true$' .env; then
+    echo "[deploy] production frontend must use HTTPS; configure FRONTEND_BASE_URL=https://..." >&2
+    echo "[deploy] temporary HTTP requires explicit ALLOW_INSECURE_HTTP=true" >&2
+    exit 1
+  fi
+  echo "[deploy] WARNING: ALLOW_INSECURE_HTTP=true; traffic and credentials are unencrypted" >&2
 fi
 if grep -Eiq '^ENVIRONMENT=production' .env && grep -Eiq '^NGINX_BIND_ADDRESS=(0\.0\.0\.0|\*)' .env; then
-  echo "[deploy] production Nginx HTTP port must stay bound to localhost behind a TLS reverse proxy" >&2
-  exit 1
+  if ! grep -Eiq '^ALLOW_INSECURE_HTTP=true$' .env; then
+    echo "[deploy] production Nginx HTTP port must stay bound to localhost behind a TLS reverse proxy" >&2
+    echo "[deploy] temporary public HTTP requires explicit ALLOW_INSECURE_HTTP=true" >&2
+    exit 1
+  fi
+  echo "[deploy] WARNING: Nginx is exposed on a public HTTP address without TLS" >&2
 fi
 
 compose=(docker compose -f docker-compose.yml)

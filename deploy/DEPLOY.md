@@ -130,13 +130,15 @@ DB_PASSWORD=<强密码>
 REDIS_PASSWORD=<强密码>
 CELERY_BROKER_URL=redis://:你的REDIS_PASSWORD@redis:6379/0
 CELERY_RESULT_BACKEND=redis://:你的REDIS_PASSWORD@redis:6379/1
-CORS_ORIGINS=http://49.232.238.163:8094     # 当前 IP 直连地址
+CORS_ORIGINS=https://ads.example.com        # 正式环境使用 HTTPS 域名
 FB_ACCESS_MODE=connector
 FB_CONNECTOR_BASE_URL=<海外 Connector 地址>
 FB_CONNECTOR_SIGNING_KEY=<与海外 Connector 一致>
 CONNECTOR_SERVICE_TOKEN=<与海外 Connector 一致>
 SAAS_CALLBACK_BASE_URL=<国内 SaaS 回调地址>
-FRONTEND_BASE_URL=http://49.232.238.163:8094
+FRONTEND_BASE_URL=https://ads.example.com
+ALLOW_INSECURE_HTTP=false
+NGINX_BIND_ADDRESS=127.0.0.1
 ADS_OSS_ACCESS_KEY_ID=<阿里云 RAM AccessKey ID>
 ADS_OSS_ACCESS_KEY_SECRET=<阿里云 RAM AccessKey Secret>
 ADS_OSS_BUCKET=q8picaaa
@@ -144,6 +146,9 @@ ADS_OSS_REGION=cn-beijing
 ```
 
 > 注意：设了 REDIS_PASSWORD 后，`CELERY_BROKER_URL` 与 `CELERY_RESULT_BACKEND` 也要带密码，格式 `redis://:密码@redis:6379/0`。
+> 临时使用 `http://49.232.238.163:8094` 时，必须明确配置 `ALLOW_INSECURE_HTTP=true`、
+> `FRONTEND_BASE_URL=http://49.232.238.163:8094`、`CORS_ORIGINS=http://49.232.238.163:8094`、
+> `NGINX_BIND_ADDRESS=0.0.0.0`。该配置会暴露未加密的登录凭据和业务数据，仅用于短期联调，完成 HTTPS 后应立即恢复为 `false`、HTTPS 域名和 `127.0.0.1`。
 > Connector 模式下 Meta App Secret、OAuth 回调和 Meta Access Token 只配置在海外 Connector，国内 SaaS 不再配置 `FB_ACCESS_TOKEN`。
 > 当前素材服务强制使用阿里云 OSS，至少要配置 `ADS_OSS_ACCESS_KEY_ID`、`ADS_OSS_ACCESS_KEY_SECRET`、`ADS_OSS_BUCKET`、`ADS_OSS_REGION`。
 
