@@ -23,6 +23,26 @@ export interface CampaignTemplate {
   status: string
   created_at: string | null
   updated_at: string | null
+  access_level?: 'OWNER' | 'ADMIN' | 'EDITOR' | 'VIEWER' | null
+  can_edit?: boolean
+  can_manage_access?: boolean
+}
+
+export interface TemplateCollaborator {
+  id: string
+  tenant_id: string
+  template_id: string
+  user_id: string
+  role: 'EDITOR' | 'VIEWER'
+  status: string
+  granted_by?: string | null
+  user?: { id: string; username: string; email: string } | null
+}
+
+export interface TemplateCollaboratorCandidate {
+  id: string
+  username: string
+  email: string
 }
 
 export interface TemplatePayload {
@@ -53,4 +73,12 @@ export const templatesApi = {
   clone: (id: string) =>
     request.post<CampaignTemplate>(`/api/v1/templates/${id}/clone`),
   remove: (id: string) => request.delete(`/api/v1/templates/${id}`),
+  collaboratorCandidates: (id: string) =>
+    request.get<TemplateCollaboratorCandidate[]>(`/api/v1/templates/${id}/collaborator-candidates`),
+  collaborators: (id: string) =>
+    request.get<TemplateCollaborator[]>(`/api/v1/templates/${id}/collaborators`),
+  upsertCollaborator: (id: string, userId: string, role: 'EDITOR' | 'VIEWER') =>
+    request.put<TemplateCollaborator>(`/api/v1/templates/${id}/collaborators/${userId}`, { role }),
+  removeCollaborator: (id: string, userId: string) =>
+    request.delete(`/api/v1/templates/${id}/collaborators/${userId}`),
 }

@@ -1,4 +1,4 @@
-from services.meta_delivery_rules import budget_bid_preflight_errors, conversion_event_preflight_errors, default_optimization_goal, objective_optimization_preflight_errors, schedule_preflight_errors, tracking_asset_preflight_errors, tracking_asset_requirements
+from services.meta_delivery_rules import budget_bid_preflight_errors, conversion_event_preflight_errors, default_optimization_goal, filter_unused_tracking_assets, objective_optimization_preflight_errors, schedule_preflight_errors, tracking_asset_preflight_errors, tracking_asset_requirements, tracking_promoted_object
 
 
 def test_traffic_optimization_does_not_require_pixel():
@@ -45,7 +45,35 @@ def test_tracking_requirements_are_extracted_for_account_validation():
         "scope": "广告组 1",
         "optimization_goal": "OFFSITE_CONVERSIONS",
         "asset_id": "pixel-1",
+        "asset_type": "PIXEL",
     }]
+
+
+def test_dataset_requirement_keeps_asset_type_for_account_validation():
+    requirements = tracking_asset_requirements(
+        "OFFSITE_CONVERSIONS",
+        {"dataset_id": "dataset-1", "conversion_event": "PURCHASE"},
+    )
+    assert requirements[0]["asset_type"] == "DATASET"
+
+
+def test_promoted_object_is_canonicalized_before_building_meta_payload():
+    assert tracking_promoted_object({
+        "pixel_id": "stale-pixel",
+        "conversion_event": "stale-event",
+        "promoted_object": {"pixel_id": "pixel-1", "custom_event_type": "PURCHASE"},
+    }) == {"pixel_id": "pixel-1", "custom_event_type": "PURCHASE"}
+    assert tracking_promoted_object({
+        "pixel_id": "pixel-1",
+        "conversion_event": "PURCHASE",
+        "promoted_object": {"page_id": "page-1"},
+    }) == {"pixel_id": "pixel-1", "custom_event_type": "PURCHASE"}
+
+
+def test_ambiguous_pixel_and_dataset_source_is_not_guessed():
+    config = {"pixel_id": "pixel-1", "dataset_id": "dataset-1", "conversion_event": "PURCHASE"}
+    assert tracking_promoted_object(config) is None
+    assert tracking_asset_preflight_errors("OFFSITE_CONVERSIONS", config)[0]["code"] == "TRACKING_ASSET_REQUIRED"
 
 
 def test_standard_and_custom_conversion_events_are_allowed():
@@ -89,6 +117,18 @@ def test_default_traffic_performance_goal_matches_meta_ui():
     assert default_optimization_goal("OUTCOME_TRAFFIC") == "LANDING_PAGE_VIEWS"
 
 
+def test_awareness_performance_goals_are_allowed_and_default_to_reach():
+    assert default_optimization_goal("OUTCOME_AWARENESS") == "REACH"
+    assert default_optimization_goal("REACH") == "REACH"
+    for goal in ("REACH", "IMPRESSIONS", "AD_RECALL_LIFT", "THRUPLAY", "TWO_SECOND_CONTINUOUS_VIDEO_VIEWS"):
+        assert objective_optimization_preflight_errors("OUTCOME_AWARENESS", goal, {}) == []
+
+
+def test_app_promotion_is_rejected_until_app_promoted_object_is_supported():
+    errors = objective_optimization_preflight_errors("OUTCOME_APP_PROMOTION", "APP_INSTALLS", {})
+    assert errors[0]["code"] == "OBJECTIVE_UNSUPPORTED"
+
+
 def test_leads_can_use_onsite_lead_generation_without_pixel():
     assert objective_optimization_preflight_errors("OUTCOME_LEADS", "LEAD_GENERATION", {}) == []
     assert tracking_asset_preflight_errors("LEAD_GENERATION", {}) == []
@@ -97,6 +137,36 @@ def test_leads_can_use_onsite_lead_generation_without_pixel():
 def test_engagement_optimization_does_not_require_pixel():
     assert objective_optimization_preflight_errors("OUTCOME_ENGAGEMENT", "POST_ENGAGEMENT", {}) == []
     assert tracking_asset_preflight_errors("POST_ENGAGEMENT", {}) == []
+
+
+def test_non_conversion_goal_filters_stale_tracking_asset_config():
+    config = filter_unused_tracking_assets(
+        "LINK_CLICKS",
+        {
+            "pixel_id": "pixel-1",
+            "dataset_id": "dataset-1",
+            "conversion_event": "PURCHASE",
+            "promoted_object": {"pixel_id": "pixel-1", "custom_event_type": "PURCHASE"},
+        },
+    )
+    assert config == {}
+
+
+def test_mixed_adsets_keep_shared_source_but_filter_non_conversion_override():
+    config = filter_unused_tracking_assets(
+        "LINK_CLICKS",
+        {
+            "dataset_id": "dataset-1",
+            "conversion_event": "PURCHASE",
+            "adsets": [
+                {"optimization_goal": "LINK_CLICKS", "pixel_id": "stale-pixel"},
+                {"optimization_goal": "OFFSITE_CONVERSIONS", "dataset_id": "dataset-2", "conversion_event": "LEAD"},
+            ],
+        },
+    )
+    assert config["dataset_id"] == "dataset-1"
+    assert "pixel_id" not in config["adsets"][0]
+    assert config["adsets"][1]["dataset_id"] == "dataset-2"
 
 
 def test_bid_cap_requires_positive_bid_amount():

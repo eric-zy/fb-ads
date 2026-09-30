@@ -949,11 +949,17 @@ POST /api/v1/accounts/{account_pk}/operation-lease
 | GET | `/api/v1/templates` | 登录 | 列表（可 `?status=` 过滤） |
 | POST | `/api/v1/templates` | 登录用户 | 创建（模板归创建者所有） |
 | GET | `/api/v1/templates/{template_id}` | 登录 | 详情 |
-| PATCH | `/api/v1/templates/{template_id}` | 创建者或管理员 | 局部更新 |
-| POST | `/api/v1/templates/{template_id}/clone` | 创建者或管理员 | 复制 |
-| DELETE | `/api/v1/templates/{template_id}` | 创建者或管理员 | 删除（软删除，置 ARCHIVED） |
+| PATCH | `/api/v1/templates/{template_id}` | 所有者、EDITOR 或管理员 | 局部更新 |
+| POST | `/api/v1/templates/{template_id}/clone` | 模板可见成员或管理员 | 复制 |
+| DELETE | `/api/v1/templates/{template_id}` | 所有者或管理员 | 删除（软删除，置 ARCHIVED） |
+| GET | `/api/v1/templates/{template_id}/collaborator-candidates` | 所有者或管理员 | 可授权的租户成员 |
+| GET | `/api/v1/templates/{template_id}/collaborators` | 所有者或管理员 | 当前协作成员 |
+| PUT | `/api/v1/templates/{template_id}/collaborators/{user_id}` | 所有者或管理员 | 授予/更新 `EDITOR` 或 `VIEWER` |
+| DELETE | `/api/v1/templates/{template_id}/collaborators/{user_id}` | 所有者或管理员 | 撤销模板访问 |
 
-普通用户只能查看和修改自己创建的模板；租户管理员可管理本租户全部模板。迁移前创建、没有创建者信息的历史模板仍仅限管理员操作。
+模板采用租户内显式协作权限：所有者可授予 `EDITOR`（可编辑）或 `VIEWER`（只读、可复制）；
+租户管理员可管理本租户全部模板。迁移前创建、没有创建者信息的历史模板仍仅限管理员操作。
+返回的 `access_level`、`can_edit`、`can_manage_access` 可供前端控制操作入口；模板协作权限不改变广告账户的读写授权。
 
 ### POST /api/v1/templates
 
@@ -1009,6 +1015,17 @@ POST /api/v1/accounts/{account_pk}/operation-lease
 
 > Meta 易变参数统一放 JSON 字段，API 参数变化时无需改表结构。
 
+#### Pixel / 数据集过滤规则
+
+按照 Meta Ad Set 的 `optimization_goal` 判断事件源是否需要参与投放：当前系统仅对
+`OFFSITE_CONVERSIONS`、`VALUE`、`CONVERSIONS` 保留/校验 Pixel 或 Dataset 及转化事件。
+事件源校验同时匹配 `asset_type`（`PIXEL` / `DATASET`）和 Meta 资产 ID；仅 ID 相同但类型不同不会通过发布预检。
+`LINK_CLICKS`、`LANDING_PAGE_VIEWS`、`IMPRESSIONS`、`REACH`、`POST_ENGAGEMENT`、
+`THRUPLAY`、`CONVERSATIONS`、`LEAD_GENERATION` 等非网站转化目标不发送无关的
+`pixel_id`、`dataset_id`、`promoted_object` 字段。混合广告组模板保留模板级共享事件源，
+但会移除非转化广告组自己的事件源覆盖配置；发布预检仍会按每个广告组逐账户校验可用性。
+当前版本不支持 `OUTCOME_APP_PROMOTION`，会在模板保存或直接投放校验阶段明确提示；知名度目标默认使用 `REACH`，可选 `IMPRESSIONS`、`AD_RECALL_LIFT`、`THRUPLAY` 和 `TWO_SECOND_CONTINUOUS_VIDEO_VIEWS`。
+
 ### PATCH /api/v1/templates/{template_id}
 
 仅更新传入的字段（`exclude_unset=True`）。
@@ -1022,6 +1039,11 @@ POST /api/v1/accounts/{account_pk}/operation-lease
 ## 9. 任务中心 `/api/v1/jobs`
 
 批量投放、启停、改预算统一走异步 Job。全部需登录。
+
+投放编排默认按 `PUBLISH_DISPATCH_BATCH_SIZE=25` 个账户一批入队，批次间默认延迟
+`PUBLISH_DISPATCH_BATCH_DELAY_SECONDS=2` 秒；生产环境可在 `.env` 调整这两个参数，
+用于控制 Celery、Connector 与 Meta API 的突发压力。每个账户仍保持独立 JobItem、状态和重试，
+不会因分批而把部分成功汇总成整体失败。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

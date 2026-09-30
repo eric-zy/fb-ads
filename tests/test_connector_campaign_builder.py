@@ -96,6 +96,38 @@ def test_build_connector_payload_preserves_dataset_conversion_source():
     }
 
 
+def test_build_connector_payload_passes_page_promoted_object_for_lead_generation():
+    template = SimpleNamespace(
+        name="Lead Campaign",
+        objective="OUTCOME_LEADS",
+        special_ad_categories=[],
+        is_adset_budget_sharing_enabled=False,
+        buying_type="AUCTION",
+        budget_type="DAILY",
+        daily_budget=10,
+        lifetime_budget=None,
+        billing_event="IMPRESSIONS",
+        optimization_goal="LEAD_GENERATION",
+        targeting_json={"geo_locations": {"countries": ["US"]}},
+        placement_json={},
+        bid_strategy=None,
+        creative_config_json={
+            "page_id": "page-1",
+            "creatives": [{
+                "page_id": "page-1",
+                "asset_type": "image",
+                "image_hash": "hash-1",
+                "message": "hello",
+                "landing_url": "https://example.com",
+            }],
+        },
+    )
+
+    payload = build_connector_payload(template, "act_1")
+
+    assert payload["adsets"][0]["promoted_object"] == {"page_id": "page-1"}
+
+
 def test_build_connector_payload_does_not_require_tracking_source_for_traffic():
     template = SimpleNamespace(
         name="Traffic Campaign",

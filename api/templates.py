@@ -8,17 +8,27 @@ from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from sqlalchemy.orm import Session
 
 from core.auth import get_current_active_user
 from core.database import get_db
 from core.enums import TemplateStatus
 from services.business_access import owned_query, tenant_required
-from models import CampaignTemplate, MetaPage, User
+from models import CampaignTemplate, MetaPage, TemplateCollaborator, User
+from services.template_access import (
+    TEMPLATE_ADMIN,
+    TEMPLATE_EDITOR,
+    TEMPLATE_OWNER,
+    TEMPLATE_VIEWER,
+    can_edit_template,
+    can_manage_template_access,
+    template_access_level,
+    template_query,
+)
 from services.creative_format import normalize_creative_format
 from services.meta_creative_options import normalize_cta
-from services.meta_delivery_rules import default_optimization_goal
+from services.meta_delivery_rules import default_optimization_goal, filter_unused_tracking_assets, objective_optimization_preflight_errors
 from services.targeting_catalog import (
     normalize_targeting,
     placement_preflight_errors,
@@ -27,6 +37,27 @@ from services.targeting_catalog import (
 )
 
 router = APIRouter(prefix="/api/v1/templates", tags=["投放模板"])
+
+
+def _template_response(
+    template: CampaignTemplate,
+    db: Optional[Session] = None,
+    current_user: Optional[User] = None,
+) -> Dict[str, Any]:
+    """返回模板时再次过滤历史数据中的无关事件源字段。"""
+
+    result = template.to_dict()
+    goal = template.optimization_goal or default_optimization_goal(template.objective)
+    result["creative_config_json"] = filter_unused_tracking_assets(
+        goal,
+        result.get("creative_config_json"),
+    )
+    if db is not None and current_user is not None:
+        access_level = template_access_level(db, template, current_user)
+        result["access_level"] = access_level
+        result["can_edit"] = access_level in {TEMPLATE_ADMIN, TEMPLATE_OWNER, TEMPLATE_EDITOR}
+        result["can_manage_access"] = access_level in {TEMPLATE_ADMIN, TEMPLATE_OWNER}
+    return result
 
 
 def _validate_page_for_tenant(db: Session, creative_config: Optional[Dict[str, Any]]) -> None:
@@ -43,6 +74,8 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
     objective = str(values.get("objective") or "").upper()
     if objective not in {"OUTCOME_AWARENESS", "OUTCOME_TRAFFIC", "OUTCOME_ENGAGEMENT", "OUTCOME_LEADS", "OUTCOME_SALES", "OUTCOME_APP_PROMOTION", "TRAFFIC", "REACH", "BRAND_AWARENESS", "VIDEO_VIEWS", "ENGAGEMENT", "LEAD_GENERATION", "CONVERSIONS", "LINK_CLICKS"}:
         raise HTTPException(status_code=400, detail="请选择有效的 Meta 广告系列目标")
+    if objective == "OUTCOME_APP_PROMOTION":
+        raise HTTPException(status_code=400, detail="当前系统暂不支持 App Promotion，请改用知名度、流量、互动、潜在客户或销售目标")
     buying_type = str(values.get("buying_type") or "AUCTION").upper()
     if buying_type != "AUCTION":
         raise HTTPException(status_code=400, detail="当前系统只支持 AUCTION 购买类型")
@@ -83,6 +116,13 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="总预算模板必须配置 schedule.end_time")
     objective = str(values.get("objective") or "OUTCOME_TRAFFIC").upper()
     optimization_goal = str(values.get("optimization_goal") or default_optimization_goal(objective)).upper()
+    # Pixel / Dataset 只属于实际使用网站转化优化的模板或广告组；保存时即清理
+    # 非转化目标的残留字段，避免旧模板在后续发布时继续携带无关 promoted_object。
+    config = filter_unused_tracking_assets(optimization_goal, config)
+    values["creative_config_json"] = config
+    objective_errors = objective_optimization_preflight_errors(objective, optimization_goal, config)
+    if objective_errors:
+        raise HTTPException(status_code=400, detail=objective_errors[0]["message"])
     if objective == "OUTCOME_SALES" and optimization_goal in {"LINK_CLICKS", "LANDING_PAGE_VIEWS"}:
         raise HTTPException(status_code=400, detail="OUTCOME_SALES 不支持 LINK_CLICKS/LANDING_PAGE_VIEWS；请改用 OUTCOME_TRAFFIC，或配置 OFFSITE_CONVERSIONS 及 promoted_object")
     # Pixel/Dataset 只在发布预检时按 optimization_goal 判断。模板可以先保存为
@@ -255,6 +295,17 @@ class TemplateUpdate(BaseModel):
     status: Optional[str] = None
 
 
+class TemplateCollaboratorRequest(BaseModel):
+    role: str = Field("VIEWER", description="EDITOR 或 VIEWER")
+
+    @validator("role")
+    def normalize_role(cls, value):
+        normalized = str(value or "").upper()
+        if normalized not in {TEMPLATE_EDITOR, TEMPLATE_VIEWER}:
+            raise ValueError("模板协作角色只能是 EDITOR 或 VIEWER")
+        return normalized
+
+
 # ==================== 路由 ====================
 
 @router.get("")
@@ -264,11 +315,11 @@ def list_templates(
     current_user: User = Depends(get_current_active_user),
 ):
     """模板列表"""
-    query = owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.is_temporary.is_(False))
+    query = template_query(db.query(CampaignTemplate), current_user).filter(CampaignTemplate.is_temporary.is_(False))
     if status:
         query = query.filter(CampaignTemplate.status == status)
     items = query.order_by(CampaignTemplate.created_at.desc()).all()
-    return [t.to_dict() for t in items]
+    return [_template_response(t, db, current_user) for t in items]
 
 
 @router.post("", status_code=201)
@@ -300,7 +351,123 @@ def create_template(
     db.add(template)
     db.commit()
     db.refresh(template)
-    return template.to_dict()
+    return _template_response(template, db, current_user)
+
+
+def _get_template_for_access(db: Session, template_id: str, current_user: User) -> CampaignTemplate:
+    template = template_query(db.query(CampaignTemplate), current_user).filter(
+        CampaignTemplate.id == template_id,
+        CampaignTemplate.is_temporary.is_(False),
+    ).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="模板不存在或无权访问")
+    return template
+
+
+@router.get("/{template_id}/collaborator-candidates")
+def list_template_collaborator_candidates(
+    template_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """列出当前租户可被模板所有者授权的成员。"""
+    template = _get_template_for_access(db, template_id, current_user)
+    if not can_manage_template_access(db, template, current_user):
+        raise HTTPException(status_code=403, detail="只有模板所有者或管理员可以管理协作成员")
+    tenant_id = tenant_required(current_user)
+    users = db.query(User).filter(
+        User.tenant_id == tenant_id,
+        User.is_active.is_(True),
+        User.id != template.created_by,
+    ).order_by(User.username.asc()).all()
+    return [
+        {"id": user.id, "username": user.username, "email": user.email}
+        for user in users
+    ]
+
+
+@router.get("/{template_id}/collaborators")
+def list_template_collaborators(
+    template_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    template = _get_template_for_access(db, template_id, current_user)
+    if not can_manage_template_access(db, template, current_user):
+        raise HTTPException(status_code=403, detail="只有模板所有者或管理员可以查看协作成员")
+    rows = db.query(TemplateCollaborator).filter(
+        TemplateCollaborator.tenant_id == tenant_required(current_user),
+        TemplateCollaborator.template_id == template.id,
+        TemplateCollaborator.status == "ACTIVE",
+    ).order_by(TemplateCollaborator.created_at.asc()).all()
+    return [row.to_dict() for row in rows]
+
+
+@router.put("/{template_id}/collaborators/{user_id}")
+def upsert_template_collaborator(
+    template_id: str,
+    user_id: str,
+    req: TemplateCollaboratorRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    template = _get_template_for_access(db, template_id, current_user)
+    if not can_manage_template_access(db, template, current_user):
+        raise HTTPException(status_code=403, detail="只有模板所有者或管理员可以管理协作成员")
+    if user_id == template.created_by:
+        raise HTTPException(status_code=400, detail="模板所有者无需添加为协作成员")
+    tenant_id = tenant_required(current_user)
+    user = db.query(User).filter(
+        User.id == user_id,
+        User.tenant_id == tenant_id,
+        User.is_active.is_(True),
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="租户成员不存在或已停用")
+    row = db.query(TemplateCollaborator).filter(
+        TemplateCollaborator.tenant_id == tenant_id,
+        TemplateCollaborator.template_id == template.id,
+        TemplateCollaborator.user_id == user_id,
+    ).first()
+    if row:
+        row.role = req.role
+        row.status = "ACTIVE"
+        row.granted_by = current_user.id
+    else:
+        row = TemplateCollaborator(
+            id=uuid.uuid4().hex,
+            tenant_id=tenant_id,
+            template_id=template.id,
+            user_id=user_id,
+            role=req.role,
+            status="ACTIVE",
+            granted_by=current_user.id,
+        )
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row.to_dict()
+
+
+@router.delete("/{template_id}/collaborators/{user_id}")
+def remove_template_collaborator(
+    template_id: str,
+    user_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    template = _get_template_for_access(db, template_id, current_user)
+    if not can_manage_template_access(db, template, current_user):
+        raise HTTPException(status_code=403, detail="只有模板所有者或管理员可以管理协作成员")
+    row = db.query(TemplateCollaborator).filter(
+        TemplateCollaborator.tenant_id == tenant_required(current_user),
+        TemplateCollaborator.template_id == template.id,
+        TemplateCollaborator.user_id == user_id,
+    ).first()
+    if row:
+        row.status = "REVOKED"
+        db.commit()
+    return {"status": "ok"}
 
 
 @router.get("/{template_id}")
@@ -310,10 +477,8 @@ def get_template(
     current_user: User = Depends(get_current_active_user),
 ):
     """模板详情"""
-    template = owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.id == template_id).first()
-    if not template:
-        raise HTTPException(status_code=404, detail="模板不存在")
-    return template.to_dict()
+    template = _get_template_for_access(db, template_id, current_user)
+    return _template_response(template, db, current_user)
 
 
 @router.patch("/{template_id}")
@@ -324,9 +489,9 @@ def update_template(
     current_user: User = Depends(get_current_active_user),
 ):
     """更新模板（仅更新传入字段）"""
-    template = owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.id == template_id).first()
-    if not template:
-        raise HTTPException(status_code=404, detail="模板不存在")
+    template = _get_template_for_access(db, template_id, current_user)
+    if not can_edit_template(db, template, current_user):
+        raise HTTPException(status_code=403, detail="没有编辑该模板的权限")
 
     values = req.dict(exclude_unset=True)
     if "creative_config_json" in values:
@@ -342,11 +507,15 @@ def update_template(
     if "creative_config_json" in values:
         values["creative_config_json"] = merged["creative_config_json"]
         _validate_page_for_tenant(db, values["creative_config_json"])
+    elif merged["creative_config_json"] != template.creative_config_json:
+        # 顺手清理历史模板的残留事件源，但不因一次名称/状态更新重新触发
+        # Facebook Page 校验，避免无关更新被失效页面阻断。
+        values["creative_config_json"] = merged["creative_config_json"]
     for field, value in values.items():
         setattr(template, field, value)
     db.commit()
     db.refresh(template)
-    return template.to_dict()
+    return _template_response(template, db, current_user)
 
 
 @router.post("/{template_id}/clone", status_code=201)
@@ -356,9 +525,7 @@ def clone_template(
     current_user: User = Depends(get_current_active_user),
 ):
     """复制模板（设计文档第 37.3 节）"""
-    source = owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.id == template_id).first()
-    if not source:
-        raise HTTPException(status_code=404, detail="模板不存在")
+    source = _get_template_for_access(db, template_id, current_user)
 
     clone = CampaignTemplate(
         id=uuid.uuid4().hex,
@@ -377,13 +544,16 @@ def clone_template(
         billing_event=source.billing_event,
         targeting_json=source.targeting_json,
         placement_json=source.placement_json,
-        creative_config_json=source.creative_config_json,
+        creative_config_json=filter_unused_tracking_assets(
+            source.optimization_goal or default_optimization_goal(source.objective),
+            source.creative_config_json,
+        ),
         status=TemplateStatus.ACTIVE.value,
     )
     db.add(clone)
     db.commit()
     db.refresh(clone)
-    return clone.to_dict()
+    return _template_response(clone, db, current_user)
 
 
 @router.delete("/{template_id}")
@@ -393,9 +563,9 @@ def delete_template(
     current_user: User = Depends(get_current_active_user),
 ):
     """删除模板（软删除：置为 ARCHIVED，保留历史实例映射）"""
-    template = owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.id == template_id).first()
-    if not template:
-        raise HTTPException(status_code=404, detail="模板不存在")
+    template = _get_template_for_access(db, template_id, current_user)
+    if not can_manage_template_access(db, template, current_user):
+        raise HTTPException(status_code=403, detail="只有模板所有者或管理员可以删除模板")
 
     template.status = TemplateStatus.ARCHIVED.value
     db.commit()

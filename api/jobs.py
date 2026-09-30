@@ -23,6 +23,7 @@ from core.tenant import effective_tenant_id
 from models import AdGroup, Campaign, CampaignInstance, CampaignTemplate, CampaignJob, CampaignJobItem, CampaignJobRevision, PublishPreview, User
 from services.account_access import accessible_account_ids
 from services.business_access import owned_query, tenant_required, require_accounts, account_ids_for_action
+from services.template_access import template_query
 from services.account_operation_lease import AccountOperationLeaseService
 
 def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
@@ -36,7 +37,13 @@ from core.enums import TemplateStatus
 from services.job_service import JobDispatchError, JobService
 from services.creative_format import normalize_creative_format
 from services.meta_creative_options import normalize_cta
-from services.meta_delivery_rules import budget_bid_preflight_errors, conversion_event_preflight_errors, default_optimization_goal, objective_optimization_preflight_errors
+from services.meta_delivery_rules import (
+    budget_bid_preflight_errors,
+    conversion_event_preflight_errors,
+    default_optimization_goal,
+    filter_unused_tracking_assets,
+    objective_optimization_preflight_errors,
+)
 from services.targeting_catalog import placement_preflight_errors, targeting_preflight_errors
 from core.audit import record_audit
 
@@ -192,7 +199,7 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     if req.template_id:
         query = db.query(CampaignTemplate)
         if current_user is not None:
-            query = owned_query(query, CampaignTemplate, current_user)
+            query = template_query(query, current_user)
         template = query.filter(CampaignTemplate.id == req.template_id).first()
         if not template or (tenant_id and template.tenant_id != tenant_id):
             raise HTTPException(status_code=404, detail="投放模板不存在或无权访问")
@@ -208,6 +215,8 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     objective = str(config.get("objective") or "").upper()
     if objective not in {"OUTCOME_AWARENESS", "OUTCOME_TRAFFIC", "OUTCOME_ENGAGEMENT", "OUTCOME_LEADS", "OUTCOME_SALES", "OUTCOME_APP_PROMOTION"}:
         raise HTTPException(status_code=400, detail="推广目标无效，请选择 Meta 支持的 OUTCOME_* 目标")
+    if objective == "OUTCOME_APP_PROMOTION":
+        raise HTTPException(status_code=400, detail="当前系统暂不支持 App Promotion，请改用知名度、流量、互动、潜在客户或销售目标")
     daily_budget = config.get("daily_budget") or config.get("budget")
     if daily_budget is None or float(daily_budget) <= 0:
         raise HTTPException(status_code=400, detail="直接配置的日预算必须大于 0")
@@ -296,6 +305,9 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     else:
         # 防止从轮播切回单素材后把旧卡片带入模板快照。
         creative_config.pop("carousel_cards", None)
+    # 直接投放与模板保存走同一套过滤规则；非转化目标不把历史残留的
+    # Pixel/Dataset 字段带入临时模板或后续 Meta 请求。
+    creative_config = filter_unused_tracking_assets(template_goal, creative_config)
     event_errors = conversion_event_preflight_errors(template_goal, creative_config)
     if event_errors:
         raise HTTPException(status_code=400, detail=event_errors[0]["message"])
@@ -428,7 +440,7 @@ def _submit(
     edit_mode: Optional[str] = None,
 ) -> dict:
     """统一提交入口：建 Job → 派发 → 立即返回"""
-    template = owned_query(db.query(CampaignTemplate), CampaignTemplate, created_by).filter(CampaignTemplate.id == template_id).first()
+    template = template_query(db.query(CampaignTemplate), created_by).filter(CampaignTemplate.id == template_id).first()
     if not template:
         raise HTTPException(404, "投放模板不存在或无权访问")
     require_accounts(db, created_by, ad_account_ids, write=True)
@@ -916,15 +928,19 @@ def get_edit_source(
     selected_items = failed_items or list(job.items)
     if visible is not None:
         selected_items = [item for item in selected_items if item.ad_account_id in visible]
-    template = db.query(CampaignTemplate).filter(CampaignTemplate.id == job.template_id).first()
+    template = template_query(db.query(CampaignTemplate), current_user).filter(CampaignTemplate.id == job.template_id).first()
     if not template:
         raise HTTPException(status_code=409, detail="原任务引用的投放配置已不存在，无法编辑")
 
     params = job.params or {}
     source = str(params.get("source") or "TEMPLATE").upper()
+    safe_creative_config = filter_unused_tracking_assets(
+        template.optimization_goal or default_optimization_goal(template.objective),
+        template.creative_config_json,
+    )
     inline_config = None
     if source == "DIRECT":
-        config = template.creative_config_json or {}
+        config = safe_creative_config
         inline_config = {
             "name": template.name,
             "objective": template.objective,
@@ -964,7 +980,10 @@ def get_edit_source(
         "ad_account_ids": [item.ad_account_id for item in selected_items],
         "failed_account_ids": [item.ad_account_id for item in failed_items],
         "errors": errors,
-        "template": template.to_dict(),
+        "template": {
+            **template.to_dict(),
+            "creative_config_json": safe_creative_config,
+        },
     }
 
 

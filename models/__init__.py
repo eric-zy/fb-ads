@@ -32,6 +32,7 @@ from models.account_group import AccountGroup
 # ---- 对齐设计文档新增的核心模型 ----
 # Campaign Template：系统最核心业务对象（设计文档第 3.1 / 10 节）
 from models.template import CampaignTemplate
+from models.template_collaborator import TemplateCollaborator
 # Template → 多账户部署的实例映射（设计文档第 12 / 13 / 14 节）
 from models.instance import CampaignInstance, AdSetInstance, AdInstance
 # 加密凭据（设计文档第 9 节 / Meta 账号管理 V1 §4）
@@ -95,6 +96,7 @@ __all__ = [
     'AccountGroup',
     # 新增
     'CampaignTemplate',
+    'TemplateCollaborator',
     'CampaignInstance',
     'AdSetInstance',
     'AdInstance',

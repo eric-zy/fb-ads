@@ -499,12 +499,16 @@ def execute_campaign_job(self, job_id: str) -> Dict[str, Any]:
 
         is_create = job.action_type == ActionType.CREATE.value
         dispatch_failures = 0
-        for item in items:
+        batch_size = max(1, int(settings.PUBLISH_DISPATCH_BATCH_SIZE))
+        batch_delay = max(0.0, float(settings.PUBLISH_DISPATCH_BATCH_DELAY_SECONDS))
+        for index, item in enumerate(items):
             try:
-                if is_create:
-                    create_campaign_for_account.delay(item.id)
-                else:
-                    apply_action_for_account.delay(item.id)
+                # 同一批次并行，批次之间错开入队；这样保留每个账户独立
+                # 状态/重试，同时避免大规模投放瞬间打满 Celery、Connector
+                # 和 Meta 限流额度。
+                countdown = index // batch_size * batch_delay
+                task = create_campaign_for_account if is_create else apply_action_for_account
+                task.apply_async(args=(item.id,), countdown=countdown)
             except Exception as exc:
                 dispatch_failures += 1
                 db.rollback()

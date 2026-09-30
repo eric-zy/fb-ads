@@ -73,6 +73,8 @@ export const OPTIMIZATION_GOAL_LABELS: Record<string, string> = {
   LANDING_PAGE_VIEWS: '落地页浏览量最大化',
   LINK_CLICKS: '链接点击量最大化',
   REACH: '单日独立覆盖人数最大化',
+  AD_RECALL_LIFT: '广告回忆度最大化',
+  TWO_SECOND_CONTINUOUS_VIDEO_VIEWS: '两秒连续视频观看最大化',
   CONVERSATIONS: '对话次数最大化',
   IMPRESSIONS: '展示次数最大化',
   OFFSITE_CONVERSIONS: '网站转化量最大化',
@@ -86,14 +88,26 @@ export const OPTIMIZATION_GOAL_LABELS: Record<string, string> = {
 
 export const OPTIMIZATION_GOAL_OPTIONS: Record<string, string[]> = {
   // 顺序与 Meta 页面一致：核心成效目标在前，其它可用目标在后。
+  OUTCOME_AWARENESS: ['REACH', 'IMPRESSIONS', 'AD_RECALL_LIFT', 'THRUPLAY', 'TWO_SECOND_CONTINUOUS_VIDEO_VIEWS'],
   OUTCOME_TRAFFIC: ['LANDING_PAGE_VIEWS', 'LINK_CLICKS', 'REACH', 'CONVERSATIONS', 'IMPRESSIONS', 'OFFSITE_CONVERSIONS'],
   OUTCOME_SALES: ['OFFSITE_CONVERSIONS', 'VALUE', 'CONVERSIONS'],
   OUTCOME_ENGAGEMENT: ['POST_ENGAGEMENT', 'THRUPLAY', 'EVENT_RESPONSES', 'CONVERSATIONS', 'IMPRESSIONS'],
   OUTCOME_LEADS: ['LEAD_GENERATION', 'OFFSITE_CONVERSIONS', 'CONVERSATIONS', 'IMPRESSIONS'],
 }
 
+const normalizeCampaignObjective = (objective: string) => ({
+  TRAFFIC: 'OUTCOME_TRAFFIC',
+  LINK_CLICKS: 'OUTCOME_TRAFFIC',
+  REACH: 'OUTCOME_AWARENESS',
+  BRAND_AWARENESS: 'OUTCOME_AWARENESS',
+  VIDEO_VIEWS: 'OUTCOME_ENGAGEMENT',
+  ENGAGEMENT: 'OUTCOME_ENGAGEMENT',
+  LEAD_GENERATION: 'OUTCOME_LEADS',
+  CONVERSIONS: 'OUTCOME_SALES',
+}[String(objective || '').toUpperCase()] || String(objective || '').toUpperCase())
+
 export const optimizationGoalOptions = (objective: string) =>
-  (OPTIMIZATION_GOAL_OPTIONS[objective] || ['LINK_CLICKS']).map(value => ({
+  (OPTIMIZATION_GOAL_OPTIONS[normalizeCampaignObjective(objective)] || ['LINK_CLICKS']).map(value => ({
     value,
     label: OPTIMIZATION_GOAL_LABELS[value] || value,
   }))
@@ -102,14 +116,19 @@ export const optimizationGoalLabel = (goal: string | null | undefined) =>
   OPTIMIZATION_GOAL_LABELS[String(goal || '').toUpperCase()] || goal || '-'
 
 export const isOptimizationGoalAllowed = (objective: string, goal: string) =>
-  !OPTIMIZATION_GOAL_OPTIONS[objective] || OPTIMIZATION_GOAL_OPTIONS[objective].includes(goal)
+  !OPTIMIZATION_GOAL_OPTIONS[normalizeCampaignObjective(objective)] || OPTIMIZATION_GOAL_OPTIONS[normalizeCampaignObjective(objective)].includes(goal)
 
 export const defaultOptimizationGoal = (objective: string) => {
-  if (objective === 'OUTCOME_SALES') return 'OFFSITE_CONVERSIONS'
-  if (objective === 'OUTCOME_ENGAGEMENT') return 'POST_ENGAGEMENT'
-  if (objective === 'OUTCOME_LEADS') return 'LEAD_GENERATION'
+  const normalized = normalizeCampaignObjective(objective)
+  if (normalized === 'OUTCOME_SALES') return 'OFFSITE_CONVERSIONS'
+  if (normalized === 'OUTCOME_ENGAGEMENT') return 'POST_ENGAGEMENT'
+  if (normalized === 'OUTCOME_LEADS') return 'LEAD_GENERATION'
+  if (normalized === 'OUTCOME_AWARENESS') return 'REACH'
   return 'LANDING_PAGE_VIEWS'
 }
 
 export const isConversionOptimizationGoal = (goal: string) =>
   CONVERSION_OPTIMIZATION_GOALS.includes(goal as typeof CONVERSION_OPTIMIZATION_GOALS[number])
+
+export const trackingAssetRequiredForGoals = (goals: Array<string | null | undefined>) =>
+  goals.some(goal => isConversionOptimizationGoal(String(goal || '').toUpperCase()))

@@ -99,7 +99,7 @@
           </template>
           <template v-else>
             <el-form-item label="广告系列名称" required><el-input v-model="directForm.name" placeholder="例如 US 流量测试" /></el-form-item>
-            <el-form-item label="推广目标" required><el-select v-model="directForm.objective" style="width:100%"><el-option label="流量 OUTCOME_TRAFFIC" value="OUTCOME_TRAFFIC" /><el-option label="销售 OUTCOME_SALES" value="OUTCOME_SALES" /><el-option label="互动 OUTCOME_ENGAGEMENT" value="OUTCOME_ENGAGEMENT" /><el-option label="潜在客户 OUTCOME_LEADS" value="OUTCOME_LEADS" /></el-select></el-form-item>
+            <el-form-item label="推广目标" required><el-select v-model="directForm.objective" style="width:100%"><el-option label="知名度 OUTCOME_AWARENESS" value="OUTCOME_AWARENESS" /><el-option label="流量 OUTCOME_TRAFFIC" value="OUTCOME_TRAFFIC" /><el-option label="销售 OUTCOME_SALES" value="OUTCOME_SALES" /><el-option label="互动 OUTCOME_ENGAGEMENT" value="OUTCOME_ENGAGEMENT" /><el-option label="潜在客户 OUTCOME_LEADS" value="OUTCOME_LEADS" /></el-select></el-form-item>
             <el-form-item label="Facebook Page" required>
               <el-select v-model="directForm.page_id" filterable style="width:100%" placeholder="选择已同步的 Facebook Page">
                 <el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name || page.page_id} (${page.page_id})`" :value="page.page_id" />
@@ -276,6 +276,7 @@
               v-model="directForm.dataset_id"
               filterable
               clearable
+              @change="handleDirectTrackingAssetChange"
               style="width: 100%"
               placeholder="先选择广告账户，再选择共同可用的 Pixel / 数据集"
               :loading="trackingAssetsLoading"
@@ -308,7 +309,7 @@
               <div class="tip">支持标准事件或自定义事件；自定义事件需以字母开头，仅允许字母、数字和下划线。</div>
             </el-form-item>
           <div v-else class="tracking-asset-template-state">
-            <el-tag v-if="selectedTemplateTrackingAssetId" type="success">已配置：{{ selectedTemplateTrackingAssetId }}</el-tag>
+            <el-tag v-if="selectedTemplateTrackingAssetId && selectedTemplateTrackingEvent" type="success">已配置：{{ selectedTemplateTrackingAssetId }} · {{ selectedTemplateTrackingEvent }}</el-tag>
             <el-tag v-else type="warning">模板未配置 Pixel / 数据集，请先编辑模板</el-tag>
           </div>
           <el-alert
@@ -753,7 +754,7 @@ const form = reactive({
 const directForm = reactive({
   name: '直接投放测试', objective: 'OUTCOME_TRAFFIC', page_id: '', daily_budget: 10,
   optimization_goal: 'LANDING_PAGE_VIEWS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1,
-  dataset_id: '', conversion_event: 'PURCHASE',
+  dataset_id: '', tracking_asset_type: 'PIXEL' as 'PIXEL' | 'DATASET', conversion_event: 'PURCHASE',
   creative_format: 'SINGLE_IMAGE_VIDEO' as 'SINGLE_IMAGE_VIDEO' | 'CAROUSEL',
   adsets: [{ key: `${Date.now()}-1`, name: 'US 广告组', budget: 10, country: 'US', regions: '', cities: '', zips: '', excluded_country: '', excluded_regions: '', excluded_cities: '', excluded_zips: '', custom_locations_json: '', excluded_custom_locations_json: '', region_group_id: '', targeting_package_id: '', location_types: ['home', 'recent'] as string[], age_min: 18, age_max: 65, genders: [1, 2] as number[], interests: '', languages: [] as string[], custom_audiences: [] as string[], excluded_custom_audiences: [] as string[], device_platforms: [] as string[], user_os: '', user_device: '', wireless_carrier: '', publisher_platforms: [] as string[], facebook_positions: [] as string[], instagram_positions: [] as string[], audience_network_positions: [] as string[], messenger_positions: [] as string[], optimization_goal: 'LANDING_PAGE_VIEWS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1 }],
   creatives: [{ key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' }],
@@ -966,8 +967,19 @@ const directConfig = computed<Record<string, any> | null>(() => {
     optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy,
     // 事件源仅在当前广告组实际使用转化优化时进入请求；切换到互动、展示
     // 或站内线索目标后保留界面草稿，但不把无关 Pixel/Dataset 发送给 Meta。
-    ...(directNeedsTrackingAsset.value && directForm.dataset_id ? { dataset_id: directForm.dataset_id } : {}),
-    ...(directNeedsTrackingAsset.value && directForm.conversion_event ? { conversion_event: directForm.conversion_event } : {}),
+    ...(directNeedsTrackingAsset.value && directForm.dataset_id && directForm.conversion_event
+      ? directForm.tracking_asset_type === 'DATASET'
+        ? {
+            dataset_id: directForm.dataset_id,
+            conversion_event: directForm.conversion_event,
+            promoted_object: { dataset_id: directForm.dataset_id, conversion_event: directForm.conversion_event },
+          }
+        : {
+            pixel_id: directForm.dataset_id,
+            custom_event_type: directForm.conversion_event,
+            promoted_object: { pixel_id: directForm.dataset_id, custom_event_type: directForm.conversion_event },
+          }
+      : {}),
     adsets,
   }
 })
@@ -978,14 +990,19 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
   directForm.page_id = config.page_id || directForm.page_id
   directForm.daily_budget = Number(config.daily_budget || directForm.daily_budget)
   directForm.optimization_goal = config.optimization_goal || directForm.optimization_goal
-  directForm.dataset_id = config.dataset_id
-    || config.pixel_id
-    || config.promoted_object?.dataset_id
+  directForm.dataset_id = config.promoted_object?.dataset_id
     || config.promoted_object?.pixel_id
+    || config.dataset_id
+    || config.pixel_id
     || ''
-  directForm.conversion_event = config.conversion_event
-    || config.promoted_object?.conversion_event
+  directForm.tracking_asset_type = config.promoted_object?.dataset_id
+    ? 'DATASET'
+    : config.promoted_object?.pixel_id
+      ? 'PIXEL'
+      : config.dataset_id ? 'DATASET' : 'PIXEL'
+  directForm.conversion_event = config.promoted_object?.conversion_event
     || config.promoted_object?.custom_event_type
+    || config.conversion_event
     || directForm.conversion_event
   directForm.billing_event = config.billing_event || directForm.billing_event
   directForm.bid_strategy = config.bid_strategy || directForm.bid_strategy
@@ -1178,10 +1195,15 @@ const audienceOptions = computed(() => {
     })
 })
 const selectedTemplateTrackingConfig = computed(() => selectedTemplate.value?.creative_config_json || {})
-const selectedTemplateTrackingAssetId = computed(() => selectedTemplateTrackingConfig.value.dataset_id
-  || selectedTemplateTrackingConfig.value.pixel_id
-  || selectedTemplateTrackingConfig.value.promoted_object?.dataset_id
+const selectedTemplateTrackingAssetId = computed(() => selectedTemplateTrackingConfig.value.promoted_object?.dataset_id
   || selectedTemplateTrackingConfig.value.promoted_object?.pixel_id
+  || selectedTemplateTrackingConfig.value.dataset_id
+  || selectedTemplateTrackingConfig.value.pixel_id
+  || '')
+const selectedTemplateTrackingEvent = computed(() => selectedTemplateTrackingConfig.value.promoted_object?.conversion_event
+  || selectedTemplateTrackingConfig.value.promoted_object?.custom_event_type
+  || selectedTemplateTrackingConfig.value.conversion_event
+  || selectedTemplateTrackingConfig.value.custom_event_type
   || '')
 const templateOptimizationGoal = computed(() => selectedTemplate.value?.optimization_goal
   || selectedTemplateTrackingConfig.value.optimization_goal
@@ -1195,7 +1217,11 @@ const trackingAssetRequired = computed(() => form.publish_mode === 'DIRECT' ? di
 const trackingConfigReady = computed(() => !trackingAssetRequired.value
   || (form.publish_mode === 'DIRECT'
     ? !!directForm.dataset_id && !!directForm.conversion_event
-    : !!selectedTemplateTrackingAssetId.value))
+    : !!selectedTemplateTrackingAssetId.value && !!selectedTemplateTrackingEvent.value))
+const handleDirectTrackingAssetChange = (assetId: string) => {
+  const selected = trackingAssets.value.find(item => item.id === assetId)
+  if (selected) directForm.tracking_asset_type = selected.asset_type
+}
 const formatTrackingAssetTime = (value?: string | null) => value
   ? new Date(value).toLocaleString('zh-CN', { hour12: false })
   : '未同步'
@@ -1516,12 +1542,15 @@ const loadTrackingAssets = async (accountIds = form.ad_account_ids) => {
     // 后端已按账户返回关联范围；这里再做一次前端保护，避免旧响应覆盖新账户选择。
     if (requestNo !== trackingAssetsRequest) return
     trackingAssets.value = (data.items || []).filter(item => accountIds.every(id => item.account_ids.includes(id)))
-    const selectedAssetStillAvailable = trackingAssets.value.some(item => item.id === directForm.dataset_id)
+    const selectedAssetStillAvailable = trackingAssets.value.some(item =>
+      item.id === directForm.dataset_id && item.asset_type === directForm.tracking_asset_type,
+    )
     if (!selectedAssetStillAvailable) directForm.dataset_id = ''
     // 只有一个共同可用事件源时自动选中，减少投放人员重复操作；
     // 存在多个资产时保留空值，让用户明确选择，避免误用 Pixel。
     if (!directForm.dataset_id && trackingAssets.value.length === 1) {
       directForm.dataset_id = trackingAssets.value[0].id
+      directForm.tracking_asset_type = trackingAssets.value[0].asset_type
     }
   } catch (error: any) {
     if (requestNo !== trackingAssetsRequest) return

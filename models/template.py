@@ -56,6 +56,11 @@ class CampaignTemplate(TenantMixin, Base):
     # 关系：模板 → 批量任务 / 模板 → 各账户的投放实例
     jobs = relationship("CampaignJob", back_populates="template", cascade="save-update")
     instances = relationship("CampaignInstance", back_populates="template", cascade="save-update")
+    collaborators = relationship(
+        "TemplateCollaborator",
+        back_populates="template",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         # 行级隔离：列表页固定按 (租户, 状态) 过滤

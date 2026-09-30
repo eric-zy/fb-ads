@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from api.templates import TemplateCreate, TemplateUpdate, create_template, update_template
-from models import CampaignTemplate, MetaPage, User
+from models import CampaignTemplate, MetaPage, TemplateCollaborator, User
 
 
 def _template_values(**creative_config):
@@ -226,3 +226,75 @@ def test_non_admin_cannot_update_another_users_template(db):
         update_template(created["id"], TemplateUpdate(name="Should fail"), db, other_user)
 
     assert exc_info.value.status_code == 404
+
+
+def test_template_editor_can_update_shared_template(db):
+    _seed_page(db)
+    owner = _user("owner")
+    editor = _user("test001")
+    db.add_all([owner, editor])
+    db.commit()
+
+    created = create_template(
+        TemplateCreate(**_template_values(
+            creatives=[
+                {"asset_type": "image", "asset_id": "asset-1", "landing_url": "https://example.com/1"},
+            ],
+        )),
+        db,
+        owner,
+    )
+    db.add(TemplateCollaborator(
+        id="share-editor-1",
+        tenant_id="test_tenant",
+        template_id=created["id"],
+        user_id=editor.id,
+        role="EDITOR",
+        status="ACTIVE",
+        granted_by=owner.id,
+    ))
+    db.commit()
+
+    updated = update_template(
+        created["id"],
+        TemplateUpdate(name="Updated by shared editor"),
+        db,
+        editor,
+    )
+
+    assert updated["name"] == "Updated by shared editor"
+    assert updated["access_level"] == "EDITOR"
+    assert updated["can_edit"] is True
+
+
+def test_template_viewer_cannot_update_shared_template(db):
+    _seed_page(db)
+    owner = _user("owner")
+    viewer = _user("viewer")
+    db.add_all([owner, viewer])
+    db.commit()
+
+    created = create_template(
+        TemplateCreate(**_template_values(
+            creatives=[
+                {"asset_type": "image", "asset_id": "asset-1", "landing_url": "https://example.com/1"},
+            ],
+        )),
+        db,
+        owner,
+    )
+    db.add(TemplateCollaborator(
+        id="share-viewer-1",
+        tenant_id="test_tenant",
+        template_id=created["id"],
+        user_id=viewer.id,
+        role="VIEWER",
+        status="ACTIVE",
+        granted_by=owner.id,
+    ))
+    db.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        update_template(created["id"], TemplateUpdate(name="Should fail"), db, viewer)
+
+    assert exc_info.value.status_code == 403

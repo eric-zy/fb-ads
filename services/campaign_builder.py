@@ -35,7 +35,7 @@ from models import (
 from services.meta.service import MetaAdsService
 from services.meta_audience_policy import resolve_required_exclusions
 from services.targeting_catalog import normalize_targeting
-from services.meta_delivery_rules import default_optimization_goal, is_pixel_required
+from services.meta_delivery_rules import default_optimization_goal, is_pixel_required, normalized_campaign_objective, tracking_promoted_object
 from services.meta_creative_options import normalize_cta
 
 
@@ -64,7 +64,7 @@ _OBJECTIVE_ALIASES = {
 }
 _VALID_OBJECTIVES = {
     "OUTCOME_AWARENESS", "OUTCOME_TRAFFIC", "OUTCOME_ENGAGEMENT",
-    "OUTCOME_LEADS", "OUTCOME_SALES", "OUTCOME_APP_PROMOTION",
+    "OUTCOME_LEADS", "OUTCOME_SALES",
 }
 
 
@@ -96,6 +96,8 @@ class CampaignBuilder:
         name = self.campaign_name or f"{self.template.name}{self.name_suffix}"
         raw_objective = (self.template.objective or "").strip().upper()
         objective = _OBJECTIVE_ALIASES.get(raw_objective, raw_objective)
+        if objective == "OUTCOME_APP_PROMOTION":
+            raise ValueError("当前系统暂不支持 App Promotion，请改用知名度、流量、互动、潜在客户或销售目标")
         if objective not in _VALID_OBJECTIVES:
             raise ValueError(
                 f"模板推广目标无效：{self.template.objective!r}。"
@@ -203,25 +205,23 @@ class AdSetBuilder:
             params["daily_budget"] = budget_cents
 
         optimization_goal = str(params["optimization_goal"]).upper()
-        objective = str(self.template.objective or "OUTCOME_TRAFFIC").upper()
+        objective = normalized_campaign_objective(self.template.objective or "OUTCOME_TRAFFIC")
+        config = {**(self.template.creative_config_json or {}), **self.adset_config}
         if objective == "OUTCOME_SALES" and optimization_goal in {"LINK_CLICKS", "LANDING_PAGE_VIEWS"}:
             raise ValueError("OUTCOME_SALES 不支持 LINK_CLICKS/LANDING_PAGE_VIEWS；请改用 OUTCOME_TRAFFIC，或配置 OFFSITE_CONVERSIONS 及 promoted_object")
         if is_pixel_required(optimization_goal):
-            config = {**(self.template.creative_config_json or {}), **self.adset_config}
-            promoted_object = config.get("promoted_object")
-            if not promoted_object:
-                dataset_id = config.get("dataset_id")
-                pixel_id = config.get("pixel_id")
-                event = str(config.get("conversion_event") or config.get("custom_event_type") or "").strip()
-                if dataset_id and event:
-                    promoted_object = {"dataset_id": dataset_id, "conversion_event": event}
-                elif pixel_id and event:
-                    promoted_object = {"pixel_id": pixel_id, "custom_event_type": event}
+            promoted_object = tracking_promoted_object(config)
             if not promoted_object:
                 raise ValueError(
-                    f"优化目标 {optimization_goal} 必须配置 creative_config_json.promoted_object"
+                    f"优化目标 {optimization_goal} 必须配置有效的 Pixel/Dataset 和转化事件"
                 )
             params["promoted_object"] = promoted_object
+        elif optimization_goal in {"LEAD_GENERATION", "CONVERSATIONS"}:
+            # 线索表单和消息对话需要 Page 作为 promoted_object；此前仅在
+            # 网站转化目标分支传递该字段，导致这些目标直到 Meta API 才失败。
+            page_id = str(config.get("page_id") or "").strip()
+            if page_id:
+                params["promoted_object"] = {"page_id": page_id}
 
         if self.adset_config.get("bid_strategy") or self.template.bid_strategy:
             bid_strategy = (self.adset_config.get("bid_strategy") or self.template.bid_strategy).upper()

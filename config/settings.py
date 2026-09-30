@@ -144,6 +144,12 @@ class Settings(BaseSettings):
     CELERY_TASK_SERIALIZER: str = "json"
     CELERY_ACCEPT_CONTENT: list = ["json"]
     CELERY_TIMEZONE: str = "UTC"
+    # 批量投放编排护栏：同一 Job 按批次入队，避免一次性向 Meta/Connector
+    # 突发数千个请求。批次间延迟由 Worker 侧 countdown 实现，可按环境调节。
+    PUBLISH_DISPATCH_BATCH_SIZE: int = int(os.getenv("PUBLISH_DISPATCH_BATCH_SIZE", "25"))
+    PUBLISH_DISPATCH_BATCH_DELAY_SECONDS: float = float(
+        os.getenv("PUBLISH_DISPATCH_BATCH_DELAY_SECONDS", "2")
+    )
     
     # ========== 风控配置 ==========
     RISK_ENABLE: bool = os.getenv("RISK_ENABLE", "true").lower() == "true"

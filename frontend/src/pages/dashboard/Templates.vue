@@ -51,11 +51,12 @@
           </template>
         </el-table-column>
         <el-table-column prop="updated_at" :label="t('pages.updated')" width="180" show-overflow-tooltip />
-        <el-table-column :label="t('pages.actions')" width="200" fixed="right">
+        <el-table-column :label="t('pages.actions')" width="280" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="row.can_edit !== false" link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="primary" @click="handleClone(row)">复制</el-button>
-            <el-button link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button v-if="row.can_manage_access" link type="primary" @click="openShare(row)">共享</el-button>
+            <el-button v-if="row.can_manage_access" link type="danger" @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -166,7 +167,7 @@
         <el-form-item v-if="form.bid_strategy === 'LOWEST_COST_WITH_MIN_ROAS'" label="ROAS 约束 JSON" required>
           <el-input v-model="form.bid_constraints_json" type="textarea" :rows="3" placeholder='例如 {"roas_average_floor": 1.5}' />
         </el-form-item>
-        <template v-if="isConversionOptimizationGoal(form.optimization_goal)">
+        <template v-if="templateNeedsTrackingAsset">
           <el-alert type="info" :closable="false" show-icon title="转化事件源按发布预检校验">
             Pixel / 数据集仅在转化类优化目标发布时必需；模板可先保存，发布预检会在缺少事件源时拦截。
           </el-alert>
@@ -341,13 +342,46 @@
         <el-button v-else type="primary" :loading="saving" @click="submit">保存模板</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="shareDialogVisible" title="模板协作成员" width="640px" :close-on-click-modal="false">
+      <el-alert
+        title="EDITOR 可编辑模板；VIEWER 仅可查看并用于复制。模板共享不改变广告账户权限。"
+        type="info"
+        :closable="false"
+        show-icon
+        class="share-tip"
+      />
+      <div class="share-form">
+        <el-select v-model="shareUserId" filterable placeholder="选择租户成员" style="flex: 1">
+          <el-option v-for="user in collaboratorCandidates" :key="user.id" :label="`${user.username}（${user.email}）`" :value="user.id" />
+        </el-select>
+        <el-select v-model="shareRole" style="width: 130px">
+          <el-option label="可编辑 EDITOR" value="EDITOR" />
+          <el-option label="只读 VIEWER" value="VIEWER" />
+        </el-select>
+        <el-button type="primary" :loading="shareSaving" :disabled="!shareUserId" @click="saveShare">授权</el-button>
+      </div>
+      <el-table :data="collaborators" size="small" v-loading="shareLoading" empty-text="暂未共享">
+        <el-table-column label="成员" min-width="220">
+          <template #default="{ row }">{{ row.user?.username || row.user_id }}（{{ row.user?.email || '-' }}）</template>
+        </el-table-column>
+        <el-table-column label="权限" width="150">
+          <template #default="{ row }">
+            <el-tag :type="row.role === 'EDITOR' ? 'success' : 'info'">{{ row.role === 'EDITOR' ? '可编辑' : '只读' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="90">
+          <template #default="{ row }"><el-button link type="danger" @click="removeShare(row)">移除</el-button></template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { templatesApi, type CampaignTemplate } from '@/api/templates'
+import { templatesApi, type CampaignTemplate, type TemplateCollaborator, type TemplateCollaboratorCandidate } from '@/api/templates'
 import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
 import { mediaApi, type MediaItem } from '@/api/media'
 import { metaPagesApi, type MetaPage } from '@/api/metaPages'
@@ -357,11 +391,11 @@ import { useUserStore } from '@/stores/userStore'
 import {
   CTA_OPTIONS,
   defaultOptimizationGoal,
-  isConversionOptimizationGoal,
   isOptimizationGoalAllowed,
   optimizationGoalLabel,
   optimizationGoalOptions,
   STANDARD_CONVERSION_EVENTS,
+  trackingAssetRequiredForGoals,
 } from '@/config/metaDeliveryRules'
 const { t } = useLocale()
 const userStore = useUserStore()
@@ -379,6 +413,14 @@ const dialogVisible = ref(false)
 const isEdit = ref(false)
 const editingId = ref('')
 const templateStep = ref(0)
+const shareDialogVisible = ref(false)
+const shareLoading = ref(false)
+const shareSaving = ref(false)
+const shareTemplateId = ref('')
+const shareUserId = ref('')
+const shareRole = ref<'EDITOR' | 'VIEWER'>('EDITOR')
+const collaboratorCandidates = ref<TemplateCollaboratorCandidate[]>([])
+const collaborators = ref<TemplateCollaborator[]>([])
 
 const DEFAULT_TARGETING = JSON.stringify(
   { geo_locations: { countries: ['US'] }, age_min: 18, age_max: 65, genders: [1, 2] },
@@ -468,6 +510,10 @@ const placementValuesFromConfig = (placement: Record<string, any> | null | undef
   return [...new Set(values)]
 }
 const adsetForms = reactive<AdsetForm[]>([newAdset()])
+const templateNeedsTrackingAsset = computed(() => trackingAssetRequiredForGoals([
+  form.optimization_goal,
+  ...adsetForms.map(item => item.optimization_goal),
+]))
 const addAdset = () => adsetForms.push(newAdset())
 const removeAdset = (index: number) => adsetForms.splice(index, 1)
 const splitTargetingValues = (value: string | string[]) => (Array.isArray(value) ? value : value.split(','))
@@ -608,7 +654,7 @@ const buildCreativeJson = () => {
     config.schedule = { start_time: form.schedule_start || undefined, end_time: form.schedule_end }
   }
   const trackingAssetId = form.tracking_asset_type === 'DATASET' ? form.dataset_id.trim() : form.pixel_id.trim()
-  if (isConversionOptimizationGoal(form.optimization_goal) && trackingAssetId && form.custom_event_type.trim()) {
+  if (templateNeedsTrackingAsset.value && trackingAssetId && form.custom_event_type.trim()) {
     config.promoted_object = form.tracking_asset_type === 'DATASET'
       ? { dataset_id: trackingAssetId, conversion_event: form.custom_event_type }
       : { pixel_id: trackingAssetId, custom_event_type: form.custom_event_type }
@@ -666,9 +712,11 @@ const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
   creativeForm.shared = { headline: cfg.shared_creative?.headline || first.headline || '', primary_text: cfg.shared_creative?.primary_text || first.primary_text || '', description: cfg.shared_creative?.description || first.description || '', cta: cfg.shared_creative?.cta || first.cta || 'LEARN_MORE', landing_url: cfg.shared_creative?.landing_url || first.landing_url || '' }
   form.schedule_start = cfg.schedule?.start_time || ''
   form.schedule_end = cfg.schedule?.end_time || ''
-  const datasetId = cfg.promoted_object?.dataset_id || cfg.dataset_id || ''
-  const pixelId = cfg.promoted_object?.pixel_id || cfg.pixel_id || ''
-  form.tracking_asset_type = datasetId ? 'DATASET' : 'PIXEL'
+  const promotedDatasetId = cfg.promoted_object?.dataset_id || ''
+  const promotedPixelId = cfg.promoted_object?.pixel_id || ''
+  const datasetId = promotedDatasetId || (!promotedPixelId ? cfg.dataset_id || '' : '')
+  const pixelId = promotedPixelId || (!promotedDatasetId ? cfg.pixel_id || '' : '')
+  form.tracking_asset_type = promotedDatasetId ? 'DATASET' : promotedPixelId ? 'PIXEL' : datasetId ? 'DATASET' : 'PIXEL'
   form.dataset_id = datasetId
   form.pixel_id = pixelId
   form.custom_event_type = cfg.promoted_object?.conversion_event || cfg.promoted_object?.custom_event_type || cfg.conversion_event || 'PURCHASE'
@@ -1060,6 +1108,52 @@ const handleClone = async (row: CampaignTemplate) => {
   }
 }
 
+const openShare = async (row: CampaignTemplate) => {
+  shareTemplateId.value = row.id
+  shareUserId.value = ''
+  shareRole.value = 'EDITOR'
+  shareDialogVisible.value = true
+  shareLoading.value = true
+  try {
+    const [candidateResponse, collaboratorResponse] = await Promise.all([
+      templatesApi.collaboratorCandidates(row.id),
+      templatesApi.collaborators(row.id),
+    ])
+    collaboratorCandidates.value = candidateResponse.data
+    collaborators.value = collaboratorResponse.data
+  } catch {
+    collaboratorCandidates.value = []
+    collaborators.value = []
+  } finally {
+    shareLoading.value = false
+  }
+}
+
+const saveShare = async () => {
+  if (!shareTemplateId.value || !shareUserId.value) return
+  shareSaving.value = true
+  try {
+    await templatesApi.upsertCollaborator(shareTemplateId.value, shareUserId.value, shareRole.value)
+    const { data } = await templatesApi.collaborators(shareTemplateId.value)
+    collaborators.value = data
+    shareUserId.value = ''
+    ElMessage.success('模板协作权限已更新')
+  } finally {
+    shareSaving.value = false
+  }
+}
+
+const removeShare = async (row: TemplateCollaborator) => {
+  try {
+    await ElMessageBox.confirm(`确定移除成员「${row.user?.username || row.user_id}」的模板权限？`, '确认移除', { type: 'warning' })
+    await templatesApi.removeCollaborator(shareTemplateId.value, row.user_id)
+    collaborators.value = collaborators.value.filter(item => item.user_id !== row.user_id)
+    ElMessage.success('已移除模板协作权限')
+  } catch {
+    // 用户取消或请求失败由全局拦截器提示
+  }
+}
+
 const handleDelete = async (row: CampaignTemplate) => {
   try {
     await ElMessageBox.confirm(
@@ -1100,6 +1194,8 @@ onMounted(() => {
 </script>
 
 <style scoped lang="scss">
+.share-form { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
+.share-tip { margin-bottom: 12px; }
 .adset-editor { width: 100%; }
 .adset-card { border: 1px solid #dcdfe6; border-radius: 6px; padding: 12px; margin-bottom: 10px; background: #fafcff; }
 .adset-card :deep(.el-form-item) { margin-bottom: 10px; }

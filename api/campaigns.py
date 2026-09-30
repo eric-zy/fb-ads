@@ -17,6 +17,8 @@ from services.job_service import JobDispatchError, JobService
 from services.account_access import accessible_account_ids
 from services.account_operation_lease import AccountOperationLeaseService
 from services.business_access import account_ids_for_action, require_accounts, tenant_required
+from services.template_access import template_access_level
+from services.meta_delivery_rules import default_optimization_goal, filter_unused_tracking_assets
 from tasks.meta_sync_tasks import sync_delivery_objects_task, sync_single_ad_group_task, update_delivery_object_task
 from celery_app import celery_app
 
@@ -581,7 +583,7 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
     if not campaign or not _can_see_account(visible, campaign.ad_account_id):
         raise HTTPException(status_code=404, detail="广告系列不存在")
     template = campaign.template
-    private_template = template and (current_user.is_admin() or template.created_by == current_user.id)
+    private_template = template and template_access_level(db, template, current_user) is not None
     job_item = None
     if template:
         for job in reversed(template.jobs or []):
@@ -629,8 +631,23 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
             "system_status": campaign.ad_account.system_status,
             "account_status": campaign.ad_account.account_status,
         } if campaign.ad_account else None,
-        "template": template.to_dict() if private_template else None,
-        "creative_config": template.creative_config_json if private_template else None,
+        "template": (
+            {
+                **template.to_dict(),
+                "creative_config_json": filter_unused_tracking_assets(
+                    template.optimization_goal or default_optimization_goal(template.objective),
+                    template.creative_config_json,
+                ),
+            }
+            if private_template else None
+        ),
+        "creative_config": (
+            filter_unused_tracking_assets(
+                template.optimization_goal or default_optimization_goal(template.objective),
+                template.creative_config_json,
+            )
+            if private_template else None
+        ),
         "adsets": [
             {
                 **adset.to_dict(),

@@ -207,26 +207,30 @@ class JobService:
         ids = list(dict.fromkeys(ad_account_ids or []))
         if tracking_requirements and ids:
             selected_asset_ids = {item["asset_id"] for item in tracking_requirements}
+            selected_asset_types = {item["asset_type"] for item in tracking_requirements if item.get("asset_type")}
             asset_rows = self.db.query(MetaTrackingAsset).filter(
                 MetaTrackingAsset.ad_account_id.in_(ids),
                 MetaTrackingAsset.meta_asset_id.in_(selected_asset_ids),
+                MetaTrackingAsset.asset_type.in_(selected_asset_types),
                 MetaTrackingAsset.status == "ACTIVE",
                 MetaTrackingAsset.usable.is_(True),
             ).all()
             usable_by_account = {}
             for row in asset_rows:
-                usable_by_account.setdefault(row.ad_account_id, set()).add(row.meta_asset_id)
+                usable_by_account.setdefault(row.ad_account_id, set()).add((row.asset_type, row.meta_asset_id))
             unavailable_items = []
             for account_id in ids:
                 available_assets = usable_by_account.get(account_id, set())
                 for requirement in tracking_requirements:
-                    if requirement["asset_id"] not in available_assets:
+                    asset_key = (requirement["asset_type"], requirement["asset_id"])
+                    if asset_key not in available_assets:
                         unavailable_items.append({
                             "account_id": account_id,
                             "asset_id": requirement["asset_id"],
+                            "asset_type": requirement["asset_type"],
                             "optimization_goal": requirement["optimization_goal"],
                             "scope": requirement["scope"],
-                            "reason": "事件源未同步、已失效或不属于该广告账户",
+                            "reason": f"{requirement['asset_type']} 未同步、已失效或不属于该广告账户",
                         })
             if unavailable_items:
                 errors.append({
@@ -252,6 +256,7 @@ class JobService:
                         {
                             "account_id": row.ad_account_id,
                             "asset_id": row.meta_asset_id,
+                            "asset_type": row.asset_type,
                             "reason": "事件源同步已超过 24 小时",
                         }
                         for row in stale_assets
