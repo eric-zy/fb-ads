@@ -946,7 +946,7 @@ POST /api/v1/accounts/{account_pk}/operation-lease
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| GET | `/api/v1/templates` | 登录 | 列表（可 `?status=` 过滤） |
+| GET | `/api/v1/templates` | 登录 | 列表（默认仅返回 `ACTIVE`；可用 `?status=DISABLED` / `?status=ARCHIVED` 查看其他状态） |
 | POST | `/api/v1/templates` | 登录用户 | 创建（模板归创建者所有） |
 | GET | `/api/v1/templates/{template_id}` | 登录 | 详情 |
 | PATCH | `/api/v1/templates/{template_id}` | 所有者、EDITOR 或管理员 | 局部更新 |

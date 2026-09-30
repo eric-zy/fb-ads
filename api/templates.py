@@ -310,14 +310,16 @@ class TemplateCollaboratorRequest(BaseModel):
 
 @router.get("")
 def list_templates(
-    status: Optional[str] = Query(None, description="按状态过滤 ACTIVE / DISABLED / ARCHIVED"),
+    status: Optional[str] = Query("ACTIVE", description="按状态过滤 ACTIVE / DISABLED / ARCHIVED；默认仅返回 ACTIVE"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
     """模板列表"""
     query = template_query(db.query(CampaignTemplate), current_user).filter(CampaignTemplate.is_temporary.is_(False))
-    if status:
-        query = query.filter(CampaignTemplate.status == status)
+    # 删除采用软删除（ARCHIVED）以保留历史投放映射；普通模板页只展示可用模板。
+    # 对显式传入空字符串也回退到 ACTIVE，避免归档记录意外泄漏到默认列表。
+    selected_status = (status or TemplateStatus.ACTIVE.value).upper()
+    query = query.filter(CampaignTemplate.status == selected_status)
     items = query.order_by(CampaignTemplate.created_at.desc()).all()
     return [_template_response(t, db, current_user) for t in items]
 

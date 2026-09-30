@@ -750,7 +750,7 @@ const loadTargetingForm = (value: Record<string, any> | null | undefined) => {
 const loadTemplates = async () => {
   loading.value = true
   try {
-    const { data } = await templatesApi.list()
+    const { data } = await templatesApi.list('ACTIVE')
     templates.value = data
   } finally {
     loading.value = false

@@ -3,7 +3,7 @@
 import pytest
 from fastapi import HTTPException
 
-from api.templates import TemplateCreate, TemplateUpdate, create_template, update_template
+from api.templates import TemplateCreate, TemplateUpdate, create_template, delete_template, list_templates, update_template
 from models import CampaignTemplate, MetaPage, TemplateCollaborator, User
 
 
@@ -298,3 +298,26 @@ def test_template_viewer_cannot_update_shared_template(db):
         update_template(created["id"], TemplateUpdate(name="Should fail"), db, viewer)
 
     assert exc_info.value.status_code == 403
+
+
+def test_archived_template_is_hidden_from_default_list_but_available_explicitly(db):
+    _seed_page(db)
+    owner = _user("owner")
+    db.add(owner)
+    db.commit()
+
+    created = create_template(
+        TemplateCreate(**_template_values(
+            creatives=[
+                {"asset_type": "image", "asset_id": "asset-1", "landing_url": "https://example.com/1"},
+            ],
+        )),
+        db,
+        owner,
+    )
+    deleted = delete_template(created["id"], db, owner)
+
+    assert deleted["status"] == "ARCHIVED"
+    assert list_templates(None, db, owner) == []
+    archived = list_templates("ARCHIVED", db, owner)
+    assert [item["id"] for item in archived] == [created["id"]]

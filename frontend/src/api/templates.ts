@@ -63,7 +63,7 @@ export interface TemplatePayload {
 }
 
 export const templatesApi = {
-  list: (status?: string) =>
+  list: (status = 'ACTIVE') =>
     request.get<CampaignTemplate[]>('/api/v1/templates', { params: { status } }),
   get: (id: string) => request.get<CampaignTemplate>(`/api/v1/templates/${id}`),
   create: (data: TemplatePayload) =>
