@@ -331,7 +331,12 @@ def create_template(
     current_user: User = Depends(get_current_active_user),
 ):
     """创建投放模板"""
-    if owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.name == req.name).first():
+    # ARCHIVED 模板保留用于历史投放映射，不应继续占用新模板名称。
+    # 同一租户内只禁止与当前 ACTIVE 模板重名。
+    if owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(
+        CampaignTemplate.name == req.name,
+        CampaignTemplate.status == TemplateStatus.ACTIVE.value,
+    ).first():
         raise HTTPException(status_code=400, detail=f"模板名称已存在: {req.name}")
 
     payload = req.dict(exclude_none=False)

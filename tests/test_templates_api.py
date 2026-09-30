@@ -321,3 +321,28 @@ def test_archived_template_is_hidden_from_default_list_but_available_explicitly(
     assert list_templates(None, db, owner) == []
     archived = list_templates("ARCHIVED", db, owner)
     assert [item["id"] for item in archived] == [created["id"]]
+
+    recreated = create_template(
+        TemplateCreate(**_template_values(
+            creatives=[
+                {"asset_type": "image", "asset_id": "asset-2", "landing_url": "https://example.com/2"},
+            ],
+        )),
+        db,
+        owner,
+    )
+    assert recreated["id"] != created["id"]
+    assert recreated["name"] == created["name"]
+    assert recreated["status"] == "ACTIVE"
+
+    with pytest.raises(HTTPException) as exc_info:
+        create_template(
+            TemplateCreate(**_template_values(
+                creatives=[
+                    {"asset_type": "image", "asset_id": "asset-3", "landing_url": "https://example.com/3"},
+                ],
+            )),
+            db,
+            owner,
+        )
+    assert exc_info.value.status_code == 400
