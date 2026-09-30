@@ -50,7 +50,6 @@ export const accountApi = {
   unbind: (id: string, lease_token: string) => request.post('/api/v1/accounts/' + id + '/unbind', { lease_token }),
   sync: (id: string, leaseToken: string) => request.post('/api/v1/accounts/' + id + '/sync', { lease_token: leaseToken }),
   syncBatch: (data: { account_ids?: string[]; business_id?: string; operation_leases?: Record<string, string> }) => request.post('/api/v1/accounts/sync', data),
-  syncCampaigns: (id: string) => request.post('/api/v1/accounts/' + id + '/sync-campaigns'),
 }
 
 export type BusinessStatus = 'ACTIVE' | 'DISABLED' | 'ARCHIVED'

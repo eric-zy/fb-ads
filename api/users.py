@@ -5,13 +5,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from pydantic import BaseModel, EmailStr, Field
 from typing import Any, Dict, List, Optional
-import hashlib
 import uuid
 
 from core.database import get_db
 from core.logger import logger
 from core.tenant import effective_tenant_id
-from core.auth import get_current_active_user, require_admin
+from core.auth import AuthManager, get_current_active_user, require_admin
 from models import AdAccount, Tenant, User, Role
 from models.tenant import UserRole
 from api.accounts import account_to_dict
@@ -20,8 +19,8 @@ router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
 
 def _hash_password(password: str) -> str:
-    """与 main.py 登录比对逻辑一致的 sha256 哈希"""
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    """统一使用带盐的密码哈希；保留函数名兼容既有用户管理接口。"""
+    return AuthManager.hash_password(password)
 
 # ==================== 数据模型 ====================
 

@@ -284,7 +284,7 @@ def get_tenant_usage(
 
 
 def _sha256(password: str) -> str:
-    """与 core.auth.AuthManager 一致的密码哈希"""
-    import hashlib
+    """兼容历史函数名，实际使用 AuthManager 的强哈希实现。"""
+    from core.auth import AuthManager
 
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return AuthManager.hash_password(password)

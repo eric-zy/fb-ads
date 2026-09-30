@@ -21,9 +21,8 @@ from services.rate_limit import RateLimitManager
 class AuthEnforcementMiddleware(BaseHTTPMiddleware):
     """统一 API 鉴权中间件（设计文档第 41.2 节：权限隔离）
 
-    背景：main.py 中存在大量直接挂在 app 上的内联路由（sync / spend-today /
-    risk-check / freeze / performance / reports / campaigns / batch-publish 等），
-    均未加任何鉴权依赖，任何拿到地址的人都能直接操作广告账户。
+    所有业务 API 统一挂在 `api/` Router 下；中间件作为最后一道鉴权兜底，
+    防止新接口遗漏 Depends 或内部路由被错误暴露。
 
     逐个给 20+ 路由补 Depends 容易遗漏，因此用中间件统一兜底：
     除白名单外，所有 /api/ 请求必须携带有效 JWT。

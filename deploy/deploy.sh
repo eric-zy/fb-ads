@@ -11,6 +11,14 @@ if grep -Eiq 'change-me|replace-with|example\.com|your-secret|your_app|your_acce
   echo "[deploy] placeholder value detected in deploy/.env" >&2
   exit 1
 fi
+if grep -Eiq '^ENVIRONMENT=production' .env && grep -Eiq '^FRONTEND_BASE_URL=http://' .env; then
+  echo "[deploy] production frontend must use HTTPS; configure FRONTEND_BASE_URL=https://..." >&2
+  exit 1
+fi
+if grep -Eiq '^ENVIRONMENT=production' .env && grep -Eiq '^NGINX_BIND_ADDRESS=(0\.0\.0\.0|\*)' .env; then
+  echo "[deploy] production Nginx HTTP port must stay bound to localhost behind a TLS reverse proxy" >&2
+  exit 1
+fi
 
 compose=(docker compose -f docker-compose.yml)
 if [[ -f ../frontend/dist/index.html ]]; then

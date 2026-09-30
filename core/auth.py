@@ -12,6 +12,9 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict
 import jwt
 import hashlib
+import base64
+import hmac
+import secrets
 
 from config.settings import settings
 from core.logger import logger
@@ -23,17 +26,66 @@ security = HTTPBearer()
 
 
 class AuthManager:
-    """认证管理器（密码统一使用 sha256，与登录逻辑一致）"""
+    """认证管理器。
+
+    新密码使用带随机盐的 PBKDF2-HMAC-SHA256。历史 SHA-256 密码仍可验证，
+    但登录成功后由调用方升级为新格式，避免一次性重置所有用户密码。
+    """
+
+    PASSWORD_SCHEME = "pbkdf2_sha256"
+    PASSWORD_ITERATIONS = 600_000
 
     @staticmethod
     def hash_password(password: str) -> str:
-        """哈希密码（sha256）"""
-        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+        """使用随机盐和 PBKDF2 生成可迁移的密码哈希。"""
+        salt = secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            AuthManager.PASSWORD_ITERATIONS,
+        )
+        return "$".join(
+            (
+                AuthManager.PASSWORD_SCHEME,
+                str(AuthManager.PASSWORD_ITERATIONS),
+                base64.urlsafe_b64encode(salt).decode("ascii").rstrip("="),
+                base64.urlsafe_b64encode(digest).decode("ascii").rstrip("="),
+            )
+        )
 
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
-        """验证密码（sha256 比对）"""
-        return AuthManager.hash_password(plain_password) == hashed_password
+        """验证新格式密码，并兼容历史无盐 SHA-256 哈希。"""
+        if not hashed_password:
+            return False
+        if hashed_password.startswith(f"{AuthManager.PASSWORD_SCHEME}$"):
+            try:
+                scheme, iterations_text, salt_text, digest_text = hashed_password.split("$", 3)
+                if scheme != AuthManager.PASSWORD_SCHEME:
+                    return False
+                iterations = int(iterations_text)
+                if iterations < 100_000 or iterations > 2_000_000:
+                    return False
+                padding = "=" * (-len(salt_text) % 4)
+                salt = base64.urlsafe_b64decode((salt_text + padding).encode("ascii"))
+                padding = "=" * (-len(digest_text) % 4)
+                expected = base64.urlsafe_b64decode((digest_text + padding).encode("ascii"))
+                actual = hashlib.pbkdf2_hmac(
+                    "sha256", plain_password.encode("utf-8"), salt, iterations
+                )
+                return hmac.compare_digest(actual, expected)
+            except (ValueError, TypeError):
+                return False
+
+        # Legacy format: unsalted SHA-256.  It is accepted only to enable
+        # transparent migration at the next successful login.
+        legacy = hashlib.sha256(plain_password.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(legacy, hashed_password)
+
+    @staticmethod
+    def needs_password_rehash(hashed_password: str) -> bool:
+        return not (hashed_password or "").startswith(f"{AuthManager.PASSWORD_SCHEME}$")
 
     @staticmethod
     def create_access_token(data: Dict, expires_delta: Optional[timedelta] = None) -> str:

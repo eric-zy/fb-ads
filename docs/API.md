@@ -767,24 +767,27 @@ POST /api/v1/accounts/{account_pk}/operation-lease
 
 ### 6.2 账户运营接口
 
-以下接口的 `{account_id}` 为 Meta 广告账户 ID（`act_xxx` 或纯数字），全部需登录。
+以下接口统一使用正式 Router；`{account_pk}` 为本地广告账户主键，部分查询接口
+同时接受 Meta 账户号。全部需登录。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/v1/accounts/{account_id}/sync` | 从 Meta 同步广告系列 |
-| GET | `/api/v1/accounts/{account_id}/campaigns` | 本地已同步的系列列表 |
-| GET | `/api/v1/accounts/{account_id}/spend-today` | 今日花费（`spend` 主单位 / `spend_minor` 最小单位） |
-| GET | `/api/v1/accounts/{account_id}/performance` | 性能趋势 |
-| GET | `/api/v1/accounts/{account_id}/fraud-score` | 欺诈评分 |
-| GET | `/api/v1/accounts/{account_id}/daily-report` | 日报告 |
-| GET | `/api/v1/accounts/{account_id}/weekly-report` | 周报告 |
-| POST | `/api/v1/accounts/{account_id}/risk-check` | 执行风控检查 |
-| GET | `/api/v1/accounts/{account_id}/risk-events` | 风险事件列表 |
-| POST | `/api/v1/accounts/{account_id}/freeze` | 冻结账户 |
-| GET | `/api/v1/accounts/{account_id}/safe-publish-interval` | 建议发布间隔 |
-| GET | `/api/v1/accounts/{account_id}/publish-frequency-check` | 发布频次检查 |
-
-#### POST /api/v1/accounts/{account_id}/sync
+| POST | `/api/v1/accounts/{account_pk}/sync` | 异步同步广告账户及投放对象 |
+| GET | `/api/v1/campaigns` | 本地已同步的 Campaign 列表 |
+| GET | `/api/v1/accounts/{account_pk}/account-health-check` | 账户健康检查 |
+| GET | `/api/v1/accounts/{account_pk}/fraud-score` | 欺诈评分 |
+| GET | `/api/v1/accounts/{account_pk}/risk-events` | 风险事件列表 |
+| GET | `/api/v1/accounts/{account_pk}/safety-recommendations` | 安全建议 |
+| POST | `/api/v1/accounts/{account_pk}/freeze` | 冻结账户 |
+| POST | `/api/v1/accounts/{account_pk}/unfreeze` | 恢复账户 |
+| GET | `/api/v1/accounts/{account_pk}/publish-frequency-check` | 发布频次检查 |
+| GET | `/api/v1/accounts/{account_pk}/rate-limit-status` | API 限流状态 |
+| POST | `/api/v1/risk-control/accounts/{account_id}/recheck` | 重新执行风控检查 |
+| POST | `/api/v1/reports/sync` | 异步同步 Insights |
+| GET | `/api/v1/reports/account-overview` | 账户报表总览 |
+| GET | `/api/v1/reports/breakdown` | 多层级报表拆分 |
+| GET | `/api/v1/reports/trend` | 报表趋势 |
+#### POST /api/v1/accounts/{account_pk}/sync
 
 请求体必须携带当前用户持有的 `ACCOUNT_SYNC` 租约：
 
@@ -792,98 +795,14 @@ POST /api/v1/accounts/{account_pk}/operation-lease
 { "lease_token": "lease-token" }
 ```
 
-批量同步 `/api/v1/accounts/sync` 使用 `operation_leases` 传递账户到 token
-映射。缺失、过期、持有人或操作类型不匹配时返回
-`409 account_operation_lease_required`。
+批量同步使用 `POST /api/v1/accounts/sync`；任务状态统一使用
+`GET /api/v1/tasks/{task_id}`，任务记录仅对创建者和管理员可见。
 
-```json
-{ "status": "success", "account_id": "act_123", "created": 5, "updated": 3 }
-```
+#### 报表与风控接口
 
-#### GET /api/v1/accounts/{account_id}/spend-today
-
-```json
-{ "account_id": "act_123", "spend": 1234.56, "currency": "USD" }
-```
-
-#### GET /api/v1/accounts/{account_id}/performance
-
-查询参数：`days`（默认 30）
-
-```json
-{ "account_id": "act_123", "days": 30, "data": [ { "date": "...", "spend": 100, "impressions": 5000 } ] }
-```
-
-#### GET /api/v1/accounts/{account_id}/fraud-score
-
-查询参数：`window_days`（默认 7）
-
-```json
-{ "account_id": "act_123", "fraud_score": 0.45, "risk_level": "medium", "threshold": 0.7 }
-```
-
-风险等级：`>0.8 critical` / `>0.6 high` / `>0.4 medium` / 否则 `low`
-
-#### GET /api/v1/accounts/{account_id}/daily-report
-
-查询参数：`report_date`（`YYYY-MM-DD`，默认今天）
-
-无数据时返回 `404`；日期格式错误返回 `400`。
-
-#### GET /api/v1/accounts/{account_id}/risk-events
-
-查询参数：`limit`（默认 50）
-
-```json
-{
-  "account_id": "act_123",
-  "events": [
-    {
-      "id": "xxx",
-      "event_type": "UNUSUAL_SPEND",
-      "risk_level": "HIGH",
-      "title": "异常花费检测",
-      "description": "...",
-      "is_resolved": false,
-      "created_at": "2026-08-29T10:00:00"
-    }
-  ]
-}
-```
-
-#### POST /api/v1/accounts/{account_id}/freeze
-
-查询参数：`reason`（必填，字符串）
-
-```json
-{ "status": "success", "account_id": "act_123", "message": "Account frozen successfully" }
-```
-
-#### GET /api/v1/accounts/{account_id}/safe-publish-interval
-
-```json
-{
-  "account_id": "act_123",
-  "suggested_interval_minutes": 6,
-  "rate_limit": { "minute": {...}, "hour": {...}, "day": {...} }
-}
-```
-
-#### GET /api/v1/accounts/{account_id}/publish-frequency-check
-
-查询参数：`hours`（默认 24）
-
-```json
-{
-  "account_id": "act_123",
-  "hours": 24,
-  "safe": true,
-  "current_usage": { ... },
-  "recommendation": "可以发布"
-}
-```
-
-判定规则：分钟用量 < 10 且小时用量 < 200。
+账户花费、性能和报表统一通过 `/api/v1/reports/*` 查询；账户健康、欺诈评分、
+风险事件、频次和限流状态统一通过 `/api/v1/accounts/{account_pk}/*` 查询。
+风控重新检查统一使用 `/api/v1/risk-control/accounts/{account_id}/recheck`。
 
 ---
 
@@ -1216,10 +1135,12 @@ POST /api/v1/accounts/{account_pk}/operation-lease
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| GET | `/api/v1/accounts/{account_id}/campaigns` | 登录 | 本地已同步系列列表 |
-| POST | `/api/v1/campaigns/batch-publish` | 登录 | 批量投放（旧接口） |
-| POST | `/api/v1/campaigns/{campaign_id}/pause` | 登录 | 暂停系列 |
-| POST | `/api/v1/campaigns/{campaign_id}/resume` | 登录 | 恢复系列 |
+| GET | `/api/v1/campaigns` | 登录 | 分页查询本地 Campaign |
+| GET | `/api/v1/campaigns/{campaign_id}/detail` | 登录 | Campaign 详情 |
+| GET | `/api/v1/campaigns/{campaign_id}/adsets` | 登录 | 查询广告组 |
+| POST | `/api/v1/campaigns/actions` | 按操作权限 | 同步、启停、归档、恢复、预算修改 |
+| GET | `/api/v1/delivery-actions` | 登录 | 查询投放操作记录 |
+| POST | `/api/v1/jobs/campaign-create` | `job:create` | 模板化批量投放 |
 
 ### 投放对象高风险操作
 
@@ -1247,85 +1168,13 @@ POST /api/v1/accounts/{account_pk}/operation-lease
 `409 account_operation_lease_required`。广告组复用同步接口
 `POST /api/v1/ad-groups/{ad_group_id}/sync` 也采用同样的 `lease_token` 请求体。
 
-### POST /api/v1/campaigns/batch-publish
-
-```json
-{
-  "account_id": "act_123",
-  "campaigns": [ { "name": "系列A", "objective": "OUTCOME_SALES" } ],
-  "publish_type": "immediate",
-  "start_time": null,
-  "interval_minutes": null,
-  "max_daily_campaigns": 10,
-  "enable_risk_check": true,
-  "enable_frequency_check": true,
-  "notify_on_complete": false,
-  "notify_email": null
-}
-```
-
-响应：
-
-```json
-{
-  "status": "submitted",
-  "account_id": "act_123",
-  "campaign_count": 1,
-  "publish_type": "immediate",
-  "message": "批量投放任务已接收，将在后台处理"
-}
-```
-
-触发频次上限时返回 `429`。
-
-> 建议新功能改用 `/api/v1/jobs/campaign-create`（模板化 + 真实异步执行）。
-
-### POST /api/v1/campaigns/{campaign_id}/pause
-
-```json
-{ "status": "success", "campaign_id": "123", "state": "PAUSED" }
-```
-
-系列不存在返回 `404`。Meta 调用失败时会记录警告，但本地状态仍更新。
-
 ---
 
 ## 11. 异步任务 `/api/v1/tasks`
 
-Celery 任务提交与查询（与 Job Center 是两套体系：`tasks` 是单次 Celery 任务，`jobs` 是业务批量任务）。
-
-| 方法 | 路径 | 权限 | 说明 |
-|---|---|---|---|
-| POST | `/api/v1/tasks/fetch-insights` | 登录 | 提交拉取洞察任务 |
-| POST | `/api/v1/tasks/generate-report` | 登录 | 提交报表生成任务 |
-| GET | `/api/v1/tasks/{task_id}` | 登录 | 查询任务状态 |
-
-### POST /api/v1/tasks/fetch-insights
-
-查询参数：`account_id`
-
-```json
-{ "status": "submitted", "task_id": "celery-task-id", "account_id": "act_123" }
-```
-
-### POST /api/v1/tasks/generate-report
-
-```json
-{ "account_id": "act_123", "report_type": "daily", "date": "2026-08-28" }
-```
-
-`report_type` 仅支持 `daily` / `weekly`，否则 `400`。
-
-### GET /api/v1/tasks/{task_id}
-
-```json
-{
-  "task_id": "celery-task-id",
-  "status": "SUCCESS",
-  "result": { ... },
-  "error": null
-}
-```
+任务只由正式的账户同步、报表同步、投放和素材接口创建；统一通过
+`GET /api/v1/tasks/{task_id}` 查询。不存在归属记录或不属于当前用户的任务统一返回
+`404`，不允许直接查询任意 Celery ID。
 
 ---
 

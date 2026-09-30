@@ -294,8 +294,7 @@ def sync_ad_account_task(self, ad_account_id: str, requested_by: str = None) -> 
 def sync_campaigns_task(self, account_id: str) -> Dict:
     """同步某个广告账户下的广告系列（Campaign）
 
-    此前 `POST /accounts/{id}/sync-campaigns` 是同步执行、HTTP 直等 Meta API，
-    账户多或网络慢时会拖垮请求线程。改为异步后 HTTP 只负责投递任务。
+    由 `/api/v1/accounts/{id}/sync` 统一投递，HTTP 只负责提交异步任务。
 
     Args:
         account_id: 广告账户内部主键

@@ -55,9 +55,10 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
-    # 本地 Vite 开发环境需要直接代理到 API；生产环境可通过 nginx 内网访问。
+    # API 只允许本机调试访问；生产流量统一从 Nginx/HTTPS 入口进入，
+    # 避免绕过统一鉴权、限流和安全响应头。
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
   celery-worker:
     build:
@@ -100,8 +101,9 @@ services:
     security_opt:
       - seccomp=unconfined
     ports:
-      # 未备案期间通过公网 IP:8094 访问；备案后可改回 127.0.0.1:8094 并由 Caddy 反代。
-      - "8094:80"
+      # Nginx 明文端口只供本机 TLS 反代使用；如确需临时公网访问，
+      # 必须显式设置 NGINX_BIND_ADDRESS，并承担明文传输风险。
+      - "${NGINX_BIND_ADDRESS:-127.0.0.1}:8094:80"
     depends_on:
       api:
         condition: service_healthy

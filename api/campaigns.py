@@ -58,7 +58,10 @@ def _require_action_permission(user: User, action: str) -> None:
 
 
 def _visible_accounts(db: Session, user: User) -> Optional[set[str]]:
-    return account_ids_for_action(db, user)
+    # 读取列表使用统一的账户可见性判定。管理员返回 None，表示当前租户
+    # 内不按账户分配关系收窄；不能通过 account_ids_for_action() 重新查
+    # AdAccount 主表，否则测试/历史数据中仅有投放实例的记录会被误过滤。
+    return accessible_account_ids(db, user)
 
 
 def _can_see_account(visible: Optional[set[str]], account_id: str) -> bool:

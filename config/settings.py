@@ -219,7 +219,10 @@ class Settings(BaseSettings):
     # ========== 多租户（SaaS）配置 ==========
     # 严格模式：开启后，执行租户级查询却没有租户上下文时直接抛错，
     # 而不是"不过滤返回全量"。生产环境强烈建议开启，开发环境可关闭以便调试。
-    TENANT_STRICT_MODE: bool = os.getenv("TENANT_STRICT_MODE", "false").lower() == "true"
+    TENANT_STRICT_MODE: bool = os.getenv(
+        "TENANT_STRICT_MODE",
+        "true" if os.getenv("ENVIRONMENT", "development").lower() == "production" else "false",
+    ).lower() == "true"
     # 默认租户：历史数据回填归属的租户 slug（迁移 0006 会创建/复用）
     DEFAULT_TENANT_SLUG: str = os.getenv("DEFAULT_TENANT_SLUG", "default")
     DEFAULT_TENANT_NAME: str = os.getenv("DEFAULT_TENANT_NAME", "默认租户")
@@ -258,6 +261,8 @@ class Settings(BaseSettings):
             raise ValueError("APP_ROLE 必须是 saas 或 fb_connector")
         if self.ENVIRONMENT.lower() == "production" and self.SECRET_KEY in {"", "your-secret-key", "change-me"}:
             raise ValueError("生产环境必须设置非默认 SECRET_KEY")
+        if self.ENVIRONMENT.lower() == "production" and not self.TENANT_STRICT_MODE:
+            raise ValueError("生产环境必须开启 TENANT_STRICT_MODE=true")
         if role == "fb_connector":
             required = {
                 "FB_APP_ID": self.FB_APP_ID,

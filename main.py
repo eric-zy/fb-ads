@@ -1,30 +1,15 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from datetime import date
-from typing import List, Optional
 from pydantic import BaseModel
 
 from config.settings import settings
 from core.database import get_db, init_db, close_db
 from core.logger import logger
-from core.money import to_major, to_minor
-from services.ad_account_resolver import resolve_ad_account
-from services.ads_manager import AdsManager
-from services.risk_detector import RiskDetector
-from services.analytics import AnalyticsEngine
-from services.rate_limit import RateLimitManager
 # 必须先导入 celery_app（其内部会 set_default），
 # 保证后续 @shared_task 在运行时解析到本项目 Celery 实例（redis broker）。
 from celery_app import celery_app as _celery_app  # noqa: F401
-from tasks.celery_tasks import (
-    fetch_account_insights,
-    check_account_risk,
-    generate_daily_report,
-    generate_weekly_report,
-)
-from tasks.meta_sync_tasks import sync_campaigns_task
 from api import tenants as tenants_api
 from api import users as users_api
 from api import accounts as accounts_api
@@ -49,15 +34,14 @@ from api import meta_targeting as meta_targeting_api
 from api import meta_audiences as meta_audiences_api
 from api import meta_tracking_assets as meta_tracking_assets_api
 from api.targeting_packages import region_router as region_groups_api_router, package_router as targeting_packages_api_router
-from core.auth import get_current_active_user, require_admin
+from core.auth import AuthManager, get_current_active_user
 from core.middleware import (
     AuthEnforcementMiddleware,
     LoggingMiddleware,
     RateLimitMiddleware,
 )
-import jwt
-import hashlib
-from datetime import datetime, timedelta
+from models import User
+from datetime import timedelta
 
 # 初始化FastAPI应用
 app = FastAPI(
@@ -91,35 +75,6 @@ app.add_middleware(
 )
 
 # ==================== 数据模型 ====================
-
-class AccountInfo(BaseModel):
-    """账户信息（金额一律最小货币单位，见 core/money.py）"""
-    account_id: str
-    account_name: str
-    currency: str
-    timezone: str
-    daily_spend_limit: int
-
-class CampaignInfo(BaseModel):
-    """系列信息"""
-    campaign_id: str
-    name: str
-    status: str
-    objective: str
-    daily_budget: Optional[int]
-
-class RiskEventInfo(BaseModel):
-    """风险事件"""
-    event_type: str
-    risk_level: str
-    title: str
-    description: str
-
-class ReportRequest(BaseModel):
-    """报告请求"""
-    account_id: str
-    report_type: str  # daily, weekly
-    date: Optional[str] = None
 
 # ==================== 初始化 ====================
 
@@ -212,25 +167,19 @@ app.include_router(targeting_packages_api_router)
 # ==================== 认证API ====================
 
 def _hash_password(password: str) -> str:
-    """与数据库存储一致的密码哈希（sha256）"""
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    """兼容旧调用方，统一使用 AuthManager 的强哈希实现。"""
+    return AuthManager.hash_password(password)
 
 def _create_access_token(user_id: str, email: str, role: str, tenant_id: str = None) -> str:
-    """生成JWT风格的访问令牌
-
-    多租户：`tid` / `tenant_id` claim 会被 `core.database.get_db` 读取，
-    用于建立请求级租户上下文（自动注入 tenant_id 过滤）。
-    """
+    """生成统一认证模块签发的短期访问令牌。"""
     payload = {
         "sub": user_id,
         "email": email,
         "role": role,
         "tenant_id": tenant_id,
         "tid": tenant_id,
-        "exp": datetime.utcnow() + timedelta(days=7),
-        "iat": datetime.utcnow(),
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+    return AuthManager.create_access_token(payload, expires_delta=timedelta(hours=24))
 
 class LoginRequest(BaseModel):
     username: str
@@ -242,10 +191,14 @@ async def auth_login(request: LoginRequest, db: Session = Depends(get_db)):
     try:
         from models import User, Role
         user = db.query(User).filter(User.username == request.username.strip()).first()
-        if not user or user.hashed_password != _hash_password(request.password):
+        if not user or not AuthManager.verify_password(request.password, user.hashed_password):
             raise HTTPException(status_code=401, detail="用户名或密码错误")
         if not user.is_active:
             raise HTTPException(status_code=403, detail="账户已被禁用")
+
+        if AuthManager.needs_password_rehash(user.hashed_password):
+            user.hashed_password = AuthManager.hash_password(request.password)
+            db.commit()
 
         role_permissions = []
         if getattr(user, "role_id", None):
@@ -291,264 +244,6 @@ async def health_check():
         "environment": settings.ENVIRONMENT
     }
 
-# ==================== 账户API ====================
-
-@app.post("/api/v1/accounts/{account_id}/sync-campaigns")
-async def sync_campaigns_api(account_id: str, db: Session = Depends(get_db)):
-    """异步同步账户下的广告系列（Campaign）
-
-    注意与 `POST /api/v1/accounts/{id}/sync` 的区别：
-        - 本接口：同步 **广告系列**（Campaign），属于投放模块
-        - 后者：  同步 **广告账户本身**（文档 §20）
-
-    两者原本同名（`/accounts/{id}/sync`），路径模式相同导致后者遮蔽本路由，
-    因此改名区分。account_id 兼容主键与 Meta 账户号 act_xxx。
-
-    异步执行（文档 §25）：立即返回 job_id，HTTP 不等待 Meta API。
-    """
-    # 先确认账户存在，避免投递一个注定查不到数据的任务
-    account = resolve_ad_account(db, account_id)
-    if not account:
-        raise HTTPException(status_code=404, detail=f"广告账户不存在: {account_id}")
-
-    async_result = sync_campaigns_task.delay(account.id)
-    return {
-        "status": "QUEUED",
-        "account_id": account.id,
-        "job_id": async_result.id,
-    }
-
-@app.get("/api/v1/accounts/{account_id}/spend-today")
-async def get_daily_spend(account_id: str, db: Session = Depends(get_db)):
-    """获取今日花费
-
-    `spend_minor` 为最小货币单位，`spend` 为换算后的主单位（便于前端直接展示）。
-    """
-    try:
-        ads_manager = AdsManager(db)
-        spend_minor = ads_manager.get_account_spend_today(account_id)
-
-        return {
-            "account_id": account_id,
-            "spend": to_major(spend_minor),
-            "spend_minor": spend_minor,
-            "currency": "USD"
-        }
-    except Exception as e:
-        logger.error(f"Failed to get daily spend: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==================== 风控API ====================
-
-@app.post("/api/v1/accounts/{account_id}/risk-check")
-async def check_risk_api(account_id: str, db: Session = Depends(get_db)):
-    """检查账户风险"""
-    try:
-        risk_detector = RiskDetector(db)
-        result = risk_detector.execute_risk_actions(account_id)
-        
-        return {
-            "status": "success",
-            "account_id": account_id,
-            "actions_taken": result
-        }
-    except Exception as e:
-        logger.error(f"Failed to check risk: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/accounts/{account_id}/risk-events")
-async def get_risk_events(account_id: str, limit: int = 50, db: Session = Depends(get_db)):
-    """获取账户风险事件"""
-    try:
-        from models import RiskEvent
-        
-        events = db.query(RiskEvent).filter(
-            RiskEvent.ad_account_id == account_id
-        ).order_by(RiskEvent.created_at.desc()).limit(limit).all()
-        
-        return {
-            "account_id": account_id,
-            "events": [
-                {
-                    "id": e.id,
-                    "event_type": e.event_type.value,
-                    "risk_level": e.risk_level.value,
-                    "title": e.title,
-                    "description": e.description,
-                    "is_resolved": e.is_resolved,
-                    "created_at": e.created_at.isoformat()
-                }
-                for e in events
-            ]
-        }
-    except Exception as e:
-        logger.error(f"Failed to get risk events: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/accounts/{account_id}/freeze")
-async def freeze_account(account_id: str, reason: str, db: Session = Depends(get_db)):
-    """冻结账户"""
-    try:
-        risk_detector = RiskDetector(db)
-        success = risk_detector.freeze_account(account_id, reason)
-        
-        if success:
-            return {
-                "status": "success",
-                "account_id": account_id,
-                "message": "Account frozen successfully"
-            }
-        else:
-            raise HTTPException(status_code=404, detail="Account not found")
-    except Exception as e:
-        logger.error(f"Failed to freeze account: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==================== 数据分析API ====================
-
-@app.get("/api/v1/accounts/{account_id}/performance")
-async def get_account_performance(account_id: str, days: int = 30, db: Session = Depends(get_db)):
-    """获取账户性能趋势"""
-    try:
-        analytics = AnalyticsEngine(db)
-        df = analytics.get_account_performance_trend(account_id, days)
-        
-        if df.empty:
-            return {"account_id": account_id, "data": []}
-        
-        return {
-            "account_id": account_id,
-            "days": days,
-            "data": df.to_dict(orient='records')
-        }
-    except Exception as e:
-        logger.error(f"Failed to get performance: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/accounts/{account_id}/fraud-score")
-async def get_fraud_score(account_id: str, window_days: int = 7, db: Session = Depends(get_db)):
-    """获取欺诈评分"""
-    try:
-        analytics = AnalyticsEngine(db)
-        fraud_score = analytics.calculate_fraud_score(account_id, window_days)
-        
-        risk_level = "critical" if fraud_score > 0.8 else \
-                     "high" if fraud_score > 0.6 else \
-                     "medium" if fraud_score > 0.4 else "low"
-        
-        return {
-            "account_id": account_id,
-            "fraud_score": fraud_score,
-            "risk_level": risk_level,
-            "threshold": settings.RISK_FRAUD_SCORE_THRESHOLD
-        }
-    except Exception as e:
-        logger.error(f"Failed to get fraud score: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/accounts/{account_id}/daily-report")
-async def get_daily_report(account_id: str, report_date: str = None, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
-    """获取日报告"""
-    try:
-        analytics = AnalyticsEngine(db)
-        
-        if report_date is None:
-            report_date = str(date.today())
-        
-        report = analytics.generate_daily_report(account_id, date.fromisoformat(report_date))
-        
-        if not report:
-            raise HTTPException(status_code=404, detail="No data found for this date")
-        
-        return report
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get daily report: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/accounts/{account_id}/weekly-report")
-async def get_weekly_report(account_id: str, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
-    """获取周报告"""
-    try:
-        analytics = AnalyticsEngine(db)
-        report = analytics.generate_weekly_report(account_id)
-        
-        if not report:
-            raise HTTPException(status_code=404, detail="No data found")
-        
-        return report
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get weekly report: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/accounts/{account_id}/performance-trend")
-async def get_performance_trend(account_id: str, days: int = 30, db: Session = Depends(get_db), _=Depends(get_current_active_user)):
-    """获取账户趋势数据，供报表折线图使用。"""
-    if days < 1 or days > 90:
-        raise HTTPException(status_code=400, detail="days 必须在 1 到 90 之间")
-    frame = AnalyticsEngine(db).get_account_performance_trend(account_id, days)
-    return frame.to_dict(orient="records") if not frame.empty else []
-
-# ==================== 任务API ====================
-
-@app.post("/api/v1/tasks/fetch-insights")
-async def submit_fetch_insights(account_id: str, _=Depends(get_current_active_user)):
-    """提交拉取洞察任务"""
-    try:
-        task = fetch_account_insights.delay(account_id)
-        return {
-            "status": "submitted",
-            "task_id": task.id,
-            "account_id": account_id
-        }
-    except Exception as e:
-        logger.error(f"Failed to submit fetch insights task: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/tasks/generate-report")
-async def submit_generate_report(request: ReportRequest):
-    """提交报告生成任务"""
-    try:
-        if request.report_type == "daily":
-            task = generate_daily_report.delay(request.account_id, request.date)
-        elif request.report_type == "weekly":
-            task = generate_weekly_report.delay(request.account_id)
-        else:
-            raise HTTPException(status_code=400, detail="Invalid report type")
-        
-        return {
-            "status": "submitted",
-            "task_id": task.id,
-            "account_id": request.account_id,
-            "report_type": request.report_type
-        }
-    except Exception as e:
-        logger.error(f"Failed to submit report task: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/tasks/{task_id}")
-async def get_task_status(task_id: str):
-    """获取任务状态"""
-    try:
-        from celery_app import celery_app
-        
-        task_result = celery_app.AsyncResult(task_id)
-        
-        return {
-            "task_id": task_id,
-            "status": task_result.status,
-            "result": task_result.result if task_result.status == "SUCCESS" else None,
-            "error": str(task_result.info) if task_result.status == "FAILURE" else None
-        }
-    except Exception as e:
-        logger.error(f"Failed to get task status: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 # ==================== 认证：当前用户 ====================
 
 @app.get("/api/v1/auth/me")
@@ -565,120 +260,6 @@ async def auth_me(current_user: "User" = Depends(get_current_active_user)):
         "permissions": sorted(set(current_user.permissions or [])),
         "settings": current_user.settings or {},
     }
-
-# ==================== 系列管理API ====================
-
-@app.get("/api/v1/accounts/{account_id}/campaigns")
-async def get_campaigns(account_id: str, db: Session = Depends(get_db)):
-    """获取账户下的广告系列列表（来自已同步的本地数据）"""
-    try:
-        from models import Campaign, CampaignStatus
-        campaigns = (
-            db.query(Campaign)
-            .filter(Campaign.ad_account_id == account_id)
-            .order_by(Campaign.created_at.desc())
-            .all()
-        )
-        return {
-            "account_id": account_id,
-            "campaigns": [
-                {
-                    "id": c.id,
-                    "campaign_id": c.campaign_id,
-                    "name": c.name,
-                    "status": c.status.value if c.status else "UNKNOWN",
-                    "objective": c.objective,
-                    "budget": c.budget,
-                    "daily_budget": c.daily_budget,
-                    "spend": c.spend or 0,
-                    "impressions": c.impressions or 0,
-                    "clicks": c.clicks or 0,
-                    "ctr": c.ctr or 0,
-                    "cpc": c.cpc or 0,
-                    "cpm": c.cpm or 0,
-                }
-                for c in campaigns
-            ],
-        }
-    except Exception as e:
-        logger.error(f"Failed to get campaigns: {str(e)}")
-        raise HTTPException(status_code=500, detail="获取系列列表失败")
-
-class BatchPublishRequest(BaseModel):
-    """批量投放请求"""
-    account_id: str
-    campaigns: List[dict]
-    publish_type: str = "immediate"
-    start_time: Optional[str] = None
-    interval_minutes: Optional[int] = None
-    max_daily_campaigns: Optional[int] = 10
-    enable_risk_check: bool = True
-    enable_frequency_check: bool = True
-    notify_on_complete: bool = False
-    notify_email: Optional[str] = None
-
-@app.post("/api/v1/campaigns/batch-publish", deprecated=True)
-async def batch_publish_api(
-    request: BatchPublishRequest,
-    _=Depends(get_current_active_user),
-):
-    """已停用的旧批量投放入口；正式投放统一走 Job Center。"""
-    raise HTTPException(
-        status_code=410,
-        detail="旧批量投放接口已停用，请使用 POST /api/v1/jobs/campaign-create",
-    )
-
-@app.post("/api/v1/campaigns/{campaign_id}/pause", deprecated=True)
-async def pause_campaign_api(campaign_id: str, _=Depends(get_current_active_user)):
-    raise HTTPException(
-        status_code=410,
-        detail="旧暂停接口已停用，请使用 POST /api/v1/campaigns/actions",
-    )
-
-@app.post("/api/v1/campaigns/{campaign_id}/resume", deprecated=True)
-async def resume_campaign_api(campaign_id: str, _=Depends(get_current_active_user)):
-    raise HTTPException(
-        status_code=410,
-        detail="旧恢复接口已停用，请使用 POST /api/v1/campaigns/actions",
-    )
-
-@app.get("/api/v1/accounts/{account_id}/safe-publish-interval")
-async def safe_publish_interval_api(account_id: str):
-    """获取建议的安全发布间隔"""
-    try:
-        rate_manager = RateLimitManager(account_id)
-        status_info = rate_manager.get_status()
-        # 基于剩余额度的简单启发式：剩余越多，允许间隔越短
-        hour_remaining = status_info.get("hour", {}).get("remaining", 200)
-        suggested_minutes = max(5, int(60 / max(1, hour_remaining / 10)))
-        return {
-            "account_id": account_id,
-            "suggested_interval_minutes": suggested_minutes,
-            "rate_limit": status_info,
-        }
-    except Exception as e:
-        logger.error(f"Failed to get safe publish interval: {str(e)}")
-        raise HTTPException(status_code=500, detail="获取发布间隔失败")
-
-@app.get("/api/v1/accounts/{account_id}/publish-frequency-check")
-async def publish_frequency_check_api(account_id: str, hours: int = 24):
-    """检查发布频次是否安全"""
-    try:
-        rate_manager = RateLimitManager(account_id)
-        status_info = rate_manager.get_status()
-        minute_used = status_info.get("minute", {}).get("used", 0)
-        hour_used = status_info.get("hour", {}).get("used", 0)
-        safe = minute_used < 10 and hour_used < 200
-        return {
-            "account_id": account_id,
-            "hours": hours,
-            "safe": safe,
-            "current_usage": status_info,
-            "recommendation": "可以发布" if safe else "已接近限制，请稍后再发布",
-        }
-    except Exception as e:
-        logger.error(f"Failed to check publish frequency: {str(e)}")
-        raise HTTPException(status_code=500, detail="频次检查失败")
 
 # ==================== 错误处理 ====================
 
