@@ -11,13 +11,20 @@ if grep -Eiq 'change-me|replace-with|example\.com|your-secret|your_app|your_acce
   echo "[deploy] placeholder value detected in deploy/.env" >&2
   exit 1
 fi
+insecure_http=false
 if grep -Eiq '^ENVIRONMENT=production' .env && grep -Eiq '^FRONTEND_BASE_URL=http://' .env; then
   if ! grep -Eiq '^ALLOW_INSECURE_HTTP=true$' .env; then
     echo "[deploy] production frontend must use HTTPS; configure FRONTEND_BASE_URL=https://..." >&2
     echo "[deploy] temporary HTTP requires explicit ALLOW_INSECURE_HTTP=true" >&2
     exit 1
   fi
+  insecure_http=true
   echo "[deploy] WARNING: ALLOW_INSECURE_HTTP=true; traffic and credentials are unencrypted" >&2
+fi
+if [[ "$insecure_http" == true ]] && ! grep -Eiq '^NGINX_BIND_ADDRESS=(0\.0\.0\.0|\*)$' .env; then
+  echo "[deploy] temporary public HTTP requires NGINX_BIND_ADDRESS=0.0.0.0" >&2
+  echo "[deploy] otherwise port 8094 is bound to localhost and the website cannot be reached externally" >&2
+  exit 1
 fi
 if grep -Eiq '^ENVIRONMENT=production' .env && grep -Eiq '^NGINX_BIND_ADDRESS=(0\.0\.0\.0|\*)' .env; then
   if ! grep -Eiq '^ALLOW_INSECURE_HTTP=true$' .env; then
@@ -114,8 +121,15 @@ if [[ "$web_ready" != true ]]; then
 fi
 
 echo "[deploy] 校验 Celery Worker 关键任务注册..."
-if ! "${compose[@]}" exec -T celery-worker python -c 'import celery_app; required = {"meta.sync_custom_audiences", "credentials.check_expiring"}; registered = set(celery_app.celery_app.tasks); missing = sorted(required - registered); assert not missing, f"missing celery tasks: {missing}"; print("celery task registration ok")'; then
+if ! "${compose[@]}" exec -T celery-worker python -c 'import celery_app; required = {"campaign.execute_job", "campaign.create_for_account", "campaign.apply_action_for_account", "meta.sync_custom_audiences", "credentials.check_expiring"}; registered = set(celery_app.celery_app.tasks); missing = sorted(required - registered); assert not missing, f"missing celery tasks: {missing}"; print("celery task registration ok")'; then
   echo "[deploy] Celery Worker 关键任务未注册，拒绝完成部署。最近日志：" >&2
+  "${compose[@]}" logs --tail=100 celery-worker >&2 || true
+  exit 1
+fi
+
+echo "[deploy] 校验 Celery Worker 可消费任务..."
+if ! "${compose[@]}" exec -T celery-worker celery -A celery_app inspect ping --timeout=5 | grep -q 'pong'; then
+  echo "[deploy] Celery Worker 未响应 inspect ping，拒绝完成部署。最近日志：" >&2
   "${compose[@]}" logs --tail=100 celery-worker >&2 || true
   exit 1
 fi

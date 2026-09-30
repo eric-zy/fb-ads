@@ -35,6 +35,7 @@ from api import meta_audiences as meta_audiences_api
 from api import meta_tracking_assets as meta_tracking_assets_api
 from api.targeting_packages import region_router as region_groups_api_router, package_router as targeting_packages_api_router
 from core.auth import AuthManager, get_current_active_user
+from core.tenant import bypass_tenant
 from core.middleware import (
     AuthEnforcementMiddleware,
     LoggingMiddleware,
@@ -190,20 +191,23 @@ async def auth_login(request: LoginRequest, db: Session = Depends(get_db)):
     """用户登录"""
     try:
         from models import User, Role
-        user = db.query(User).filter(User.username == request.username.strip()).first()
-        if not user or not AuthManager.verify_password(request.password, user.hashed_password):
-            raise HTTPException(status_code=401, detail="用户名或密码错误")
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="账户已被禁用")
+        # 登录请求尚未携带 JWT，无法建立租户上下文。认证阶段必须先
+        # 跨租户定位账号，签发 token 后后续请求再恢复租户隔离。
+        with bypass_tenant():
+            user = db.query(User).filter(User.username == request.username.strip()).first()
+            if not user or not AuthManager.verify_password(request.password, user.hashed_password):
+                raise HTTPException(status_code=401, detail="用户名或密码错误")
+            if not user.is_active:
+                raise HTTPException(status_code=403, detail="账户已被禁用")
 
-        if AuthManager.needs_password_rehash(user.hashed_password):
-            user.hashed_password = AuthManager.hash_password(request.password)
-            db.commit()
+            if AuthManager.needs_password_rehash(user.hashed_password):
+                user.hashed_password = AuthManager.hash_password(request.password)
+                db.commit()
 
-        role_permissions = []
-        if getattr(user, "role_id", None):
-            role = db.query(Role).filter(Role.id == user.role_id).first()
-            role_permissions = role.permissions if role else []
+            role_permissions = []
+            if getattr(user, "role_id", None):
+                role = db.query(Role).filter(Role.id == user.role_id).first()
+                role_permissions = role.permissions if role else []
         effective_permissions = sorted(set((user.permissions or []) + (role_permissions or [])))
         token = _create_access_token(user.id, user.email, user.role, user.tenant_id)
         return {

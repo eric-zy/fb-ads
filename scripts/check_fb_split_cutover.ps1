@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 if (-not (Test-Path -LiteralPath $EnvFile)) {
-    Write-Error "找不到环境文件: $EnvFile"
+    Write-Error "Environment file not found: $EnvFile"
 }
 
 $content = Get-Content -LiteralPath $EnvFile -Raw
@@ -28,16 +28,18 @@ foreach ($item in $required) {
 
 $forbidden = @("FB_APP_SECRET=", "FB_ACCESS_TOKEN=", "FB_OAUTH_REDIRECT_URI=")
 foreach ($item in $forbidden) {
-    if ($content -match [regex]::Escape($item)) { $failed += "国内配置仍包含 $item" }
+    if ($content -match [regex]::Escape($item)) { $failed += "Domestic config still contains $item" }
 }
 
-if ($content -match '(?i)change-me|replace-with|example\.com|your-secret|your_access') {
-    $failed += "配置仍包含占位值"
+if ($content -match "(?i)change-me|replace-with|example\.com|your-secret|your_access") {
+    $failed += "Configuration still contains placeholder values"
 }
 
 if ($failed.Count -gt 0) {
     Write-Host "CUTOVER_BLOCKED" -ForegroundColor Red
-    $failed | ForEach-Object { Write-Host "- $_" }
+    foreach ($failure in $failed) {
+        Write-Host ("- " + $failure)
+    }
     exit 1
 }
 
