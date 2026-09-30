@@ -30,11 +30,42 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { accountDispatchApi } from '@/api/accountDispatch'
+import { accountApi } from '@/api/admin'
 const loading = ref(false); const items = ref<any[]>([]); const rules = ref<any[]>([]); const ruleDialog = ref(false)
 const form = ref({ name: '', userIds: '', priority: 100, businessId: '', currency: '', timezone: '', tag: '' })
 async function load() { loading.value = true; try { const [p, r] = await Promise.all([accountDispatchApi.pool(), accountDispatchApi.rules()]); items.value = (p.data as any).items || []; rules.value = (r.data as any).items || [] } finally { loading.value = false } }
-async function dispatch() { await accountDispatchApi.dispatchUnassigned(); ElMessage.success('自动分配完成'); await load() }
-async function release(id: string) { await accountDispatchApi.release(id); ElMessage.success('账户已释放'); await load() }
+async function dispatch() {
+  const { data } = await accountDispatchApi.pool()
+  const ids = ((data as any).items || []).filter((row: any) => !row.assigned).map((row: any) => row.account_id)
+  const held: Array<{ accountId: string; token: string }> = []
+  const operationLeases: Record<string, string> = {}
+  try {
+    for (const accountId of ids) {
+      const result = await accountApi.acquireOperationLease(accountId, 'ACCOUNT_ASSIGNMENT', 120)
+      const token = result.data?.lease?.lease_token
+      if (!token) throw new Error('未能获取广告账户分配租约')
+      held.push({ accountId, token })
+      operationLeases[accountId] = token
+    }
+    await accountDispatchApi.dispatchUnassigned(operationLeases)
+    ElMessage.success('自动分配完成')
+    await load()
+  } finally {
+    await Promise.allSettled(held.map(({ accountId, token }) => accountApi.releaseOperationLease(accountId, token)))
+  }
+}
+async function release(id: string) {
+  const result = await accountApi.acquireOperationLease(id, 'ACCOUNT_ASSIGNMENT', 120)
+  const token = result.data?.lease?.lease_token
+  if (!token) throw new Error('未能获取广告账户分配租约')
+  try {
+    await accountDispatchApi.release(id, token)
+    ElMessage.success('账户已释放')
+    await load()
+  } finally {
+    await accountApi.releaseOperationLease(id, token).catch(() => undefined)
+  }
+}
 async function createRule() { const f = form.value; if (!f.name || !f.userIds) { ElMessage.warning('请填写规则名称和用户 ID'); return }; const cfg: any = { user_ids: f.userIds.split(',').map(x => x.trim()).filter(Boolean) }; if (f.businessId) cfg.business_id = f.businessId; if (f.currency) cfg.currency = f.currency; if (f.timezone) cfg.timezone = f.timezone; if (f.tag) cfg.tag = f.tag; await accountDispatchApi.createRule({ name: f.name, priority: f.priority, rule_type: 'LEAST_LOAD', rule_config: cfg }); ruleDialog.value = false; ElMessage.success('规则已创建'); form.value = { name: '', userIds: '', priority: 100, businessId: '', currency: '', timezone: '', tag: '' }; await load() }
 onMounted(load)
 </script>

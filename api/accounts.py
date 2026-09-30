@@ -33,13 +33,18 @@ from core.tenant import bypass_tenant
 from core.tenant import effective_tenant_id
 from core.logger import logger
 from models import (
-    AdAccount, BusinessAssetAccess, User, UserAccount, MetaAccount, Credential, SystemStatus,
+    AdAccount, AccountOperationLease, BusinessAssetAccess, User, UserAccount, MetaAccount, Credential, SystemStatus,
     RiskEvent, RiskLevel, CampaignJobItem, MetaSyncLog,
 )
 from services.credential_service import CredentialError, CredentialService
 from services.meta import AdAccountService, MetaAdsService, MetaApiError, MetaClient
 from services.fb_connector_client import FBConnectorClient, FBConnectorError
-from services.account_access import accessible_account_ids
+from services.account_access import accessible_account_ids, can_access_account
+from services.account_operation_lease import (
+    AccountOperationBusy,
+    AccountOperationLeaseService,
+)
+from services.business_access import account_ids_for_action, require_accounts, tenant_required
 from config.settings import settings
 from tasks.meta_sync_tasks import sync_ad_account_task
 
@@ -77,6 +82,7 @@ class AccountUpdate(BaseModel):
         None, description="变更归属的 BM（会先验证归属，验证不通过不生效）"
     )
     skip_verification: bool = Field(False, description="变更归属时跳过 Meta 校验")
+    lease_token: Optional[str] = Field(None, description="ACCOUNT_MUTATION 操作租约 token")
 
 
 class TransferRequest(BaseModel):
@@ -88,6 +94,7 @@ class TransferRequest(BaseModel):
     skip_verification: bool = Field(
         False, description="跳过 Meta 归属校验（仅当 BM 凭据不可用时的应急开关）"
     )
+    lease_token: Optional[str] = Field(None, description="ACCOUNT_MUTATION 操作租约 token")
 
 
 class BulkRequest(BaseModel):
@@ -98,10 +105,40 @@ class BulkRequest(BaseModel):
         None, description="目标 BM（action=transfer 时生效，必填）"
     )
     skip_verification: bool = Field(False, description="action=transfer 时跳过归属校验")
+    operation_leases: Optional[dict[str, str]] = Field(
+        None, description="按账户主键提供 ACCOUNT_MUTATION 操作租约 token"
+    )
+
+
+class AccountStatusRequest(BaseModel):
+    reason: Optional[str] = Field(None, description="冻结原因")
+    lease_token: Optional[str] = Field(None, description="ACCOUNT_MUTATION 操作租约 token")
 
 
 class AssignUsers(BaseModel):
     user_ids: List[str] = Field(..., description="要分配的用户 ID 列表")
+    primary_user_id: Optional[str] = Field(
+        None, description="主投手用户 ID；为空时保留已有主投手，没有则选择首个用户"
+    )
+    lease_token: Optional[str] = Field(None, description="ACCOUNT_ASSIGNMENT 操作租约 token")
+
+
+class PrimaryUserRequest(BaseModel):
+    user_id: str = Field(..., description="主投手用户 ID")
+    lease_token: Optional[str] = Field(None, description="ACCOUNT_ASSIGNMENT 操作租约 token")
+
+
+class OperationLeaseRequest(BaseModel):
+    operation_type: str = Field(..., min_length=1, max_length=50)
+    ttl_seconds: int = Field(90, ge=15, le=300)
+
+
+class OperationLeaseReleaseRequest(BaseModel):
+    lease_token: str = Field(..., min_length=16, max_length=128)
+
+
+class OperationLeaseTokenRequest(BaseModel):
+    lease_token: str = Field(..., min_length=16, max_length=128)
 
 
 class SyncRequest(BaseModel):
@@ -113,6 +150,9 @@ class SyncRequest(BaseModel):
     """
     account_ids: Optional[List[str]] = Field(None, description="要同步的账户主键列表")
     business_id: Optional[str] = Field(None, description="同步该 BM 下的全部账户")
+    operation_leases: Optional[dict[str, str]] = Field(
+        None, description="按账户主键提供 ACCOUNT_SYNC 操作租约 token"
+    )
 
 
 def _resolve_bm_token(db: Session, meta: MetaAccount) -> str:
@@ -397,7 +437,12 @@ def list_available_for_deployment(
 # HTTP 不等待 Meta API：投递 Celery 任务后立刻返回 job_id，
 # 进度与结果通过 `GET /api/v1/meta-accounts/{id}/sync-logs` 查询。
 
-def _submit_sync(db: Session, account: AdAccount, countdown: int = 0) -> str:
+def _submit_sync(
+    db: Session,
+    account: AdAccount,
+    countdown: int = 0,
+    requested_by: Optional[str] = None,
+) -> str:
     """投递单个账户的同步任务，返回 Celery job_id"""
     meta = (
         db.query(MetaAccount)
@@ -411,7 +456,74 @@ def _submit_sync(db: Session, account: AdAccount, countdown: int = 0) -> str:
     # 当前同步任务只通过海外 Connector 执行；不要再从国内 Credential 表取 Token。
     if not meta.connector_credential_id:
         raise HTTPException(status_code=400, detail="BM 未绑定海外 Connector 凭据")
-    return sync_ad_account_task.apply_async(args=[account.id], countdown=countdown).id
+    args = [account.id]
+    if requested_by:
+        args.append(requested_by)
+    return sync_ad_account_task.apply_async(args=args, countdown=countdown).id
+
+
+def _require_sync_access(db: Session, account: AdAccount, user: User) -> None:
+    """同步是账户级操作：管理员可操作租户内账户，其他用户必须被分配到账户。"""
+    if account.tenant_id != tenant_required(user):
+        raise HTTPException(status_code=404, detail="账户不存在")
+    require_accounts(db, user, [account.id], write=True)
+    if not user.is_admin() and "campaign:sync" not in (user.permissions or []):
+        raise HTTPException(status_code=403, detail="无权同步该广告账户")
+
+
+def _require_sync_leases(
+    db: Session,
+    current_user: User,
+    account_ids: List[str],
+    operation_leases: Optional[dict[str, str]],
+) -> None:
+    invalid_accounts = AccountOperationLeaseService(db).invalid_accounts(
+        tenant_required(current_user),
+        account_ids,
+        current_user.id,
+        operation_leases,
+        "ACCOUNT_SYNC",
+    )
+    if invalid_accounts:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "account_operation_lease_required",
+                "message": "部分广告账户的同步租约无效或已过期，请重新获取后再提交",
+                "operation_type": "ACCOUNT_SYNC",
+                "account_ids": invalid_accounts,
+            },
+        )
+
+
+def _require_account_operation_lease(
+    db: Session,
+    current_user: User,
+    account: AdAccount,
+    lease_token: Optional[str] | dict[str, str],
+    operation_type: str,
+) -> None:
+    """Require the caller's short-lived lease before mutating an account."""
+    operation_leases = (
+        lease_token if isinstance(lease_token, dict) else {account.id: lease_token or ""}
+    )
+    invalid_accounts = AccountOperationLeaseService(db).invalid_accounts(
+        account.tenant_id or tenant_required(current_user),
+        [account.id],
+        current_user.id,
+        operation_leases,
+        operation_type,
+    )
+    if invalid_accounts:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "account_operation_lease_required",
+                "message": "该广告账户的操作租约无效或已过期，请重新获取后再提交",
+                "operation_type": operation_type,
+                "account_ids": invalid_accounts,
+            },
+        )
 
 
 @router.post("/sync", response_model=dict)
@@ -419,7 +531,7 @@ def sync_accounts_batch(
     payload: SyncRequest,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(get_current_active_user),
 ):
     """批量同步广告账户（文档 §20：POST /ad-accounts/sync）
 
@@ -435,21 +547,25 @@ def sync_accounts_batch(
             status_code=400, detail="account_ids 与 business_id 至少提供一个"
         )
 
+    tenant_id = tenant_required(current_user)
+    allowed = account_ids_for_action(db, current_user, write=True)
     targets: List[AdAccount] = []
     if payload.business_id:
         meta = (
             db.query(MetaAccount)
-            .filter(MetaAccount.id == payload.business_id)
+            .filter(MetaAccount.id == payload.business_id, MetaAccount.tenant_id == tenant_id)
             .first()
         )
         if not meta:
             raise HTTPException(status_code=404, detail="BM 不存在")
         targets = (
             db.query(AdAccount)
-            .filter(AdAccount.business_id == payload.business_id)
+            .filter(AdAccount.business_id == payload.business_id,
+                    AdAccount.tenant_id == tenant_id, AdAccount.id.in_(allowed))
             .all()
         )
     else:
+        require_accounts(db, current_user, payload.account_ids or [], write=True)
         for pk in payload.account_ids or []:
             a = db.query(AdAccount).filter(AdAccount.id == pk).first()
             if a:
@@ -458,14 +574,27 @@ def sync_accounts_batch(
     if not targets:
         raise HTTPException(status_code=404, detail="未找到可同步的账户")
 
+    _require_sync_leases(
+        db,
+        current_user,
+        [account.id for account in targets],
+        payload.operation_leases,
+    )
+
     jobs: List[dict] = []
     errors: List[dict] = []
     for index, account in enumerate(targets):
         try:
+            _require_sync_access(db, account, current_user)
             jobs.append(
                 {
                     "account_id": account.id,
-                    "job_id": _submit_sync(db, account, countdown=min(index * 3, 300)),
+                    "job_id": _submit_sync(
+                        db,
+                        account,
+                        countdown=min(index * 3, 300),
+                        requested_by=current_user.id,
+                    ),
                 }
             )
         except HTTPException as e:
@@ -495,9 +624,10 @@ def sync_accounts_batch(
 @router.post("/{account_pk}/sync", response_model=dict)
 def sync_single_account(
     account_pk: str,
+    payload: OperationLeaseTokenRequest,
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(get_current_active_user),
 ):
     """同步单个广告账户（文档 §20：POST /ad-accounts/{id}/sync）
 
@@ -510,7 +640,14 @@ def sync_single_account(
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
 
-    job_id = _submit_sync(db, a)
+    _require_sync_access(db, a, current_user)
+    _require_sync_leases(
+        db,
+        current_user,
+        [a.id],
+        {a.id: payload.lease_token},
+    )
+    job_id = _submit_sync(db, a, requested_by=current_user.id)
 
     record_audit(
         db,
@@ -631,9 +768,13 @@ def update_account(
     a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
+    _require_account_operation_lease(
+        db, current_user, a, data.lease_token, "ACCOUNT_MUTATION"
+    )
 
     _UNSET = object()  # 区分"未传该字段"与"显式传 null"
     payload = data.model_dump(exclude_unset=True)
+    payload.pop("lease_token", None)
     # business_id 单独处理，避免直接 setattr 绕过归属校验
     new_business_id = payload.pop("business_id", _UNSET)
     skip_verification = bool(payload.pop("skip_verification", False))
@@ -690,6 +831,13 @@ def bulk_update_accounts(
             continue
 
         try:
+            _require_account_operation_lease(
+                db,
+                current_user,
+                a,
+                payload.operation_leases or {},
+                "ACCOUNT_MUTATION",
+            )
             if payload.action == "freeze":
                 # 系统侧禁用 = 不参与批量投放；Meta 侧状态不受影响
                 a.system_status = SystemStatus.DISABLED.value
@@ -704,6 +852,10 @@ def bulk_update_accounts(
                     db, a, payload.business_id, skip_verification=payload.skip_verification
                 )
             elif payload.action == "delete":
+                db.query(AccountOperationLease).filter(
+                    AccountOperationLease.tenant_id == a.tenant_id,
+                    AccountOperationLease.account_id == a.id,
+                ).delete(synchronize_session=False)
                 db.query(UserAccount).filter(
                     UserAccount.account_id == a.id
                 ).delete(synchronize_session=False)
@@ -753,6 +905,9 @@ def transfer_account(
     a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
+    _require_account_operation_lease(
+        db, current_user, a, payload.lease_token, "ACCOUNT_MUTATION"
+    )
 
     old_business_id = a.business_id
     # business_id 为 None（未传或显式 null）时由 _apply_meta_transfer 返回明确提示
@@ -781,7 +936,7 @@ def transfer_account(
 @router.post("/{account_pk}/freeze", response_model=dict)
 def freeze_account(
     account_pk: str,
-    reason: Optional[str] = None,
+    payload: AccountStatusRequest,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -792,8 +947,11 @@ def freeze_account(
     a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
+    _require_account_operation_lease(
+        db, current_user, a, payload.lease_token, "ACCOUNT_MUTATION"
+    )
     a.system_status = SystemStatus.DISABLED.value
-    a.system_status_reason = reason
+    a.system_status_reason = payload.reason
     a.system_status_at = datetime.utcnow()
     db.commit()
     return account_to_dict(a)
@@ -802,6 +960,7 @@ def freeze_account(
 @router.post("/{account_pk}/unfreeze", response_model=dict)
 def unfreeze_account(
     account_pk: str,
+    payload: OperationLeaseTokenRequest,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -809,6 +968,9 @@ def unfreeze_account(
     a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
+    _require_account_operation_lease(
+        db, current_user, a, payload.lease_token, "ACCOUNT_MUTATION"
+    )
     a.system_status = SystemStatus.ACTIVE.value
     a.system_status_reason = None
     a.system_status_at = datetime.utcnow()
@@ -826,29 +988,76 @@ def assign_users(
     """分配账户给多个用户（管理员，写入 user_accounts 关联表）"""
     tenant_ctx = nullcontext() if effective_tenant_id(current_user) else bypass_tenant()
     with tenant_ctx:
-        a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
+        a = db.query(AdAccount).filter(AdAccount.id == account_pk).with_for_update().first()
         if not a:
             raise HTTPException(status_code=404, detail="账户不存在")
-        users = db.query(User).filter(User.id.in_(payload.user_ids)).all()
+        _require_account_operation_lease(
+            db, current_user, a, payload.lease_token, "ACCOUNT_ASSIGNMENT"
+        )
+        requested_ids = list(dict.fromkeys(payload.user_ids))
+        if not requested_ids:
+            raise HTTPException(status_code=400, detail="至少选择一个用户")
+        if payload.primary_user_id and payload.primary_user_id not in requested_ids:
+            raise HTTPException(status_code=400, detail="主投手必须包含在本次分配用户中")
+        users = db.query(User).filter(User.id.in_(requested_ids)).all()
         existing = {u.id for u in users}
-        missing = set(payload.user_ids) - existing
+        missing = set(requested_ids) - existing
         if missing:
             raise HTTPException(status_code=400, detail=f"以下用户不存在: {', '.join(missing)}")
         cross_tenant = [u.username for u in users if u.tenant_id != a.tenant_id]
         if cross_tenant:
             raise HTTPException(status_code=400, detail=f"不能将广告账户分配给其他租户用户: {', '.join(cross_tenant)}")
-        for uid in payload.user_ids:
-            if not db.query(UserAccount).filter(UserAccount.user_id == uid, UserAccount.account_id == a.id).first():
-                db.add(UserAccount(
+        rows = db.query(UserAccount).filter(
+            UserAccount.tenant_id == a.tenant_id,
+            UserAccount.account_id == a.id,
+        ).with_for_update().all()
+        by_user = {row.user_id: row for row in rows}
+        for uid in requested_ids:
+            row = by_user.get(uid)
+            if row is None:
+                row = UserAccount(
                     id=str(uuid.uuid4()),
                     tenant_id=a.tenant_id,
                     user_id=uid,
                     account_id=a.id,
                     role="publisher",
-                ))
+                    assignment_role="COLLABORATOR",
+                    assignment_status="ACTIVE",
+                    assigned_by=current_user.id,
+                )
+                db.add(row)
+                by_user[uid] = row
+            else:
+                row.assignment_status = "ACTIVE"
+                row.assignment_type = "MANUAL"
+                row.assigned_by = current_user.id
+                row.expires_at = None
+                if not row.role or row.role == "viewer":
+                    row.role = "publisher"
+
+        active_rows = [row for row in by_user.values() if row.assignment_status == "ACTIVE"]
+        primary_id = payload.primary_user_id
+        if not primary_id:
+            existing_primary = next(
+                (row.user_id for row in active_rows if row.assignment_role == "PRIMARY"),
+                None,
+            )
+            primary_id = existing_primary or requested_ids[0]
+        # 先清空主投手再设置目标，避免数据库唯一部分索引在同一次 flush
+        # 中因更新顺序产生瞬时冲突。
+        for row in active_rows:
+            row.assignment_role = "COLLABORATOR"
+        db.flush()
+        for row in active_rows:
+            if row.user_id == primary_id:
+                row.assignment_role = "PRIMARY"
         db.commit()
-        count = db.query(UserAccount).filter(UserAccount.account_id == a.id).count()
-        return {"success": True, "assigned_count": count}
+        count = db.query(UserAccount).filter(
+            UserAccount.tenant_id == a.tenant_id,
+            UserAccount.account_id == a.id,
+            UserAccount.assignment_status == "ACTIVE",
+        ).count()
+        return {"success": True, "assigned_count": count, "primary_user_id": primary_id}
 
 
 @router.post("/{account_pk}/unassign", response_model=dict)
@@ -859,15 +1068,60 @@ def unassign_user(
     db: Session = Depends(get_db),
 ):
     """从账户移除用户分配（管理员）"""
-    a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
+    a = db.query(AdAccount).filter(AdAccount.id == account_pk).with_for_update().first()
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
-    db.query(UserAccount).filter(
+    _require_account_operation_lease(
+        db, current_user, a, payload.lease_token, "ACCOUNT_ASSIGNMENT"
+    )
+    rows = db.query(UserAccount).filter(
+        UserAccount.tenant_id == a.tenant_id,
         UserAccount.account_id == a.id,
-        UserAccount.user_id.in_(payload.user_ids),
-    ).delete(synchronize_session=False)
+    ).with_for_update().all()
+    remove_ids = set(payload.user_ids)
+    for row in rows:
+        if row.user_id in remove_ids:
+            db.delete(row)
+    remaining = [
+        row for row in rows
+        if row.user_id not in remove_ids and row.assignment_status == "ACTIVE"
+    ]
+    remaining.sort(key=lambda row: (row.assigned_at or datetime.min, row.id))
+    if remaining and not any(row.assignment_role == "PRIMARY" for row in remaining):
+        remaining[0].assignment_role = "PRIMARY"
     db.commit()
-    return {"success": True}
+    primary_id = next((row.user_id for row in remaining if row.assignment_role == "PRIMARY"), None)
+    return {"success": True, "primary_user_id": primary_id}
+
+
+@router.post("/{account_pk}/primary", response_model=dict)
+def set_primary_user(
+    account_pk: str,
+    payload: PrimaryUserRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """设置账户唯一主投手；其它有效分配自动降为协作者。"""
+    a = db.query(AdAccount).filter(AdAccount.id == account_pk).with_for_update().first()
+    if not a:
+        raise HTTPException(status_code=404, detail="账户不存在")
+    _require_account_operation_lease(
+        db, current_user, a, payload.lease_token, "ACCOUNT_ASSIGNMENT"
+    )
+    rows = db.query(UserAccount).filter(
+        UserAccount.tenant_id == a.tenant_id,
+        UserAccount.account_id == a.id,
+        UserAccount.assignment_status == "ACTIVE",
+    ).with_for_update().all()
+    target = next((row for row in rows if row.user_id == payload.user_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="该用户未分配到此广告账户")
+    for row in rows:
+        row.assignment_role = "COLLABORATOR"
+    db.flush()
+    target.assignment_role = "PRIMARY"
+    db.commit()
+    return {"success": True, "primary_user_id": payload.user_id}
 
 
 @router.get("/{account_pk}/users", response_model=List[dict])
@@ -881,14 +1135,122 @@ def account_users(
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
     rows = db.query(UserAccount, User).join(User, UserAccount.user_id == User.id).filter(
-        UserAccount.account_id == a.id
+        UserAccount.tenant_id == a.tenant_id,
+        UserAccount.account_id == a.id,
+        UserAccount.assignment_status == "ACTIVE",
     ).all()
-    return [{"user_id": u.id, "username": u.username, "email": u.email, "role": ua.role} for ua, u in rows]
+    return [{
+        "user_id": u.id,
+        "username": u.username,
+        "email": u.email,
+        "role": ua.role,
+        "assignment_role": ua.assignment_role,
+        "assignment_status": ua.assignment_status,
+        "assignment_type": ua.assignment_type,
+        "assigned_at": ua.assigned_at.isoformat() if ua.assigned_at else None,
+        "expires_at": ua.expires_at.isoformat() if ua.expires_at else None,
+        "is_primary": ua.assignment_status == "ACTIVE" and ua.assignment_role == "PRIMARY",
+    } for ua, u in rows]
+
+
+def _lease_account_or_404(db: Session, account_pk: str, current_user: User) -> AdAccount:
+    account = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="账户不存在")
+    # 普通投手只可为自己已分配且有写权限的账户申请租约；管理员可全量操作。
+    require_accounts(db, current_user, [account.id], write=True)
+    return account
+
+
+@router.get("/{account_pk}/operation-lease", response_model=dict)
+def get_operation_lease(
+    account_pk: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    account = _lease_account_or_404(db, account_pk, current_user)
+    lease = AccountOperationLeaseService(db).get(
+        effective_tenant_id(current_user) or account.tenant_id,
+        account.id,
+    )
+    return {"active": lease is not None, "lease": AccountOperationLeaseService.serialize(lease)}
+
+
+@router.post("/{account_pk}/operation-lease", response_model=dict)
+def acquire_operation_lease(
+    account_pk: str,
+    payload: OperationLeaseRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    account = _lease_account_or_404(db, account_pk, current_user)
+    tenant_id = effective_tenant_id(current_user) or account.tenant_id
+    service = AccountOperationLeaseService(db)
+    try:
+        lease = service.acquire(
+            tenant_id,
+            account.id,
+            current_user.id,
+            payload.operation_type,
+            payload.ttl_seconds,
+        )
+        db.commit()
+        return {"success": True, "lease": service.serialize(lease)}
+    except AccountOperationBusy as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "account_operation_busy",
+                "message": str(exc),
+                "holder_user_id": exc.lease.holder_user_id,
+                "operation_type": exc.lease.operation_type,
+                "expires_at": exc.lease.expires_at.isoformat(),
+            },
+        ) from exc
+    except IntegrityError as exc:
+        # 两个请求同时申请一个尚不存在的租约时，行锁无法锁住空集；
+        # 由唯一键裁决，并把竞争失败转换为稳定的 409，而不是 500。
+        db.rollback()
+        current = service.get(tenant_id, account.id)
+        if current:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "account_operation_busy",
+                    "message": "该广告账户刚刚被其他投手锁定，请稍后重试",
+                    "holder_user_id": current.holder_user_id,
+                    "operation_type": current.operation_type,
+                    "expires_at": current.expires_at.isoformat(),
+                },
+            ) from exc
+        raise
+
+
+@router.delete("/{account_pk}/operation-lease", response_model=dict)
+def release_operation_lease(
+    account_pk: str,
+    payload: OperationLeaseReleaseRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    account = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
+    if not account:
+        # 账户删除后前端 finally 仍会尝试释放原租约；释放接口保持幂等，
+        # 避免把已成功的删除操作误报成失败。
+        return {"success": True, "released": False}
+    tenant_id = effective_tenant_id(current_user) or account.tenant_id
+    released = AccountOperationLeaseService(db).release(
+        tenant_id, account.id, current_user.id, payload.lease_token
+    )
+    db.commit()
+    return {"success": True, "released": released}
 
 
 @router.delete("/{account_pk}", response_model=dict)
 def delete_account(
     account_pk: str,
+    payload: OperationLeaseTokenRequest,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -896,6 +1258,9 @@ def delete_account(
     a = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
     if not a:
         raise HTTPException(status_code=404, detail="账户不存在")
+    _require_account_operation_lease(
+        db, current_user, a, payload.lease_token, "ACCOUNT_MUTATION"
+    )
     referenced_jobs = db.query(CampaignJobItem).filter(CampaignJobItem.ad_account_id == a.id).count()
     if referenced_jobs:
         raise HTTPException(
@@ -907,6 +1272,10 @@ def delete_account(
             },
         )
     db.query(UserAccount).filter(UserAccount.account_id == a.id).delete(synchronize_session=False)
+    db.query(AccountOperationLease).filter(
+        AccountOperationLease.tenant_id == a.tenant_id,
+        AccountOperationLease.account_id == a.id,
+    ).delete(synchronize_session=False)
     db.delete(a)
     try:
         db.commit()
@@ -926,6 +1295,7 @@ def delete_account(
 @router.post("/{account_pk}/unbind", response_model=dict)
 def unbind_account(
     account_pk: str,
+    payload: OperationLeaseTokenRequest,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -933,6 +1303,13 @@ def unbind_account(
     account = db.query(AdAccount).filter(AdAccount.id == account_pk).first()
     if not account:
         raise HTTPException(status_code=404, detail="账户不存在")
+    _require_account_operation_lease(
+        db, current_user, account, payload.lease_token, "ACCOUNT_MUTATION"
+    )
+    db.query(AccountOperationLease).filter(
+        AccountOperationLease.tenant_id == account.tenant_id,
+        AccountOperationLease.account_id == account.id,
+    ).delete(synchronize_session=False)
     account.credential_id = None
     account.owner_type = "UNBOUND"
     account.system_status = SystemStatus.DISABLED.value

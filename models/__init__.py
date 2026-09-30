@@ -5,7 +5,11 @@ from models.tenant import Tenant, TenantStatus, TenantPlan, UserRole
 
 from models.ad_account import AdAccount, SystemStatus
 from models.business_asset_access import BusinessAssetAccess
-from models.account_assignment import AccountAssignmentRule, AccountAssignmentLog
+from models.account_assignment import (
+    AccountAssignmentRule,
+    AccountAssignmentLog,
+    AccountOperationLease,
+)
 from models.meta_account import MetaAccount, BusinessStatus, SyncStatus
 from models.creative_asset import CreativeAsset
 from models.media_upload_session import MediaUploadSession
@@ -86,6 +90,7 @@ __all__ = [
     'RiskRule',
     'User',
     'UserAccount',
+    'AccountOperationLease',
     'Role',
     'AccountGroup',
     # 新增

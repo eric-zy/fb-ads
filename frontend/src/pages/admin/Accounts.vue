@@ -213,6 +213,19 @@
           {{ u.username }} ({{ u.email }})
         </el-checkbox>
       </el-checkbox-group>
+      <el-form label-width="80px" class="primary-form">
+        <el-form-item label="主投手">
+          <el-select v-model="primaryUserId" placeholder="选择主投手" style="width: 100%" :disabled="!selectedUsers.length">
+            <el-option v-for="u in allUsers.filter((item) => selectedUsers.includes(item.id))" :key="u.id" :label="u.username" :value="u.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <el-alert
+        title="主投手负责账户操作；其它已分配用户保留协作权限。保存不会移除未勾选的历史用户。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
       <template #footer>
         <el-button @click="showAssign = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="saveAssign">保存分配</el-button>
@@ -224,9 +237,16 @@
       <el-table :data="assignedList" style="width: 100%">
         <el-table-column prop="username" label="用户名" />
         <el-table-column prop="email" label="邮箱" />
+        <el-table-column label="分工" width="90">
+          <template #default="{ row }">
+            <el-tag v-if="row.is_primary" type="primary" size="small">主投手</el-tag>
+            <el-tag v-else type="info" size="small">协作者</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="90">
           <template #default="{ row }">
-            <el-button link type="danger" size="small" @click="removeUser(row)">移除</el-button>
+            <el-button v-if="!row.is_primary && row.assignment_status === 'ACTIVE'" link type="primary" size="small" @click="setPrimaryUser(row)">设主投手</el-button>
+            <el-button v-if="row.assignment_status === 'ACTIVE'" link type="danger" size="small" @click="removeUser(row)">移除</el-button>
           </template>
         </el-table-column>
         <template #empty><el-empty description="暂无分配用户" /></template>
@@ -290,6 +310,7 @@ const showAssign = ref(false)
 const assignAccount = ref<AdAccountItem | null>(null)
 const allUsers = ref<AdminUser[]>([])
 const selectedUsers = ref<string[]>([])
+const primaryUserId = ref('')
 
 const showUsers = ref(false)
 const userAccount = ref<AdAccountItem | null>(null)
@@ -396,6 +417,23 @@ function clearSelection() {
   tableRef.value?.clearSelection()
 }
 
+async function withAccountLeases<T>(accountIds: string[], operationType: string, callback: (tokens: Record<string, string>) => Promise<T>): Promise<T> {
+  const held: Array<{ accountId: string; token: string }> = []
+  const tokens: Record<string, string> = {}
+  try {
+    for (const accountId of accountIds) {
+      const { data } = await accountApi.acquireOperationLease(accountId, operationType, 120)
+      const token = data?.lease?.lease_token
+      if (!token) throw new Error('未能获取广告账户操作租约')
+      held.push({ accountId, token })
+      tokens[accountId] = token
+    }
+    return await callback(tokens)
+  } finally {
+    await Promise.allSettled(held.map(({ accountId, token }) => accountApi.releaseOperationLease(accountId, token)))
+  }
+}
+
 function openCreate() {
   form.value = {
     account_id: '', currency: 'USD', system_status: 'ACTIVE',
@@ -430,7 +468,9 @@ async function save() {
     }
     if (form.value.id) {
       const { id, ...rest } = payload as any
-      await accountApi.update(id, rest)
+      await withAccountLeases([id], 'ACCOUNT_MUTATION', async tokens => {
+        await accountApi.update(id, { ...rest, lease_token: tokens[id] })
+      })
     } else {
       await accountApi.create(payload as any)
     }
@@ -467,12 +507,15 @@ async function submitTransfer() {
   saving.value = true
   try {
     if (transferBulk.value) {
-      const { data } = await accountApi.bulk({
+      const ids = selected.value.map((a) => a.id)
+      const { data } = await withAccountLeases(ids, 'ACCOUNT_MUTATION', tokens => accountApi.bulk({
         action: 'transfer',
-        account_ids: selected.value.map((a) => a.id),
+        account_ids: ids,
         business_id: transferTarget.value,
         skip_verification: transferSkipVerify.value,
+        operation_leases: tokens,
       })
+      )
       if (data.failed_count) {
         ElMessage.warning(`成功 ${data.success_count} 个，失败 ${data.failed_count} 个：${data.errors?.[0]?.error || ''}`)
       } else {
@@ -480,10 +523,12 @@ async function submitTransfer() {
       }
       clearSelection()
     } else if (transferRow.value) {
-      await accountApi.transfer(transferRow.value.id, {
+      await withAccountLeases([transferRow.value.id], 'ACCOUNT_MUTATION', tokens => accountApi.transfer(transferRow.value!.id, {
         business_id: transferTarget.value,
         skip_verification: transferSkipVerify.value,
+        lease_token: tokens[transferRow.value!.id],
       })
+      )
       ElMessage.success('归属已更新')
     }
     showTransfer.value = false
@@ -507,11 +552,14 @@ async function bulkAction(action: 'freeze' | 'unfreeze' | 'delete') {
     }
   }
   try {
-    const { data } = await accountApi.bulk({
+    const ids = selected.value.map((a) => a.id)
+    const { data } = await withAccountLeases(ids, 'ACCOUNT_MUTATION', tokens => accountApi.bulk({
       action,
-      account_ids: selected.value.map((a) => a.id),
+      account_ids: ids,
       reason: action === 'freeze' ? '批量停用' : undefined,
+      operation_leases: tokens,
     })
+    )
     if (data.failed_count) {
       ElMessage.warning(`成功 ${data.success_count} 个，失败 ${data.failed_count} 个：${data.errors?.[0]?.error || ''}`)
     } else {
@@ -528,9 +576,19 @@ async function bulkAction(action: 'freeze' | 'unfreeze' | 'delete') {
 async function bulkSync() {
   if (!selected.value.length) return
   syncing.value = true
+  const held: Array<{ accountId: string; token: string }> = []
+  const operationLeases: Record<string, string> = {}
   try {
+    for (const accountId of selected.value.map((account) => account.id)) {
+      const { data: leaseResult } = await accountApi.acquireOperationLease(accountId, 'ACCOUNT_SYNC', 120)
+      const token = leaseResult?.lease?.lease_token
+      if (!token) throw new Error('未能获取广告账户操作租约')
+      held.push({ accountId, token })
+      operationLeases[accountId] = token
+    }
     const { data } = await accountApi.syncBatch({
       account_ids: selected.value.map((a) => a.id),
+      operation_leases: operationLeases,
     })
     if (data.failed) {
       ElMessage.warning(
@@ -543,6 +601,7 @@ async function bulkSync() {
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   } finally {
+    await Promise.allSettled(held.map(({ accountId, token }) => accountApi.releaseOperationLease(accountId, token)))
     syncing.value = false
   }
 }
@@ -559,8 +618,10 @@ async function toggleStatus(a: AdAccountItem) {
     return
   }
   try {
-    if (disabling) await accountApi.freeze(a.id, '管理员停用')
-    else await accountApi.unfreeze(a.id)
+    await withAccountLeases([a.id], 'ACCOUNT_MUTATION', async tokens => {
+      if (disabling) await accountApi.freeze(a.id, '管理员停用', tokens[a.id])
+      else await accountApi.unfreeze(a.id, tokens[a.id])
+    })
     await loadAccounts()
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
@@ -573,7 +634,7 @@ async function remove(a: AdAccountItem) {
     return
   }
   try {
-    await accountApi.delete(a.id)
+    await withAccountLeases([a.id], 'ACCOUNT_MUTATION', tokens => accountApi.delete(a.id, tokens[a.id]))
     await loadAccounts()
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
@@ -583,9 +644,16 @@ async function remove(a: AdAccountItem) {
 async function openAssign(a: AdAccountItem) {
   assignAccount.value = a
   selectedUsers.value = []
+  primaryUserId.value = ''
   try {
-    const { data } = await userApi.list({ page: 1, page_size: 100 })
-    allUsers.value = data
+    const [{ data: users }, { data: assigned }] = await Promise.all([
+      userApi.list({ page: 1, page_size: 100 }),
+      accountApi.users(a.id),
+    ])
+    allUsers.value = users
+    const activeAssigned = (assigned as AccountUser[]).filter((row) => row.assignment_status === 'ACTIVE')
+    selectedUsers.value = activeAssigned.map((row) => row.user_id)
+    primaryUserId.value = activeAssigned.find((row) => row.is_primary)?.user_id || ''
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
     return
@@ -599,7 +667,12 @@ async function saveAssign() {
   }
   saving.value = true
   try {
-    await accountApi.assign(assignAccount.value.id, selectedUsers.value)
+    await withAccountLeases([assignAccount.value.id], 'ACCOUNT_ASSIGNMENT', tokens => accountApi.assign(
+      assignAccount.value!.id,
+      selectedUsers.value,
+      primaryUserId.value || selectedUsers.value[0],
+      tokens[assignAccount.value!.id],
+    ))
     showAssign.value = false
     await loadAccounts()
   } catch (e: any) {
@@ -623,9 +696,21 @@ async function openUsers(a: AdAccountItem) {
 async function removeUser(u: AccountUser) {
   if (!userAccount.value) return
   try {
-    await accountApi.unassign(userAccount.value.id, [u.user_id])
-    assignedList.value = assignedList.value.filter((x) => x.user_id !== u.user_id)
+    await withAccountLeases([userAccount.value.id], 'ACCOUNT_ASSIGNMENT', tokens => accountApi.unassign(userAccount.value!.id, [u.user_id], tokens[userAccount.value!.id]))
+    const { data } = await accountApi.users(userAccount.value.id)
+    assignedList.value = data
     await loadAccounts()
+  } catch (e: any) {
+    // 错误已由 utils/request.ts 全局拦截器弹框提示
+  }
+}
+
+async function setPrimaryUser(u: AccountUser) {
+  if (!userAccount.value) return
+  try {
+    await withAccountLeases([userAccount.value.id], 'ACCOUNT_ASSIGNMENT', tokens => accountApi.setPrimary(userAccount.value!.id, u.user_id, tokens[userAccount.value!.id]))
+    const { data } = await accountApi.users(userAccount.value.id)
+    assignedList.value = data
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   }
@@ -688,6 +773,9 @@ onMounted(async () => {
   margin-left: 10px;
   font-size: 12px;
   color: #909399;
+}
+.primary-form {
+  margin-top: 16px;
 }
 .mb12 {
   margin-bottom: 12px;

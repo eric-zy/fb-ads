@@ -24,6 +24,7 @@ class CampaignTemplate(TenantMixin, Base):
 
     id = Column(String(50), primary_key=True, index=True)
     name = Column(String(255), nullable=False, comment="模板名称，如 US Sales V1")
+    created_by = Column(String(50), nullable=True, comment="模板创建人；历史未知归属仅管理员可见")
 
     # ---- Campaign 级 ----
     objective = Column(String(64), comment="推广目标，如 OUTCOME_SALES / OUTCOME_TRAFFIC")
@@ -59,12 +60,14 @@ class CampaignTemplate(TenantMixin, Base):
     __table_args__ = (
         # 行级隔离：列表页固定按 (租户, 状态) 过滤
         Index("ix_campaign_templates_tenant_status", "tenant_id", "status"),
+        Index("ix_campaign_templates_tenant_owner", "tenant_id", "created_by"),
     )
 
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "tenant_id": self.tenant_id,
+            "created_by": self.created_by,
             "name": self.name,
             "objective": self.objective,
             "buying_type": self.buying_type,

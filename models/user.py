@@ -7,7 +7,7 @@
     - `company_id` 保留但已废弃，仅为兼容老前端，新代码一律用 `tenant_id`
 """
 
-from sqlalchemy import Column, String, DateTime, Boolean, JSON, Index, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Boolean, JSON, Index, UniqueConstraint, text
 from datetime import datetime
 
 from core.database import Base
@@ -75,6 +75,9 @@ class UserAccount(TenantMixin, Base):
 
     # 权限
     role = Column(String(50), default="viewer")  # owner, editor, viewer
+    # 账户协作角色：一个账户最多一个 PRIMARY，其余为 COLLABORATOR。
+    # 与 role（账户内读写权限）分开，避免改变既有权限语义。
+    assignment_role = Column(String(20), default="COLLABORATOR", nullable=False)
     assignment_type = Column(String(20), default="MANUAL", nullable=False)
     assignment_status = Column(String(20), default="ACTIVE", nullable=False)
     assigned_by = Column(String(50), nullable=True)
@@ -87,6 +90,14 @@ class UserAccount(TenantMixin, Base):
         Index('ix_user_account', 'user_id', 'account_id'),
         Index('ix_user_accounts_tenant_user', 'tenant_id', 'user_id'),
         UniqueConstraint('tenant_id', 'user_id', 'account_id', name='uq_user_account_assignment'),
+        # 数据库层兜底：同一租户账户的有效关系最多一个主投手。
+        Index(
+            'uq_user_accounts_active_primary',
+            'tenant_id', 'account_id',
+            unique=True,
+            sqlite_where=text("assignment_status = 'ACTIVE' AND assignment_role = 'PRIMARY'"),
+            postgresql_where=text("assignment_status = 'ACTIVE' AND assignment_role = 'PRIMARY'"),
+        ),
     )
 
     def __repr__(self):

@@ -539,7 +539,7 @@ def sync_meta_accounts(
     else:
         _resolve_token(db, meta)
 
-    async_result = sync_ad_accounts_task.delay(meta.id)
+    async_result = sync_ad_accounts_task.delay(meta.id, current_user.id)
 
     record_audit(
         db,

@@ -128,7 +128,17 @@ async function loadDetail() { loading.value = true; try { const { data } = await
 async function loadLogs() { try { const { data } = await metaAccountApi.syncLogs(businessId.value, { limit: 30 }); syncLogs.value = data } catch { syncLogs.value = [] } }
 async function syncAccounts() { syncing.value = true; try { const { data } = await metaAccountApi.syncAccounts(businessId.value); ElMessage.success(`同步任务已提交（${data.job_id.slice(0, 8)}…）`); setTimeout(async () => { await loadDetail(); await loadLogs() }, 3000) } catch {} finally { syncing.value = false } }
 async function verifyConnection() { try { const { data } = await metaAccountApi.verifyConnection(businessId.value); if (data.dev_mode) ElMessage.warning('开发模式：未配置 FB 凭据，未做真实校验'); else if (data.ok) ElMessage.success('连接正常，Business ID 校验通过'); else ElMessage.error('校验失败：' + (data.error || '未知错误')) } catch {} }
-async function toggleStatus(row: AdAccountItem) { try { if (row.system_status === 'ACTIVE') await accountApi.freeze(row.id, '管理员停用'); else await accountApi.unfreeze(row.id); await loadDetail() } catch {} }
+async function withMutationLease<T>(accountId: string, callback: (token: string) => Promise<T>): Promise<T> {
+  const { data } = await accountApi.acquireOperationLease(accountId, 'ACCOUNT_MUTATION', 120)
+  const token = data?.lease?.lease_token
+  if (!token) throw new Error('未能获取广告账户操作租约')
+  try {
+    return await callback(token)
+  } finally {
+    await accountApi.releaseOperationLease(accountId, token).catch(() => undefined)
+  }
+}
+async function toggleStatus(row: AdAccountItem) { try { await withMutationLease(row.id, token => row.system_status === 'ACTIVE' ? accountApi.freeze(row.id, '管理员停用', token) : accountApi.unfreeze(row.id)); await loadDetail() } catch {} }
 function openImport() { importVisible.value = true; fetchFromMeta() }
 async function fetchFromMeta() { fetching.value = true; try { const { data } = await request.get(`/api/v1/meta-accounts/${businessId.value}/ad-accounts/from-meta`); const existingIds = new Set(accounts.value.map((a) => a.account_id)); candidates.value = (data.accounts || []).map((a: any) => ({ id: a.id, name: a.name, account_status: a.account_status, currency: a.currency, _existing: existingIds.has(a.id) })); if (data.dev_mode) ElMessage.warning('开发模式：未配置 FB 凭据，无法拉取真实账户列表') } catch {} finally { fetching.value = false } }
 function onCandidatesChange(rows: any[]) { selectedCandidates.value = rows }

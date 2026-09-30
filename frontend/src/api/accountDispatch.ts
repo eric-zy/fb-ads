@@ -4,6 +4,7 @@ export const accountDispatchApi = {
   pool: () => request.get('/api/v1/account-pool'),
   rules: () => request.get('/api/v1/account-dispatch/rules'),
   createRule: (data: any) => request.post('/api/v1/account-dispatch/rules', data),
-  dispatchUnassigned: () => request.post('/api/v1/account-dispatch/dispatch-unassigned'),
-  release: (id: string) => request.post(`/api/v1/account-dispatch/accounts/${id}/release`),
+  dispatch: (id: string, lease_token: string) => request.post(`/api/v1/account-dispatch/accounts/${id}/dispatch`, { lease_token }),
+  dispatchUnassigned: (operation_leases: Record<string, string>) => request.post('/api/v1/account-dispatch/dispatch-unassigned', { operation_leases }),
+  release: (id: string, lease_token: string) => request.post(`/api/v1/account-dispatch/accounts/${id}/release`, { lease_token }),
 }

@@ -106,7 +106,7 @@
               </el-select>
               <div v-if="!metaPages.length" class="page-sync-inline">
                 <span>暂无已同步页面。</span>
-                <el-button size="small" :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
+                <el-button v-if="userStore.isAdmin || userStore.hasPermission('meta_asset:manage')" size="small" :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
               </div>
             </el-form-item>
             <el-form-item label="默认日预算" required><el-input-number v-model="directForm.daily_budget" :min="1" :step="1" /><span class="tip-inline">美元/天</span></el-form-item>
@@ -365,6 +365,7 @@
               <span v-if="selectedExistingAdGroup(account.id)?.stale" class="stale-adgroup-tip">
                 源数据超过 24 小时未同步，请先同步 Meta
                 <el-button
+                  v-if="userStore.isAdmin || userStore.hasPermission('campaign:sync')"
                   size="small"
                   type="warning"
                   :loading="existingAdGroupSyncing[account.id]"
@@ -658,6 +659,7 @@ import { regionGroupsApi, targetingPackagesApi, type RegionGroup, type Targeting
 import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
 import { campaignsApi, type SyncedAdGroup } from '@/api/campaigns'
 import { useLocale } from '@/stores/localeStore'
+import { useUserStore } from '@/stores/userStore'
 import {
   CTA_OPTIONS,
   defaultOptimizationGoal,
@@ -668,6 +670,7 @@ import {
   STANDARD_CONVERSION_EVENTS,
 } from '@/config/metaDeliveryRules'
 const { t } = useLocale()
+const userStore = useUserStore()
 import {
   jobsApi,
   isFinalStatus,
@@ -1415,8 +1418,12 @@ const syncExistingAdGroup = async (targetAccountId: string) => {
   existingAdGroupSyncing[targetAccountId] = true
   existingAdGroupSyncState[targetAccountId] = 'PENDING'
   delete existingAdGroupSyncError[targetAccountId]
+  let leaseToken = ''
   try {
-    const { data } = await campaignsApi.syncAdGroup(selected.id)
+    const { data: leaseResult } = await accountApi.acquireOperationLease(targetAccountId, 'CAMPAIGN_SYNC', 120)
+    leaseToken = leaseResult?.lease?.lease_token || ''
+    if (!leaseToken) throw new Error('未能获取广告账户操作租约')
+    const { data } = await campaignsApi.syncAdGroup(selected.id, leaseToken)
     ElMessage.success('已提交广告组同步，完成后将自动刷新配置')
     for (let attempt = 0; attempt < 45; attempt += 1) {
       await new Promise(resolve => window.setTimeout(resolve, 2000))
@@ -1463,6 +1470,7 @@ const syncExistingAdGroup = async (targetAccountId: string) => {
     existingAdGroupSyncError[targetAccountId] = '无法读取同步任务状态，请检查网络或任务中心'
     ElMessage.error('广告组同步失败，请检查同步权限或任务中心')
   } finally {
+    if (leaseToken) await accountApi.releaseOperationLease(targetAccountId, leaseToken).catch(() => undefined)
     existingAdGroupSyncing[targetAccountId] = false
   }
 }
@@ -1791,7 +1799,18 @@ const submit = async () => {
   }
 
   submitting.value = true
+  const operationLeases: Array<{ accountId: string; token: string }> = []
+  const operationLeaseTokens: Record<string, string> = {}
   try {
+    // 提交窗口内为每个目标账户加短时协调锁，避免两个投手同时发起同一批发布。
+    // Connector Worker 的长任务锁仍由后端负责，这里只保护前端提交阶段。
+    for (const accountId of form.ad_account_ids) {
+      const { data: leaseResult } = await accountApi.acquireOperationLease(accountId, 'CAMPAIGN_CREATE', 120)
+      const token = leaseResult?.lease?.lease_token
+      if (!token) throw new Error('未能获取广告账户操作租约')
+      operationLeases.push({ accountId, token })
+      operationLeaseTokens[accountId] = token
+    }
     syncAccessBusinessDefaults()
     // 素材是按广告账户生成 Meta 映射的；绑定占位和上传由后端投放任务
     // 幂等处理。不要在提交 Job 前调用 /prepare：素材仍在 OSS 处理时，
@@ -1824,6 +1843,7 @@ const submit = async () => {
         : `publish:${preflightResult.value.preview_id}`,
       source_job_id: editSource.value?.source_job_id,
       revision_id: editRevisionId.value || undefined,
+      operation_leases: operationLeaseTokens,
     })
     if (data.rejected_accounts?.length) {
       ElMessage.warning(`有 ${data.rejected_accounts.length} 个账号未进入任务，请检查账号状态`)
@@ -1837,6 +1857,9 @@ const submit = async () => {
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   } finally {
+    await Promise.allSettled(
+      operationLeases.map(({ accountId, token }) => accountApi.releaseOperationLease(accountId, token)),
+    )
     submitting.value = false
   }
 }
@@ -2013,7 +2036,22 @@ const viewJob = async (id: string) => {
 const retryFailed = async () => {
   if (!currentJob.value) return
   try {
-    await jobsApi.retry(currentJob.value.id)
+    const { data: detail } = await jobsApi.get(currentJob.value.id)
+    const accountIds = (detail.items || []).filter((item: any) => item.status === 'FAILED').map((item: any) => item.ad_account_id)
+    const held: Array<{ accountId: string; token: string }> = []
+    const operationLeases: Record<string, string> = {}
+    try {
+      for (const accountId of [...new Set(accountIds)]) {
+        const { data: leaseResult } = await accountApi.acquireOperationLease(accountId, 'CAMPAIGN_RETRY', 120)
+        const token = leaseResult?.lease?.lease_token
+        if (!token) throw new Error('未能获取广告账户操作租约')
+        held.push({ accountId, token })
+        operationLeases[accountId] = token
+      }
+      await jobsApi.retry(currentJob.value.id, { operation_leases: operationLeases })
+    } finally {
+      await Promise.allSettled(held.map(({ accountId, token }) => accountApi.releaseOperationLease(accountId, token)))
+    }
     ElMessage.success('已重新分派失败账户')
     startPolling(currentJob.value.id)
   } catch (e: any) {

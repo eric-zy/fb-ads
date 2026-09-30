@@ -85,7 +85,7 @@ class MetaOAuthService:
         except MetaOAuthError:
             result = short
         access_token = result.get("access_token", token)
-        # XMP 类平台的连接校验：Token 必须属于当前平台 Meta App，
+        # 外部平台类连接校验：Token 必须属于当前平台 Meta App，
         # 不能只依赖数据库中记录的 app_id。
         debug = self._get_json("debug_token", {
             "input_token": access_token,

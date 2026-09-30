@@ -344,15 +344,31 @@ async function load() {
 
 async function handleSync() {
   syncing.value = true
+  let leaseToken = ''
   try {
-    const { data } = await accountApi.sync(accountId.value)
+    const { data: leaseResult } = await accountApi.acquireOperationLease(accountId.value, 'ACCOUNT_SYNC', 120)
+    leaseToken = leaseResult?.lease?.lease_token || ''
+    if (!leaseToken) throw new Error('未能获取广告账户操作租约')
+    const { data } = await accountApi.sync(accountId.value, leaseToken)
     ElMessage.success(`同步任务已提交（job_id: ${data.job_id}）`)
     // 异步执行，稍后刷新一次看是否有新数据
     setTimeout(load, 2000)
   } catch (e: any) {
     ElMessage.error(errorOf(e))
   } finally {
+    if (leaseToken) await accountApi.releaseOperationLease(accountId.value, leaseToken).catch(() => undefined)
     syncing.value = false
+  }
+}
+
+async function withMutationLease<T>(callback: (token: string) => Promise<T>): Promise<T> {
+  const { data } = await accountApi.acquireOperationLease(accountId.value, 'ACCOUNT_MUTATION', 120)
+  const token = data?.lease?.lease_token
+  if (!token) throw new Error('未能获取广告账户操作租约')
+  try {
+    return await callback(token)
+  } finally {
+    await accountApi.releaseOperationLease(accountId.value, token).catch(() => undefined)
   }
 }
 
@@ -392,9 +408,9 @@ async function onDeploySwitch(val: boolean) {
   toggling.value = true
   try {
     if (val) {
-      await accountApi.unfreeze(accountId.value)
+      await withMutationLease(token => accountApi.unfreeze(accountId.value, token))
     } else {
-      await accountApi.freeze(accountId.value, '管理员在账户详情页禁用')
+      await withMutationLease(token => accountApi.freeze(accountId.value, '管理员在账户详情页禁用', token))
     }
     ElMessage.success(val ? '已允许参与批量投放' : '已禁止参与批量投放')
     await load()
@@ -430,7 +446,7 @@ async function unbindAccount() {
       '确认解绑账号',
       { type: 'warning', confirmButtonText: '确认解绑', cancelButtonText: '取消' },
     )
-    await accountApi.unbind(accountId.value)
+    await withMutationLease(token => accountApi.unbind(accountId.value, token))
     ElMessage.success('账号已解绑')
     goBack()
   } catch (e: any) {

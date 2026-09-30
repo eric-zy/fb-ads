@@ -560,7 +560,11 @@ Access Token 的独立管理层（设计文档第 9 节）。全部为管理员�
 | POST | `/api/v1/accounts/{account_pk}/unfreeze` | 管理员 | 启用（system_status=ACTIVE） |
 | POST | `/api/v1/accounts/{account_pk}/assign` | 管理员 | 分配用户 |
 | POST | `/api/v1/accounts/{account_pk}/unassign` | 管理员 | 取消分配 |
+| POST | `/api/v1/accounts/{account_pk}/primary` | 管理员 | 设置唯一主投手，其余为协作者 |
 | GET | `/api/v1/accounts/{account_pk}/users` | 管理员 | 已分配用户列表 |
+| GET | `/api/v1/accounts/{account_pk}/operation-lease` | 登录且有账户写权限 | 查询账户操作租约 |
+| POST | `/api/v1/accounts/{account_pk}/operation-lease` | 登录且有账户写权限 | 获取账户短时操作租约（15~300 秒） |
+| DELETE | `/api/v1/accounts/{account_pk}/operation-lease` | 登录 | 释放本人持有的操作租约 |
 
 > 注意：路径参数 `{account_pk}` 是**系统内部主键**，不是 Meta 的 `act_xxx`。
 
@@ -674,13 +678,19 @@ AND Meta 侧账户状态允许投放
 `system_status_reason`、`daily_spend_limit`、`monthly_spend_limit`、`risk_score`、
 `business_id`。
 
+请求体还必须携带当前用户持有的 `ACCOUNT_MUTATION` 租约：
+
+```json
+{ "account_name": "账户A", "lease_token": "lease-token" }
+```
+
 > Meta 侧字段（`account_status` / `amount_spent` 等）由同步写入，不在此修改。
 > 变更 `business_id` 时同样要做归属校验。
 
 #### POST /api/v1/accounts/{account_pk}/transfer
 
 ```json
-{ "business_id": "yyy", "skip_verification": false }
+{ "business_id": "yyy", "skip_verification": false, "lease_token": "lease-token" }
 ```
 
 默认调用 Meta 校验归属，校验不通过不写库；`skip_verification` 仅在 BM 凭据失效时的应急开关。
@@ -695,7 +705,8 @@ AND Meta 侧账户状态允许投放
   "action": "transfer",
   "account_ids": ["pk1", "pk2"],
   "business_id": "yyy",
-  "skip_verification": false
+  "skip_verification": false,
+  "operation_leases": { "pk1": "lease-token-1", "pk2": "lease-token-2" }
 }
 ```
 
@@ -717,8 +728,42 @@ AND Meta 侧账户状态允许投放
 #### POST /api/v1/accounts/{account_pk}/assign
 
 ```json
-{ "user_ids": ["user_id_1", "user_id_2"] }
+{
+  "user_ids": ["user_id_1", "user_id_2"],
+  "primary_user_id": "user_id_1",
+  "lease_token": "assignment-lease-token"
+}
 ```
+
+同一账户允许多个有效分配，但数据库保证最多一个 `PRIMARY` 主投手；未指定
+`primary_user_id` 时保留已有主投手，没有主投手则选择本次列表第一个用户。
+其它有效分配为 `COLLABORATOR` 协作者。保存分配不会删除未勾选的历史用户，
+请使用 `/unassign` 明确移除。分配、移除分配和切换主投手均需携带
+`ACCOUNT_ASSIGNMENT` 租约 token。
+
+账户调度中心的单账户自动分配、释放，以及批量“自动分配未分配账户”也使用
+`ACCOUNT_ASSIGNMENT` 租约；批量接口同样通过 `operation_leases` 按账户主键传递 token。
+
+冻结、启用、删除、解绑接口同样需要 `ACCOUNT_MUTATION` 租约；批量接口在
+`operation_leases` 中按账户主键提供 token。缺失、过期、持有人或操作类型不匹配时
+统一返回 `409 account_operation_lease_required`。
+
+#### 账户操作租约
+
+主投手/协作者都必须先拥有账户写权限，才能申请短时租约。租约用于编辑、同步、
+提交等前端关键操作的并发控制；任务提交接口会再次校验 token，真正的投放任务
+仍由 worker 层锁保证幂等。
+
+```json
+POST /api/v1/accounts/{account_pk}/operation-lease
+{
+  "operation_type": "EDIT_TEMPLATE",
+  "ttl_seconds": 90
+}
+```
+
+同一时间同一账户只能有一个有效租约，冲突返回 `409 account_operation_busy`；
+租约最长 300 秒，异常退出后自动过期。
 
 ### 6.2 账户运营接口
 
@@ -740,6 +785,16 @@ AND Meta 侧账户状态允许投放
 | GET | `/api/v1/accounts/{account_id}/publish-frequency-check` | 发布频次检查 |
 
 #### POST /api/v1/accounts/{account_id}/sync
+
+请求体必须携带当前用户持有的 `ACCOUNT_SYNC` 租约：
+
+```json
+{ "lease_token": "lease-token" }
+```
+
+批量同步 `/api/v1/accounts/sync` 使用 `operation_leases` 传递账户到 token
+映射。缺失、过期、持有人或操作类型不匹配时返回
+`409 account_operation_lease_required`。
 
 ```json
 { "status": "success", "account_id": "act_123", "created": 5, "updated": 3 }
@@ -892,11 +947,13 @@ AND Meta 侧账户状态允许投放
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
 | GET | `/api/v1/templates` | 登录 | 列表（可 `?status=` 过滤） |
-| POST | `/api/v1/templates` | 管理员 | 创建 |
+| POST | `/api/v1/templates` | 登录用户 | 创建（模板归创建者所有） |
 | GET | `/api/v1/templates/{template_id}` | 登录 | 详情 |
-| PATCH | `/api/v1/templates/{template_id}` | 管理员 | 局部更新 |
-| POST | `/api/v1/templates/{template_id}/clone` | 管理员 | 复制 |
-| DELETE | `/api/v1/templates/{template_id}` | 管理员 | 删除（软删除，置 ARCHIVED） |
+| PATCH | `/api/v1/templates/{template_id}` | 创建者或管理员 | 局部更新 |
+| POST | `/api/v1/templates/{template_id}/clone` | 创建者或管理员 | 复制 |
+| DELETE | `/api/v1/templates/{template_id}` | 创建者或管理员 | 删除（软删除，置 ARCHIVED） |
+
+普通用户只能查看和修改自己创建的模板；租户管理员可管理本租户全部模板。迁移前创建、没有创建者信息的历史模板仍仅限管理员操作。
 
 ### POST /api/v1/templates
 
@@ -987,7 +1044,8 @@ AND Meta 侧账户状态允许投放
   "template_id": "xxx",
   "ad_account_ids": ["1", "2", "3"],
   "budget_override": 100,
-  "status": "PAUSED"
+  "status": "PAUSED",
+  "operation_leases": {"1": "lease-token-1", "2": "lease-token-2", "3": "lease-token-3"}
 }
 ```
 
@@ -999,6 +1057,8 @@ AND Meta 侧账户状态允许投放
 
 - `budget_override` 留空则使用模板预算（美元/天）
 - `status` 默认 `PAUSED`，避免创建后立即产生花费
+- `operation_leases` 必须包含每个目标账户对应的短时租约 token；缺失、过期、
+  持有人不匹配或操作类型不匹配时返回 `409 account_operation_lease_required`
 
 随后前端轮询 `GET /api/v1/jobs/{job_id}` 查看进度。
 
@@ -1012,7 +1072,8 @@ AND Meta 侧账户状态允许投放
   "ad_account_ids": ["1", "2"],
   "budget_override": 100,
   "status": "PAUSED",
-  "scheduled_at": "2026-08-30T18:00:00+08:00"
+  "scheduled_at": "2026-08-30T18:00:00+08:00",
+  "operation_leases": {"1": "lease-token-1", "2": "lease-token-2"}
 }
 ```
 
@@ -1137,6 +1198,32 @@ AND Meta 侧账户状态允许投放
 | POST | `/api/v1/campaigns/batch-publish` | 登录 | 批量投放（旧接口） |
 | POST | `/api/v1/campaigns/{campaign_id}/pause` | 登录 | 暂停系列 |
 | POST | `/api/v1/campaigns/{campaign_id}/resume` | 登录 | 恢复系列 |
+
+### 投放对象高风险操作
+
+广告系列、广告组、广告的同步、启停/归档/移除/恢复、预算修改，以及失败操作重试，
+提交前都必须持有目标广告账户的短时操作租约。租约申请见上文“账户操作租约”。
+
+批量操作请求统一携带账户到 token 的映射：
+
+```json
+{
+  "action": "PAUSE",
+  "ids": ["campaign-instance-id"],
+  "object_type": "CAMPAIGN",
+  "operation_leases": {"account-id": "lease-token"}
+}
+```
+
+同步使用 `action=SYNC`，失败操作重试使用：
+
+```json
+{ "lease_token": "lease-token" }
+```
+
+对应接口会校验租约的持有人、操作类型、账户和有效期；缺失、过期或不匹配返回
+`409 account_operation_lease_required`。广告组复用同步接口
+`POST /api/v1/ad-groups/{ad_group_id}/sync` 也采用同样的 `lease_token` 请求体。
 
 ### POST /api/v1/campaigns/batch-publish
 

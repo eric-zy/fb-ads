@@ -15,19 +15,20 @@ from core.enums import ActionType
 from models import AdAccount, AdGroup, Campaign, AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, AsyncTaskRecord, DeliveryAction, SyncAlert, User
 from services.job_service import JobDispatchError, JobService
 from services.account_access import accessible_account_ids
+from services.account_operation_lease import AccountOperationLeaseService
+from services.business_access import account_ids_for_action, require_accounts, tenant_required
 from tasks.meta_sync_tasks import sync_delivery_objects_task, sync_single_ad_group_task, update_delivery_object_task
 from celery_app import celery_app
 
 router = APIRouter(prefix="/api/v1", tags=["Meta 投放对象"])
 
+
+class OperationLeasePayload(BaseModel):
+    lease_token: str
+
 def _scope(query, model, user):
-    """租户用户只能访问本租户对象；平台管理员可跨租户审计。"""
-    if getattr(user, "is_platform_admin", lambda: False)() and not getattr(user, "tenant_id", None):
-        return query
-    tenant_id = getattr(user, "tenant_id", None)
-    if not tenant_id:
-        raise HTTPException(status_code=403, detail="当前账号未绑定租户")
-    return query.filter(model.tenant_id == tenant_id)
+    """业务对象始终限定在当前生效租户。"""
+    return query.filter(model.tenant_id == tenant_required(user))
 
 def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
     if not user_id:
@@ -55,11 +56,38 @@ def _require_action_permission(user: User, action: str) -> None:
 
 
 def _visible_accounts(db: Session, user: User) -> Optional[set[str]]:
-    return accessible_account_ids(db, user)
+    return account_ids_for_action(db, user)
 
 
 def _can_see_account(visible: Optional[set[str]], account_id: str) -> bool:
     return visible is None or account_id in visible
+
+
+def _require_operation_leases(
+    db: Session,
+    current_user: User,
+    account_ids: List[str],
+    operation_leases: Optional[dict[str, str]],
+    operation_type: str,
+) -> None:
+    """Require a current account lease before queuing a high-risk operation."""
+    invalid_accounts = AccountOperationLeaseService(db).invalid_accounts(
+        tenant_required(current_user),
+        account_ids,
+        current_user.id,
+        operation_leases,
+        operation_type,
+    )
+    if invalid_accounts:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "account_operation_lease_required",
+                "message": "部分广告账户的操作租约无效或已过期，请重新获取后再提交",
+                "operation_type": operation_type,
+                "account_ids": invalid_accounts,
+            },
+        )
 
 
 @router.get("/ad-groups/search")
@@ -127,6 +155,7 @@ def search_synced_ad_groups(
 @router.post("/ad-groups/{ad_group_id}/sync")
 def sync_synced_ad_group(
     ad_group_id: str,
+    req: "OperationLeasePayload",
     db: Session = Depends(get_db),
     current_user=Depends(get_current_active_user),
 ):
@@ -148,6 +177,14 @@ def sync_synced_ad_group(
         raise HTTPException(status_code=404, detail="广告组不存在或无权同步")
 
     account_id = row.campaign.ad_account_id
+    require_accounts(db, current_user, [account_id], write=True)
+    _require_operation_leases(
+        db,
+        current_user,
+        [account_id],
+        {account_id: req.lease_token},
+        "CAMPAIGN_SYNC",
+    )
     task = sync_single_ad_group_task.delay(ad_group_id, account_id)
     db.add(AsyncTaskRecord(
         task_id=task.id,
@@ -243,6 +280,7 @@ class CampaignActionRequest(BaseModel):
     ad_account_ids: Optional[List[str]] = None
     budget: Optional[float] = None
     idempotency_key: Optional[str] = None
+    operation_leases: Optional[dict[str, str]] = None
 
 
 @router.get("/delivery-actions")
@@ -274,7 +312,12 @@ def get_delivery_action(action_id: str, db: Session = Depends(get_db), current_u
 
 
 @router.post("/delivery-actions/{action_id}/retry")
-def retry_delivery_action(action_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
+def retry_delivery_action(
+    action_id: str,
+    req: "OperationLeasePayload",
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
     """仅重试失败的 AdSet/Ad 状态操作，创建新的动作记录避免覆盖原始失败证据。"""
     visible = _visible_accounts(db, current_user)
     row = _scope(db.query(DeliveryAction), DeliveryAction, current_user).filter(DeliveryAction.id == action_id).first()
@@ -283,6 +326,16 @@ def retry_delivery_action(action_id: str, db: Session = Depends(get_db), current
     if row.status != "FAILED":
         raise HTTPException(status_code=409, detail="只有失败的操作可以重试")
     _require_action_permission(current_user, row.action)
+    require_accounts(db, current_user, [row.account_id], write=True)
+    _require_operation_leases(
+        db,
+        current_user,
+        [row.account_id],
+        {row.account_id: req.lease_token},
+        "CAMPAIGN_RETRY",
+    )
+    if not current_user.is_admin() and row.requested_by != current_user.id:
+        raise HTTPException(status_code=404, detail="操作记录不存在或无权操作")
     if row.object_type == "ADSET":
         target = _scope(db.query(AdSetInstance), AdSetInstance, current_user).filter(AdSetInstance.id == row.object_id).first()
         meta_id = target.meta_adset_id if target else None
@@ -507,7 +560,14 @@ def list_adsets(
         .all()
     )
     return {
-        "items": [row.to_dict() for row in rows],
+        "items": [
+            {
+                **row.to_dict(),
+                "ad_account_id": row.campaign_instance.ad_account_id,
+                "account_name": row.campaign_instance.ad_account.account_name if row.campaign_instance.ad_account else None,
+            }
+            for row in rows
+        ],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -521,12 +581,16 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
     if not campaign or not _can_see_account(visible, campaign.ad_account_id):
         raise HTTPException(status_code=404, detail="广告系列不存在")
     template = campaign.template
+    private_template = template and (current_user.is_admin() or template.created_by == current_user.id)
     job_item = None
     if template:
         for job in reversed(template.jobs or []):
             item = next((row for row in job.items if row.ad_account_id == campaign.ad_account_id), None)
             if item:
                 job_item = item.to_dict()
+                if not current_user.is_admin() and job.created_by != current_user.id:
+                    for key in ("response_payload", "error_message", "connector_task_id", "request_hash", "access_business_id"):
+                        job_item.pop(key, None)
                 job_item["publisher"] = _publisher_info(db, job.created_by)
                 break
     recent_jobs = (
@@ -551,7 +615,7 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
             "status": item.status,
             "remote_status": connector_status.get("status") or campaign.meta_status,
             "error_code": item.error_code,
-            "error_message": item.error_message,
+            "error_message": item.error_message if current_user.is_admin() or job.created_by == current_user.id else None,
             "created_at": job.created_at.isoformat() if job.created_at else None,
             "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         })
@@ -565,8 +629,8 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
             "system_status": campaign.ad_account.system_status,
             "account_status": campaign.ad_account.account_status,
         } if campaign.ad_account else None,
-        "template": template.to_dict() if template else None,
-        "creative_config": (template.creative_config_json if template else None),
+        "template": template.to_dict() if private_template else None,
+        "creative_config": template.creative_config_json if private_template else None,
         "adsets": [
             {
                 **adset.to_dict(),
@@ -609,7 +673,14 @@ def list_ads(
         .all()
     )
     return {
-        "items": [row.to_dict() for row in rows],
+        "items": [
+            {
+                **row.to_dict(),
+                "ad_account_id": row.adset_instance.campaign_instance.ad_account_id,
+                "account_name": row.adset_instance.campaign_instance.ad_account.account_name if row.adset_instance.campaign_instance.ad_account else None,
+            }
+            for row in rows
+        ],
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -651,6 +722,14 @@ def campaign_action(
         if not account_ids:
             raise HTTPException(status_code=404, detail="未找到可同步的投放对象")
         object_ids = [row.id for row in visible_rows]
+        require_accounts(db, current_user, account_ids, write=True)
+        _require_operation_leases(
+            db,
+            current_user,
+            account_ids,
+            req.operation_leases,
+            "CAMPAIGN_SYNC",
+        )
         tasks = [sync_delivery_objects_task.delay(account_id) for account_id in account_ids]
         for task in tasks:
             db.add(AsyncTaskRecord(task_id=task.id, task_type="META_SYNC", object_type=object_type, object_ids=object_ids, created_by=current_user.id))
@@ -671,6 +750,16 @@ def campaign_action(
 
     instances = _scope(db.query(CampaignInstance), CampaignInstance, current_user).filter(CampaignInstance.id.in_(req.ids)).all()
     instances = [row for row in instances if _can_see_account(visible, row.ad_account_id)]
+    instance_account_ids = sorted({row.ad_account_id for row in instances})
+    require_accounts(db, current_user, instance_account_ids, write=True)
+    if instances:
+        _require_operation_leases(
+            db,
+            current_user,
+            instance_account_ids,
+            req.operation_leases,
+            "CAMPAIGN_ACTION",
+        )
     if action == "RESTORE" and instances:
         invalid = [row.id for row in instances if row.status not in {"ARCHIVED", "DELETED"}]
         if invalid:
@@ -681,6 +770,15 @@ def campaign_action(
         targets = [{"type": "ADSET", "id": row.id, "account_id": row.campaign_instance.ad_account_id} for row in adsets if _can_see_account(visible, row.campaign_instance.ad_account_id)]
         targets += [{"type": "AD", "id": row.id, "account_id": row.adset_instance.campaign_instance.ad_account_id} for row in ads if _can_see_account(visible, row.adset_instance.campaign_instance.ad_account_id)]
         if targets:
+            target_account_ids = sorted({target["account_id"] for target in targets})
+            require_accounts(db, current_user, target_account_ids, write=True)
+            _require_operation_leases(
+                db,
+                current_user,
+                target_account_ids,
+                req.operation_leases,
+                "CAMPAIGN_ACTION",
+            )
             actions = []
             request_key = req.idempotency_key or uuid.uuid4().hex
             for target in targets:
@@ -688,7 +786,11 @@ def campaign_action(
                 if action == "RESTORE" and row.status not in {"ARCHIVED", "DELETED"}:
                     raise HTTPException(status_code=409, detail="只有已归档或已移除的对象可以恢复")
                 action_key = f"{request_key}:{target['type']}:{target['id']}"
-                existing = db.query(DeliveryAction).filter(DeliveryAction.idempotency_key == action_key).first()
+                existing = db.query(DeliveryAction).filter(
+                    DeliveryAction.idempotency_key == action_key,
+                    DeliveryAction.requested_by == current_user.id,
+                    DeliveryAction.tenant_id == tenant_required(current_user),
+                ).first()
                 if existing:
                     actions.append(existing)
                     continue

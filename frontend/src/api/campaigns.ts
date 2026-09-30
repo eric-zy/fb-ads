@@ -1,6 +1,6 @@
 import request from '@/utils/request'
 export interface MetaCampaign { id: string; ad_account_id: string; account_name?: string; meta_campaign_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; objective?: string; template_name?: string; updated_at?: string; publisher?: { id: string; username: string; email?: string | null } | null; grouped?: boolean; grouped_ids?: string[]; account_count?: number; meta_campaign_ids?: string[]; grouped_accounts?: Array<{ id: string; name: string; meta_campaign_id?: string | null; status?: string; meta_status?: string | null }> }
-export interface MetaAdSet { id: string; campaign_id: string; meta_adset_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; optimization_goal?: string; daily_budget?: number }
+export interface MetaAdSet { id: string; campaign_id: string; ad_account_id?: string; account_name?: string | null; meta_adset_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; optimization_goal?: string; daily_budget?: number }
 export interface SyncedAdGroup {
   id: string
   ad_group_id: string
@@ -12,7 +12,7 @@ export interface SyncedAdGroup {
   updated_at?: string | null
   stale?: boolean
 }
-export interface MetaAd { id: string; adset_id: string; meta_ad_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; effective_status?: string }
+export interface MetaAd { id: string; adset_id: string; ad_account_id?: string; account_name?: string | null; meta_ad_id: string; name: string; status: string; meta_status?: string; desired_status?: string; last_error?: string | null; deleted_at?: string | null; effective_status?: string }
 export interface AsyncActionResult { job_id?: string; job_ids?: string[]; task_ids?: string[]; action_ids?: string[]; account_ids?: string[]; object_type?: string; object_ids?: string[]; object_count?: number; status: string }
 export interface AdGroupSyncResult { status: string; task_id: string; ad_group_id: string; account_id: string }
 export interface AsyncTaskStatus { task_id: string; state: string; result?: { status?: string; ad_group_id?: string; updated_at?: string; error?: string; [key: string]: any }; error?: string }
@@ -22,18 +22,18 @@ export interface DeliveryObjectDetail { object_type: string; object: MetaCampaig
 export interface PageResult<T> { items: T[]; total: number; page: number; page_size: number }
 export const campaignsApi = {
   searchAdGroups: (params?: { account_id?: string; q?: string; status?: string; limit?: number }) => request.get<SyncedAdGroup[]>('/api/v1/ad-groups/search', { params }),
-  syncAdGroup: (id: string) => request.post<AdGroupSyncResult>('/api/v1/ad-groups/' + id + '/sync'),
+  syncAdGroup: (id: string, leaseToken: string) => request.post<AdGroupSyncResult>('/api/v1/ad-groups/' + id + '/sync', { lease_token: leaseToken }),
   list: (params?: { ad_account_id?: string; status?: string; keyword?: string; page?: number; page_size?: number }) => request.get<PageResult<MetaCampaign>>('/api/v1/campaigns', { params }),
   detail: (id: string) => request.get<any>('/api/v1/campaigns/' + id + '/detail'),
   objectDetail: (objectType: string, id: string) => request.get<DeliveryObjectDetail>('/api/v1/delivery-objects/' + objectType + '/' + id),
   adsets: (id: string, status?: string, page?: number, page_size?: number) => request.get<PageResult<MetaAdSet>>('/api/v1/campaigns/' + id + '/adsets', { params: { status, page, page_size } }),
   ads: (id: string, status?: string, page?: number, page_size?: number) => request.get<PageResult<MetaAd>>('/api/v1/adsets/' + id + '/ads', { params: { status, page, page_size } }),
-  sync: (ids?: string[], objectType = 'CAMPAIGN') => request.post<AsyncActionResult & { object_type?: string; object_ids?: string[] }>('/api/v1/campaigns/actions', { action: 'SYNC', ids, object_type: objectType }),
-  action: (data: { action: string; ids: string[]; object_type?: string; budget?: number; idempotency_key?: string }) => request.post<AsyncActionResult>('/api/v1/campaigns/actions', data),
+  sync: (ids?: string[], objectType = 'CAMPAIGN', operation_leases?: Record<string, string>) => request.post<AsyncActionResult & { object_type?: string; object_ids?: string[] }>('/api/v1/campaigns/actions', { action: 'SYNC', ids, object_type: objectType, operation_leases }),
+  action: (data: { action: string; ids: string[]; object_type?: string; budget?: number; idempotency_key?: string; operation_leases?: Record<string, string> }) => request.post<AsyncActionResult>('/api/v1/campaigns/actions', data),
   taskStatus: (id: string) => request.get<AsyncTaskStatus>('/api/v1/tasks/' + id),
   taskRecords: (limit = 50) => request.get('/api/v1/tasks', { params: { limit } }),
   deliveryActions: (limit = 50, status?: string) => request.get<DeliveryAction[]>('/api/v1/delivery-actions', { params: { limit, status } }),
-  retryDeliveryAction: (id: string) => request.post<{ status: string; action_id: string; task_id: string }>('/api/v1/delivery-actions/' + id + '/retry'),
+  retryDeliveryAction: (id: string, leaseToken: string) => request.post<{ status: string; action_id: string; task_id: string }>('/api/v1/delivery-actions/' + id + '/retry', { lease_token: leaseToken }),
   alerts: (limit = 30) => request.get<SyncAlert[]>('/api/v1/sync-alerts', { params: { limit } }),
   resolveAlert: (id: string) => request.post<SyncAlert>('/api/v1/sync-alerts/' + id + '/resolve'),
 }

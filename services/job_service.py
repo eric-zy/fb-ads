@@ -617,7 +617,9 @@ class JobService:
         if idempotency_key:
             existing = (
                 self.db.query(CampaignJob)
-                .filter(CampaignJob.idempotency_key == idempotency_key)
+                .filter(CampaignJob.idempotency_key == idempotency_key,
+                        CampaignJob.tenant_id == template.tenant_id,
+                        CampaignJob.created_by == created_by)
                 .first()
             )
             if existing:

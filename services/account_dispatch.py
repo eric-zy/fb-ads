@@ -14,6 +14,25 @@ class AccountDispatchService:
         account = self.db.query(AdAccount).filter(AdAccount.id == account_id, AdAccount.tenant_id == tenant_id).with_for_update().first()
         if not account:
             raise ValueError("广告账户不存在")
+
+        # 手工分配优先于自动规则。历史数据可能只有协作者，没有主投手，
+        # 这里将最早的有效关系提升为主投手，保持向后兼容且不重复创建关系。
+        active_rows = self.db.query(UserAccount).filter(
+            UserAccount.tenant_id == tenant_id,
+            UserAccount.account_id == account_id,
+            UserAccount.assignment_status == "ACTIVE",
+        ).order_by(UserAccount.assigned_at.asc(), UserAccount.id.asc()).all()
+        primary = next((row for row in active_rows if row.assignment_role == "PRIMARY"), None)
+        if primary:
+            return primary
+        if active_rows:
+            primary = active_rows[0]
+            primary.assignment_role = "PRIMARY"
+            for row in active_rows[1:]:
+                row.assignment_role = "COLLABORATOR"
+            self.db.commit()
+            return primary
+
         rules = self.db.query(AccountAssignmentRule).filter(
             AccountAssignmentRule.tenant_id == tenant_id,
             AccountAssignmentRule.status == "ACTIVE",
@@ -37,10 +56,7 @@ class AccountDispatchService:
                 continue
             counts = {u.id: self.db.query(UserAccount).filter(UserAccount.tenant_id == tenant_id, UserAccount.user_id == u.id, UserAccount.assignment_status == "ACTIVE").count() for u in users}
             user = sorted(users, key=lambda u: (counts[u.id], user_ids.index(u.id)))[0]
-            existing = self.db.query(UserAccount).filter(UserAccount.tenant_id == tenant_id, UserAccount.account_id == account_id, UserAccount.assignment_status == "ACTIVE").first()
-            if existing:
-                return existing
-            assignment = UserAccount(id=uuid.uuid4().hex, tenant_id=tenant_id, user_id=user.id, account_id=account_id, assignment_type="AUTO", assignment_status="ACTIVE", assigned_by=operator_id)
+            assignment = UserAccount(id=uuid.uuid4().hex, tenant_id=tenant_id, user_id=user.id, account_id=account_id, role="publisher", assignment_role="PRIMARY", assignment_type="AUTO", assignment_status="ACTIVE", assigned_by=operator_id)
             self.db.add(assignment)
             self.db.add(AccountAssignmentLog(id=uuid.uuid4().hex, tenant_id=tenant_id, account_id=account_id, to_user_id=user.id, rule_id=rule.id, action="ASSIGN", operator_id=operator_id, reason="自动分配"))
             self.db.commit()
@@ -72,12 +88,13 @@ class AccountDispatchService:
         assigned = skipped = 0
         errors = []
         for (account_id,) in accounts:
-            exists = self.db.query(UserAccount.id).filter(
+            primary_exists = self.db.query(UserAccount.id).filter(
                 UserAccount.tenant_id == tenant_id,
                 UserAccount.account_id == account_id,
+                UserAccount.assignment_role == "PRIMARY",
                 UserAccount.assignment_status == "ACTIVE",
             ).first()
-            if exists:
+            if primary_exists:
                 skipped += 1
                 continue
             try:

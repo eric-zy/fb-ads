@@ -310,7 +310,16 @@ const submit = async () => {
   }
 
   submitting.value = true
+  const operationLeases: Array<{ accountId: string; token: string }> = []
+  const operationLeaseTokens: Record<string, string> = {}
   try {
+    for (const accountId of form.ad_account_ids) {
+      const { data: leaseResult } = await accountApi.acquireOperationLease(accountId, 'SCHEDULE_CAMPAIGN', 120)
+      const token = leaseResult?.lease?.lease_token
+      if (!token) throw new Error('未能获取广告账户操作租约')
+      operationLeases.push({ accountId, token })
+      operationLeaseTokens[accountId] = token
+    }
     syncAccessBusinessDefaults()
     const { data } = await jobsApi.scheduleCampaign({
       template_id: form.template_id,
@@ -319,6 +328,7 @@ const submit = async () => {
       status: form.status,
       scheduled_at: toIsoWithOffset(when),
       access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined,
+      operation_leases: operationLeaseTokens,
     })
     ElMessage.success(`定时任务已创建：${data.job_id}`)
     dialogVisible.value = false
@@ -326,6 +336,9 @@ const submit = async () => {
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   } finally {
+    await Promise.allSettled(
+      operationLeases.map(({ accountId, token }) => accountApi.releaseOperationLease(accountId, token)),
+    )
     submitting.value = false
   }
 }

@@ -27,9 +27,11 @@ SENSITIVE_KEYS = (
 MASKED_PLACEHOLDER = "***"
 
 
-def _sanitize(data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _sanitize(data: Any) -> Any:
     """递归脱敏：命中敏感键的字段值替换为占位符"""
-    if not data:
+    if isinstance(data, (list, tuple)):
+        return [_sanitize(item) for item in data]
+    if not isinstance(data, dict):
         return data
 
     result: Dict[str, Any] = {}
@@ -37,7 +39,7 @@ def _sanitize(data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         key_lower = str(key).lower()
         if any(s in key_lower for s in SENSITIVE_KEYS):
             result[key] = MASKED_PLACEHOLDER if value else value
-        elif isinstance(value, dict):
+        elif isinstance(value, (dict, list, tuple)):
             result[key] = _sanitize(value)
         else:
             result[key] = value

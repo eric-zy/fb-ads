@@ -304,7 +304,7 @@ def resolve_tenant_of(model, value, column: str = "id") -> Optional[str]:
         db.close()
 
 
-def tenant_task(resolver):
+def tenant_task(resolver, *, required=False):
     """Celery 任务装饰器：先解析租户，再在租户上下文中执行任务体
 
     用法（`@shared_task` 在外层，本装饰器在内层）：
@@ -325,14 +325,28 @@ def tenant_task(resolver):
             try:
                 tenant_id = resolver(*args, **kwargs)
             except Exception as e:  # noqa: BLE001
+                if required:
+                    raise PermissionError("任务租户解析失败，拒绝执行") from e
                 logger.warning(f"[tenant] 租户解析异常，任务将在无租户上下文下执行: {e}")
                 tenant_id = None
+            if required and not tenant_id:
+                raise PermissionError("任务缺少租户上下文，拒绝执行")
             with tenant_scope(tenant_id):
-                return task_fn(*args, **kwargs)
+                guard = _tenant_filter_enabled.set(True) if required else None
+                try:
+                    return task_fn(*args, **kwargs)
+                finally:
+                    if guard is not None:
+                        _tenant_filter_enabled.reset(guard)
 
         return wrapper
 
     return decorator
+
+
+def strict_tenant_task(resolver):
+    """Tenant business tasks must fail closed even inside an eager orchestrator."""
+    return tenant_task(resolver, required=True)
 
 
 def for_all_tenants(task_fn):
@@ -421,13 +435,15 @@ def _apply_tenant_write_guard(session, flush_context, instances) -> None:
         if isinstance(obj, TenantMixin):
             if getattr(obj, "tenant_id", None) is None:
                 if tenant_id is None:
-                    # 不受 TENANT_STRICT_MODE 控制：这类写入必然失败，
-                    # 早失败 + 明确信息，好过数据库抛 NOT NULL。
-                    raise PermissionError(
-                        f"缺少租户上下文，无法创建 {type(obj).__name__}："
-                        "平台账号请先切换到某个租户，或在创建对象时显式赋值 tenant_id"
-                    )
-                obj.tenant_id = tenant_id
+                    # 平台级可空表（如 AuditLog、平台管理员 User）允许
+                    # tenant_id=NULL；普通租户业务表仍必须有上下文。
+                    if not getattr(obj, "__tenant_nullable__", False):
+                        raise PermissionError(
+                            f"缺少租户上下文，无法创建 {type(obj).__name__}："
+                            "平台账号请先切换到某个租户，或在创建对象时显式赋值 tenant_id"
+                        )
+                else:
+                    obj.tenant_id = tenant_id
         elif isinstance(obj, SharedTenantMixin):
             # 共享表**故意不自动填充**：tenant_id 为 NULL 是"平台内置数据"的
             # 合法取值。若当前处在某个租户上下文中却留空，多半是业务代码漏传，

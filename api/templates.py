@@ -11,9 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from core.auth import get_current_active_user, require_admin
+from core.auth import get_current_active_user
 from core.database import get_db
 from core.enums import TemplateStatus
+from services.business_access import owned_query, tenant_required
 from models import CampaignTemplate, MetaPage, User
 from services.creative_format import normalize_creative_format
 from services.meta_creative_options import normalize_cta
@@ -260,10 +261,10 @@ class TemplateUpdate(BaseModel):
 def list_templates(
     status: Optional[str] = Query(None, description="按状态过滤 ACTIVE / DISABLED / ARCHIVED"),
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """模板列表"""
-    query = db.query(CampaignTemplate).filter(CampaignTemplate.is_temporary.is_(False))
+    query = owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.is_temporary.is_(False))
     if status:
         query = query.filter(CampaignTemplate.status == status)
     items = query.order_by(CampaignTemplate.created_at.desc()).all()
@@ -274,10 +275,10 @@ def list_templates(
 def create_template(
     req: TemplateCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """创建投放模板"""
-    if db.query(CampaignTemplate).filter(CampaignTemplate.name == req.name).first():
+    if owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.name == req.name).first():
         raise HTTPException(status_code=400, detail=f"模板名称已存在: {req.name}")
 
     payload = req.dict(exclude_none=False)
@@ -291,6 +292,8 @@ def create_template(
     _validate_delivery_config(payload)
     template = CampaignTemplate(
         id=uuid.uuid4().hex,
+        tenant_id=tenant_required(current_user),
+        created_by=getattr(current_user, "id", None),
         **payload,
         status=TemplateStatus.ACTIVE.value,
     )
@@ -304,10 +307,10 @@ def create_template(
 def get_template(
     template_id: str,
     db: Session = Depends(get_db),
-    _: object = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """模板详情"""
-    template = db.query(CampaignTemplate).filter(CampaignTemplate.id == template_id).first()
+    template = owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="模板不存在")
     return template.to_dict()
@@ -318,10 +321,10 @@ def update_template(
     template_id: str,
     req: TemplateUpdate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    current_user: User = Depends(get_current_active_user),
 ):
     """更新模板（仅更新传入字段）"""
-    template = db.query(CampaignTemplate).filter(CampaignTemplate.id == template_id).first()
+    template = owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="模板不存在")
 
@@ -350,15 +353,17 @@ def update_template(
 def clone_template(
     template_id: str,
     db: Session = Depends(get_db),
-    _: object = Depends(require_admin),
+    current_user: User = Depends(get_current_active_user),
 ):
     """复制模板（设计文档第 37.3 节）"""
-    source = db.query(CampaignTemplate).filter(CampaignTemplate.id == template_id).first()
+    source = owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.id == template_id).first()
     if not source:
         raise HTTPException(status_code=404, detail="模板不存在")
 
     clone = CampaignTemplate(
         id=uuid.uuid4().hex,
+        tenant_id=tenant_required(current_user),
+        created_by=getattr(current_user, "id", None),
         name=f"{source.name} - 副本",
         objective=source.objective,
         buying_type=source.buying_type,
@@ -385,10 +390,10 @@ def clone_template(
 def delete_template(
     template_id: str,
     db: Session = Depends(get_db),
-    _: object = Depends(require_admin),
+    current_user: User = Depends(get_current_active_user),
 ):
     """删除模板（软删除：置为 ARCHIVED，保留历史实例映射）"""
-    template = db.query(CampaignTemplate).filter(CampaignTemplate.id == template_id).first()
+    template = owned_query(db.query(CampaignTemplate), CampaignTemplate, current_user).filter(CampaignTemplate.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="模板不存在")
 

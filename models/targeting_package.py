@@ -9,7 +9,7 @@ from core.tenant import TenantMixin
 
 
 class RegionGroup(TenantMixin, Base):
-    """XMP 风格的地区组，只保存 Meta targeting 所需的地区 ID。"""
+    """参考成熟投流平台设计的地区组，只保存 Meta targeting 所需的地区 ID。"""
 
     __tablename__ = "region_groups"
     __table_args__ = (
@@ -43,7 +43,7 @@ class RegionGroup(TenantMixin, Base):
 
 
 class TargetingPackage(TenantMixin, Base):
-    """XMP 风格的可复用定向包，包含受众、设备、语言和版位。"""
+    """可复用的定向包，包含受众、设备、语言和版位。"""
 
     __tablename__ = "targeting_packages"
     __table_args__ = (

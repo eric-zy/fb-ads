@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, DateTime, JSON, String, Index
+from sqlalchemy import Column, DateTime, JSON, String, Index, UniqueConstraint
 from core.database import Base
 from core.tenant import TenantMixin
 
@@ -29,3 +29,33 @@ class AccountAssignmentLog(TenantMixin, Base):
     operator_id = Column(String(50), nullable=True)
     reason = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AccountOperationLease(TenantMixin, Base):
+    """账户关键操作的短时协调租约。
+
+    实际投放任务仍由 worker 层的 Redis 锁保护；本表用于 API/UI 层提示并发
+    操作冲突，避免多个投手同时编辑或提交同一广告账户。
+    """
+
+    __tablename__ = "account_operation_leases"
+
+    id = Column(String(50), primary_key=True, index=True)
+    account_id = Column(String(50), nullable=False, index=True)
+    holder_user_id = Column(String(50), nullable=False, index=True)
+    operation_type = Column(String(50), nullable=False)
+    lease_token = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "account_id", name="uq_account_operation_lease_account"
+        ),
+        Index(
+            "ix_account_operation_lease_active",
+            "tenant_id",
+            "account_id",
+            "expires_at",
+        ),
+    )

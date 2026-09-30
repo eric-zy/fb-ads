@@ -22,7 +22,8 @@ from config.settings import settings
 from core.database import SessionLocal
 from core.logger import logger
 from core.redis_client import redis_client
-from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task, bypass_tenant
+from core.tenant import for_all_tenants, resolve_tenant_of, strict_tenant_task as tenant_task, bypass_tenant
+from services.business_access import task_actor, require_accounts
 from models import (
     AdAccount,
     MetaAccount,
@@ -153,13 +154,13 @@ def sync_meta_authorization_task(self, credential_id: str) -> Dict:
 
 
 @shared_task(bind=True, name="meta.sync_ad_accounts", max_retries=2, default_retry_delay=60)
-@tenant_task(lambda self, business_id: resolve_tenant_of(MetaAccount, business_id, column="id"))
-def sync_ad_accounts_task(self, business_id: str) -> Dict:
+@tenant_task(lambda self, business_id, requested_by=None: resolve_tenant_of(MetaAccount, business_id, column="id"))
+def sync_ad_accounts_task(self, business_id: str, requested_by: str = None) -> Dict:
     """同步某个 BM 下的全部广告账户，并刷新其 Facebook Page。"""
     db = SessionLocal()
     try:
         service = MetaSyncService(db)
-        log = service.sync_ad_accounts(business_id)
+        log = service.sync_ad_accounts(business_id, requested_by=requested_by)
         logger.info(
             f"[meta_sync] BM {business_id} 账户同步完成: "
             f"{log.status} ({log.success_count}/{log.total_count})"
@@ -243,15 +244,33 @@ def sync_business_task(self, business_id: str) -> Dict:
 
 
 @shared_task(bind=True, name="meta.sync_ad_account", max_retries=2, default_retry_delay=60)
-@tenant_task(lambda self, ad_account_id: resolve_tenant_of(AdAccount, ad_account_id))
-def sync_ad_account_task(self, ad_account_id: str) -> Dict:
+@tenant_task(lambda self, ad_account_id, requested_by=None: resolve_tenant_of(AdAccount, ad_account_id))
+def sync_ad_account_task(self, ad_account_id: str, requested_by: str = None) -> Dict:
     """同步单个广告账户的 Meta 侧信息"""
     db = SessionLocal()
+    lock = None
+    lock_acquired = False
     try:
-        log = MetaSyncService(db).sync_ad_account(ad_account_id)
+        account = db.query(AdAccount).filter(AdAccount.id == ad_account_id).first()
+        if not account:
+            return {"status": "failed", "account_id": ad_account_id, "error": "广告账户不存在"}
+        if requested_by:
+            require_accounts(db, task_actor(db, requested_by, account.tenant_id), [account.id], write=True)
+        # 共享账户按租户维度串行同步，避免多个用户重复拉取和互相覆盖。
+        lock = redis_client.redis_client.lock(
+            f"fbads:account-operation:{account.tenant_id}:{account.id}",
+            timeout=max(int(settings.FB_CONNECTOR_REPORT_TIMEOUT) * 3, 1800),
+            blocking=False,
+        )
+        if not lock.acquire(blocking=False):
+            return {"status": "skipped", "account_id": account.id, "tenant_id": account.tenant_id,
+                    "reason": "该广告账户已有同步任务执行中"}
+        lock_acquired = True
+        log = MetaSyncService(db).sync_ad_account(ad_account_id, requested_by=requested_by)
         tracking_asset_task = sync_tracking_assets_task.delay(ad_account_id)
         return {
             "status": "success",
+            "tenant_id": account.tenant_id,
             "sync_log": _log_to_dict(log),
             "tracking_asset_task_id": tracking_asset_task.id,
         }
@@ -262,6 +281,11 @@ def sync_ad_account_task(self, ad_account_id: str) -> Dict:
         except self.MaxRetriesExceededError:
             return {"status": "failed", "error": str(exc)}
     finally:
+        if lock is not None and lock_acquired:
+            try:
+                lock.release()
+            except Exception as exc:
+                logger.warning("[meta_sync] 账户同步锁释放失败 account_id=%s error=%s", ad_account_id, exc)
         db.close()
 
 
@@ -306,8 +330,11 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
     lock = None
     lock_acquired = False
     try:
+        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        if not account:
+            return {"status": "failed", "error": "广告账户不存在"}
         lock = redis_client.redis_client.lock(
-            f"fbads:delivery-sync:{account_id}",
+            f"fbads:account-operation:{account.tenant_id}:{account.id}",
             timeout=max(int(settings.FB_CONNECTOR_REPORT_TIMEOUT) * 3, 1800),
             blocking=False,
         )
@@ -316,9 +343,6 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
             raise RuntimeError(f"账户 {account_id} 的投放对象同步正在执行")
         lock_acquired = True
 
-        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
-        if not account:
-            return {"status": "failed", "error": "广告账户不存在"}
         ref = CredentialResolver(db).for_account(account.id)
         campaigns = db.query(CampaignInstance).filter(CampaignInstance.ad_account_id == account.id).all()
         # 每个账户只拉取一次，避免按 Campaign / AdSet 重复请求 Meta API。
@@ -720,10 +744,20 @@ def sync_all_delivery_objects_task(self) -> Dict:
 def update_delivery_object_task(self, object_type: str, object_id: str, account_id: str, action: str, action_record_id: str | None = None) -> Dict:
     """异步暂停/启用单个 AdSet 或 Ad。"""
     db = SessionLocal()
+    lock = None
+    lock_acquired = False
     try:
         account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
         if not account:
             return {"status": "failed", "error": "广告账户不存在"}
+        lock = redis_client.redis_client.lock(
+            f"fbads:account-operation:{account.tenant_id}:{account.id}",
+            timeout=max(int(settings.FB_CONNECTOR_REPORT_TIMEOUT) * 3, 1800),
+            blocking=False,
+        )
+        if not lock.acquire(blocking=False):
+            raise RuntimeError(f"账户 {account_id} 的投放写操作正在执行")
+        lock_acquired = True
         ref = CredentialResolver(db).for_account(account.id)
         remote_status = "PAUSED" if action in {"PAUSE", "ARCHIVE", "DELETE", "RESTORE"} else "ACTIVE"
         desired_status = (
@@ -732,6 +766,9 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
             else remote_status
         )
         action_row = db.query(DeliveryAction).filter(DeliveryAction.id == action_record_id).first() if action_record_id else None
+        if not action_row or (action_row.account_id, action_row.object_id, action_row.object_type, action_row.action) != (account.id, object_id, object_type, action):
+            raise PermissionError("操作记录与目标不匹配")
+        require_accounts(db, task_actor(db, action_row.requested_by, account.tenant_id), [account.id], write=True)
         if action_row:
             action_row.status = "RUNNING"
             action_row.started_at = datetime.utcnow()
@@ -740,6 +777,8 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
             obj = db.query(AdSetInstance).filter(AdSetInstance.id == object_id).first()
             if not obj or not obj.meta_adset_id:
                 raise RuntimeError("广告组 Meta ID 不存在")
+            if obj.campaign_instance.ad_account_id != account.id:
+                raise PermissionError("广告组不属于目标账户")
             FBConnectorClient().update_object(
                 "ADSET",
                 obj.meta_adset_id,
@@ -759,6 +798,8 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
             obj = db.query(AdInstance).filter(AdInstance.id == object_id).first()
             if not obj or not obj.meta_ad_id:
                 raise RuntimeError("广告 Meta ID 不存在")
+            if obj.adset_instance.campaign_instance.ad_account_id != account.id:
+                raise PermissionError("广告不属于目标账户")
             FBConnectorClient().update_object(
                 "AD",
                 obj.meta_ad_id,
@@ -798,6 +839,11 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
         except self.MaxRetriesExceededError:
             return {"status": "failed", "error": str(exc)}
     finally:
+        if lock is not None and lock_acquired:
+            try:
+                lock.release()
+            except Exception as exc:
+                logger.warning("[meta_sync] 投放写锁释放失败 account_id=%s error=%s", account_id, exc)
         db.close()
 
 

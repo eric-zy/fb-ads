@@ -120,6 +120,7 @@ export interface CreateCampaignPayload {
   idempotency_key?: string
   source_job_id?: string
   revision_id?: string
+  operation_leases?: Record<string, string>
 }
 
 export interface JobEditSource {
@@ -160,6 +161,7 @@ export interface CampaignJobRevision {
 export interface TemplateActionPayload {
   template_id: string
   ad_account_ids?: string[]
+  operation_leases?: Record<string, string>
 }
 
 export interface ScheduleCampaignPayload {
@@ -173,6 +175,7 @@ export interface ScheduleCampaignPayload {
   preview_id?: string
   snapshot_hash?: string
   idempotency_key?: string
+  operation_leases?: Record<string, string>
 }
 
 export const jobsApi = {
@@ -216,10 +219,10 @@ export const jobsApi = {
   discardRevision: (id: string) =>
     request.post<CampaignJobRevision>(`/api/v1/jobs/revisions/${id}/discard`),
 
-  retry: (id: string, data?: { item_ids?: string[]; mode?: 'CONTINUE' }) =>
+  retry: (id: string, data?: { item_ids?: string[]; mode?: 'CONTINUE'; operation_leases?: Record<string, string> }) =>
     request.post(`/api/v1/jobs/${id}/retry`, data || {}),
-  continueItem: (jobId: string, itemId: string) =>
-    request.post(`/api/v1/jobs/${jobId}/items/${itemId}/continue`),
+  continueItem: (jobId: string, itemId: string, operation_leases?: Record<string, string>) =>
+    request.post(`/api/v1/jobs/${jobId}/items/${itemId}/continue`, { operation_leases }),
   reconcileItem: (jobId: string, itemId: string) =>
     request.post<{ job_id: string; item_id: string; result: DeliveryReconcileResult }>(`/api/v1/jobs/${jobId}/items/${itemId}/reconcile`),
   confirmReconcileItem: (jobId: string, itemId: string, confirmations: Array<{ group: string; client_key?: string | null; object_id: string }>) =>

@@ -198,19 +198,19 @@
         <el-table-column label="失败项操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="row.status === 'FAILED' && row.response_payload?.cleanup_status !== 'COMPLETED' && !hasPendingReconcile(row)"
+              v-if="canRetry && row.status === 'FAILED' && row.response_payload?.cleanup_status !== 'COMPLETED' && !hasPendingReconcile(row)"
               link
               type="primary"
               @click="handleContinueItem(row)"
             >继续执行</el-button>
             <el-button
-              v-if="row.status === 'FAILED' && hasPendingReconcile(row)"
+              v-if="canRetry && row.status === 'FAILED' && hasPendingReconcile(row)"
               link
               type="warning"
               @click="handleReconcileItem(row)"
             >查询对账</el-button>
             <el-button
-              v-if="row.response_payload?.cleanup_status === 'PENDING'"
+              v-if="canRetry && row.response_payload?.cleanup_status === 'PENDING'"
               link
               type="danger"
               @click="handleCleanupItem(row)"
@@ -243,7 +243,7 @@
               <div v-if="row.candidates?.length" class="reconcile-candidates">
                 <div v-for="candidate in row.candidates" :key="candidate.id" class="reconcile-candidate">
                   <span>{{ candidate.id || '-' }} {{ candidate.name || '' }}</span>
-                  <el-button link type="primary" size="small" @click="handleConfirmReconcile(row, candidate)">确认复用</el-button>
+                  <el-button v-if="canRetry" link type="primary" size="small" @click="handleConfirmReconcile(row, candidate)">确认复用</el-button>
                 </div>
               </div>
               <span v-else>未找到候选</span>
@@ -285,6 +285,7 @@ import {
   type CampaignJobRevision,
   type DeliveryReconcileItem,
 } from '@/api/jobs'
+import { accountApi } from '@/api/admin'
 import { useUserStore } from '@/stores/userStore'
 
 const jobs = ref<CampaignJob[]>([])
@@ -320,6 +321,33 @@ const summary = computed(() => ({
 let timer: number | null = null
 
 const isFinal = (status: string) => isFinalStatus(status)
+
+async function withOperationLeases<T>(accountIds: string[], callback: (leases: Record<string, string>) => Promise<T>) {
+  const held: Array<{ accountId: string; token: string }> = []
+  const tokens: Record<string, string> = {}
+  try {
+    for (const accountId of [...new Set(accountIds)].filter(Boolean)) {
+      const { data } = await accountApi.acquireOperationLease(accountId, 'CAMPAIGN_RETRY', 120)
+      const token = data?.lease?.lease_token
+      if (!token) throw new Error('未能获取广告账户操作租约')
+      held.push({ accountId, token })
+      tokens[accountId] = token
+    }
+    return await callback(tokens)
+  } finally {
+    await Promise.allSettled(held.map(({ accountId, token }) => accountApi.releaseOperationLease(accountId, token)))
+  }
+}
+
+async function retryJobWithLeases(jobId: string, itemIds?: string[]) {
+  const { data: detail } = await jobsApi.get(jobId)
+  const selected = (detail.items || []).filter((item) => item.status === 'FAILED' && (!itemIds || itemIds.includes(item.id)))
+  const accountIds = selected.map((item) => item.ad_account_id)
+  return withOperationLeases(accountIds, async operationLeases => jobsApi.retry(jobId, {
+    item_ids: itemIds,
+    operation_leases: operationLeases,
+  }))
+}
 
 const actionLabel = (action: string) =>
   ({
@@ -409,6 +437,11 @@ const loadJobs = async () => {
 }
 
 const loadRevisions = async (jobId: string) => {
+  if (!canEditRepublish.value) {
+    revisions.value = []
+    revisionsLoading.value = false
+    return
+  }
   revisionsLoading.value = true
   try {
     const { data } = await jobsApi.listRevisions(jobId)
@@ -469,7 +502,7 @@ const handleRetry = async (row: CampaignJob) => {
   }
 
   try {
-    await jobsApi.retry(row.id)
+    await retryJobWithLeases(row.id)
     ElMessage.success('已重新分派失败账户')
     await loadJobs()
     if (currentJob.value?.id === row.id) {
@@ -542,7 +575,7 @@ const handleContinueItem = async (row: any) => {
   } catch {
     return
   }
-  await jobsApi.continueItem(currentJob.value.id, row.id)
+  await withOperationLeases([row.ad_account_id], leases => jobsApi.continueItem(currentJob.value!.id, row.id, leases))
   ElMessage.success('已重新分派该失败项')
   await refreshCurrentJob(currentJob.value.id)
   startTimer()

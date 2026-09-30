@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from api.templates import TemplateCreate, TemplateUpdate, create_template, update_template
-from models import CampaignTemplate, MetaPage
+from models import CampaignTemplate, MetaPage, User
 
 
 def _template_values(**creative_config):
@@ -30,6 +30,18 @@ def _seed_page(db):
         status="ACTIVE",
     ))
     db.commit()
+
+
+def _user(user_id="test001", role="user"):
+    return User(
+        id=user_id,
+        email=f"{user_id}@test.local",
+        username=user_id,
+        hashed_password="not-used",
+        tenant_id="test_tenant",
+        role=role,
+        is_active=True,
+    )
 
 
 def test_create_template_persists_carousel_cards_without_duplicate_creatives(db):
@@ -164,3 +176,53 @@ def test_create_template_accepts_region_only_adset_geo(db):
     result = create_template(request, db, None)
 
     assert result["creative_config_json"]["adsets"][0]["targeting"]["geo_locations"]["regions"] == [{"key": "3847"}]
+
+
+def test_non_admin_can_update_template_they_created(db):
+    _seed_page(db)
+    user = _user()
+    db.add(user)
+    db.commit()
+
+    created = create_template(
+        TemplateCreate(**_template_values(
+            creatives=[
+                {"asset_type": "image", "asset_id": "asset-1", "landing_url": "https://example.com/1"},
+            ],
+        )),
+        db,
+        user,
+    )
+
+    updated = update_template(
+        created["id"],
+        TemplateUpdate(name="Updated by test001"),
+        db,
+        user,
+    )
+
+    assert updated["name"] == "Updated by test001"
+    assert updated["created_by"] == "test001"
+
+
+def test_non_admin_cannot_update_another_users_template(db):
+    _seed_page(db)
+    owner = _user("owner")
+    other_user = _user("test001")
+    db.add_all([owner, other_user])
+    db.commit()
+
+    created = create_template(
+        TemplateCreate(**_template_values(
+            creatives=[
+                {"asset_type": "image", "asset_id": "asset-1", "landing_url": "https://example.com/1"},
+            ],
+        )),
+        db,
+        owner,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        update_template(created["id"], TemplateUpdate(name="Should fail"), db, other_user)
+
+    assert exc_info.value.status_code == 404

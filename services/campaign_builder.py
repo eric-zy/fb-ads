@@ -162,7 +162,7 @@ class AdSetBuilder:
         targeting = normalize_targeting(
             dict(self.adset_config.get("targeting") or self.template.targeting_json or {"geo_locations": {"countries": ["US"]}})
         )
-        # XMP/Meta 多账户批量创建的关键约束：受众引用必须属于当前目标账户。
+        # 多账户批量创建的关键约束：受众引用必须属于当前目标账户。
         # 未解析的旧模板引用交给发布预检处理，这里只拒绝明确错配，避免把
         # 一个账户的 Audience ID 静默发到另一个账户。
         for field in ("custom_audiences", "excluded_custom_audiences", "excluded_audiences"):

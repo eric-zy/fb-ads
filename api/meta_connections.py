@@ -1,4 +1,4 @@
-"""XMP 风格的 Meta 授权连接管理接口。"""
+"""Meta 授权连接管理接口。"""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session

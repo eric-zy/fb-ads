@@ -16,25 +16,40 @@ export type SystemStatus = 'ACTIVE' | 'DISABLED'
 export interface AccessibleBusiness { business_id: string; meta_business_id?: string | null; business_name?: string | null; access_level: string; access_source: string; status: string; credential_id?: string | null }
 export interface AdAccountItem { id: string; account_id: string; account_name: string; currency: string; timezone: string | null; business_id: string | null; meta_business_id: string | null; business_name: string | null; owner_type: 'PERSONAL' | 'BUSINESS' | string; credential_id: string | null; credential_status?: string | null; credential_expires_at?: string | null; credential_last_verified_at?: string | null; authorized_by_user_id?: string | null; authorized_by_username?: string | null; credential_missing_scopes?: string[]; is_deployable?: boolean; availability_reason?: string | null; payment_status?: string; payment_source?: string | null; payment_error_code?: string | null; payment_error_message?: string | null; payment_checked_at?: string | null; account_status: string | null; effective_status: string | null; disable_reason: string | null; system_status: SystemStatus; system_status_reason: string | null; system_status_at: string | null; capabilities: Record<string, unknown> | null; spend_cap: number; amount_spent: number; balance: number; daily_spend_limit: number; monthly_spend_limit: number; risk_score: number; last_risk_check: string | null; last_synced_at: string | null; last_sync_error: string | null; created_at: string | null; updated_at: string | null }
 export interface DeployableAccount { id: string; account_id: string; account_name: string; currency: string; system_status: SystemStatus; account_status: string | null; payment_status?: string | null; payment_source?: string | null; payment_error_message?: string | null; payment_checked_at?: string | null; availability_reason?: string | null; business: { id: string | null; name: string | null; business_id: string | null }; credential: { id: string | null; status: string | null; is_expired: boolean | null; masked: string | null }; accessible_businesses?: AccessibleBusiness[] }
-export interface AccountUser { user_id: string; username: string; email: string; role: string }
+export interface AccountUser {
+  user_id: string
+  username: string
+  email: string
+  role: string
+  assignment_role?: 'PRIMARY' | 'COLLABORATOR' | string
+  assignment_status?: 'ACTIVE' | 'REVOKED' | string
+  assignment_type?: 'MANUAL' | 'AUTO' | string
+  assigned_at?: string | null
+  expires_at?: string | null
+  is_primary?: boolean
+}
 export const accountApi = {
   list: (params?: { search?: string; system_status?: string; account_status?: string; business_id?: string; page?: number; page_size?: number }) => request.get('/api/v1/accounts', { params }),
   detail: (id: string) => request.get('/api/v1/accounts/' + id),
   create: (data: { business_id: string; account_id: string; account_name?: string; account_status?: string; currency?: string; timezone?: string; system_status?: SystemStatus; daily_spend_limit?: number; monthly_spend_limit?: number; risk_score?: number; skip_verification?: boolean }) => request.post('/api/v1/accounts', data),
-  update: (id: string, data: Partial<{ account_name: string; currency: string; timezone: string; system_status: SystemStatus; system_status_reason: string; daily_spend_limit: number; monthly_spend_limit: number; risk_score: number; business_id: string; skip_verification: boolean }>) => request.put('/api/v1/accounts/' + id, data),
-  freeze: (id: string, reason?: string) => request.post('/api/v1/accounts/' + id + '/freeze', reason ? { reason } : {}),
-  unfreeze: (id: string) => request.post('/api/v1/accounts/' + id + '/unfreeze'),
-  transfer: (id: string, data: { business_id: string | null; skip_verification?: boolean }) => request.post('/api/v1/accounts/' + id + '/transfer', data),
-  bulk: (data: { action: 'freeze' | 'unfreeze' | 'delete' | 'transfer'; account_ids: string[]; reason?: string; business_id?: string; skip_verification?: boolean }) => request.post('/api/v1/accounts/bulk', data),
+  update: (id: string, data: Partial<{ account_name: string; currency: string; timezone: string; system_status: SystemStatus; system_status_reason: string; daily_spend_limit: number; monthly_spend_limit: number; risk_score: number; business_id: string; skip_verification: boolean; lease_token: string }>) => request.put('/api/v1/accounts/' + id, data),
+  freeze: (id: string, reason: string | undefined, lease_token: string) => request.post('/api/v1/accounts/' + id + '/freeze', { ...(reason ? { reason } : {}), lease_token }),
+  unfreeze: (id: string, lease_token: string) => request.post('/api/v1/accounts/' + id + '/unfreeze', { lease_token }),
+  transfer: (id: string, data: { business_id: string | null; skip_verification?: boolean; lease_token: string }) => request.post('/api/v1/accounts/' + id + '/transfer', data),
+  bulk: (data: { action: 'freeze' | 'unfreeze' | 'delete' | 'transfer'; account_ids: string[]; reason?: string; business_id?: string; skip_verification?: boolean; operation_leases: Record<string, string> }) => request.post('/api/v1/accounts/bulk', data),
   availableForDeployment: (params?: { business_id?: string; allow_paused_debug?: boolean }) => request.get('/api/v1/accounts/available-for-deployment', { params }),
   rateLimitStatus: (id: string) => request.get('/api/v1/accounts/' + id + '/rate-limit-status'),
-  assign: (id: string, user_ids: string[]) => request.post('/api/v1/accounts/' + id + '/assign', { user_ids }),
-  unassign: (id: string, user_ids: string[]) => request.post('/api/v1/accounts/' + id + '/unassign', { user_ids }),
+  assign: (id: string, user_ids: string[], primary_user_id: string | undefined, lease_token: string) => request.post('/api/v1/accounts/' + id + '/assign', { user_ids, primary_user_id, lease_token }),
+  unassign: (id: string, user_ids: string[], lease_token: string) => request.post('/api/v1/accounts/' + id + '/unassign', { user_ids, lease_token }),
+  setPrimary: (id: string, user_id: string, lease_token: string) => request.post('/api/v1/accounts/' + id + '/primary', { user_id, lease_token }),
   users: (id: string) => request.get('/api/v1/accounts/' + id + '/users'),
-  delete: (id: string) => request.delete('/api/v1/accounts/' + id),
-  unbind: (id: string) => request.post('/api/v1/accounts/' + id + '/unbind'),
-  sync: (id: string) => request.post('/api/v1/accounts/' + id + '/sync'),
-  syncBatch: (data: { account_ids?: string[]; business_id?: string }) => request.post('/api/v1/accounts/sync', data),
+  operationLease: (id: string) => request.get('/api/v1/accounts/' + id + '/operation-lease'),
+  acquireOperationLease: (id: string, operation_type: string, ttl_seconds = 90) => request.post('/api/v1/accounts/' + id + '/operation-lease', { operation_type, ttl_seconds }),
+  releaseOperationLease: (id: string, lease_token: string) => request.delete('/api/v1/accounts/' + id + '/operation-lease', { data: { lease_token } }),
+  delete: (id: string, lease_token: string) => request.delete('/api/v1/accounts/' + id, { data: { lease_token } }),
+  unbind: (id: string, lease_token: string) => request.post('/api/v1/accounts/' + id + '/unbind', { lease_token }),
+  sync: (id: string, leaseToken: string) => request.post('/api/v1/accounts/' + id + '/sync', { lease_token: leaseToken }),
+  syncBatch: (data: { account_ids?: string[]; business_id?: string; operation_leases?: Record<string, string> }) => request.post('/api/v1/accounts/sync', data),
   syncCampaigns: (id: string) => request.post('/api/v1/accounts/' + id + '/sync-campaigns'),
 }
 

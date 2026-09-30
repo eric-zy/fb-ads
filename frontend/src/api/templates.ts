@@ -4,6 +4,8 @@ import request from '@/utils/request'
 
 export interface CampaignTemplate {
   id: string
+  tenant_id?: string | null
+  created_by?: string | null
   name: string
   objective: string | null
   buying_type: string | null

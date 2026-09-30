@@ -22,6 +22,8 @@ from core.logger import logger
 from core.tenant import effective_tenant_id
 from models import AdGroup, Campaign, CampaignInstance, CampaignTemplate, CampaignJob, CampaignJobItem, CampaignJobRevision, PublishPreview, User
 from services.account_access import accessible_account_ids
+from services.business_access import owned_query, tenant_required, require_accounts, account_ids_for_action
+from services.account_operation_lease import AccountOperationLeaseService
 
 def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
     if not user_id:
@@ -42,22 +44,84 @@ router = APIRouter(prefix="/api/v1/jobs", tags=["Job Center"])
 
 
 def _scope_jobs(query, current_user):
-    """限制 Job Center 到当前生效租户；平台管理员未切租户时可跨租户审计。"""
+    """限制 Job Center 到当前生效租户；平台管理员必须先切换租户。"""
     tenant_id = effective_tenant_id(current_user)
     if tenant_id:
         return query.filter(CampaignJob.tenant_id == tenant_id)
-    if getattr(current_user, "is_platform_admin", lambda: False)():
-        return query
     raise HTTPException(status_code=403, detail="当前账号未绑定租户")
 
 
 def _scope_revisions(query, current_user):
-    tenant_id = effective_tenant_id(current_user)
-    if tenant_id:
-        return query.filter(CampaignJobRevision.tenant_id == tenant_id)
-    if getattr(current_user, "is_platform_admin", lambda: False)():
-        return query
-    raise HTTPException(status_code=403, detail="当前账号未绑定租户")
+    return owned_query(query, CampaignJobRevision, current_user)
+
+
+def _require_job_controller(job: CampaignJob, current_user: User) -> None:
+    """任务结果可按账户共享查看，但写操作仅限创建人或租户管理员。"""
+    if job.tenant_id != tenant_required(current_user) or (not current_user.is_admin() and job.created_by != current_user.id):
+        # 与资源不可见统一返回 404，避免泄露任务存在性。
+        raise HTTPException(status_code=404, detail="任务不存在或无权操作")
+
+
+def _require_submission_leases(
+    db: Session,
+    current_user: User,
+    account_ids: List[str],
+    operation_leases: Optional[dict[str, str]],
+    operation_type: str,
+) -> None:
+    """校验任务提交阶段的账户租约，防止前端租约变成仅展示状态。
+
+    Worker 执行阶段仍使用 Redis 长锁；这里的短租约只覆盖“提交 Job”这段
+    临界区，避免两个投手通过不同客户端同时创建同一账户的任务。
+    """
+    tenant_id = tenant_required(current_user)
+    service = AccountOperationLeaseService(db)
+    invalid_accounts = service.invalid_accounts(
+        tenant_id,
+        account_ids,
+        current_user.id,
+        operation_leases,
+        operation_type,
+    )
+    if invalid_accounts:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "account_operation_lease_required",
+                "message": "部分广告账户的操作租约无效或已过期，请重新获取后再提交",
+                "operation_type": operation_type,
+                "account_ids": invalid_accounts,
+            },
+        )
+
+
+def _visible_jobs(db, user):
+    query = _scope_jobs(db.query(CampaignJob), user)
+    if not user.is_admin():
+        visible = account_ids_for_action(db, user)
+        query = query.filter(CampaignJob.items.any(CampaignJobItem.ad_account_id.in_(visible)))
+    return query
+
+
+def _job_payload(job, user, visible, *, detail=False):
+    items = [item for item in job.items if visible is None or item.ad_account_id in visible]
+    payload = job.to_dict()
+    full = user.is_admin() or (job.created_by == user.id and len(items) == len(job.items))
+    if not full:
+        # params and connector payloads can contain all accounts, private
+        # template snapshots and credential references of a multi-account job.
+        for key in ("params", "error_message", "preview_id", "idempotency_key", "celery_task_id"):
+            payload.pop(key, None)
+    payload.update(total_accounts=len(items),
+                   success_count=sum(item.status in ("SUCCESS", "SKIPPED") for item in items),
+                   failed_count=sum(item.status == "FAILED" for item in items))
+    if detail:
+        payload["items"] = [item.to_dict() for item in items]
+        if not full:
+            for item in payload["items"]:
+                for key in ("response_payload", "error_message", "connector_task_id", "request_hash", "access_business_id"):
+                    item.pop(key, None)
+    return payload
 
 
 # ==================== 请求模型 ====================
@@ -85,6 +149,10 @@ class CampaignCreateRequest(BaseModel):
     idempotency_key: Optional[str] = Field(None, max_length=128, description="客户端幂等键")
     source_job_id: Optional[str] = Field(None, description="编辑后重投所基于的原任务")
     revision_id: Optional[str] = Field(None, description="编辑后重投的修订草稿")
+    operation_leases: Optional[dict[str, str]] = Field(
+        None,
+        description="按广告账户主键提供本次提交的短时操作租约 token",
+    )
 
 class CampaignPreflightRequest(CampaignCreateRequest):
     pass
@@ -104,6 +172,9 @@ class RevisionUpdateRequest(BaseModel):
 class RetryJobRequest(BaseModel):
     item_ids: Optional[List[str]] = Field(None, description="只继续指定的失败账户；为空表示全部失败账户")
     mode: str = Field("CONTINUE", pattern="^CONTINUE$")
+    operation_leases: Optional[dict[str, str]] = Field(
+        None, description="按失败账户主键提供本次重试的短时操作租约 token"
+    )
 
 
 class ReconcileConfirmationRequest(BaseModel):
@@ -116,10 +187,13 @@ class ReconcileConfirmRequest(BaseModel):
     confirmations: List[ReconcileConfirmationRequest] = Field(..., min_length=1, max_length=20)
 
 
-def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optional[str] = None) -> str:
+def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optional[str] = None, current_user=None) -> str:
     """把模板请求和直接配置请求统一成现有发布器可消费的模板。"""
     if req.template_id:
-        template = db.query(CampaignTemplate).filter(CampaignTemplate.id == req.template_id).first()
+        query = db.query(CampaignTemplate)
+        if current_user is not None:
+            query = owned_query(query, CampaignTemplate, current_user)
+        template = query.filter(CampaignTemplate.id == req.template_id).first()
         if not template or (tenant_id and template.tenant_id != tenant_id):
             raise HTTPException(status_code=404, detail="投放模板不存在或无权访问")
         return template.id
@@ -246,6 +320,7 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     template = CampaignTemplate(
         id=uuid.uuid4().hex,
         tenant_id=tenant_id,
+        created_by=getattr(current_user, "id", None),
         status=TemplateStatus.ACTIVE.value,
         is_temporary=not req.save_as_template,
         **fields,
@@ -262,12 +337,18 @@ class BudgetUpdateRequest(BaseModel):
         None, description="不传则取该模板已部署的全部账户"
     )
     budget_override: float = Field(..., description="新预算（USD/天）")
+    operation_leases: Optional[dict[str, str]] = Field(
+        None, description="按广告账户主键提供本次提交的短时操作租约 token"
+    )
 
 
 class StatusChangeRequest(BaseModel):
     template_id: str
     ad_account_ids: Optional[List[str]] = Field(
         None, description="不传则取该模板已部署的全部账户"
+    )
+    operation_leases: Optional[dict[str, str]] = Field(
+        None, description="按广告账户主键提供本次提交的短时操作租约 token"
     )
 
 
@@ -283,6 +364,10 @@ class ScheduleCampaignRequest(BaseModel):
     )
     access_business_ids: Optional[dict[str, str]] = Field(
         None, description="按本地广告账户 ID 指定本次发布使用的 BM"
+    )
+    operation_leases: Optional[dict[str, str]] = Field(
+        None,
+        description="按广告账户主键提供本次定时任务提交的短时操作租约 token",
     )
 
 
@@ -343,6 +428,10 @@ def _submit(
     edit_mode: Optional[str] = None,
 ) -> dict:
     """统一提交入口：建 Job → 派发 → 立即返回"""
+    template = owned_query(db.query(CampaignTemplate), CampaignTemplate, created_by).filter(CampaignTemplate.id == template_id).first()
+    if not template:
+        raise HTTPException(404, "投放模板不存在或无权访问")
+    require_accounts(db, created_by, ad_account_ids, write=True)
     service = JobService(db)
     try:
         job = service.create_job(
@@ -513,7 +602,11 @@ def _validate_preview_for_submit(
 @router.post("/campaign-preflight")
 def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("job:create"))):
     """发布前检查；不调用 Meta 写接口。直接配置会先标准化为内部配置。"""
-    template_id = _ensure_template(db, req, effective_tenant_id(current_user))
+    tenant_required(current_user)
+    require_accounts(db, current_user, req.ad_account_ids, write=True)
+    if req.source_job_id:
+        get_edit_source(req.source_job_id, db, current_user)
+    template_id = _ensure_template(db, req, effective_tenant_id(current_user), current_user)
     result = JobService(db).preflight_campaign(
         template_id,
         req.ad_account_ids,
@@ -558,13 +651,21 @@ def create_campaign_batch(
         req.source or ("TEMPLATE" if req.template_id else "DIRECT"),
     )
     preview = _validate_preview_for_submit(db, req, current_user)
-    template_id = _ensure_template(db, req, effective_tenant_id(current_user))
+    _require_submission_leases(
+        db,
+        current_user,
+        req.ad_account_ids,
+        req.operation_leases,
+        "CAMPAIGN_CREATE",
+    )
+    template_id = _ensure_template(db, req, effective_tenant_id(current_user), current_user)
     parent_job_id = None
     edit_mode = None
     if req.source_job_id:
         parent = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == req.source_job_id).first()
         if not parent:
             raise HTTPException(status_code=404, detail="来源任务不存在或无权访问")
+        _require_job_controller(parent, current_user)
         if parent.action_type != ActionType.CREATE.value:
             raise HTTPException(status_code=400, detail="只有广告创建任务支持编辑后重投")
         parent_job_id = parent.id
@@ -638,6 +739,13 @@ def schedule_campaign_batch(
     Job 先以 QUEUED 状态落库，由 Celery 在指定时间触发执行。
     """
     scheduled_at = _parse_scheduled_at(req.scheduled_at)
+    _require_submission_leases(
+        db,
+        current_user,
+        req.ad_account_ids,
+        req.operation_leases,
+        "SCHEDULE_CAMPAIGN",
+    )
 
     return _submit(
         db,
@@ -661,13 +769,15 @@ def list_scheduled_jobs(
     current_user=Depends(require_permission("job:create")),
 ):
     """待执行的定时任务列表（按计划执行时间升序）"""
-    jobs = JobService(db).list_scheduled_jobs(limit=limit)
+    jobs = _visible_jobs(db, current_user).filter(
+        CampaignJob.scheduled_at.isnot(None), CampaignJob.status.in_(["PENDING", "QUEUED"])
+    ).order_by(CampaignJob.scheduled_at.asc()).limit(limit).all()
     result = []
     visible = accessible_account_ids(db, current_user)
     for job in jobs:
         if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
             continue
-        payload = job.to_dict()
+        payload = _job_payload(job, current_user, visible)
         payload["publisher"] = _publisher_info(db, job.created_by)
         result.append(payload)
     return result
@@ -686,6 +796,8 @@ def dispatch_job_now(
     visible = accessible_account_ids(db, current_user)
     if visible is not None and owned.created_by != current_user.id and not any(item.ad_account_id in visible for item in owned.items):
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+    _require_job_controller(owned, current_user)
+    require_accounts(db, current_user, [item.ad_account_id for item in owned.items], write=True)
     try:
         job = JobService(db).dispatch_now(job_id)
     except JobDispatchError as e:
@@ -707,6 +819,13 @@ def update_budget_batch(
     accounts = _resolve_accounts(db, req.template_id, req.ad_account_ids)
     if not accounts:
         raise HTTPException(status_code=400, detail="该模板下没有已部署的广告账户")
+    _require_submission_leases(
+        db,
+        current_user,
+        accounts,
+        req.operation_leases,
+        "CAMPAIGN_ACTION",
+    )
 
     return _submit(
         db,
@@ -728,6 +847,13 @@ def pause_batch(
     accounts = _resolve_accounts(db, req.template_id, req.ad_account_ids)
     if not accounts:
         raise HTTPException(status_code=400, detail="该模板下没有已部署的广告账户")
+    _require_submission_leases(
+        db,
+        current_user,
+        accounts,
+        req.operation_leases,
+        "CAMPAIGN_ACTION",
+    )
 
     return _submit(
         db,
@@ -749,6 +875,13 @@ def enable_batch(
     accounts = _resolve_accounts(db, req.template_id, req.ad_account_ids)
     if not accounts:
         raise HTTPException(status_code=400, detail="该模板下没有已部署的广告账户")
+    _require_submission_leases(
+        db,
+        current_user,
+        accounts,
+        req.operation_leases,
+        "CAMPAIGN_ACTION",
+    )
 
     return _submit(
         db,
@@ -777,6 +910,7 @@ def get_edit_source(
     visible = accessible_account_ids(db, current_user)
     if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+    _require_job_controller(job, current_user)
 
     failed_items = [item for item in job.items if item.status == "FAILED"]
     selected_items = failed_items or list(job.items)
@@ -889,7 +1023,7 @@ def list_job_revisions(
     current_user=Depends(require_permission("job:create")),
 ):
     get_edit_source(job_id, db, current_user)
-    return [row.to_dict() for row in db.query(CampaignJobRevision).filter(
+    return [row.to_dict() for row in _scope_revisions(db.query(CampaignJobRevision), current_user).filter(
         CampaignJobRevision.base_job_id == job_id
     ).order_by(CampaignJobRevision.version.desc()).all()]
 
@@ -958,7 +1092,7 @@ def list_jobs(
     current_user=Depends(get_current_active_user),
 ):
     """任务列表"""
-    query = _scope_jobs(db.query(CampaignJob), current_user)
+    query = _visible_jobs(db, current_user)
     if status:
         query = query.filter(CampaignJob.status == status)
     jobs = query.order_by(CampaignJob.created_at.desc()).limit(limit).all()
@@ -967,7 +1101,7 @@ def list_jobs(
     for job in jobs:
         if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
             continue
-        payload = job.to_dict()
+        payload = _job_payload(job, current_user, visible)
         if visible is not None:
             items = [item for item in job.items if item.ad_account_id in visible]
             payload["total_accounts"] = len(items)
@@ -985,13 +1119,13 @@ def get_job(
     current_user=Depends(get_current_active_user),
 ):
     """任务详情（前端轮询进度：成功 / 失败 / 执行中各多少）"""
-    owned = _scope_jobs(db.query(CampaignJob), current_user).filter(CampaignJob.id == job_id).first()
+    owned = _visible_jobs(db, current_user).filter(CampaignJob.id == job_id).first()
     if not owned:
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
     visible = accessible_account_ids(db, current_user)
     if visible is not None and owned.created_by != current_user.id and not any(item.ad_account_id in visible for item in owned.items):
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
-    detail = JobService(db).get_job_detail(job_id)
+    detail = _job_payload(owned, current_user, visible, detail=True)
     if not detail:
         raise HTTPException(status_code=404, detail="任务不存在")
     if visible is not None:
@@ -1017,7 +1151,18 @@ def retry_job(
     visible = accessible_account_ids(db, current_user)
     if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+    _require_job_controller(job, current_user)
     req = req or RetryJobRequest()
+    selected_items = [item for item in job.items if not req.item_ids or item.id in req.item_ids]
+    retry_account_ids = sorted({item.ad_account_id for item in selected_items})
+    require_accounts(db, current_user, retry_account_ids, write=True)
+    _require_submission_leases(
+        db,
+        current_user,
+        retry_account_ids,
+        req.operation_leases,
+        "CAMPAIGN_RETRY",
+    )
     allowed_item_ids = set(req.item_ids or [])
     if allowed_item_ids:
         visible_item_ids = {item.id for item in job.items if visible is None or item.ad_account_id in visible}
@@ -1033,6 +1178,7 @@ def retry_job(
 def continue_job_item(
     job_id: str,
     item_id: str,
+    req: Optional[RetryJobRequest] = None,
     db: Session = Depends(get_db),
     current_user=Depends(require_permission("job:retry")),
 ):
@@ -1044,7 +1190,17 @@ def continue_job_item(
     visible = accessible_account_ids(db, current_user)
     if not item or (visible is not None and job.created_by != current_user.id and item.ad_account_id not in visible):
         raise HTTPException(status_code=404, detail="任务项不存在或无权访问")
+    _require_job_controller(job, current_user)
+    req = req or RetryJobRequest()
     item_payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+    require_accounts(db, current_user, [item.ad_account_id], write=True)
+    _require_submission_leases(
+        db,
+        current_user,
+        [item.ad_account_id],
+        req.operation_leases,
+        "CAMPAIGN_RETRY",
+    )
     if item_payload.get("cleanup_status") == "COMPLETED":
         raise HTTPException(status_code=409, detail="该失败项的 Meta 对象已清理，请使用编辑后重投")
     pending_reconcile = (item_payload.get("reconcile") or {}).get("pending")
@@ -1072,6 +1228,8 @@ def reconcile_job_item(
     visible = accessible_account_ids(db, current_user)
     if not item or (visible is not None and job.created_by != current_user.id and item.ad_account_id not in visible):
         raise HTTPException(status_code=404, detail="任务项不存在或无权访问")
+    _require_job_controller(job, current_user)
+    require_accounts(db, current_user, [item.ad_account_id], write=True)
     try:
         result = JobService(db).reconcile_job_item(job_id, item_id)
     except Exception as exc:
@@ -1110,6 +1268,8 @@ def confirm_reconcile_job_item(
     visible = accessible_account_ids(db, current_user)
     if not item or (visible is not None and job.created_by != current_user.id and item.ad_account_id not in visible):
         raise HTTPException(status_code=404, detail="任务项不存在或无权访问")
+    _require_job_controller(job, current_user)
+    require_accounts(db, current_user, [item.ad_account_id], write=True)
     try:
         result = JobService(
             db
@@ -1157,7 +1317,9 @@ def cleanup_job_item(
     visible = accessible_account_ids(db, current_user)
     if not item or (visible is not None and job.created_by != current_user.id and item.ad_account_id not in visible):
         raise HTTPException(status_code=404, detail="任务项不存在或无权访问")
+    _require_job_controller(job, current_user)
     item_payload = item.response_payload if isinstance(item.response_payload, dict) else {}
+    require_accounts(db, current_user, [item.ad_account_id], write=True)
     if item.status != "FAILED" and item_payload.get("cleanup_status") != "PENDING":
         raise HTTPException(status_code=409, detail="当前任务项没有待清理的 Meta 对象")
     try:
@@ -1181,6 +1343,8 @@ def cancel_job(
     visible = accessible_account_ids(db, current_user)
     if visible is not None and existing.created_by != current_user.id and not any(item.ad_account_id in visible for item in existing.items):
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+    _require_job_controller(existing, current_user)
+    require_accounts(db, current_user, [item.ad_account_id for item in existing.items], write=True)
     job = JobService(db).cancel_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="任务不存在")

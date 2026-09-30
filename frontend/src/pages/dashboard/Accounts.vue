@@ -7,7 +7,7 @@
         <p class="page-subtitle">统一接入和管理各广告平台账户，当前支持 Meta。</p>
       </div>
       <div class="head-actions">
-        <el-button :icon="Refresh" :loading="loading" @click="load">{{ t('pages.refresh') }}</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="load()">{{ t('pages.refresh') }}</el-button>
         <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="openAddDialog">接入账号</el-button>
       </div>
     </div>
@@ -69,11 +69,11 @@
             </el-select>
             <el-button link type="info" @click="resetFilters">重置</el-button>
             </div>
-            <div v-if="isAdmin || userStore.isManager || userStore.hasPermission('ad_account:manage')" class="batch-actions">
-            <el-button type="primary" plain :disabled="!selectedAccountRows.length" @click="syncSelectedAccounts">批量同步</el-button>
-            <el-button type="success" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('unfreeze')">批量启用</el-button>
-            <el-button type="warning" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('freeze')">批量停用</el-button>
-            <el-button type="primary" :disabled="!selectedAccountRows.length" @click="goBatchPublish">批量投放</el-button>
+            <div v-if="canSyncAccounts || isAdmin || canCreateJobs" class="batch-actions">
+            <el-button v-if="canSyncAccounts" type="primary" plain :disabled="!selectedAccountRows.length" @click="syncSelectedAccounts">批量同步</el-button>
+            <el-button v-if="isAdmin" type="success" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('unfreeze')">批量启用</el-button>
+            <el-button v-if="isAdmin" type="warning" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('freeze')">批量停用</el-button>
+            <el-button v-if="canCreateJobs" type="primary" :disabled="!selectedAccountRows.length" @click="goBatchPublish">批量投放</el-button>
             </div>
           </div>
           <el-table :data="filteredAccounts" v-loading="loading" stripe @selection-change="selectedAccountRows = $event">
@@ -113,7 +113,7 @@
             </el-table-column>
             <el-table-column label="数量" width="90"><template #default="{ row }">{{ row.usable_count }}/{{ row.asset_count }}</template></el-table-column>
             <el-table-column label="操作" width="110">
-              <template #default="{ row }"><el-button v-if="isAdmin" link type="primary" :loading="trackingSyncing[row.account_pk]" @click="syncTrackingAsset(row.account_pk)">立即同步</el-button></template>
+              <template #default="{ row }"><el-button v-if="isAdmin || userStore.hasPermission('meta_asset:manage')" link type="primary" :loading="trackingSyncing[row.account_pk]" @click="syncTrackingAsset(row.account_pk)">立即同步</el-button></template>
             </el-table-column>
           </el-table>
           <el-empty v-if="!trackingHealthLoading && !trackingHealth.length" description="暂无广告账户资产同步记录" />
@@ -181,6 +181,8 @@ const { t } = useLocale()
 type DiscoveredBusiness = { id: string; name?: string | null; verification_status?: string | null }
 type TreeNode = { id: string; label: string; type: 'platform' | 'business' | 'account'; children?: TreeNode[]; businessId?: string; metaBusinessId?: string; credentialStatus?: string; syncStatus?: string; accountCount?: number; accountId?: string; accountStatus?: string | null; effectiveStatus?: string | null; systemStatus?: string; amountSpent?: number; currency?: string; businessName?: string | null; source?: AdAccountItem }
 const router = useRouter(); const route = useRoute(); const userStore = useUserStore(); const activeTab = ref('accounts-list'); const treeRef = ref<InstanceType<typeof ElTree>>(); const loading = ref(false); const credentialLoading = ref(false); const syncLoading = ref(false); const trackingHealthLoading = ref(false); const trackingHealth = ref<TrackingAssetHealthItem[]>([]); const trackingHealthSummary = ref<Record<string, number>>({}); const trackingSyncing = reactive<Record<string, boolean>>({}); const filterText = ref(''); const accountSearch = ref(''); const accountMetaStatus = ref(''); const accountSystemStatus = ref(''); const selectedAccountRows = ref<AdAccountItem[]>([]); const accountPage = ref(1); const accountPageSize = 20; const accountTotal = ref(0); const accounts = ref<AdAccountItem[]>([]); const metaAccounts = ref<MetaAccountItem[]>([]); const credentialRows = ref<CredentialItem[]>([]); const syncRows = ref<Array<SyncLogItem & { business_name: string }>>([]); const drawerVisible = ref(false); const selectedBusiness = ref<TreeNode | null>(null); const selectedAccount = ref<TreeNode | null>(null); const addDialogVisible = ref(false); const authorizing = ref(false); const completing = ref(false); const oauthCredentialId = ref<string | null>(null); const oauthStep = ref<'login' | 'businesses' | 'success'>('login'); const oauthError = ref(''); const discoveredBusinesses = ref<DiscoveredBusiness[]>([]); const selectedDiscoveredBusinessId = ref<string | null>(null); const oauthAdAccounts = ref<any[]>([]); const selectedOAuthAccountIds = ref<string[]>([]); const oauthOwnerFilter = ref<'ALL'|'PERSONAL'|'BUSINESS'>('ALL'); const isAdmin = computed(() => userStore.isAdmin); const activeCount = computed(() => accounts.value.filter(a => a.system_status === 'ACTIVE').length); const treeProps = { children: 'children', label: 'label' }
+const canSyncAccounts = computed(() => isAdmin.value || userStore.hasPermission('campaign:sync'))
+const canCreateJobs = computed(() => isAdmin.value || userStore.hasPermission('job:create'))
 const accountCredentialStatus = (account: AdAccountItem) => {
   const meta = account.business_id ? metaAccounts.value.find(item => item.id === account.business_id) : null
   const credential = account.credential_id ? credentialRows.value.find(item => item.id === account.credential_id) : null
@@ -197,10 +199,49 @@ function metaStatusType(account: AdAccountItem): 'success'|'danger'|'warning' { 
 function paymentStatusLabel(status?: string) { return ({ AVAILABLE: '可用', BM_CENTRAL: 'BM统一付款', MISSING: '未配置', PAST_DUE: '欠费', RESTRICTED: '受限', UNKNOWN: '未检查' } as Record<string, string>)[status || 'UNKNOWN'] || status || '未检查' }
 const filteredAccounts = computed(() => accounts.value.filter(account => { const q = accountSearch.value.trim().toLowerCase(); const meta = account.effective_status || account.account_status || 'PENDING'; return (!q || `${account.account_name || ''} ${account.account_id}`.toLowerCase().includes(q)) && (!accountMetaStatus.value || meta === accountMetaStatus.value) && (!accountSystemStatus.value || account.system_status === accountSystemStatus.value) }))
 function resetFilters() { accountSearch.value = ''; accountMetaStatus.value = ''; accountSystemStatus.value = '' }
-async function syncSelectedAccounts() { const ids = selectedAccountRows.value.map(account => account.id); if (!ids.length) return; try { await accountApi.syncBatch({ account_ids: ids }); ElMessage.success(`已提交 ${ids.length} 个账号的同步任务`); selectedAccountRows.value = []; await load() } catch { /* 全局请求拦截器提示错误 */ } }
-async function setSelectedAccountsStatus(action: 'freeze' | 'unfreeze') { const ids = selectedAccountRows.value.map(account => account.id); if (!ids.length) return; try { await accountApi.bulk({ action, account_ids: ids, reason: action === 'freeze' ? '管理员批量停用' : undefined }); ElMessage.success(`已批量${action === 'freeze' ? '停用' : '启用'} ${ids.length} 个账号`); selectedAccountRows.value = []; await load() } catch { /* 全局请求拦截器提示错误 */ } }
-async function setAccountStatus(account: AdAccountItem | undefined, action: 'freeze' | 'unfreeze') { if (!account) return; await accountApi.bulk({ action, account_ids: [account.id], reason: action === 'freeze' ? '管理员停用账号' : undefined }); ElMessage.success(action === 'freeze' ? '账号已停用' : '账号已启用'); await load() }
-async function unbindAccount(account: AdAccountItem | undefined) { if (!account) return; try { await ElMessageBox.confirm('解绑后将清除授权凭据并隐藏账号，但会保留历史投放记录。确定解绑吗？', '确认解绑账号', { type: 'warning' }); await accountApi.unbind(account.id); ElMessage.success('账号已解绑'); drawerVisible.value = false; await load() } catch { /* 用户取消或后端返回错误 */ } }
+async function syncSelectedAccounts() { const ids = selectedAccountRows.value.map(account => account.id); if (!ids.length) return; const held: Array<{ accountId: string; token: string }> = []; const operationLeases: Record<string, string> = {}; try { for (const accountId of ids) { const { data } = await accountApi.acquireOperationLease(accountId, 'ACCOUNT_SYNC', 120); const token = data?.lease?.lease_token; if (!token) throw new Error('未能获取广告账户操作租约'); held.push({ accountId, token }); operationLeases[accountId] = token } await accountApi.syncBatch({ account_ids: ids, operation_leases: operationLeases }); ElMessage.success(`已提交 ${ids.length} 个账号的同步任务`); selectedAccountRows.value = []; await load() } catch { /* 全局请求拦截器提示错误 */ } finally { await Promise.allSettled(held.map(({ accountId, token }) => accountApi.releaseOperationLease(accountId, token))) } }
+async function withMutationLeases<T>(accountIds: string[], callback: (tokens: Record<string, string>) => Promise<T>): Promise<T> {
+  const held: Array<{ accountId: string; token: string }> = []
+  const tokens: Record<string, string> = {}
+  try {
+    for (const accountId of accountIds) {
+      const { data } = await accountApi.acquireOperationLease(accountId, 'ACCOUNT_MUTATION', 120)
+      const token = data?.lease?.lease_token
+      if (!token) throw new Error('未能获取广告账户操作租约')
+      held.push({ accountId, token })
+      tokens[accountId] = token
+    }
+    return await callback(tokens)
+  } finally {
+    await Promise.allSettled(held.map(({ accountId, token }) => accountApi.releaseOperationLease(accountId, token)))
+  }
+}
+async function setSelectedAccountsStatus(action: 'freeze' | 'unfreeze') {
+  const ids = selectedAccountRows.value.map(account => account.id)
+  if (!ids.length) return
+  try {
+    await withMutationLeases(ids, tokens => accountApi.bulk({ action, account_ids: ids, reason: action === 'freeze' ? '管理员批量停用' : undefined, operation_leases: tokens }))
+    ElMessage.success(`已批量${action === 'freeze' ? '停用' : '启用'} ${ids.length} 个账号`)
+    selectedAccountRows.value = []
+    await load()
+  } catch { /* 全局请求拦截器提示错误 */ }
+}
+async function setAccountStatus(account: AdAccountItem | undefined, action: 'freeze' | 'unfreeze') {
+  if (!account) return
+  await withMutationLeases([account.id], tokens => accountApi.bulk({ action, account_ids: [account.id], reason: action === 'freeze' ? '管理员停用账号' : undefined, operation_leases: tokens }))
+  ElMessage.success(action === 'freeze' ? '账号已停用' : '账号已启用')
+  await load()
+}
+async function unbindAccount(account: AdAccountItem | undefined) {
+  if (!account) return
+  try {
+    await ElMessageBox.confirm('解绑后将清除授权凭据并隐藏账号，但会保留历史投放记录。确定解绑吗？', '确认解绑账号', { type: 'warning' })
+    await withMutationLeases([account.id], tokens => accountApi.unbind(account.id, tokens[account.id]))
+    ElMessage.success('账号已解绑')
+    drawerVisible.value = false
+    await load()
+  } catch { /* 用户取消或后端返回错误 */ }
+}
 function goBatchPublish() { router.push({ path: '/dashboard/batch-publish', query: { account_ids: selectedAccountRows.value.map(account => account.id).join(',') } }) }
 function isAccountSelectable(account: AdAccountItem) { const metaStatus = account.effective_status || account.account_status; return account.system_status === 'ACTIVE' && (!metaStatus || metaStatus === 'ACTIVE') }
 const filteredOAuthAdAccounts = computed(() => oauthAdAccounts.value.filter(item => oauthOwnerFilter.value === 'ALL' || (item.business?.id ? 'BUSINESS' : 'PERSONAL') === oauthOwnerFilter.value))

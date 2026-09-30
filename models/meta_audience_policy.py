@@ -11,8 +11,8 @@ from core.tenant import TenantMixin
 class MetaAudienceExclusionPolicy(TenantMixin, Base):
     """描述某个广告账户必须排除的 Meta Custom Audience。
 
-    策略与 Meta 受众目录分离：目录是外部资产缓存，策略是 XMP 的
-    法律/运营控制面。当前采用一条记录覆盖当前状态，变更通过版本和审计日志追踪。
+    策略与 Meta 受众目录分离：目录是外部资产缓存，策略是法律/运营
+    控制面。当前采用一条记录覆盖当前状态，变更通过版本和审计日志追踪。
     """
 
     __tablename__ = "meta_audience_exclusion_policies"

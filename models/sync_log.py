@@ -38,6 +38,8 @@ class MetaSyncLog(TenantMixin, Base):
     __tablename__ = "meta_sync_logs"
     __table_args__ = (
         Index("ix_meta_sync_logs_tenant_business", "tenant_id", "business_id"),
+        Index("ix_meta_sync_logs_tenant_account", "tenant_id", "ad_account_id"),
+        Index("ix_meta_sync_logs_tenant_requester", "tenant_id", "requested_by"),
         Index("ix_meta_sync_logs_tenant_created", "tenant_id", "created_at"),
     )
 
@@ -49,6 +51,21 @@ class MetaSyncLog(TenantMixin, Base):
         nullable=True,
         index=True,
         comment="对应 BM；BM 被删除时置空而非级联删除日志",
+    )
+
+    ad_account_id = Column(
+        String(50),
+        ForeignKey("ad_accounts.id"),
+        nullable=True,
+        index=True,
+        comment="对应广告账户；BM 级同步时为空",
+    )
+    requested_by = Column(
+        String(50),
+        ForeignKey("users.id"),
+        nullable=True,
+        index=True,
+        comment="发起同步的系统用户；定时/系统任务可为空",
     )
 
     sync_type = Column(String(32), nullable=False, comment="BUSINESS / AD_ACCOUNT / FULL")
@@ -78,6 +95,8 @@ class MetaSyncLog(TenantMixin, Base):
             "id": self.id,
             "tenant_id": self.tenant_id,
             "business_id": self.business_id,
+            "ad_account_id": self.ad_account_id,
+            "requested_by": self.requested_by,
             "sync_type": self.sync_type,
             "status": self.status,
             "total_count": self.total_count,

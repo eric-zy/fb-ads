@@ -4,6 +4,7 @@ from celery import chain
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from core.auth import get_current_active_user, require_admin
+from core.audit import record_audit
 from core.tenant import effective_tenant_id
 from core.database import get_db
 from core.money import to_major
@@ -23,6 +24,13 @@ def sync_report_data(
 ):
     """管理员手动回补账户 Insights；只允许操作当前租户账户。"""
     tenant_id = effective_tenant_id(current_user)
+    # 平台管理员未切换租户时不得触发跨租户全量写入；如确需处理，
+    # 必须显式指定一个本地广告账户，任务随后按该账户租户执行。
+    if not tenant_id and not account_id:
+        raise HTTPException(
+            status_code=400,
+            detail="请先切换到目标租户，或显式指定 account_id",
+        )
     query = db.query(AdAccount).filter(AdAccount.system_status == "ACTIVE")
     if tenant_id:
         query = query.filter(AdAccount.tenant_id == tenant_id)
@@ -53,6 +61,15 @@ def sync_report_data(
             created_by=current_user.id,
         ))
     db.commit()
+    record_audit(
+        db,
+        action="SYNC_REPORT_DATA",
+        resource_type="ad_account",
+        resource_id=account_id or "batch",
+        user_id=current_user.id,
+        request_data={"account_id": account_id, "days": days, "account_count": len(accounts)},
+        response_data={"status": "QUEUED", "task_ids": task_ids},
+    )
     return {"status": "queued", "days": days, "account_count": len(accounts), "task_ids": task_ids}
 
 @router.get("/account-overview")

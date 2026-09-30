@@ -39,9 +39,9 @@
       <div class="info-row"><span>角色</span><b>{{ roleLabel(user?.role) }}</b></div>
     </div>
 
-    <div v-if="userStore.isAdmin" class="card audience-policy-card">
+    <div v-if="userStore.isAdmin || userStore.hasPermission('meta_asset:manage')" class="card audience-policy-card">
       <h3>Meta 受众资产与强制排除</h3>
-      <p class="hint">管理员可按广告账户同步 Custom Audience，并锁定法律/运营要求的排除受众。投放时系统会自动合并这些排除项。</p>
+      <p class="hint">具备 Meta 资产管理权限的用户可按广告账户同步 Custom Audience，并锁定法律/运营要求的排除受众。投放时系统会自动合并这些排除项。</p>
       <div class="field">
         <label>广告账户</label>
         <select v-model="selectedAccountId" class="input" @change="loadAudiences">
@@ -129,7 +129,7 @@ function roleLabel(r?: string) {
 onMounted(() => {
   const s = (userStore.user?.settings as Record<string, any>) || {}
   settings.value = { ...settings.value, ...s }
-  if (userStore.isAdmin) void loadAccounts()
+  if (userStore.isAdmin || userStore.hasPermission('meta_asset:manage')) void loadAccounts()
 })
 
 async function loadAccounts() {

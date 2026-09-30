@@ -11,6 +11,7 @@ from core.auth import get_current_active_user
 from core.database import get_db
 from models import AdAccount, RegionGroup, TargetingPackage, User
 from services.account_access import can_access_account
+from services.business_access import owned_query, tenant_required, require_accounts
 from services.targeting_catalog import normalize_targeting, targeting_preflight_errors, placement_preflight_errors
 
 
@@ -47,14 +48,17 @@ def _validate_accounts(db: Session, user: User, account_ids: List[str]) -> List[
             raise HTTPException(status_code=400, detail=f"广告账户不存在：{account_id}")
         if not can_access_account(db, user, account_id):
             raise HTTPException(status_code=403, detail=f"无权绑定广告账户：{account_id}")
+    # 账户存在且可见后，再执行统一租户/操作范围校验；这样“存在但无权”
+    # 按本模块既有契约返回 403，而不会被安全型 404 覆盖。
+    require_accounts(db, user, ids)
     return ids
 
 
-def _validate_region_ids(db: Session, region_group_ids: List[str]) -> List[str]:
+def _validate_region_ids(db: Session, region_group_ids: List[str], user) -> List[str]:
     ids = _unique(region_group_ids)
     if not ids:
         return []
-    found = {row.id for row in db.query(RegionGroup).filter(RegionGroup.id.in_(ids)).all()}
+    found = {row.id for row in owned_query(db.query(RegionGroup), RegionGroup, user).filter(RegionGroup.id.in_(ids)).all()}
     missing = sorted(set(ids) - found)
     if missing:
         raise HTTPException(status_code=400, detail=f"地区组不存在：{', '.join(missing)}")
@@ -85,9 +89,9 @@ def _validate_region_payload(req: RegionGroupRequest) -> tuple[dict, dict]:
 def list_region_groups(
     status: Optional[str] = Query("ACTIVE"),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
-    query = db.query(RegionGroup)
+    query = owned_query(db.query(RegionGroup), RegionGroup, current_user)
     if status:
         query = query.filter(RegionGroup.status == status.upper())
     return [item.to_dict() for item in query.order_by(RegionGroup.updated_at.desc()).all()]
@@ -103,6 +107,7 @@ def create_region_group(
     account_ids = _validate_accounts(db, current_user, req.account_ids)
     item = RegionGroup(
         id=uuid.uuid4().hex,
+        tenant_id=tenant_required(current_user),
         name=req.name.strip(),
         geo_locations=geo,
         excluded_geo_locations=excluded,
@@ -123,7 +128,7 @@ def update_region_group(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    item = db.query(RegionGroup).filter(RegionGroup.id == group_id).first()
+    item = owned_query(db.query(RegionGroup), RegionGroup, current_user).filter(RegionGroup.id == group_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="地区组不存在")
     geo, excluded = _validate_region_payload(req)
@@ -141,9 +146,9 @@ def update_region_group(
 def delete_region_group(
     group_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
-    item = db.query(RegionGroup).filter(RegionGroup.id == group_id).first()
+    item = owned_query(db.query(RegionGroup), RegionGroup, current_user).filter(RegionGroup.id == group_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="地区组不存在")
     item.status = "ARCHIVED"
@@ -169,9 +174,9 @@ def _validate_package_payload(req: TargetingPackageRequest) -> dict:
 def list_targeting_packages(
     status: Optional[str] = Query("ACTIVE"),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
-    query = db.query(TargetingPackage)
+    query = owned_query(db.query(TargetingPackage), TargetingPackage, current_user)
     if status:
         query = query.filter(TargetingPackage.status == status.upper())
     return [item.to_dict() for item in query.order_by(TargetingPackage.updated_at.desc()).all()]
@@ -185,9 +190,10 @@ def create_targeting_package(
 ):
     targeting = _validate_package_payload(req)
     account_ids = _validate_accounts(db, current_user, req.account_ids)
-    region_ids = _validate_region_ids(db, req.region_group_ids)
+    region_ids = _validate_region_ids(db, req.region_group_ids, current_user)
     item = TargetingPackage(
         id=uuid.uuid4().hex,
+        tenant_id=tenant_required(current_user),
         name=req.name.strip(),
         targeting_json=targeting,
         placement_json=dict(req.placement_json or {}),
@@ -209,7 +215,7 @@ def update_targeting_package(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    item = db.query(TargetingPackage).filter(TargetingPackage.id == package_id).first()
+    item = owned_query(db.query(TargetingPackage), TargetingPackage, current_user).filter(TargetingPackage.id == package_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="定向包不存在")
     targeting = _validate_package_payload(req)
@@ -217,7 +223,7 @@ def update_targeting_package(
     item.targeting_json = targeting
     item.placement_json = dict(req.placement_json or {})
     item.account_ids = _validate_accounts(db, current_user, req.account_ids)
-    item.region_group_ids = _validate_region_ids(db, req.region_group_ids)
+    item.region_group_ids = _validate_region_ids(db, req.region_group_ids, current_user)
     item.description = req.description
     db.commit()
     db.refresh(item)
@@ -228,9 +234,9 @@ def update_targeting_package(
 def delete_targeting_package(
     package_id: str,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_user),
 ):
-    item = db.query(TargetingPackage).filter(TargetingPackage.id == package_id).first()
+    item = owned_query(db.query(TargetingPackage), TargetingPackage, current_user).filter(TargetingPackage.id == package_id).first()
     if not item:
         raise HTTPException(status_code=404, detail="定向包不存在")
     item.status = "ARCHIVED"

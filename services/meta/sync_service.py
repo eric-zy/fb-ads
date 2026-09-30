@@ -57,11 +57,18 @@ class MetaSyncService:
     # 同步日志
     # ------------------------------------------------------------------
     def _start_log(
-        self, business_id: Optional[str], sync_type: str, celery_task_id: Optional[str] = None
+        self,
+        business_id: Optional[str],
+        sync_type: str,
+        celery_task_id: Optional[str] = None,
+        ad_account_id: Optional[str] = None,
+        requested_by: Optional[str] = None,
     ) -> MetaSyncLog:
         log = MetaSyncLog(
             id=__import__("uuid").uuid4().hex,
             business_id=business_id,
+            ad_account_id=ad_account_id,
+            requested_by=requested_by,
             sync_type=sync_type,
             status=SyncLogStatus.RUNNING.value,
             celery_task_id=celery_task_id,
@@ -139,7 +146,9 @@ class MetaSyncService:
     # ------------------------------------------------------------------
     # 同步 BM 下的广告账户
     # ------------------------------------------------------------------
-    def sync_ad_accounts(self, business_id: str) -> MetaSyncLog:
+    def sync_ad_accounts(
+        self, business_id: str, requested_by: Optional[str] = None
+    ) -> MetaSyncLog:
         """拉取该 BM 下的广告账户并 Upsert 入库
 
         注意：**不覆盖 system_status**，管理员的禁用决定必须保留。
@@ -148,7 +157,11 @@ class MetaSyncService:
         if not business:
             raise ValueError(f"BM 不存在: {business_id}")
 
-        log = self._start_log(business_id, SyncType.AD_ACCOUNT.value)
+        log = self._start_log(
+            business_id,
+            SyncType.AD_ACCOUNT.value,
+            requested_by=requested_by,
+        )
         business.sync_status = SyncStatus.SYNCING.value
         self.db.commit()
 
@@ -391,14 +404,21 @@ class MetaSyncService:
     # ------------------------------------------------------------------
     # 同步单个账户
     # ------------------------------------------------------------------
-    def sync_ad_account(self, ad_account_id: str) -> MetaSyncLog:
+    def sync_ad_account(
+        self, ad_account_id: str, requested_by: Optional[str] = None
+    ) -> MetaSyncLog:
         """同步单个广告账户的 Meta 侧信息"""
         account = self.db.query(AdAccount).filter(AdAccount.id == ad_account_id).first()
         if not account:
             raise ValueError(f"广告账户不存在: {ad_account_id}")
 
         business = account.business
-        log = self._start_log(business.id if business else None, SyncType.AD_ACCOUNT.value)
+        log = self._start_log(
+            business.id if business else None,
+            SyncType.AD_ACCOUNT.value,
+            ad_account_id=account.id,
+            requested_by=requested_by,
+        )
 
         try:
             ref = CredentialResolver(self.db).for_account(account.id)

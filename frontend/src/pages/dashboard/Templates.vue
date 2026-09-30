@@ -280,10 +280,10 @@
             <el-select v-model="creativeForm.page_id" filterable class="page-select" placeholder="选择已授权的 Facebook 页面">
               <el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name} (${page.page_id})`" :value="page.page_id" />
             </el-select>
-            <el-button type="primary" plain :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
+            <el-button v-if="userStore.isAdmin || userStore.hasPermission('meta_asset:manage')" type="primary" plain :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
           </div>
           <div v-if="!metaPages.length" class="tip page-sync-tip">
-            暂无已同步页面，请先完成 Meta OAuth 授权或点击右侧按钮同步。
+            暂无已同步页面，请先完成 Meta OAuth 授权。
           </div>
         </el-form-item>
         <el-form-item label="素材形式">
@@ -353,6 +353,7 @@ import { mediaApi, type MediaItem } from '@/api/media'
 import { metaPagesApi, type MetaPage } from '@/api/metaPages'
 import { regionGroupsApi, targetingPackagesApi, type RegionGroup, type TargetingPackage } from '@/api/targetingPackages'
 import { useLocale } from '@/stores/localeStore'
+import { useUserStore } from '@/stores/userStore'
 import {
   CTA_OPTIONS,
   defaultOptimizationGoal,
@@ -363,6 +364,7 @@ import {
   STANDARD_CONVERSION_EVENTS,
 } from '@/config/metaDeliveryRules'
 const { t } = useLocale()
+const userStore = useUserStore()
 
 const templates = ref<CampaignTemplate[]>([])
 const mediaAssets = ref<MediaItem[]>([])

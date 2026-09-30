@@ -24,7 +24,9 @@ from core.enums import (
     JobStatus,
 )
 from core.logger import logger
-from core.tenant import resolve_tenant_of, tenant_task
+from core.redis_client import redis_client
+from core.tenant import resolve_tenant_of, strict_tenant_task as tenant_task
+from services.business_access import task_actor, require_accounts
 from config.settings import settings
 from models import Campaign, AdGroup, CampaignInstance, AdSetInstance, AdInstance, CampaignJob, CampaignJobItem, CreativeAsset, MetaAssetBinding, MetaAudienceAsset, AdAccount, MetaPage, SinanCredential, User
 from services.credential_service import CredentialService
@@ -42,6 +44,31 @@ from core.security import decrypt_token
 
 # 未到达终态的子项状态
 _ACTIVE_ITEM_STATUSES = [JobItemStatus.PENDING.value, JobItemStatus.RUNNING.value]
+
+
+class AccountOperationBusy(RuntimeError):
+    """共享广告账户正在执行另一项写操作，当前任务应稍后重试。"""
+
+
+def _acquire_account_write_lock(tenant_id: str, account_id: str):
+    """同一租户的共享广告账户写操作串行化。"""
+    lock = redis_client.redis_client.lock(
+        f"fbads:account-operation:{tenant_id}:{account_id}",
+        timeout=max(int(settings.FB_CONNECTOR_REPORT_TIMEOUT) * 3, 1800),
+        blocking=False,
+    )
+    if not lock.acquire(blocking=False):
+        raise AccountOperationBusy(f"账户 {account_id} 的投放写操作正在执行")
+    return lock
+
+
+def _validate_item_actor(db, item):
+    job = item.job
+    account = item.ad_account
+    if not job or not account or job.tenant_id != item.tenant_id or account.tenant_id != item.tenant_id:
+        raise PermissionError("任务、子项与账户归属不一致")
+    require_accounts(db, task_actor(db, job.created_by, item.tenant_id), [account.id], write=True)
+    return job.status == JobStatus.CANCELLED.value
 
 
 def _resolve_adset_for_remote_ad(
@@ -507,10 +534,15 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
     db = SessionLocal()
     job_id: Optional[str] = None
     usage_asset_ids: list[str] = []
+    write_lock = None
     try:
         item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
         if not item:
             return {"error": "job item not found"}
+
+        if _validate_item_actor(db, item):
+            return {"skipped": True, "reason": "cancelled"}
+        write_lock = _acquire_account_write_lock(item.tenant_id, item.ad_account_id)
 
         job_id = item.job_id
         logger.info(
@@ -806,6 +838,9 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
 
         raise RuntimeError("广告账户未绑定海外 Connector 凭据")
 
+    except AccountOperationBusy as e:
+        db.rollback()
+        raise self.retry(exc=e, countdown=15)
     except MetaApiError as e:
         db.rollback()
         logger.error(f"[JobItem {job_item_id}] Meta 调用失败: {e}")
@@ -903,6 +938,11 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             db.commit()
         return {"error": message}
     finally:
+        if write_lock is not None:
+            try:
+                write_lock.release()
+            except Exception:
+                logger.warning("[JobItem %s] 投放写锁释放失败", job_item_id)
         _finalize_job_if_done(db, job_id)
         db.close()
 
@@ -920,10 +960,15 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
     """
     db = SessionLocal()
     job_id: Optional[str] = None
+    write_lock = None
     try:
         item = db.query(CampaignJobItem).filter(CampaignJobItem.id == job_item_id).first()
         if not item:
             return {"error": "job item not found"}
+
+        if _validate_item_actor(db, item):
+            return {"skipped": True, "reason": "cancelled"}
+        write_lock = _acquire_account_write_lock(item.tenant_id, item.ad_account_id)
 
         job_id = item.job_id
         if item.status == JobItemStatus.SUCCESS.value:
@@ -1026,6 +1071,9 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
         db.commit()
         return {"ok": True, "action": action, "campaign_id": instance.meta_campaign_id}
 
+    except AccountOperationBusy as e:
+        db.rollback()
+        raise self.retry(exc=e, countdown=15)
     except MetaApiError as e:
         db.rollback()
         logger.error(f"[JobItem {job_item_id}] 批量操作失败: {e}")
@@ -1037,6 +1085,11 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
         _mark_item_failed(db, job_item_id, None, str(e), ErrorCategory.UNKNOWN)
         return {"error": str(e)}
     finally:
+        if write_lock is not None:
+            try:
+                write_lock.release()
+            except Exception:
+                logger.warning("[JobItem %s] 投放写锁释放失败", job_item_id)
         _finalize_job_if_done(db, job_id)
         db.close()
 

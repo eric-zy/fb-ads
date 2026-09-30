@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from core.auth import require_admin
 from core.database import get_db
 from core.tenant import effective_tenant_id
 from models import User, AdAccount, BusinessAssetAccess, UserAccount, AccountAssignmentRule
+from api.accounts import _require_account_operation_lease
 from services.account_dispatch import AccountDispatchService
+from services.account_pool import AccountPoolService
 
 router = APIRouter(prefix="/api/v1/account-dispatch", tags=["广告账户调度"])
 
@@ -15,6 +17,27 @@ class RuleRequest(BaseModel):
     priority: int = 100
     rule_type: str = "FIXED_USER"
     rule_config: dict = {}
+
+
+class AssignmentLeaseRequest(BaseModel):
+    lease_token: str = Field(..., min_length=16, max_length=128)
+
+
+class DispatchUnassignedRequest(BaseModel):
+    operation_leases: dict[str, str] = Field(
+        default_factory=dict,
+        description="按账户主键提供 ACCOUNT_ASSIGNMENT 操作租约 token",
+    )
+
+
+def _account_or_404(db: Session, account_id: str, current_user: User) -> AdAccount:
+    account = db.query(AdAccount).filter(
+        AdAccount.id == account_id,
+        AdAccount.tenant_id == effective_tenant_id(current_user),
+    ).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="广告账户不存在")
+    return account
 
 @router.post("/rules")
 def create_rule(payload: RuleRequest, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
@@ -43,10 +66,19 @@ def update_rule_status(rule_id: str, status: str, db: Session = Depends(get_db),
 @router.get("/accounts/{account_id}/assignments")
 def list_assignments(account_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
     rows = db.query(UserAccount).filter(UserAccount.tenant_id == effective_tenant_id(current_user), UserAccount.account_id == account_id).order_by(UserAccount.assigned_at.desc()).all()
-    return {"items": [{"id": r.id, "user_id": r.user_id, "status": r.assignment_status, "type": r.assignment_type, "assigned_at": r.assigned_at.isoformat() if r.assigned_at else None, "expires_at": r.expires_at.isoformat() if r.expires_at else None} for r in rows], "total": len(rows)}
+    return {"items": [{"id": r.id, "user_id": r.user_id, "status": r.assignment_status, "assignment_role": r.assignment_role, "is_primary": r.assignment_status == "ACTIVE" and r.assignment_role == "PRIMARY", "type": r.assignment_type, "assigned_at": r.assigned_at.isoformat() if r.assigned_at else None, "expires_at": r.expires_at.isoformat() if r.expires_at else None} for r in rows], "total": len(rows)}
 
 @router.post("/accounts/{account_id}/dispatch")
-def dispatch(account_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+def dispatch(
+    account_id: str,
+    payload: AssignmentLeaseRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    account = _account_or_404(db, account_id, current_user)
+    _require_account_operation_lease(
+        db, current_user, account, payload.lease_token, "ACCOUNT_ASSIGNMENT"
+    )
     try:
         row = AccountDispatchService(db).dispatch(effective_tenant_id(current_user), account_id, current_user.id)
         return {"status": "ASSIGNED", "user_id": row.user_id, "account_id": account_id}
@@ -54,13 +86,40 @@ def dispatch(account_id: str, db: Session = Depends(get_db), current_user: User 
         raise HTTPException(status_code=400, detail=str(exc))
 
 @router.post("/accounts/{account_id}/release")
-def release(account_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+def release(
+    account_id: str,
+    payload: AssignmentLeaseRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    account = _account_or_404(db, account_id, current_user)
+    _require_account_operation_lease(
+        db, current_user, account, payload.lease_token, "ACCOUNT_ASSIGNMENT"
+    )
     count = AccountDispatchService(db).release(effective_tenant_id(current_user), account_id, current_user.id)
     return {"status": "RELEASED", "account_id": account_id, "released": count}
 
 @router.post("/dispatch-unassigned")
-def dispatch_unassigned(db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+def dispatch_unassigned(
+    payload: DispatchUnassignedRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
     """将当前账户池内尚未分配的账户按规则批量分配。"""
     tenant_id = effective_tenant_id(current_user)
+    unassigned_ids = [
+        row["account_id"]
+        for row in AccountPoolService(db).list(tenant_id, include_unassigned=True)
+        if not row["assigned"]
+    ]
+    for account_id in unassigned_ids:
+        account = _account_or_404(db, account_id, current_user)
+        _require_account_operation_lease(
+            db,
+            current_user,
+            account,
+            payload.operation_leases,
+            "ACCOUNT_ASSIGNMENT",
+        )
     result = AccountDispatchService(db).dispatch_unassigned(tenant_id, current_user.id)
     return {"status": "COMPLETED", **result}

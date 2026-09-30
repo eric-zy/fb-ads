@@ -304,6 +304,22 @@ def _make_account(client, business_id: str) -> dict:
     return payload
 
 
+def _account_lease(client, account_id: str, operation_type: str = "ACCOUNT_MUTATION") -> str:
+    """获取账户写操作租约，保持账户接口测试与生产调用契约一致。"""
+    resp = client.post(
+        f"/api/v1/accounts/{account_id}/operation-lease",
+        json={"operation_type": operation_type, "ttl_seconds": 60},
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json().get("lease", {}).get("lease_token")
+    assert token
+    return token
+
+
+def _account_leases(client, account_ids: list[str], operation_type: str = "ACCOUNT_MUTATION") -> dict[str, str]:
+    return {account_id: _account_lease(client, account_id, operation_type) for account_id in account_ids}
+
+
 def test_account_requires_business(client):
     """归属 BM 为必填：缺少 business_id 直接 400"""
     resp = client.post(
@@ -394,7 +410,8 @@ def test_transfer_and_bulk_transfer(client):
 
     # 单个转移到另一个 BM
     resp = client.post(
-        f"/api/v1/accounts/{acc['id']}/transfer", json={"business_id": meta_b["id"]}
+        f"/api/v1/accounts/{acc['id']}/transfer",
+        json={"business_id": meta_b["id"], "lease_token": _account_lease(client, acc["id"])},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["business_id"] == meta_b["id"]
@@ -406,6 +423,7 @@ def test_transfer_and_bulk_transfer(client):
             "action": "transfer",
             "account_ids": [acc["id"]],
             "business_id": meta_a["id"],
+            "operation_leases": _account_leases(client, [acc["id"]]),
         },
     )
     assert resp.status_code == 200, resp.text
@@ -422,7 +440,8 @@ def test_transfer_rejects_unassign(client):
     acc = _make_account(client, business_id=meta["id"])
 
     resp = client.post(
-        f"/api/v1/accounts/{acc['id']}/transfer", json={"business_id": None}
+        f"/api/v1/accounts/{acc['id']}/transfer",
+        json={"business_id": None, "lease_token": _account_lease(client, acc["id"])},
     )
     assert resp.status_code == 400
     assert "system_status" in resp.json()["detail"]
@@ -437,7 +456,12 @@ def test_bulk_freeze_unfreeze_delete(client):
 
     resp = client.post(
         "/api/v1/accounts/bulk",
-        json={"action": "freeze", "account_ids": ids, "reason": "批量冻结测试"},
+        json={
+            "action": "freeze",
+            "account_ids": ids,
+            "reason": "批量冻结测试",
+            "operation_leases": _account_leases(client, ids),
+        },
     )
     assert resp.json()["success_count"] == 2
 
@@ -452,13 +476,23 @@ def test_bulk_freeze_unfreeze_delete(client):
         db.close()
 
     resp = client.post(
-        "/api/v1/accounts/bulk", json={"action": "unfreeze", "account_ids": ids}
+        "/api/v1/accounts/bulk",
+        json={
+            "action": "unfreeze",
+            "account_ids": ids,
+            "operation_leases": _account_leases(client, ids),
+        },
     )
     assert resp.json()["success_count"] == 2
 
     # 批量删除（含一个不存在的 ID，验证部分失败不影响其余）
     resp = client.post(
-        "/api/v1/accounts/bulk", json={"action": "delete", "account_ids": ids + ["not-exist"]}
+        "/api/v1/accounts/bulk",
+        json={
+            "action": "delete",
+            "account_ids": ids + ["not-exist"],
+            "operation_leases": _account_leases(client, ids),
+        },
     )
     body = resp.json()
     assert body["success_count"] == 2 and body["failed_count"] == 1
@@ -494,6 +528,9 @@ def test_delete_meta_account_clears_credentials(client):
         json={
             "action": "delete",
             "account_ids": [a["id"] for a in client.get("/api/v1/accounts").json()],
+            "operation_leases": _account_leases(
+                client, [a["id"] for a in client.get("/api/v1/accounts").json()]
+            ),
         },
     )
     resp = client.delete(f"/api/v1/meta-accounts/{meta['id']}")
@@ -536,7 +573,10 @@ def test_disabled_account_excluded_from_pool(client):
     meta = _make_meta(client)
     acc = _make_account(client, business_id=meta["id"])
 
-    client.post(f"/api/v1/accounts/{acc['id']}/freeze", params={"reason": "风控"})
+    client.post(
+        f"/api/v1/accounts/{acc['id']}/freeze",
+        json={"reason": "风控", "lease_token": _account_lease(client, acc["id"])},
+    )
     body = client.get("/api/v1/accounts/available-for-deployment").json()
     assert body["total"] == 0
 
@@ -594,7 +634,10 @@ def test_sync_does_not_overwrite_system_status(client):
     acc = _make_account(client, business_id=meta["id"])
 
     # 管理员禁用
-    client.post(f"/api/v1/accounts/{acc['id']}/freeze", params={"reason": "禁止投放"})
+    client.post(
+        f"/api/v1/accounts/{acc['id']}/freeze",
+        json={"reason": "禁止投放", "lease_token": _account_lease(client, acc["id"])},
+    )
 
     db = TestingSessionLocal()
     try:

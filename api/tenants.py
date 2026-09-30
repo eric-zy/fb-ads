@@ -15,7 +15,7 @@
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from core.auth import AuthManager, get_current_active_user, get_current_tenant, require_platform_admin
 from core.database import get_db
 from core.tenant import bypass_tenant
+from core.audit import record_audit
 from models import AdAccount, CampaignTemplate, MetaAccount, Tenant, User
 from models.tenant import TenantStatus, UserRole
 
@@ -133,6 +134,7 @@ def list_tenants(
 @router.post("/switch", response_model=dict)
 def switch_tenant(
     req: TenantSwitchRequest,
+    request: Request,
     current_user: User = Depends(require_platform_admin),
     db: Session = Depends(get_db),
 ):
@@ -140,6 +142,16 @@ def switch_tenant(
     tenant = db.query(Tenant).filter(Tenant.id == req.tenant_id.strip()).first()
     if not tenant or not tenant.is_active():
         raise HTTPException(status_code=404, detail="目标租户不存在或已停用")
+    record_audit(
+        db,
+        action="SWITCH_TENANT_CONTEXT",
+        resource_type="tenant",
+        resource_id=tenant.id,
+        user_id=current_user.id,
+        request_data={"target_tenant_id": tenant.id, "tenant_switch": True},
+        response_data={"status": "ISSUED"},
+        request=request,
+    )
     token = AuthManager.create_access_token({
         "sub": current_user.id,
         "email": current_user.email,
