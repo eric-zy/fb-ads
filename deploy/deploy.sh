@@ -152,8 +152,8 @@ if ! "${compose[@]}" exec -T celery-worker python -c 'import celery_app; require
 fi
 
 echo "[deploy] 校验 Celery Worker 可消费任务..."
-if ! "${compose[@]}" exec -T celery-worker celery -A celery_app inspect ping --timeout=5 | grep -q 'pong'; then
-  echo "[deploy] Celery Worker 未响应 inspect ping，拒绝完成部署。最近日志：" >&2
+if ! "${compose[@]}" exec -T api python scripts/check_celery_worker.py; then
+  echo "[deploy] Celery Worker 未完成测试任务，拒绝完成部署。最近日志：" >&2
   "${compose[@]}" logs --tail=100 celery-worker >&2 || true
   exit 1
 fi

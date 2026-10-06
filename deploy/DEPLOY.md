@@ -167,8 +167,9 @@ ALLOW_INSECURE_HTTP=true
 NGINX_BIND_ADDRESS=0.0.0.0
 ```
 
-部署完成前会验证数据库/Redis 就绪、Nginx `/health` 和 `/ready` 的 JSON 响应及
-Instagram 等关键 Worker 任务注册。单纯收到网页 HTML 200 不会通过后端探针。
+部署完成前会验证数据库/Redis 就绪、Nginx `/health` 和 `/ready` 的 JSON 响应、
+Instagram 等关键 Worker 任务注册，并投递一条无业务副作用的测试任务确认 Worker
+实际消费及结果回传。单纯收到网页 HTML 200 不会通过后端探针。
 
 大文件素材使用 OSS Multipart 浏览器直传：`OSS_MULTIPART_THRESHOLD_BYTES` 控制切换阈值，
 `OSS_MULTIPART_PART_SIZE_BYTES` 控制分片大小（不得小于 5MiB）。默认均为 16MiB；前端最多并发上传 4 个分片，
