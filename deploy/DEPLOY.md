@@ -117,6 +117,11 @@ ls /opt/fb-ads/deploy/    # 应见 Dockerfile / docker-compose.yml / .env.exampl
 
 ## 3. 配置 .env
 
+国内部署唯一业务配置来源是 `deploy/.env`。`deploy.sh` 会显式把该文件传给 Compose，
+并清除文件中业务键对应的 shell 覆盖；API、Worker、Beat 同样通过 `env_file: .env` 读取它。
+修改仓库根目录 `.env` 或只在命令前设置 `ALLOW_INSECURE_HTTP=true` 不会改变国内部署配置。
+配置检查兼容 LF 与 Windows CRLF 换行；不会修改配置文件，也不会因行尾回车误判 HTTP 开关。
+
 ```bash
 cd /opt/fb-ads/deploy
 cp .env.example .env
@@ -151,6 +156,19 @@ ADS_OSS_REGION=cn-beijing
 > `NGINX_BIND_ADDRESS=0.0.0.0`。该配置会暴露未加密的登录凭据和业务数据，仅用于短期联调，完成 HTTPS 后应立即恢复为 `false`、HTTPS 域名和 `127.0.0.1`。
 > Connector 模式下 Meta App Secret、OAuth 回调和 Meta Access Token 只配置在海外 Connector，国内 SaaS 不再配置 `FB_ACCESS_TOKEN`。
 > 当前素材服务强制使用阿里云 OSS，至少要配置 `ADS_OSS_ACCESS_KEY_ID`、`ADS_OSS_ACCESS_KEY_SECRET`、`ADS_OSS_BUCKET`、`ADS_OSS_REGION`。
+
+现有 HTTP 测试环境报 `production frontend must use HTTPS` 时，在服务器项目目录执行
+`vim deploy/.env`，确认以下配置，每个键只保留一行，再重新运行原部署命令：
+
+```ini
+FRONTEND_BASE_URL=http://49.232.238.163:8094
+SAAS_CALLBACK_BASE_URL=http://49.232.238.163:8094
+ALLOW_INSECURE_HTTP=true
+NGINX_BIND_ADDRESS=0.0.0.0
+```
+
+部署完成前会验证数据库/Redis 就绪、Nginx `/health` 和 `/ready` 的 JSON 响应及
+Instagram 等关键 Worker 任务注册。单纯收到网页 HTML 200 不会通过后端探针。
 
 大文件素材使用 OSS Multipart 浏览器直传：`OSS_MULTIPART_THRESHOLD_BYTES` 控制切换阈值，
 `OSS_MULTIPART_PART_SIZE_BYTES` 控制分片大小（不得小于 5MiB）。默认均为 16MiB；前端最多并发上传 4 个分片，

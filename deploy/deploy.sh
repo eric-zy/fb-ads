@@ -7,13 +7,30 @@ if [[ ! -f .env ]]; then
   echo "[deploy] missing deploy/.env; copy .env.example and fill production values first" >&2
   exit 1
 fi
-if grep -Eiq 'change-me|replace-with|example\.com|your-secret|your_app|your_access' .env; then
+deploy_env_file="$PWD/.env"
+
+# 国内部署统一使用 deploy/.env。Compose 插值默认优先读取 shell 的同名变量，
+# 因此清除文件中业务配置的外部覆盖，避免数据库/端口与容器 env_file 不一致。
+while IFS= read -r deploy_config_key; do
+  case "$deploy_config_key" in
+    PATH|HOME|CODEX_HOME|PRUNE_DOCKER_CACHE) continue ;;
+  esac
+  unset "$deploy_config_key"
+done < <(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=.*/\2/p' "$deploy_env_file")
+echo "[deploy] domestic configuration: deploy/.env"
+
+# Windows 上传的 .env 可能保留 CRLF；只规范化校验输入，不改写配置文件。
+deploy_env_has() {
+  grep -Eiq "$1" < <(sed 's/\r$//' "$deploy_env_file")
+}
+
+if deploy_env_has 'change-me|replace-with|example\.com|your-secret|your_app|your_access'; then
   echo "[deploy] placeholder value detected in deploy/.env" >&2
   exit 1
 fi
 insecure_http=false
-if grep -Eiq '^ENVIRONMENT=production' .env && grep -Eiq '^FRONTEND_BASE_URL=http://' .env; then
-  if ! grep -Eiq '^ALLOW_INSECURE_HTTP=true$' .env; then
+if deploy_env_has '^ENVIRONMENT=production' && deploy_env_has '^FRONTEND_BASE_URL=http://'; then
+  if ! deploy_env_has '^ALLOW_INSECURE_HTTP=true[[:space:]]*$'; then
     echo "[deploy] production frontend must use HTTPS; configure FRONTEND_BASE_URL=https://..." >&2
     echo "[deploy] temporary HTTP requires explicit ALLOW_INSECURE_HTTP=true" >&2
     exit 1
@@ -21,13 +38,13 @@ if grep -Eiq '^ENVIRONMENT=production' .env && grep -Eiq '^FRONTEND_BASE_URL=htt
   insecure_http=true
   echo "[deploy] WARNING: ALLOW_INSECURE_HTTP=true; traffic and credentials are unencrypted" >&2
 fi
-if [[ "$insecure_http" == true ]] && ! grep -Eiq '^NGINX_BIND_ADDRESS=(0\.0\.0\.0|\*)$' .env; then
+if [[ "$insecure_http" == true ]] && ! deploy_env_has '^NGINX_BIND_ADDRESS=(0\.0\.0\.0|\*)[[:space:]]*$'; then
   echo "[deploy] temporary public HTTP requires NGINX_BIND_ADDRESS=0.0.0.0" >&2
   echo "[deploy] otherwise port 8094 is bound to localhost and the website cannot be reached externally" >&2
   exit 1
 fi
-if grep -Eiq '^ENVIRONMENT=production' .env && grep -Eiq '^NGINX_BIND_ADDRESS=(0\.0\.0\.0|\*)' .env; then
-  if ! grep -Eiq '^ALLOW_INSECURE_HTTP=true$' .env; then
+if deploy_env_has '^ENVIRONMENT=production' && deploy_env_has '^NGINX_BIND_ADDRESS=(0\.0\.0\.0|\*)'; then
+  if ! deploy_env_has '^ALLOW_INSECURE_HTTP=true[[:space:]]*$'; then
     echo "[deploy] production Nginx HTTP port must stay bound to localhost behind a TLS reverse proxy" >&2
     echo "[deploy] temporary public HTTP requires explicit ALLOW_INSECURE_HTTP=true" >&2
     exit 1
@@ -35,7 +52,7 @@ if grep -Eiq '^ENVIRONMENT=production' .env && grep -Eiq '^NGINX_BIND_ADDRESS=(0
   echo "[deploy] WARNING: Nginx is exposed on a public HTTP address without TLS" >&2
 fi
 
-compose=(docker compose -f docker-compose.yml)
+compose=(docker compose --env-file "$deploy_env_file" -f docker-compose.yml)
 if [[ -f ../frontend/dist/index.html ]]; then
   echo "[deploy] using prebuilt frontend/dist static assets"
   compose+=( -f docker-compose.frontend-dist.yml )
@@ -77,11 +94,11 @@ echo "[deploy] 数据库迁移完成。"
 echo "[deploy] 启动 API/Worker/Beat/Nginx，并等待 API 健康检查..."
 "${compose[@]}" up -d --wait --force-recreate api celery-worker celery-beat nginx
 
-echo "[deploy] 等待 API 就绪：http://127.0.0.1:8000/health"
+echo "[deploy] 等待 API 依赖就绪：http://127.0.0.1:8000/ready"
 api_ready=false
 for attempt in $(seq 1 30); do
   if curl --noproxy '*' --ipv4 --fail --silent --show-error --max-time 5 \
-      http://127.0.0.1:8000/health >/dev/null; then
+      http://127.0.0.1:8000/ready >/dev/null; then
     api_ready=true
     break
   fi
@@ -120,8 +137,15 @@ if [[ "$web_ready" != true ]]; then
   exit 1
 fi
 
+echo "[deploy] 校验 Nginx 后端探针与数据库/Redis 就绪状态..."
+if ! "${compose[@]}" exec -T api python scripts/check_http_readiness.py http://nginx; then
+  echo "[deploy] Nginx /health 或 /ready 未返回有效后端 JSON，拒绝完成部署。" >&2
+  "${compose[@]}" logs --tail=100 api nginx >&2 || true
+  exit 1
+fi
+
 echo "[deploy] 校验 Celery Worker 关键任务注册..."
-if ! "${compose[@]}" exec -T celery-worker python -c 'import celery_app; required = {"campaign.execute_job", "campaign.create_for_account", "campaign.apply_action_for_account", "meta.sync_custom_audiences", "credentials.check_expiring"}; registered = set(celery_app.celery_app.tasks); missing = sorted(required - registered); assert not missing, f"missing celery tasks: {missing}"; print("celery task registration ok")'; then
+if ! "${compose[@]}" exec -T celery-worker python -c 'import celery_app; required = {"campaign.execute_job", "campaign.create_for_account", "campaign.apply_action_for_account", "meta.sync_custom_audiences", "meta.sync_instagram", "credentials.check_expiring"}; registered = set(celery_app.celery_app.tasks); missing = sorted(required - registered); assert not missing, f"missing celery tasks: {missing}"; print("celery task registration ok")'; then
   echo "[deploy] Celery Worker 关键任务未注册，拒绝完成部署。最近日志：" >&2
   "${compose[@]}" logs --tail=100 celery-worker >&2 || true
   exit 1
