@@ -13,6 +13,7 @@ from api.media import (
     _apply_asset_view_filters,
     _asset_query,
     _assert_asset_edit_access,
+    get_media_stats_overview,
     get_media_performance_stats,
 )
 from services.account_access import accessible_account_ids
@@ -297,6 +298,44 @@ def test_media_stats_routes_expose_shared_view_filter_contract(client):
     for path in ("/api/v1/media", "/api/v1/media/stats/overview", "/api/v1/media/stats/performance"):
         operation = schema["paths"][path]["get"]
         assert expected <= {parameter["name"] for parameter in operation["parameters"]}
+
+
+def test_archived_files_are_not_counted_as_ready_inventory(stats_db):
+    stats_db.add_all([
+        CreativeAsset(
+            id="asset-live", tenant_id="tenant-a", name="仍可用", asset_type="image",
+            status="READY", storage_status="READY", processing_status="READY",
+        ),
+        CreativeAsset(
+            id="asset-archived", tenant_id="tenant-a", name="已删除", asset_type="image",
+            status="ARCHIVED", storage_status="DELETED", processing_status="READY",
+        ),
+    ])
+    stats_db.commit()
+
+    class FakeAdmin:
+        id = "admin"
+        tenant_id = "tenant-a"
+
+        def is_admin(self):
+            return True
+
+    def overview(**filters):
+        return get_media_stats_overview(
+            start_date=None, end_date=None, asset_type=None, account_id=None,
+            group_id=None, tag_id=None, workspace_mode=filters.get("workspace_mode"),
+            status_filter=filters.get("status_filter"), include_archived=True,
+            db=stats_db, user=FakeAdmin(),
+        )
+
+    with tenant_scope("tenant-a"):
+        archived = overview(workspace_mode="archive")
+        ready = overview(status_filter="ready")
+    assert archived["asset_count"] == 1
+    assert archived["ready_asset_count"] == 0
+    assert archived["funnel"][1]["count"] == 0
+    assert ready["asset_count"] == 1
+    assert ready["ready_asset_count"] == 1
 
 
 def test_media_performance_stats_rejects_invalid_date_range(stats_db):

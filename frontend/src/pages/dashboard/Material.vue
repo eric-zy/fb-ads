@@ -124,7 +124,7 @@
           <div class="funnel-title">素材使用漏斗 <span>统计区间内按素材去重，成功记录不代表平台转化效果</span></div>
           <div class="funnel-list">
             <div v-for="step in overview.funnel" :key="step.key" class="funnel-step">
-              <div class="funnel-label"><span>{{ step.label }}</span><b>{{ step.count }}</b></div>
+              <div class="funnel-label"><span>{{ workspaceMode === 'archive' && step.key === 'inventory' ? '归档素材' : step.label }}</span><b>{{ step.count }}</b></div>
               <el-progress :percentage="Math.min(step.rate, 100)" :show-text="false" :stroke-width="7" />
               <small>{{ step.rate }}%</small>
             </div>
@@ -177,16 +177,16 @@
       <div v-loading="loading" v-if="viewMode === 'card'" class="grid">
         <el-empty v-if="!filteredList.length" description="暂无符合条件的素材" />
         <div v-for="item in filteredList" :key="item.id" class="card">
-          <el-checkbox v-if="item.can_edit" :model-value="selectedIds.includes(item.id)" @change="selectedIds = $event ? [...selectedIds, item.id] : selectedIds.filter(id => id !== item.id)" class="asset-check"><span /></el-checkbox>
+          <el-checkbox v-if="item.can_edit && item.status !== 'ARCHIVED'" :model-value="selectedIds.includes(item.id)" @change="selectedIds = $event ? [...selectedIds, item.id] : selectedIds.filter(id => id !== item.id)" class="asset-check"><span /></el-checkbox>
           <div class="thumb" @click="openPreview(item)">
-            <img v-if="item.asset_type === 'image' && previewUrls[item.id]?.url" :src="previewUrls[item.id].url" alt="" />
-            <img v-else-if="item.asset_type === 'image' && item.url" :src="item.url" alt="" />
-            <img v-else-if="item.asset_type === 'video' && previewUrls[item.id]?.url" :src="previewUrls[item.id].url" alt="视频封面" />
-            <video v-else-if="item.asset_type === 'video' && item.url" :src="item.url" muted :poster="item.url" />
+            <img v-if="item.status !== 'ARCHIVED' && item.asset_type === 'image' && previewUrls[item.id]?.url" :src="previewUrls[item.id].url" alt="" />
+            <img v-else-if="item.status !== 'ARCHIVED' && item.asset_type === 'image' && item.url" :src="item.url" alt="" />
+            <img v-else-if="item.status !== 'ARCHIVED' && item.asset_type === 'video' && previewUrls[item.id]?.url" :src="previewUrls[item.id].url" alt="视频封面" />
+            <video v-else-if="item.status !== 'ARCHIVED' && item.asset_type === 'video' && item.url" :src="item.url" muted :poster="item.url" />
             <el-icon v-else class="thumb-icon"><Picture /></el-icon>
             <div class="thumb-overlay">
               <span>{{ item.asset_type === 'image' ? '图片' : '视频' }}</span>
-              <span class="preview-action">点击预览</span>
+              <span class="preview-action">{{ item.status === 'ARCHIVED' ? '已归档 · 查看说明' : '点击预览' }}</span>
             </div>
           </div>
           <div class="info">
@@ -211,7 +211,8 @@
             </div>
             <div v-if="placementAdvice(item)" class="placement-tip">{{ placementAdvice(item) }}</div>
             <div class="status">
-              <el-tag v-if="item.processing_status === 'READY' || (!item.processing_status && ['ready', 'READY'].includes(item.status))" size="small" type="success">素材就绪</el-tag>
+              <el-tag v-if="item.status === 'ARCHIVED'" size="small" type="info">已归档</el-tag>
+              <el-tag v-else-if="isAssetReady(item)" size="small" type="success">素材就绪</el-tag>
               <el-tag v-else-if="['uploading', 'UPLOADING', 'PENDING', 'PROCESSING'].includes(item.status) || ['PENDING', 'PROCESSING'].includes(item.processing_status || '')" size="small" type="info">处理中</el-tag>
               <el-tooltip v-else-if="item.status === 'FAILED' || item.status === 'failed'" :content="item.error || '点击查看失败原因'" placement="top">
                 <el-tag size="small" type="danger" class="clickable" @click="openFailure(item)">失败</el-tag>
@@ -221,14 +222,14 @@
             </div>
           </div>
           <div class="actions">
-            <el-popconfirm v-if="item.can_edit" title="确定删除该素材？" @confirm="remove(item)">
+            <el-popconfirm v-if="item.can_edit && item.status !== 'ARCHIVED'" title="确定删除该素材？" @confirm="remove(item)">
               <template #reference>
                 <el-button link type="danger" size="small">删除</el-button>
               </template>
             </el-popconfirm>
-            <el-button link type="primary" size="small" :disabled="!isAssetReady(item)" @click="openBindings(item)">查看映射</el-button>
-            <el-button link type="success" size="small" :disabled="!isAssetReady(item)" @click="syncAllAccounts(item)">同步账户</el-button>
-            <el-button v-if="item.can_edit" link size="small" @click="refreshMetadata(item)">刷新</el-button>
+            <el-button v-if="item.status !== 'ARCHIVED'" link type="primary" size="small" :disabled="!isAssetReady(item)" @click="openBindings(item)">查看映射</el-button>
+            <el-button v-if="item.status !== 'ARCHIVED'" link type="success" size="small" :disabled="!isAssetReady(item)" @click="syncAllAccounts(item)">同步账户</el-button>
+            <el-button v-if="item.can_edit && item.status !== 'ARCHIVED'" link size="small" @click="refreshMetadata(item)">刷新</el-button>
             <el-button v-if="item.can_edit && isAssetReady(item)" link type="primary" size="small" @click="beginNewVersion(item)">新版本</el-button>
             <el-button
               v-if="item.can_edit && ['FAILED', 'PENDING', 'UPLOADING'].includes(String(item.status || '').toUpperCase())"
@@ -243,9 +244,9 @@
         </div>
       </div>
       <el-table v-else v-loading="loading" :data="filteredList" class="asset-table" row-key="id" @row-click="openStats" @selection-change="onTableSelectionChange">
-        <el-table-column type="selection" width="48" />
+        <el-table-column type="selection" width="48" :selectable="isAssetSelectable" />
         <el-table-column label="素材" min-width="280">
-          <template #default="{ row }"><div class="table-asset"><img v-if="row.asset_type === 'image' && (previewUrls[row.id]?.url || row.url)" :src="previewUrls[row.id]?.url || row.url || ''" /><div><b>{{ row.name }} <el-tag size="small" effect="plain">V{{ row.version_number || 1 }}</el-tag></b><small>{{ row.asset_type === 'image' ? '图片' : '视频' }} · {{ formatSize(row.size) }}</small></div></div></template>
+          <template #default="{ row }"><div class="table-asset"><img v-if="row.status !== 'ARCHIVED' && row.asset_type === 'image' && (previewUrls[row.id]?.url || row.url)" :src="previewUrls[row.id]?.url || row.url || ''" /><div><b>{{ row.name }} <el-tag size="small" effect="plain">V{{ row.version_number || 1 }}</el-tag></b><small>{{ row.asset_type === 'image' ? '图片' : '视频' }} · {{ formatSize(row.size) }}</small></div></div></template>
         </el-table-column>
         <el-table-column label="负责人" width="140"><template #default="{ row }">{{ row.uploader_name || '系统' }}</template></el-table-column>
         <el-table-column label="使用关系" width="180"><template #default="{ row }"><span>账户 {{ row.ready_binding_count || 0 }}/{{ row.binding_count || 0 }}</span><br /><span>投放 {{ row.successful_publish_count || 0 }}/{{ row.publish_count || 0 }}</span></template></el-table-column>
@@ -397,7 +398,7 @@
     <el-dialog v-model="previewVisible" :title="previewAsset?.name || '素材预览'" width="760px" destroy-on-close>
       <img v-if="previewAsset?.asset_type === 'image' && previewOriginalUrl" :src="previewOriginalUrl" class="preview-media" alt="" />
       <video v-else-if="previewAsset?.asset_type === 'video' && previewOriginalUrl" :src="previewOriginalUrl" class="preview-media" controls autoplay />
-      <el-empty v-else description="素材预览暂不可用" />
+      <el-empty v-else :description="previewAsset?.status === 'ARCHIVED' ? '素材已归档，源文件已删除，无法预览' : previewLoading ? '正在获取预览...' : previewAsset && isAssetProcessing(previewAsset) ? '素材仍在处理中，完成后可预览' : '素材预览暂不可用'" />
     </el-dialog>
   </div>
 </template>
@@ -511,6 +512,7 @@ const previewUrls = reactive<Record<string, { url: string; expiresAt: number }>>
 const previewVisible = ref(false)
 const previewAsset = ref<MediaItem | null>(null)
 const previewOriginalUrl = ref('')
+const previewLoading = ref(false)
 let bindingTimer: number | null = null
 let assetPollingTimer: number | null = null
 
@@ -544,13 +546,18 @@ const statusTagType = (item: MediaItem) => {
   return label === '正在投放' || label === '可投放' ? 'success' : label === '失败' ? 'danger' : label === '处理中' ? 'info' : 'warning'
 }
 const onTableSelectionChange = (rows: MediaItem[]) => {
-  selectedIds.value = rows.filter(item => item.can_edit).map(item => item.id)
+  selectedIds.value = rows.filter(isAssetSelectable).map(item => item.id)
 }
 
-const isAssetReady = (item: MediaItem) => item.processing_status === 'READY' || (!item.processing_status && item.status === 'READY')
+const isAssetSelectable = (item: MediaItem) => Boolean(item.can_edit) && item.status !== 'ARCHIVED'
+const isAssetReady = (item: MediaItem) =>
+  item.status !== 'ARCHIVED' && item.storage_status !== 'DELETED'
+  && (item.processing_status === 'READY' || (!item.processing_status && item.status === 'READY'))
 const isAssetProcessing = (item: MediaItem) =>
-  ['UPLOADING', 'PENDING', 'PROCESSING'].includes(String(item.status || '').toUpperCase())
-  || ['PENDING', 'PROCESSING'].includes(String(item.processing_status || '').toUpperCase())
+  item.status !== 'ARCHIVED' && (
+    ['UPLOADING', 'PENDING', 'PROCESSING'].includes(String(item.status || '').toUpperCase())
+    || ['PENDING', 'PROCESSING'].includes(String(item.processing_status || '').toUpperCase())
+  )
 
 const stopAssetPolling = () => {
   if (assetPollingTimer !== null) {
@@ -625,7 +632,7 @@ const load = async () => {
     list.value = data
     await loadOverview()
     await Promise.all(data.map(async (item) => {
-      if (item.url || !isAssetReady(item)) return
+      if (item.status === 'ARCHIVED' || item.url || !isAssetReady(item)) return
       const cached = previewUrls[item.id]
       if (cached && cached.expiresAt > Date.now() + 5000) return
       try {
@@ -735,14 +742,18 @@ const onRetryFileSelected = async (event: Event) => {
 const openPreview = async (item: MediaItem) => {
   previewAsset.value = item
   previewOriginalUrl.value = ''
+  previewLoading.value = false
   previewVisible.value = true
+  if (item.status === 'ARCHIVED') return
   try {
     if (item.url) previewOriginalUrl.value = item.url
     else if (isAssetReady(item)) {
+      previewLoading.value = true
       const { data } = await mediaApi.getDownloadUrl(item.id, 'original')
       previewOriginalUrl.value = data.url
     }
-  } catch { /* 全局请求层已静默，弹窗保留空状态 */ }
+  } catch { /* 全局请求层已提示错误，弹窗保留空状态 */ }
+  finally { previewLoading.value = false }
 }
 
 const waitForAsset = async (assetId: string) => {

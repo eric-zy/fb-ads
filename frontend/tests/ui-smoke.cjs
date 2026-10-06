@@ -51,7 +51,15 @@ async function main() {
       if (path === '/users/smoke-user/accounts') return respond({ accounts: [account] })
       if (path === '/accounts/available-for-deployment') return respond({ total: 1, accounts: [account] })
       if (path === '/meta-pages') return respond([{ id: 'page-local', page_id: 'page-1', page_name: '测试 Page', status: 'ACTIVE' }, { id: 'page-local-2', page_id: 'page-2', page_name: '第二个 Page', status: 'ACTIVE' }])
-      if (path === '/media') return respond([{ id: 'asset-1', name: '测试图片', asset_type: 'image', status: 'READY', is_current: true }])
+      if (path === '/media') {
+        if (url.searchParams.get('workspace_mode') === 'archive') return respond([
+          { id: 'archived-image', name: '已归档图片', asset_type: 'image', status: 'ARCHIVED', storage_status: 'DELETED', processing_status: 'READY', can_edit: true },
+          { id: 'archived-video', name: '已归档视频', asset_type: 'video', status: 'ARCHIVED', storage_status: 'DELETED', processing_status: 'PENDING', can_edit: true },
+        ])
+        return respond([{ id: 'asset-1', name: '测试图片', asset_type: 'image', status: 'READY', is_current: true }])
+      }
+      if (path === '/media/stats/overview') return respond({ asset_count: 2, ready_asset_count: 0, used_asset_count: 0, unused_asset_count: 2, inventory_usage_rate: 0, account_coverage_rate: 0, bound_account_count: 0, available_account_count: 0, binding_count: 0, ready_binding_count: 0, usage_count: 0, successful_usage_count: 0, failed_usage_count: 0, success_rate: 0, funnel: [{ key: 'inventory', label: '库存素材', count: 2, rate: 100 }, { key: 'ready', label: '就绪素材', count: 0, rate: 0 }], top_assets: [] })
+      if (path === '/media/stats/performance') return respond({ has_data: false, items: [] })
       if (path === '/meta-instagram') return respond({ source: 'LOCAL_SNAPSHOT', items: url.searchParams.get('page_id') === 'page-1' ? [{ id: '200', username: 'brand', account_ids: [account.id] }] : [], accounts: [{ account_pk: account.id, account_name: account.account_name, sync_status: 'HEALTHY' }] })
       if (path === `/meta-instagram/${account.id}/sync`) return respond({ status: 'QUEUED', task_id: 'abc123' })
       if (path === '/meta-instagram/tasks/abc123') return respond({ task_id: 'abc123', state: instagramSyncFails ? 'FAILURE' : 'SUCCESS', error: instagramSyncFails ? '模拟 Instagram 同步失败' : null })
@@ -185,6 +193,17 @@ async function main() {
     await page.getByRole('button', { name: '下一步', exact: true }).click()
     assert.equal((await preflightRequest).postDataJSON().inline_config.instagram_user_id, '200')
     console.log('PASS Instagram direct: selected identity reaches preflight configuration')
+
+    await page.goto(`${baseURL}/dashboard/material`)
+    await page.getByRole('button', { name: '已归档', exact: true }).click()
+    await page.locator('.card').filter({ hasText: '已归档图片' }).waitFor()
+    assert.equal(await page.locator('.card .status').filter({ hasText: '素材就绪' }).count(), 0)
+    assert.equal(await page.locator('.card .status').filter({ hasText: '处理中' }).count(), 0)
+    const previewRequests = calls.filter(item => item.path?.includes('/download-url')).length
+    await page.locator('.card').filter({ hasText: '已归档视频' }).locator('.thumb').click()
+    await page.getByText('素材已归档，源文件已删除，无法预览', { exact: true }).waitFor()
+    assert.equal(calls.filter(item => item.path?.includes('/download-url')).length, previewRequests)
+    console.log('PASS archive: deleted files are not shown as ready or processing; preview explains why')
 
     assert.deepEqual(errors, [])
     console.log('PASS no browser runtime exceptions')

@@ -265,7 +265,7 @@ def _apply_asset_view_filters(
     elif status_filter == "failed":
         query = query.filter(CreativeAsset.status.in_(["FAILED", "failed"]))
     elif status_filter == "ready":
-        query = query.filter(or_(
+        query = query.filter(CreativeAsset.status != "ARCHIVED", CreativeAsset.storage_status != "DELETED").filter(or_(
             CreativeAsset.processing_status == "READY",
             and_(CreativeAsset.processing_status.is_(None), CreativeAsset.status == "READY"),
         ))
@@ -1233,7 +1233,8 @@ def get_media_stats_overview(
     asset_count = len(assets)
     ready_asset_count = sum(
         1 for asset in assets
-        if asset.processing_status == "READY" or asset.status == "READY"
+        if asset.status != "ARCHIVED" and asset.storage_status != "DELETED"
+        and (asset.processing_status == "READY" or asset.status == "READY")
     )
     used_asset_count = int(used_asset_count)
     converted_asset_count = int(converted_asset_count)
