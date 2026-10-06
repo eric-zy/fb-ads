@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from core.database import SessionLocal
 from core.logger import logger
+from core.reporting_time import account_today
 from core.redis_client import redis_client
 from core.tenant import for_all_tenants, resolve_tenant_of, tenant_task
 from config.settings import settings
@@ -83,8 +84,9 @@ def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
 
         ads_manager = AdsManager(db)
         # days 表示包含今天在内的自然日数量。
-        start_date = (date.today() - timedelta(days=max(days - 1, 0))).strftime('%Y-%m-%d')
-        end_date = date.today().strftime('%Y-%m-%d')
+        today = account_today(account)
+        start_date = (today - timedelta(days=max(days - 1, 0))).strftime('%Y-%m-%d')
+        end_date = today.strftime('%Y-%m-%d')
         
         insights_count = ads_manager.fetch_insights(account_id, start_date, end_date)
         delivery_counts = ads_manager.fetch_delivery_insights(account_id, start_date, end_date)

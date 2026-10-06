@@ -6,7 +6,7 @@
         <p class="page-subtitle">{{ connectorMode ? '通过 Meta OAuth 完成授权，凭据由海外 Connector 托管' : '管理 BM 的 Meta Access Token，并通过 Meta OAuth 完成授权、权限校验和自动同步广告账户' }}</p>
       </div>
       <div class="head-actions">
-        <el-button type="success" :loading="authorizing" @click="startMetaAuth">Meta OAuth 授权</el-button>
+        <el-button type="success" :loading="authorizing" @click="startMetaAuth()">Meta OAuth 授权</el-button>
         <el-button v-if="!connectorMode" type="primary" :icon="Plus" @click="openCreate">手工新增 Token</el-button>
       </div>
     </div>
@@ -58,15 +58,15 @@
         <el-table-column label="来源 / 类型" width="170">
           <template #default="{ row }">
             <div><el-tag size="small" effect="plain">{{ row.token_type }}</el-tag></div>
-            <div class="sub-text">{{ sourceLabel(row) }}</div>
+            <div class="sub-text">{{ sourceLabel(row as TableRow<typeof list>) }}</div>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="125">
           <template #default="{ row }">
             <el-tooltip v-if="row.last_error" :content="row.last_error" placement="top">
-              <el-tag :type="statusType(row)" effect="light" round>{{ statusLabel(row) }}</el-tag>
+              <el-tag :type="statusType(row as TableRow<typeof list>)" effect="light" round>{{ statusLabel(row as TableRow<typeof list>) }}</el-tag>
             </el-tooltip>
-            <el-tag v-else :type="statusType(row)" effect="light" round>{{ statusLabel(row) }}</el-tag>
+            <el-tag v-else :type="statusType(row as TableRow<typeof list>)" effect="light" round>{{ statusLabel(row as TableRow<typeof list>) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="过期时间" width="170">
@@ -80,14 +80,14 @@
         </el-table-column>
         <el-table-column v-if="!connectorMode" label="操作" width="360" fixed="right">
           <template #default="{ row }">
-            <el-button link type="success" size="small" @click="reauthorize(row)">重新授权</el-button>
-            <el-button link type="primary" size="small" :loading="verifyingId === row.id" @click="verifyOne(row)">校验</el-button>
-            <el-button link type="warning" size="small" @click="openRotate(row)">轮换</el-button>
-            <el-button link type="info" size="small" @click="revealOne(row)">明文</el-button>
-            <el-button link :type="row.status === 'ACTIVE' ? 'danger' : 'success'" size="small" @click="toggleStatus(row)">
+            <el-button link type="success" size="small" @click="reauthorize(row as TableRow<typeof list>)">重新授权</el-button>
+            <el-button link type="primary" size="small" :loading="verifyingId === row.id" @click="verifyOne(row as TableRow<typeof list>)">校验</el-button>
+            <el-button link type="warning" size="small" @click="openRotate(row as TableRow<typeof list>)">轮换</el-button>
+            <el-button link type="info" size="small" @click="revealOne(row as TableRow<typeof list>)">明文</el-button>
+            <el-button link :type="row.status === 'ACTIVE' ? 'danger' : 'success'" size="small" @click="toggleStatus(row as TableRow<typeof list>)">
               {{ row.status === 'ACTIVE' ? '停用' : '启用' }}
             </el-button>
-            <el-button link type="danger" size="small" @click="remove(row)">删除</el-button>
+            <el-button link type="danger" size="small" @click="remove(row as TableRow<typeof list>)">删除</el-button>
           </template>
         </el-table-column>
         <template #empty><el-empty description="暂无凭据，请先选择 BM 发起 Meta OAuth 授权" /></template>

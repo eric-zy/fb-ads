@@ -3,6 +3,7 @@ from datetime import date
 from api.connector_callbacks_insights import _upsert_account_insights
 from models import AccountInsight, AdAccount
 from core.tenant import tenant_scope
+import pytest
 
 
 def test_connector_account_insights_are_upserted_into_canonical_table(db):
@@ -45,3 +46,16 @@ def test_connector_account_insights_are_upserted_into_canonical_table(db):
         db.commit()
     assert db.query(AccountInsight).filter(AccountInsight.ad_account_id == account.id).count() == 1
     assert db.query(AccountInsight).filter(AccountInsight.ad_account_id == account.id).one().spend == 2000
+
+
+@pytest.mark.parametrize("currency,expected", [("USD", 1000), ("JPY", 10), ("KRW", 10)])
+def test_callback_uses_account_currency(db, currency, expected):
+    account = AdAccount(id="currency-callback", account_id="act_currency_callback", currency=currency)
+    db.add(account)
+    db.flush()
+    _upsert_account_insights(db, account, [{"date_start": "2026-10-06", "spend": "10",
+                                          "action_values": [{"action_type": "purchase", "value": "10"}]}])
+    db.flush()
+    row = db.query(AccountInsight).filter(AccountInsight.ad_account_id == account.id).one()
+    assert row.spend == expected
+    assert row.conversion_value == expected

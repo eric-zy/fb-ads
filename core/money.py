@@ -21,6 +21,7 @@
     是**派生指标**而非金额，保持浮点；但计算它们时必须先转成主单位（元）再算。
 """
 from typing import Optional
+from decimal import Decimal, ROUND_HALF_EVEN
 
 # 常见货币的小数位（用于最小单位换算）。未列出的货币默认 2 位。
 _CURRENCY_EXPONENT = {
@@ -51,11 +52,14 @@ def exponent_for(currency: Optional[str]) -> int:
     return _CURRENCY_EXPONENT.get(str(currency).upper(), 2)
 
 
-def to_minor(amount: Optional[float], currency: Optional[str] = None) -> int:
+def to_minor(amount, currency: Optional[str] = None) -> int:
     """主单位（元）→ 最小单位（分）"""
     if amount is None:
         return 0
-    return int(round(float(amount) * (10 ** exponent_for(currency))))
+    value = Decimal(str(amount))
+    if not value.is_finite():
+        raise ValueError("金额必须是有限数值")
+    return int((value * (10 ** exponent_for(currency))).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN))
 
 
 def to_major(amount_minor: Optional[int], currency: Optional[str] = None) -> float:

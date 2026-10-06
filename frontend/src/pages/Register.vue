@@ -3,12 +3,12 @@
     <el-card class="register-card">
       <template #header>
         <div class="card-header">
-          <span>注册新账户</span>
+          <span>账户开通</span>
         </div>
       </template>
-      <el-alert type="info" :closable="false" title="注册功能开发中">
-        <p>当前后端尚未开放注册接口（POST /api/v1/auth/register）。</p>
-        <p>请使用已有账户登录，或联系管理员创建账户。</p>
+      <el-alert type="info" :closable="false" title="账户由管理员统一开通">
+        <p>请联系管理员创建账户并分配角色和广告账户访问范围。</p>
+        <p>已开通的账户可以直接返回登录。</p>
       </el-alert>
       <el-button type="primary" class="back-btn" @click="goLogin">返回登录</el-button>
     </el-card>

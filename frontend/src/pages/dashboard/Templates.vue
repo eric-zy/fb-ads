@@ -53,10 +53,10 @@
         <el-table-column prop="updated_at" :label="t('pages.updated')" width="180" show-overflow-tooltip />
         <el-table-column :label="t('pages.actions')" width="280" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="row.can_edit !== false" link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="primary" @click="handleClone(row)">复制</el-button>
-            <el-button v-if="row.can_manage_access" link type="primary" @click="openShare(row)">共享</el-button>
-            <el-button v-if="row.can_manage_access" link type="danger" @click="handleDelete(row)">删除</el-button>
+            <el-button v-if="row.can_edit !== false" link type="primary" @click="openEdit(row as TableRow<typeof templates>)">编辑</el-button>
+            <el-button link type="primary" @click="handleClone(row as TableRow<typeof templates>)">复制</el-button>
+            <el-button v-if="row.can_manage_access" link type="primary" @click="openShare(row as TableRow<typeof templates>)">共享</el-button>
+            <el-button v-if="row.can_manage_access" link type="danger" @click="handleDelete(row as TableRow<typeof templates>)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -278,7 +278,7 @@
         <el-divider content-position="left">广告创意</el-divider>
         <el-form-item label="Facebook 页面" required>
           <div class="page-select-row">
-            <el-select v-model="creativeForm.page_id" filterable class="page-select" placeholder="选择已授权的 Facebook 页面">
+            <el-select v-model="creativeForm.page_id" filterable class="page-select" placeholder="选择已授权的 Facebook 页面" @change="setTemplateInstagramIdentity('')">
               <el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name} (${page.page_id})`" :value="page.page_id" />
             </el-select>
             <el-button v-if="userStore.isAdmin || userStore.hasPermission('meta_asset:manage')" type="primary" plain :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
@@ -286,6 +286,10 @@
           <div v-if="!metaPages.length" class="tip page-sync-tip">
             暂无已同步页面，请先完成 Meta OAuth 授权。
           </div>
+        </el-form-item>
+        <el-form-item label="Instagram 身份">
+          <InstagramIdentitySelect v-model="creativeForm.instagram_user_id" :page-id="creativeForm.page_id" @update:model-value="setTemplateInstagramIdentity" />
+          <div v-if="hasCreativeInstagramOverrides" class="tip">此模板含创意独立身份；重新选择或清除公共身份会统一应用到全部创意。</div>
         </el-form-item>
         <el-form-item label="素材形式">
           <el-radio-group v-model="creativeForm.creative_format">
@@ -371,7 +375,7 @@
           </template>
         </el-table-column>
         <el-table-column label="操作" width="90">
-          <template #default="{ row }"><el-button link type="danger" @click="removeShare(row)">移除</el-button></template>
+          <template #default="{ row }"><el-button link type="danger" @click="removeShare(row as TableRow<typeof collaborators>)">移除</el-button></template>
         </el-table-column>
       </el-table>
     </el-dialog>
@@ -383,6 +387,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { templatesApi, type CampaignTemplate, type TemplateCollaborator, type TemplateCollaboratorCandidate } from '@/api/templates'
 import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
+import InstagramIdentitySelect from '@/components/InstagramIdentitySelect.vue'
 import { mediaApi, type MediaItem } from '@/api/media'
 import { metaPagesApi, type MetaPage } from '@/api/metaPages'
 import { regionGroupsApi, targetingPackagesApi, type RegionGroup, type TargetingPackage } from '@/api/targetingPackages'
@@ -610,7 +615,18 @@ watch(() => form.objective, objective => {
 })
 type CreativeForm = { asset_type: 'image' | 'video'; image_hash: string; video_id: string; headline: string; primary_text: string; description: string; cta: string; landing_url: string; asset_id: string }
 const newCreative = (): CreativeForm => ({ asset_type: 'image', image_hash: '', video_id: '', headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '', asset_id: '' })
-const creativeForm = reactive<{ page_id: string; creative_format: 'SINGLE_IMAGE_VIDEO' | 'CAROUSEL'; delivery: { split_level: 'AD' | 'ADSET' | 'CAMPAIGN'; combination_mode: string }; shared: Omit<CreativeForm, 'asset_type' | 'asset_id' | 'image_hash' | 'video_id'>; creatives: CreativeForm[] }>({ page_id: '', creative_format: 'SINGLE_IMAGE_VIDEO', delivery: { split_level: 'AD', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' }, shared: { headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '' }, creatives: [newCreative()] })
+const creativeForm = reactive<{ page_id: string; instagram_user_id: string; creative_format: 'SINGLE_IMAGE_VIDEO' | 'CAROUSEL'; delivery: { split_level: 'AD' | 'ADSET' | 'CAMPAIGN'; combination_mode: string }; shared: Omit<CreativeForm, 'asset_type' | 'asset_id' | 'image_hash' | 'video_id'>; creatives: CreativeForm[] }>({ page_id: '', instagram_user_id: '', creative_format: 'SINGLE_IMAGE_VIDEO', delivery: { split_level: 'AD', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' }, shared: { headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '' }, creatives: [newCreative()] })
+const hasCreativeInstagramOverrides = computed(() => creativeForm.creatives.some(item => {
+  const config = item as Record<string, any>
+  return config.instagram_user_id || config.instagram_actor_id
+}))
+function setTemplateInstagramIdentity(value: string) {
+  creativeForm.instagram_user_id = value
+  for (const item of creativeForm.creatives) {
+    delete (item as Record<string, any>).instagram_user_id
+    delete (item as Record<string, any>).instagram_actor_id
+  }
+}
 // 异步素材流程使用大写 READY；兼容历史数据中的小写 ready。
 const availableAssets = (type: string) => mediaAssets.value.filter(
   asset => asset.asset_type === type && String(asset.status).toUpperCase() === 'READY',
@@ -634,7 +650,7 @@ const buildCreativeJson = () => {
   const creativeItems = creativeForm.creatives.map(item => {
     const asset = selectedAsset(item.asset_id)
     const merged = { ...creativeForm.shared, ...item }
-    for (const field of ['headline', 'primary_text', 'description', 'cta', 'landing_url']) if (item[field] === '' || item[field] == null) merged[field] = creativeForm.shared[field]
+    for (const field of ['headline', 'primary_text', 'description', 'cta', 'landing_url'] as const) if (item[field] === '' || item[field] == null) merged[field] = creativeForm.shared[field]
     const result = { ...merged } as Record<string, any>
     if (asset?.fb_hash || item.image_hash) result.image_hash = asset?.fb_hash || item.image_hash
     else delete result.image_hash
@@ -644,6 +660,7 @@ const buildCreativeJson = () => {
   })
   const config: Record<string, any> = {
     page_id: creativeForm.page_id,
+    ...(creativeForm.instagram_user_id ? { instagram_user_id: creativeForm.instagram_user_id } : {}),
     shared_creative: { ...creativeForm.shared },
     creative_format: creativeForm.creative_format,
     delivery: { ...creativeForm.delivery },
@@ -702,6 +719,7 @@ const buildCreativeJson = () => {
 const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
   const cfg = value || {}
   creativeForm.page_id = cfg.page_id || ''
+  creativeForm.instagram_user_id = cfg.instagram_user_id || cfg.instagram_actor_id || cfg.creatives?.[0]?.instagram_user_id || cfg.creatives?.[0]?.instagram_actor_id || ''
   creativeForm.creative_format = cfg.creative_format === 'CAROUSEL' ? 'CAROUSEL' : 'SINGLE_IMAGE_VIDEO'
   creativeForm.delivery.split_level = ['AD', 'ADSET', 'CAMPAIGN'].includes(cfg.delivery?.split_level) ? cfg.delivery.split_level : 'AD'
   creativeForm.delivery.combination_mode = cfg.delivery?.combination_mode || 'ACCOUNT_X_ADSET_X_CREATIVE'

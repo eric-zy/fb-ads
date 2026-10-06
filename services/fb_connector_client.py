@@ -135,6 +135,9 @@ class FBConnectorClient:
     def oauth_businesses(self, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/internal/meta/oauth/businesses", {"credential_id": credential_id}, request_id=request_id)
 
+    def credential_health(self, credential_ids: list[str]) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/oauth/credential-health", {"credential_ids": credential_ids})
+
     def oauth_ad_accounts(self, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/internal/meta/oauth/ad-accounts", {"credential_id": credential_id}, request_id=request_id)
 
@@ -152,6 +155,10 @@ class FBConnectorClient:
 
     def sync_pages(self, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/internal/meta/pages/sync", {"credential_id": credential_id}, request_id=request_id)
+
+    def list_instagram_accounts(self, account_id: str, credential_id: str) -> dict[str, Any]:
+        return self._request("POST", "/internal/meta/instagram/list", {"account_id": account_id, "credential_id": credential_id},
+                             timeout=settings.FB_CONNECTOR_REPORT_TIMEOUT)
 
     def list_custom_audiences(self, account_id: str, credential_id: str, *, request_id: str | None = None) -> dict[str, Any]:
         """读取账户级 Custom Audience 元数据；Connector 端不得返回成员数据。"""

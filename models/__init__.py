@@ -24,6 +24,7 @@ from models.ad_group import AdGroup
 from models.ad import Ad
 from models.publish_task import PublishTask, PublishedAd
 from models.insights import AccountInsight, CampaignInsight, AdInsight, AdSetInsight
+from models.revenue import RevenueDailyTotal
 from models.risk_control import RiskEvent, RiskExecution, RiskLevel, RiskEventType, RiskRule
 from models.user import User, UserAccount
 from models.role import Role
@@ -54,6 +55,7 @@ from models.delivery_action import DeliveryAction
 from models.meta_audience import MetaAudienceAsset
 from models.meta_audience_policy import MetaAudienceExclusionPolicy
 from models.meta_tracking_asset import MetaTrackingAsset
+from models.meta_instagram import MetaInstagramSnapshot
 from models.targeting_package import RegionGroup, TargetingPackage
 
 __all__ = [
@@ -81,6 +83,7 @@ __all__ = [
     'PublishTask',
     'PublishedAd',
     'AccountInsight',
+    'RevenueDailyTotal',
     'CampaignInsight',
     'AdInsight',
     'AdSetInsight',
@@ -117,6 +120,7 @@ __all__ = [
     'MetaAudienceAsset',
     'MetaAudienceExclusionPolicy',
     'MetaTrackingAsset',
+    'MetaInstagramSnapshot',
     'RegionGroup',
     'TargetingPackage',
 ]

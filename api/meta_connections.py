@@ -42,7 +42,9 @@ def list_connections(
     current_user: User = Depends(require_admin),
 ):
     if settings.FB_ACCESS_MODE == "connector":
-        return []
+        from services.connector_health import connector_health_rows
+        return [{**item, "status": item.get("health") or item.get("status"), "meta_user_id": item.get("meta_user_id") or "-",
+                 "app_id": item.get("app_id") or "connector"} for item in connector_health_rows(db)]
     if current_user.is_platform_admin():
         with bypass_tenant():
             return _rows(db)
@@ -56,7 +58,17 @@ def sync_connection(
     current_user: User = Depends(require_admin),
 ):
     if settings.FB_ACCESS_MODE == "connector":
-        raise HTTPException(status_code=410, detail="当前使用海外 Connector OAuth，请通过 BM 页面同步")
+        from services.connector_health import connector_references
+        from tasks.meta_sync_tasks import sync_ad_accounts_task, sync_ad_account_task
+        refs = [item for item in connector_references(db) if item["id"] == connection_id]
+        if not refs:
+            raise HTTPException(status_code=404, detail="Meta 授权连接不存在")
+        task_ids = []
+        for item in refs:
+            task_ids.extend(sync_ad_accounts_task.delay(key, requested_by=current_user.id).id for key in item["business_ids"])
+            if not item["business_ids"]:
+                task_ids.extend(sync_ad_account_task.delay(key, requested_by=current_user.id).id for key in item["account_ids"])
+        return {"status": "QUEUED", "task_ids": task_ids, "credential_count": len(refs), "connection_id": connection_id}
     connection = db.query(MetaConnection).filter(MetaConnection.id == connection_id).first()
     if not connection:
         raise HTTPException(status_code=404, detail="Meta 授权连接不存在")

@@ -467,7 +467,7 @@ const alertTypeLabel = (type: string) => ({
 }[type] || type)
 const getStatusType = (status: string) => ({
   RUNNING: 'success', QUEUED: 'warning', PENDING: 'info', VALIDATING: 'info', SUCCESS: 'success', PARTIAL_SUCCESS: 'warning', FAILED: 'danger', CANCELLED: 'info',
-}[status] || 'info')
+} as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[status] || 'info'
 
 const goToBatchPublish = () => router.push('/dashboard/batch-publish')
 const goToScheduledTasks = () => router.push('/dashboard/scheduled-tasks')

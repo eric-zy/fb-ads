@@ -9,7 +9,7 @@
             <p class="page-desc">统一管理图片与视频素材，发布广告时可直接复用。</p>
           </div>
           <div class="header-actions">
-            <el-select v-model="uploadAccountId" class="upload-account" placeholder="上传后同步账户（可选）" filterable clearable>
+            <el-select v-model="uploadAccountId" class="upload-account" placeholder="搜索同步账户（可选）" filterable remote :remote-method="loadAccountOptions" clearable>
               <el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} (${account.account_id})`" :value="account.id" />
             </el-select>
             <el-upload
@@ -84,7 +84,7 @@
           <el-option label="图片" value="image" />
           <el-option label="视频" value="video" />
         </el-select>
-        <el-select v-model="filterAccount" placeholder="归属账户筛选（可选）" clearable filterable class="filter-account" @change="load">
+        <el-select v-model="filterAccount" placeholder="搜索归属账户（可选）" clearable filterable remote :remote-method="loadAccountOptions" class="filter-account" @change="load">
             <el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} (${account.account_id})`" :value="account.id" />
         </el-select>
         <el-select v-model="filterTag" placeholder="素材标签" clearable filterable class="filter-tag" @change="load">
@@ -177,7 +177,7 @@
       <div v-loading="loading" v-if="viewMode === 'card'" class="grid">
         <el-empty v-if="!filteredList.length" description="暂无符合条件的素材" />
         <div v-for="item in filteredList" :key="item.id" class="card">
-          <el-checkbox v-if="item.can_edit" v-model="selectedIds" :label="item.id" class="asset-check"><span /></el-checkbox>
+          <el-checkbox v-if="item.can_edit" :model-value="selectedIds.includes(item.id)" @change="selectedIds = $event ? [...selectedIds, item.id] : selectedIds.filter(id => id !== item.id)" class="asset-check"><span /></el-checkbox>
           <div class="thumb" @click="openPreview(item)">
             <img v-if="item.asset_type === 'image' && previewUrls[item.id]?.url" :src="previewUrls[item.id].url" alt="" />
             <img v-else-if="item.asset_type === 'image' && item.url" :src="item.url" alt="" />
@@ -249,9 +249,9 @@
         </el-table-column>
         <el-table-column label="负责人" width="140"><template #default="{ row }">{{ row.uploader_name || '系统' }}</template></el-table-column>
         <el-table-column label="使用关系" width="180"><template #default="{ row }"><span>账户 {{ row.ready_binding_count || 0 }}/{{ row.binding_count || 0 }}</span><br /><span>投放 {{ row.successful_publish_count || 0 }}/{{ row.publish_count || 0 }}</span></template></el-table-column>
-        <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag size="small" :type="statusTagType(row)">{{ statusLabel(row) }}</el-tag></template></el-table-column>
+        <el-table-column label="状态" width="120"><template #default="{ row }"><el-tag size="small" :type="statusTagType(row as TableRow<typeof filteredList>)">{{ statusLabel(row as TableRow<typeof filteredList>) }}</el-tag></template></el-table-column>
         <el-table-column label="最近使用" width="170"><template #default="{ row }">{{ formatUploadedAt(row.last_used_at) }}</template></el-table-column>
-        <el-table-column label="操作" width="110" fixed="right"><template #default="{ row }"><el-button link type="primary" @click.stop="openStats(row)">使用详情</el-button></template></el-table-column>
+        <el-table-column label="操作" width="110" fixed="right"><template #default="{ row }"><el-button link type="primary" @click.stop="openStats(row as TableRow<typeof filteredList>)">使用详情</el-button></template></el-table-column>
       </el-table>
     </el-card>
     <el-dialog v-model="createGroupVisible" title="新建素材分组" width="420px">
@@ -287,7 +287,7 @@
         <el-table-column prop="connector_task_id" label="外部任务" min-width="180" show-overflow-tooltip />
         <el-table-column prop="meta_asset_id" label="Meta 素材 ID" min-width="180" show-overflow-tooltip />
         <el-table-column prop="error_message" label="错误" min-width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="90"><template #default="{ row }"><el-button v-if="row.status === 'FAILED'" link type="primary" @click="retryBinding(row)">重试</el-button></template></el-table-column>
+        <el-table-column label="操作" width="90"><template #default="{ row }"><el-button v-if="row.status === 'FAILED'" link type="primary" @click="retryBinding(row as TableRow<typeof bindings>)">重试</el-button></template></el-table-column>
       </el-table>
     </el-dialog>
     <el-dialog v-model="statsVisible" :title="`${statsAsset?.name || '素材'} · 使用统计`" width="760px">
@@ -380,7 +380,7 @@
           <el-table-column prop="name" label="文件" min-width="220" show-overflow-tooltip />
           <el-table-column prop="status" label="状态" width="100" />
           <el-table-column label="上传时间" width="170"><template #default="{ row }">{{ formatUploadedAt(row.created_at) }}</template></el-table-column>
-          <el-table-column label="操作" width="110"><template #default="{ row }"><el-button v-if="!row.is_current && row.can_edit" link type="primary" @click="setCurrentVersion(row)">设为当前</el-button><span v-else-if="row.is_current" class="current-version">当前版本</span></template></el-table-column>
+          <el-table-column label="操作" width="110"><template #default="{ row }"><el-button v-if="!row.is_current && row.can_edit" link type="primary" @click="setCurrentVersion(row as TableRow<typeof versions>)">设为当前</el-button><span v-else-if="row.is_current" class="current-version">当前版本</span></template></el-table-column>
         </el-table>
       </template>
     </el-dialog>
@@ -475,6 +475,18 @@ const membersLoading = ref(false)
 const newGroupName = ref('')
 const newGroupVisibility = ref('PRIVATE')
 const accounts = ref<AdAccountItem[]>([])
+let accountOptionsRequest = 0
+async function loadAccountOptions(query = '') {
+  const requestNo = ++accountOptionsRequest
+  const selected = accounts.value.filter(account => [uploadAccountId.value, filterAccount.value].includes(account.id))
+  try {
+    const { data } = await accountApi.list({ search: query.trim() || undefined, page: 1, page_size: 100 })
+    if (requestNo !== accountOptionsRequest) return
+    accounts.value = [...selected.filter(account => !data.some(item => item.id === account.id)), ...data]
+  } catch {
+    if (requestNo === accountOptionsRequest) accounts.value = selected
+  }
+}
 const uploading = ref(false)
 const uploadProgress = ref(0)
 const uploadStage = ref('准备上传')
@@ -857,12 +869,13 @@ const applyBatchTag = async () => {
 
 const syncSelected = async () => {
   if (!selectedIds.value.length) return
-  if (!accounts.value.length) { ElMessage.warning('暂无可用广告账户'); return }
   const readyIds = new Set(list.value.filter(item => selectedIds.value.includes(item.id) && isAssetReady(item)).map(item => item.id))
   if (!readyIds.size) { ElMessage.warning('选中的素材均未就绪，无法同步'); return }
   bulkSyncing.value = true
   try {
-    await Promise.all(Array.from(readyIds).map(id => mediaApi.syncToAccounts(id, accounts.value.map(account => account.id))))
+    const targetAccounts = await accountApi.listAll()
+    if (!targetAccounts.length) { ElMessage.warning('暂无可用广告账户'); return }
+    await Promise.all(Array.from(readyIds).map(id => mediaApi.syncToAccounts(id, targetAccounts.map(account => account.id))))
     ElMessage.success(`已提交 ${readyIds.size} 个素材的账户同步任务`)
     await load()
   } catch { /* 全局拦截器提示错误 */ }
@@ -870,9 +883,10 @@ const syncSelected = async () => {
 }
 
 const syncAllAccounts = async (item: MediaItem) => {
-  if (!accounts.value.length) { ElMessage.warning('暂无可用广告账户'); return }
   try {
-    await mediaApi.syncToAccounts(item.id, accounts.value.map(account => account.id))
+    const targetAccounts = await accountApi.listAll()
+    if (!targetAccounts.length) { ElMessage.warning('暂无可用广告账户'); return }
+    await mediaApi.syncToAccounts(item.id, targetAccounts.map(account => account.id))
     ElMessage.success('已提交全部可见广告账户同步任务')
     await openBindings(item)
   } catch (e: any) {
@@ -1011,8 +1025,7 @@ const formatMajorMoney = (value?: number | null, currency?: string | null) => {
 onMounted(async () => {
   restoreSavedView()
   try {
-    const { data } = await accountApi.list({ page: 1, page_size: 100 })
-    accounts.value = data || []
+    await loadAccountOptions()
   } catch (e: any) {
     accounts.value = []
     ElMessage.error(String(e?.response?.data?.detail || e?.message || '广告账户加载失败，请先检查账户授权'))

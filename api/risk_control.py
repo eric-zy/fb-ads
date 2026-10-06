@@ -15,7 +15,8 @@ from core.audit import record_audit
 from core.auth import get_current_active_user
 from core.database import get_db
 from core.tenant import effective_tenant_id
-from models import AdAccount, RiskEvent, RiskExecution, RiskRule, SyncAlert, User
+from models import AdAccount, RiskEvent, RiskExecution, RiskRule, SyncAlert, User, Tenant, AuditLog
+from config.settings import settings
 from models.risk_control import RiskEventType, RiskLevel
 from models.tenant import UserRole
 from services.account_access import accessible_account_ids
@@ -49,6 +50,50 @@ class RiskRulePayload(BaseModel):
 
 class RiskRuleTogglePayload(BaseModel):
     is_active: bool
+
+
+class RiskAutomationPayload(BaseModel):
+    kill_switch: bool
+
+
+def _automation_state(tenant):
+    local = bool((tenant.settings or {}).get("risk_control", {}).get("kill_switch", False))
+    global_switch = bool(settings.RISK_AUTOMATION_KILL_SWITCH)
+    return {"tenant_id": tenant.id, "kill_switch": local, "global_kill_switch": global_switch,
+            "effective_kill_switch": local or global_switch}
+
+
+@router.get("/automation")
+def risk_automation_state(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    tenant_id = effective_tenant_id(current_user)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="请先切换到目标租户")
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="租户不存在")
+    return _automation_state(tenant)
+
+
+@router.put("/automation")
+def update_risk_automation(payload: RiskAutomationPayload, request: Request,
+                           current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    _require_rule_manager(current_user)
+    tenant_id = effective_tenant_id(current_user)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="请先切换到目标租户")
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).with_for_update().first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="租户不存在")
+    previous = _automation_state(tenant)
+    tenant.settings = {**(tenant.settings or {}), "risk_control": {
+        **(tenant.settings or {}).get("risk_control", {}), "kill_switch": payload.kill_switch}}
+    state = _automation_state(tenant)
+    db.add(AuditLog(id=uuid.uuid4().hex, tenant_id=tenant.id, user_id=current_user.id,
+                   action="UPDATE_RISK_AUTOMATION", resource_type="tenant", resource_id=tenant.id,
+                   request_data={"previous": previous, "current": state},
+                   ip_address=request.client.host if request and request.client else None))
+    db.commit()
+    return state
 
 
 class RiskEventResolvePayload(BaseModel):

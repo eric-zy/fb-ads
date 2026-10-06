@@ -44,7 +44,7 @@
         <el-step title="选择投放方式" />
         <el-step title="广告系列与广告组" />
         <el-step title="广告账户与投放" />
-        <el-step title="预览提交" />
+        <el-step title="Dry Run 与确认" />
       </el-steps>
       <el-form label-width="110px" :model="form" class="publish-form">
         <section v-if="activeStep === 0" class="step-panel">
@@ -101,7 +101,7 @@
             <el-form-item label="广告系列名称" required><el-input v-model="directForm.name" placeholder="例如 US 流量测试" /></el-form-item>
             <el-form-item label="推广目标" required><el-select v-model="directForm.objective" style="width:100%"><el-option label="知名度 OUTCOME_AWARENESS" value="OUTCOME_AWARENESS" /><el-option label="流量 OUTCOME_TRAFFIC" value="OUTCOME_TRAFFIC" /><el-option label="销售 OUTCOME_SALES" value="OUTCOME_SALES" /><el-option label="互动 OUTCOME_ENGAGEMENT" value="OUTCOME_ENGAGEMENT" /><el-option label="潜在客户 OUTCOME_LEADS" value="OUTCOME_LEADS" /></el-select></el-form-item>
             <el-form-item label="Facebook Page" required>
-              <el-select v-model="directForm.page_id" filterable style="width:100%" placeholder="选择已同步的 Facebook Page">
+              <el-select v-model="directForm.page_id" filterable style="width:100%" placeholder="选择已同步的 Facebook Page" @change="setDirectInstagramIdentity('')">
                 <el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name || page.page_id} (${page.page_id})`" :value="page.page_id" />
               </el-select>
               <div v-if="!metaPages.length" class="page-sync-inline">
@@ -109,6 +109,7 @@
                 <el-button v-if="userStore.isAdmin || userStore.hasPermission('meta_asset:manage')" size="small" :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
               </div>
             </el-form-item>
+            <el-form-item label="Instagram 身份"><InstagramIdentitySelect v-model="directForm.instagram_user_id" :page-id="directForm.page_id" :account-ids="form.ad_account_ids" @update:model-value="setDirectInstagramIdentity" /><div v-if="hasDirectInstagramOverrides" class="tip">此配置含创意独立身份；重新选择或清除公共身份会统一应用到全部创意。</div></el-form-item>
             <el-form-item label="默认日预算" required><el-input-number v-model="directForm.daily_budget" :min="1" :step="1" /><span class="tip-inline">美元/天</span></el-form-item>
             <el-form-item label="成效目标"><el-select v-model="directForm.optimization_goal" style="width:100%"><el-option v-for="goal in optimizationGoalOptions(directForm.objective)" :key="goal.value" :label="`${goal.label} ${goal.value}`" :value="goal.value" /></el-select></el-form-item>
             <el-alert v-if="!directObjectiveValid" type="warning" :closable="false" show-icon title="当前推广目标与成效目标不兼容，请切换成 Meta 支持的组合" />
@@ -166,7 +167,7 @@
             <el-button plain type="primary" @click="addDirectAdset">+ 添加广告组</el-button>
             <el-divider content-position="left">广告创意</el-divider>
             <el-form-item label="素材形式">
-              <el-radio-group :model-value="creativeFormat" @change="handleCreativeFormatChange">
+              <el-radio-group :model-value="creativeFormat" @change="handleCreativeFormatChange($event as typeof creativeFormat)">
                 <el-radio value="SINGLE_IMAGE_VIDEO">单图片或视频</el-radio>
                 <el-radio value="CAROUSEL">轮播</el-radio>
               </el-radio-group>
@@ -343,7 +344,7 @@
               filterable
               remote
               clearable
-              :remote-method="(query) => loadExistingAdGroups(account.id, query)"
+              :remote-method="(query: string) => loadExistingAdGroups(account.id, query)"
               :loading="existingAdGroupLoading[account.id]"
               :placeholder="adGroupMode === 'COPY' ? '搜索源广告组 / 广告系列（可跨账户）' : '搜索已同步广告组 / 广告系列'"
               style="width: 440px"
@@ -432,11 +433,12 @@
           当前没有可投放广告账户，请先完成 Meta OAuth 授权或恢复有效凭据。
         </el-alert>
         <el-alert type="info" :closable="false" show-icon title="地区与人群">
-          当前版本沿用模板中的定向配置；地区、人群覆盖字段已预留，下一阶段接入 Meta 定向编辑器。
+          模板投放沿用模板中的定向配置；直接投放使用本次填写的地区、人群与版位。
         </el-alert>
+        <p class="tip">点击下一步将执行预检，并在需要时同步素材到 Meta。随后可执行本地 Dry Run 检查投放对象配置。</p>
         </section>
         <section v-else class="step-panel">
-          <h3>预览并提交</h3>
+          <h3>Dry Run 与提交确认</h3>
           <el-descriptions :column="1" border>
             <el-descriptions-item label="投放方式">{{ form.publish_mode === 'DIRECT' ? '直接配置' : '使用模板' }}</el-descriptions-item>
             <el-descriptions-item label="投放模板">{{ selectedTemplate?.name || form.template_name || '直接配置' }}</el-descriptions-item>
@@ -501,10 +503,26 @@
             <el-button v-if="missingAssetAccounts.length" type="primary" size="small" style="margin-top:8px" :loading="syncingAssets" @click="syncMissingAssets">
               自动同步/重试素材
             </el-button>
-            <el-button v-if="trackingAssetIssues.length" type="warning" size="small" style="margin-top:8px" :loading="syncingTrackingAssets" @click="refreshTrackingAssetsAndPreflight">
+            <el-button v-if="trackingAssetIssues.length && (userStore.isAdmin || userStore.hasPermission('meta_asset:manage'))" type="warning" size="small" style="margin-top:8px" :loading="syncingTrackingAssets" @click="refreshTrackingAssetsAndPreflight">
               重新同步事件源并预检
             </el-button>
           </el-alert>
+          <div v-if="preflightResult?.passed" class="dry-run-panel">
+            <el-button :loading="dryRunning" @click="runDryRun">执行 Dry Run</el-button>
+            <p class="tip">展开每个账户的 Campaign、AdSet 和 Ad 配置，检查素材映射；本次检查不会创建投放任务或调用 Meta 写接口。</p>
+            <template v-if="dryRunResult">
+              <el-alert :type="dryRunResult.passed ? 'success' : 'warning'" :closable="false" :title="dryRunResult.passed ? 'Dry Run 通过，可以确认提交' : 'Dry Run 未通过，请等待素材同步或处理下方错误后重试'" />
+              <el-alert v-for="warning in dryRunResult.warnings" :key="warning" :title="warning" type="info" :closable="false" />
+              <el-table :data="dryRunResult.accounts" size="small">
+                <el-table-column prop="account_name" label="账户" min-width="180" />
+                <el-table-column prop="campaign_count" label="新建系列" width="100" />
+                <el-table-column prop="adset_count" label="新建广告组" width="110" />
+                <el-table-column prop="ad_count" label="新建广告" width="100" />
+                <el-table-column label="结果" min-width="220"><template #default="{ row }">{{ row.errors.length ? row.errors.join('；') : row.reused_adset_id ? `复用广告组 ${row.reused_adset_id}` : '配置校验通过' }}</template></el-table-column>
+              </el-table>
+              <details v-for="account in dryRunResult.accounts.filter(item => item.payload)" :key="account.account_id"><summary>{{ account.account_name }}：查看对象配置</summary><pre>{{ JSON.stringify(account.payload, null, 2) }}</pre></details>
+            </template>
+          </div>
         </section>
         <div class="step-actions">
           <el-button v-if="activeStep > 0" @click="activeStep--">{{ t('pages.previous') }}</el-button>
@@ -658,6 +676,7 @@ import { metaTrackingAssetsApi, type MetaTrackingAsset } from '@/api/metaTrackin
 import { metaAudiencesApi, type MetaAudienceAsset } from '@/api/metaAudiences'
 import { regionGroupsApi, targetingPackagesApi, type RegionGroup, type TargetingPackage } from '@/api/targetingPackages'
 import MetaLanguageSelect from '@/components/MetaLanguageSelect.vue'
+import InstagramIdentitySelect from '@/components/InstagramIdentitySelect.vue'
 import { campaignsApi, type SyncedAdGroup } from '@/api/campaigns'
 import { useLocale } from '@/stores/localeStore'
 import { useUserStore } from '@/stores/userStore'
@@ -678,6 +697,7 @@ import {
   type CampaignJob,
   type CampaignJobRevision,
   type JobEditSource,
+  type CampaignDryRunResult,
 } from '@/api/jobs'
 
 const router = useRouter()
@@ -702,6 +722,8 @@ const syncingAssets = ref(false)
 const syncingTrackingAssets = ref(false)
 const preflighting = ref(false)
 const preflightResult = ref<any>(null)
+const dryRunResult = ref<CampaignDryRunResult | null>(null)
+const dryRunning = ref(false)
 const rateLimitStatus = ref<{ count: number; limit: number; usage_ratio: number } | null>(null)
 const assetBindings = ref<MetaAssetBinding[]>([])
 const metaPages = ref<MetaPage[]>([])
@@ -752,7 +774,7 @@ const form = reactive({
 })
 
 const directForm = reactive({
-  name: '直接投放测试', objective: 'OUTCOME_TRAFFIC', page_id: '', daily_budget: 10,
+  name: '直接投放测试', objective: 'OUTCOME_TRAFFIC', page_id: '', instagram_user_id: '', daily_budget: 10,
   optimization_goal: 'LANDING_PAGE_VIEWS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1,
   dataset_id: '', tracking_asset_type: 'PIXEL' as 'PIXEL' | 'DATASET', conversion_event: 'PURCHASE',
   creative_format: 'SINGLE_IMAGE_VIDEO' as 'SINGLE_IMAGE_VIDEO' | 'CAROUSEL',
@@ -760,6 +782,17 @@ const directForm = reactive({
   creatives: [{ key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' }],
 })
 const batchAssetIds = ref<string[]>([])
+const hasDirectInstagramOverrides = computed(() => directForm.creatives.some(item => {
+  const config = item as Record<string, any>
+  return config.instagram_user_id || config.instagram_actor_id
+}))
+function setDirectInstagramIdentity(value: string) {
+  directForm.instagram_user_id = value
+  for (const item of directForm.creatives) {
+    delete (item as Record<string, any>).instagram_user_id
+    delete (item as Record<string, any>).instagram_actor_id
+  }
+}
 const creativeCopyMode = ref<'SHARED' | 'INDIVIDUAL'>('SHARED')
 const creativeFormat = ref<'SINGLE_IMAGE_VIDEO' | 'CAROUSEL'>('SINGLE_IMAGE_VIDEO')
 const delivery = reactive({ split_level: 'AD' as 'AD' | 'ADSET' | 'CAMPAIGN', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' })
@@ -923,7 +956,6 @@ const buildDirectPlacement = (adset: typeof directForm.adsets[number]) => {
 const hasDirectGeoInput = (adset: typeof directForm.adsets[number]) => [
   adset.country, adset.regions, adset.cities, adset.zips, adset.custom_locations_json,
 ].some(value => String(value || '').trim())
-const directGeoError = ref('')
 
 const selectedTemplate = computed(() => templates.value.find(t => t.id === form.template_id) || null)
 const templateLabel = (item: CampaignTemplate) => `${item.name}（${item.objective || '-'} · $${item.daily_budget ?? '-'}/天）`
@@ -932,14 +964,13 @@ const templateSelectWidth = computed(() => {
   const longest = templates.value.reduce((max, item) => Math.max(max, templateLabel(item).length), 8)
   return `${Math.min(640, Math.max(180, Math.ceil(longest * 14 * 1.05)))}px`
 })
-const directConfig = computed<Record<string, any> | null>(() => {
-  if (form.publish_mode !== 'DIRECT') return null
-  directGeoError.value = ''
+const directConfiguration = computed<{ config: Record<string, any> | null; error: string }>(() => {
+  if (form.publish_mode !== 'DIRECT') return { config: null, error: '' }
   const creatives = directForm.creatives.map(({ key, ...creative }) => {
     const asset = mediaAssets.value.find(item => item.id === creative.asset_id)
     // 保留单个创意覆盖值；公共配置只作为空值回退。
-    const merged = { ...sharedCreative, ...creative }
-    for (const field of ['primary_text', 'headline', 'description', 'cta', 'landing_url']) {
+    const merged: typeof creative & { asset_type?: string } = { ...sharedCreative, ...creative }
+    for (const field of ['primary_text', 'headline', 'description', 'cta', 'landing_url'] as const) {
       if (creative[field] === '' || creative[field] == null) merged[field] = sharedCreative[field]
     }
     // 后端不能仅凭 Meta 素材 ID 判断视频/图片；必须把素材类型随协议传递。
@@ -955,11 +986,11 @@ const directConfig = computed<Record<string, any> | null>(() => {
       bid_amount: adset.bid_strategy === 'LOWEST_COST_WITHOUT_CAP' ? undefined : adset.bid_amount,
       ...(creativeFormat.value !== 'CAROUSEL' ? { creatives } : {}) }))
   } catch (error: any) {
-    directGeoError.value = error?.message || '地区 JSON 配置无效'
-    return null
+    return { config: null, error: error?.message || '地区 JSON 配置无效' }
   }
-  return {
+  return { error: '', config: {
     name: directForm.name, objective: directForm.objective, page_id: directForm.page_id, daily_budget: directForm.daily_budget,
+    ...(directForm.instagram_user_id ? { instagram_user_id: directForm.instagram_user_id } : {}),
     creative_format: creativeFormat.value,
     delivery: { ...delivery },
     ...(creativeFormat.value === 'CAROUSEL' ? { carousel_cards: creatives } : {}),
@@ -981,13 +1012,16 @@ const directConfig = computed<Record<string, any> | null>(() => {
           }
       : {}),
     adsets,
-  }
+  } }
 })
+const directConfig = computed(() => directConfiguration.value.config)
+const directGeoError = computed(() => directConfiguration.value.error)
 
 const applyEditInlineConfig = (config: Record<string, any>) => {
   directForm.name = config.name || directForm.name
   directForm.objective = config.objective || directForm.objective
   directForm.page_id = config.page_id || directForm.page_id
+  directForm.instagram_user_id = config.instagram_user_id || config.instagram_actor_id || config.creatives?.[0]?.instagram_user_id || config.creatives?.[0]?.instagram_actor_id || ''
   directForm.daily_budget = Number(config.daily_budget || directForm.daily_budget)
   directForm.optimization_goal = config.optimization_goal || directForm.optimization_goal
   directForm.dataset_id = config.promoted_object?.dataset_id
@@ -1010,7 +1044,7 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
   if (config.delivery) Object.assign(delivery, config.delivery)
   const sourceCreatives = creativeFormat.value === 'CAROUSEL' ? (config.carousel_cards || []) : (config.creatives || [])
   const firstCreative = sourceCreatives[0] || {}
-  for (const key of ['primary_text', 'headline', 'description', 'cta', 'landing_url']) {
+  for (const key of ['primary_text', 'headline', 'description', 'cta', 'landing_url'] as const) {
     if (firstCreative[key] != null) (sharedCreative as any)[key] = firstCreative[key]
   }
   const adsets = Array.isArray(config.adsets) && config.adsets.length ? config.adsets : []
@@ -1069,6 +1103,8 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
   const creatives = Array.isArray(sourceCreatives) ? sourceCreatives : []
   directForm.creatives.splice(0, directForm.creatives.length, ...creatives.map((item: any, index: number) => ({
     key: `edit-creative-${Date.now()}-${index}`,
+    ...(item.instagram_user_id ? { instagram_user_id: item.instagram_user_id } : {}),
+    ...(item.instagram_actor_id ? { instagram_actor_id: item.instagram_actor_id } : {}),
     asset_id: item.asset_id || '',
     primary_text: item.primary_text || '',
     headline: item.headline || '',
@@ -1168,7 +1204,16 @@ const flushRevisionDraft = async () => {
 const templateReady = computed(() => form.publish_mode === 'DIRECT'
   ? !!directConfig.value?.page_id
   : !!selectedTemplate.value?.creative_config_json?.page_id)
-const canSubmit = computed(() => (form.publish_mode === 'DIRECT' ? !!directConfig.value : !!form.template_id) && templateReady.value && form.ad_account_ids.length > 0 && !!preflightResult.value?.passed && !!preflightResult.value?.preview_id && !!preflightResult.value?.snapshot_hash)
+const canSubmit = computed(() => (form.publish_mode === 'DIRECT' ? !!directConfig.value : !!form.template_id) && templateReady.value && form.ad_account_ids.length > 0 && !!preflightResult.value?.passed && !!preflightResult.value?.preview_id && !!preflightResult.value?.snapshot_hash && !!dryRunResult.value?.passed && dryRunResult.value.preview_id === preflightResult.value.preview_id)
+const publishConfigurationKey = computed(() => JSON.stringify({
+  mode: form.publish_mode,
+  template_id: form.publish_mode === 'TEMPLATE' ? form.template_id : null,
+  inline_config: form.publish_mode === 'DIRECT' ? directConfig.value : null,
+  save_as_template: form.save_as_template, template_name: form.template_name,
+  account_ids: form.ad_account_ids, budget: form.budget_override, status: form.status,
+  sinan: form.sinan_promotion_id, business_ids: accessBusinessIds,
+  ad_group_mode: adGroupMode.value, ad_group_selections: adGroupSelectionsPayload.value,
+}))
 const templateBudget = computed(() => {
   if (!selectedTemplate.value) return '-'
   if (selectedTemplate.value.budget_type === 'LIFETIME') return '$' + (selectedTemplate.value.lifetime_budget ?? '-') + ' 总预算'
@@ -1322,10 +1367,10 @@ const statusTagType = (status: string) =>
     PARTIAL_SUCCESS: 'warning',
     FAILED: 'danger',
     CANCELLED: 'info',
-  }[status] || 'info')
+  } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[status] || 'info'
 
 const itemTagType = (status: string) =>
-  ({ SUCCESS: 'success', FAILED: 'danger', RUNNING: 'primary', PENDING: 'info' }[status] || 'info')
+  ({ SUCCESS: 'success', FAILED: 'danger', RUNNING: 'primary', PENDING: 'info' } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[status] || 'info'
 
 // ---------------- 数据加载 ----------------
 const loadTemplates = async () => {
@@ -1541,6 +1586,7 @@ const loadTrackingAssets = async (accountIds = form.ad_account_ids) => {
     const { data } = await metaTrackingAssetsApi.list([...accountIds])
     // 后端已按账户返回关联范围；这里再做一次前端保护，避免旧响应覆盖新账户选择。
     if (requestNo !== trackingAssetsRequest) return
+    if (data.unsynced_account_ids?.length) trackingAssetsError.value = '部分账户暂无事件源快照，请先在定向资产管理中同步 Pixel / 数据集'
     trackingAssets.value = (data.items || []).filter(item => accountIds.every(id => item.account_ids.includes(id)))
     const selectedAssetStillAvailable = trackingAssets.value.some(item =>
       item.id === directForm.dataset_id && item.asset_type === directForm.tracking_asset_type,
@@ -1734,7 +1780,7 @@ const saveRegionGroup = async () => {
       description: regionGroupDraft.description.trim() || null,
       account_ids: [...regionGroupDraft.account_ids],
       geo_locations: geo,
-      excluded_geo_locations: targeting.excluded_geo_locations || {},
+      excluded_geo_locations: targeting?.excluded_geo_locations || {},
     })
     await loadRegionGroups()
     source.region_group_id = data.id
@@ -1801,11 +1847,15 @@ const startPolling = (jobId: string) => {
 }
 
 const submit = async () => {
+  if (submitting.value) return
   if (!canSubmit.value) {
-    ElMessage.warning(!templateReady.value ? '模板尚未选择有效 Facebook 页面' : '请选择至少一个可投放广告账户')
+    ElMessage.warning(!templateReady.value ? '模板尚未选择有效 Facebook 页面' : !form.ad_account_ids.length ? '请选择至少一个可投放广告账户' : '请先完成预检和 Dry Run，确认配置后再提交')
     return
   }
-  // 二次确认前不准备素材、不创建 Job；用户取消时不会产生任何外部副作用。
+  const confirmedPreview = preflightResult.value!
+  const configurationKey = publishConfigurationKey.value
+  submitting.value = true
+  // 确认窗口只展示已检查的配置，取消时不创建 Job。
   try {
     await ElMessageBox.confirm(
       `即将为 ${form.ad_account_ids.length} 个账户创建 ${form.status === 'PAUSED' ? '暂停（调试）' : '立即启用'}广告对象。${form.status === 'PAUSED' ? '暂停状态不会开始投放，但仍可能受 Meta 账户资格限制。' : '立即启用可能产生实际广告费用。'}确认继续吗？`,
@@ -1817,17 +1867,16 @@ const submit = async () => {
       },
     )
   } catch {
+    submitting.value = false
     return
   }
 
-  // 预览页停留期间账户状态可能已变化，提交前重新执行只读预检。
-  await runPreflight()
-  if (!preflightResult.value?.passed) {
-    ElMessage.error('提交前预检未通过，请处理阻断项')
+  if (!canSubmit.value || publishConfigurationKey.value !== configurationKey || preflightResult.value?.preview_id !== confirmedPreview.preview_id) {
+    ElMessage.warning('确认期间投放配置已变化，请重新预检和执行 Dry Run')
+    submitting.value = false
     return
   }
 
-  submitting.value = true
   const operationLeases: Array<{ accountId: string; token: string }> = []
   const operationLeaseTokens: Record<string, string> = {}
   try {
@@ -1841,6 +1890,10 @@ const submit = async () => {
       operationLeaseTokens[accountId] = token
     }
     syncAccessBusinessDefaults()
+    if (publishConfigurationKey.value !== configurationKey || preflightResult.value?.preview_id !== confirmedPreview.preview_id) {
+      ElMessage.warning('投放配置已变化，请重新预检和执行 Dry Run')
+      return
+    }
     // 素材是按广告账户生成 Meta 映射的；绑定占位和上传由后端投放任务
     // 幂等处理。不要在提交 Job 前调用 /prepare：素材仍在 OSS 处理时，
     // 该接口会返回 409，导致真正的 campaign-create 请求永远不会发出。
@@ -1865,11 +1918,11 @@ const submit = async () => {
       access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined,
       ad_group_mode: adGroupMode.value,
       ad_group_selections: adGroupSelectionsPayload.value,
-      preview_id: preflightResult.value.preview_id,
-      snapshot_hash: preflightResult.value.snapshot_hash,
+      preview_id: confirmedPreview.preview_id,
+      snapshot_hash: confirmedPreview.snapshot_hash,
       idempotency_key: editSource.value
-        ? `edit:${editSource.value.source_job_id}:${preflightResult.value.preview_id}`
-        : `publish:${preflightResult.value.preview_id}`,
+        ? `edit:${editSource.value.source_job_id}:${confirmedPreview.preview_id}`
+        : `publish:${confirmedPreview.preview_id}`,
       source_job_id: editSource.value?.source_job_id,
       revision_id: editRevisionId.value || undefined,
       operation_leases: operationLeaseTokens,
@@ -1898,6 +1951,8 @@ const runPreflight = async () => {
   preflighting.value = true
   try {
     await flushRevisionDraft()
+    syncAccessBusinessDefaults()
+    const configurationKey = publishConfigurationKey.value
     if (form.publish_mode === 'DIRECT' && form.save_as_template && !form.template_id && directConfig.value) {
       const firstAdset = directConfig.value.adsets?.[0] || {}
       const { data: saved } = await templatesApi.create({
@@ -1915,11 +1970,12 @@ const runPreflight = async () => {
           adsets: directConfig.value.adsets,
         },
       })
+      if (publishConfigurationKey.value !== configurationKey) { ElMessage.info('投放配置已变化，请重新预检'); return }
       form.template_id = saved.id
       ElMessage.success(`已保存投放模板：${saved.name}`)
     }
-    syncAccessBusinessDefaults()
     const { data } = await jobsApi.preflightCampaign({ template_id: form.template_id || undefined, inline_config: form.publish_mode === 'DIRECT' ? directConfig.value || undefined : undefined, template_name: form.template_name || undefined, save_as_template: form.save_as_template, source: form.publish_mode, ad_account_ids: form.ad_account_ids, budget_override: form.budget_override || undefined, status: form.status, sinan_promotion_id: form.sinan_promotion_id || undefined, access_business_ids: Object.keys(accessBusinessIds).length ? { ...accessBusinessIds } : undefined, ad_group_mode: adGroupMode.value, ad_group_selections: adGroupSelectionsPayload.value, source_job_id: editSource.value?.source_job_id, revision_id: editRevisionId.value || undefined })
+    if (publishConfigurationKey.value !== configurationKey) { ElMessage.info('投放配置已变化，请重新预检'); return }
     if (data.template_id && form.publish_mode === 'DIRECT') form.template_id = data.template_id
     preflightResult.value = data
     if (editRevisionId.value && data.passed) {
@@ -1930,6 +1986,19 @@ const runPreflight = async () => {
     if (!data.passed) ElMessage.error('预检未通过，请处理阻断项')
   } finally { preflighting.value = false }
 }
+
+const runDryRun = async () => {
+  const preview = preflightResult.value
+  if (!preview?.passed || !preview.preview_id || !preview.snapshot_hash || dryRunning.value) return
+  dryRunning.value = true
+  dryRunResult.value = null
+  try {
+    const { data } = await jobsApi.dryRunCampaign(preview.preview_id, preview.snapshot_hash)
+    if (preflightResult.value?.preview_id === preview.preview_id) dryRunResult.value = data
+  } catch { /* 请求层展示错误；保持提交按钮禁用 */ }
+  finally { dryRunning.value = false }
+}
+watch(() => preflightResult.value?.preview_id, () => { dryRunResult.value = null })
 
 // 账户选择变化后刷新限流水位；这是参考水位，不替代 Meta app-level 限流返回。
 watch(form, loadRateLimitStatus, { deep: true })
@@ -1980,6 +2049,12 @@ watch([form, directForm, sharedCreative, delivery, accessBusinessIds, existingAd
     scheduleRevisionAutosave()
   }
 }, { deep: true })
+watch(publishConfigurationKey, () => {
+  preflightResult.value = null
+  dryRunResult.value = null
+  if (form.publish_mode === 'DIRECT') form.template_id = ''
+  if (activeStep.value === 3) activeStep.value = 2
+})
 
 const missingAssetAccounts = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['ASSET_SYNC_PENDING', 'ASSET_SYNC_FAILED', 'ACCOUNTS_REJECTED'].includes(item.code) && item.items?.some((row: any) => row.reason === '素材尚未同步完成' || row.reason === '素材正在自动同步' || String(row.reason || '').startsWith('素材同步失败'))))
 const trackingAssetIssues = computed(() => [...(preflightResult.value?.warnings || []), ...(preflightResult.value?.errors || [])].filter((item: any) => ['TRACKING_ASSET_UNAVAILABLE', 'TRACKING_ASSET_STALE'].includes(item.code)))
@@ -2043,14 +2118,32 @@ const syncMissingAssets = async () => {
 
 const refreshTrackingAssetsAndPreflight = async () => {
   if (!form.ad_account_ids.length) return
+  const accountIds = [...form.ad_account_ids]
   syncingTrackingAssets.value = true
   try {
-    // 直接投放由 loadTrackingAssets 同步并更新下拉选项；模板投放也要
-    // 触发一次账户级同步，确保预检读取到最新资产状态。
-    if (form.publish_mode === 'DIRECT') await loadTrackingAssets(form.ad_account_ids)
-    else await metaTrackingAssetsApi.list([...form.ad_account_ids])
+    const tasks = await Promise.all(accountIds.map(id => metaTrackingAssetsApi.sync(id)))
+    const taskIds = [...new Set(tasks.map(result => result.data.task_id).filter((id): id is string => !!id))]
+    if (tasks.some(result => !result.data.task_id)) throw new Error('同步接口未返回任务 ID，请检查服务部署版本')
+    let completed = false
+    for (let round = 0; round < 45; round += 1) {
+      const statuses = await Promise.all(taskIds.map(id => campaignsApi.taskStatus(id)))
+      if (statuses.some(({ data }) => ['FAILURE', 'REVOKED'].includes(data.state) || String(data.result?.status || '').toUpperCase() === 'FAILED')) {
+        throw new Error('部分事件源同步失败，请到账号中心查看资产健康状态')
+      }
+      if (statuses.every(({ data }) => data.state === 'SUCCESS')) { completed = true; break }
+      await new Promise(resolve => window.setTimeout(resolve, 2000))
+    }
+    if (!completed) throw new Error('事件源同步仍在进行，请稍后到账号中心查看结果并重新预检')
+    if (accountIds.slice().sort().join() !== form.ad_account_ids.slice().sort().join()) {
+      ElMessage.info('原选账户的事件源同步已完成，请对当前账户重新预检')
+      return
+    }
+    if (form.publish_mode === 'DIRECT') await loadTrackingAssets(accountIds)
     await runPreflight()
-    ElMessage.success('事件源已刷新，并已重新执行预检')
+    if (preflightResult.value?.passed) ElMessage.success('事件源已同步，预检通过')
+    else ElMessage.warning('事件源已同步，请处理剩余预检问题')
+  } catch (error: unknown) {
+    ElMessage.error(error instanceof Error ? error.message : '事件源同步失败，请到账号中心查看')
   } finally {
     syncingTrackingAssets.value = false
   }
@@ -2126,6 +2219,9 @@ onUnmounted(stopPolling)
 .preflight-error-item { color: #f56c6c; margin-top: 4px; }
 .preflight-warning { color: #e6a23c; margin-top: 4px; }
 .preflight-detail { color: #606266; font-size: 12px; margin: 3px 0 0 16px; }
+.dry-run-panel { margin-top: 16px; }
+.dry-run-panel pre { max-height: 360px; overflow: auto; background: #f5f7fa; padding: 12px; }
+.dry-run-panel details { margin-top: 8px; }
 .preflight-blocked { color: #f56c6c; }
 .preflight-ready { color: #67c23a; }
 .header-bar {

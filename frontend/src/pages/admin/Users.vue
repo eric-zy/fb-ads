@@ -18,12 +18,14 @@
           :prefix-icon="Search"
           @input="debouncedLoad"
         />
-        <el-select v-model="roleFilter" placeholder="角色" clearable style="width: 140px" @change="loadUsers">
+        <el-select v-model="roleFilter" placeholder="角色" clearable style="width: 140px" @change="resetUserPage">
           <el-option label="管理员" value="admin" />
+          <el-option label="租户管理员" value="tenant_admin" />
+          <el-option v-if="isPlatformAdmin" label="平台管理员" value="platform_admin" />
           <el-option label="经理" value="manager" />
           <el-option label="普通用户" value="user" />
         </el-select>
-        <el-select v-model="activeFilter" placeholder="状态" clearable style="width: 140px" @change="loadUsers">
+        <el-select v-model="activeFilter" placeholder="状态" clearable style="width: 140px" @change="resetUserPage">
           <el-option label="已启用" value="true" />
           <el-option label="已禁用" value="false" />
         </el-select>
@@ -53,18 +55,19 @@
         </el-table-column>
         <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="warning" size="small" @click="openPwd(row)">改密</el-button>
-            <el-button link :type="row.is_active ? 'info' : 'success'" size="small" @click="toggle(row)">
+            <el-button link type="primary" size="small" @click="openEdit(row as TableRow<typeof users>)">编辑</el-button>
+            <el-button link type="warning" size="small" @click="openPwd(row as TableRow<typeof users>)">改密</el-button>
+            <el-button link :type="row.is_active ? 'info' : 'success'" size="small" @click="toggle(row as TableRow<typeof users>)">
               {{ row.is_active ? '禁用' : '启用' }}
             </el-button>
-            <el-button link type="danger" size="small" @click="remove(row)">删除</el-button>
+            <el-button link type="danger" size="small" @click="remove(row as TableRow<typeof users>)">删除</el-button>
           </template>
         </el-table-column>
         <template #empty>
           <el-empty description="暂无用户" />
         </template>
       </el-table>
+      <el-pagination v-if="userTotal > userPageSize" v-model:current-page="userPage" :page-size="userPageSize" :total="userTotal" layout="total, prev, pager, next" style="justify-content:flex-end;margin-top:16px" @current-change="loadUsers" />
     </el-card>
 
     <!-- 新建/编辑弹窗 -->
@@ -132,6 +135,9 @@ import { useUserStore } from '../../stores/userStore'
 import PermissionSelector from '@/components/PermissionSelector.vue'
 
 const users = ref<AdminUser[]>([])
+const userPage = ref(1)
+const userPageSize = 20
+const userTotal = ref(0)
 const loading = ref(false)
 const search = ref('')
 const roleFilter = ref('')
@@ -159,29 +165,34 @@ const permissionDefaults = [] as string[]
 let timer: number | undefined
 function debouncedLoad() {
   clearTimeout(timer)
-  timer = setTimeout(loadUsers, 300) as unknown as number
+  timer = setTimeout(resetUserPage, 300) as unknown as number
 }
 
 function roleLabel(r: string) {
   return { admin: '管理员', tenant_admin: '租户管理员', platform_admin: '平台管理员', manager: '经理', user: '普通用户' }[r] || r
 }
 function roleType(r: string): 'danger' | 'warning' | 'info' {
-  return { admin: 'danger', tenant_admin: 'danger', platform_admin: 'danger', manager: 'warning', user: 'info' }[r] || 'info'
+  return ({ admin: 'danger', tenant_admin: 'danger', platform_admin: 'danger', manager: 'warning', user: 'info' } as const)[r as 'admin' | 'tenant_admin' | 'platform_admin' | 'manager' | 'user'] || 'info'
 }
 
+function resetUserPage() { userPage.value = 1; void loadUsers() }
+let usersRequestNo = 0
 async function loadUsers() {
+  const requestNo = ++usersRequestNo
   loading.value = true
   try {
-    const params: any = { page: 1, page_size: 100 }
+    const params: any = { page: userPage.value, page_size: userPageSize }
     if (search.value) params.search = search.value
     if (roleFilter.value) params.role = roleFilter.value
     if (activeFilter.value !== '') params.is_active = activeFilter.value === 'true'
-    const { data } = await userApi.list(params)
+    const { data, headers } = await userApi.list(params)
+    if (requestNo !== usersRequestNo) return
     users.value = data
+    userTotal.value = Number(headers['x-total-count'] ?? data.length)
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   } finally {
-    loading.value = false
+    if (requestNo === usersRequestNo) loading.value = false
   }
 }
 async function loadRoles() { try { roles.value = (await roleApi.list()).data } catch { roles.value = [] } }

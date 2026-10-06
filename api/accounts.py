@@ -400,7 +400,7 @@ def list_accounts(
 
     total = q.count()
     items = (
-        q.order_by(AdAccount.created_at.desc())
+        q.order_by(AdAccount.created_at.desc(), AdAccount.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()

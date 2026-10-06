@@ -81,6 +81,7 @@ export interface DeliveryReconcileConfirmationResult {
 }
 
 export interface JobSubmitResult {
+  rejected_accounts?: Array<{ account_id: string; reason?: string }>
   job_id: string
   status: string
   template_id?: string | null
@@ -100,6 +101,15 @@ export interface CampaignPreflightResult {
   preview_id?: string | null
   snapshot_hash?: string | null
   expires_at?: string | null
+}
+
+export interface CampaignDryRunResult {
+  preview_id: string
+  passed: boolean
+  will_write_meta: false
+  warnings: string[]
+  errors: Array<{ account_id: string; message: string }>
+  accounts: Array<{ account_id: string; account_name: string; campaign_count?: number; adset_count?: number; ad_count?: number; reused_adset_id?: string; errors: string[]; payload?: Record<string, unknown> }>
 }
 
 export interface CreateCampaignPayload {
@@ -181,6 +191,8 @@ export interface ScheduleCampaignPayload {
 export const jobsApi = {
   preflightCampaign: (data: CreateCampaignPayload) =>
     request.post<CampaignPreflightResult>('/api/v1/jobs/campaign-preflight', data),
+  dryRunCampaign: (preview_id: string, snapshot_hash: string) =>
+    request.post<CampaignDryRunResult>('/api/v1/jobs/campaign-dry-run', { preview_id, snapshot_hash }),
   createCampaign: (data: CreateCampaignPayload) =>
     request.post<JobSubmitResult>('/api/v1/jobs/campaign-create', data),
 
@@ -205,7 +217,7 @@ export const jobsApi = {
   enable: (data: TemplateActionPayload) =>
     request.post<JobSubmitResult>('/api/v1/jobs/enable', data),
 
-  list: (params?: { status?: string; limit?: number }) =>
+  list: (params?: { status?: string; limit?: number; page?: number; page_size?: number }) =>
     request.get<CampaignJob[]>('/api/v1/jobs', { params }),
 
   get: (id: string) => request.get<CampaignJob>(`/api/v1/jobs/${id}`),

@@ -27,6 +27,7 @@ from services.template_access import (
     template_query,
 )
 from services.creative_format import normalize_creative_format
+from services.instagram_identity import instagram_references
 from services.meta_creative_options import normalize_cta
 from services.meta_delivery_rules import default_optimization_goal, filter_unused_tracking_assets, objective_optimization_preflight_errors
 from services.targeting_catalog import (
@@ -112,6 +113,10 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="年龄范围无效：最小年龄不能大于最大年龄")
 
     config = values.get("creative_config_json") or {}
+    try:
+        instagram_references(config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if budget_type == "LIFETIME" and not (config.get("schedule") or {}).get("end_time"):
         raise HTTPException(status_code=400, detail="总预算模板必须配置 schedule.end_time")
     objective = str(values.get("objective") or "OUTCOME_TRAFFIC").upper()
@@ -234,8 +239,6 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         # JobService.preflight_campaign 会继续校验目标账户是否有 READY 绑定。
         if asset_type == "video" and not (creative.get("video_id") or creative.get("asset_id")):
             raise HTTPException(status_code=400, detail=f"创意 {index} 缺少视频素材或素材 ID")
-        if creative.get("instagram_actor_id") and not str(creative["instagram_actor_id"]).strip():
-            raise HTTPException(status_code=400, detail=f"创意 {index} 的 Instagram 身份无效")
         if creative.get("url_tags") and not isinstance(creative["url_tags"], str):
             raise HTTPException(status_code=400, detail=f"创意 {index} 的 URL 参数必须是字符串")
         landing_url = str(creative.get("landing_url") or "")

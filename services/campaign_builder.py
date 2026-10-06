@@ -360,8 +360,10 @@ class CreativeBuilder:
             "page_id": self.page_id,
             story_key: media_data,
         }
-        if self.creative_config.get("instagram_actor_id"):
-            object_story_spec["instagram_actor_id"] = self.creative_config["instagram_actor_id"]
+        from services.instagram_identity import instagram_user_id
+        identity = instagram_user_id(self.creative_config)
+        if identity:
+            object_story_spec["instagram_user_id"] = identity
 
         return {
             "name": f"{self.name} Creative",

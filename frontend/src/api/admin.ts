@@ -2,9 +2,20 @@
 import request from '@/utils/request'
 
 // ============ 用户管理 ============
-export interface AdminUser { id: string; username: string; tenant_id?: string | null; role: string; role_id?: string | null; company_id: string | null; is_active: boolean; is_verified: boolean; permissions: string[]; created_at: string | null; last_login: string | null }
+export interface AdminUser { id: string; username: string; email?: string | null; tenant_id?: string | null; role: string; role_id?: string | null; company_id: string | null; is_active: boolean; is_verified: boolean; permissions: string[]; created_at: string | null; last_login: string | null }
 export const userApi = {
   list: (params?: { search?: string; role?: string; is_active?: boolean; page?: number; page_size?: number }) => request.get('/api/v1/users', { params }),
+  listAll: async () => {
+    const items: AdminUser[] = []
+    let page = 1
+    while (true) {
+      const response = await request.get<AdminUser[]>('/api/v1/users', { params: { page, page_size: 100 } })
+      items.push(...response.data)
+      const total = Number(response.headers['x-total-count'])
+      if (!response.data.length || (Number.isFinite(total) && items.length >= total) || response.data.length < 100) return items
+      page += 1
+    }
+  },
   create: (data: { username: string; password?: string; role?: string; role_id?: string | null; tenant_id?: string | null; permissions?: string[]; company_id?: string; is_active?: boolean }) => request.post('/api/v1/users', data),
   update: (id: string, data: Partial<{ email: string; username: string; role: string; role_id: string | null; company_id: string; is_active: boolean; permissions: string[] }>) => request.put('/api/v1/users/' + id, data),
   resetPassword: (id: string, password: string) => request.post('/api/v1/users/' + id + '/reset-password', { password }),
@@ -29,7 +40,18 @@ export interface AccountUser {
   is_primary?: boolean
 }
 export const accountApi = {
-  list: (params?: { search?: string; system_status?: string; account_status?: string; business_id?: string; page?: number; page_size?: number }) => request.get('/api/v1/accounts', { params }),
+  list: (params?: { search?: string; system_status?: string; account_status?: string; business_id?: string; page?: number; page_size?: number }) => request.get<AdAccountItem[]>('/api/v1/accounts', { params }),
+  listAll: async () => {
+    const items: AdAccountItem[] = []
+    let page = 1
+    while (true) {
+      const response = await request.get<AdAccountItem[]>('/api/v1/accounts', { params: { page, page_size: 100 } })
+      items.push(...response.data)
+      const total = Number(response.headers['x-total-count'])
+      if (!response.data.length || (Number.isFinite(total) && items.length >= total) || response.data.length < 100) return items
+      page += 1
+    }
+  },
   detail: (id: string) => request.get('/api/v1/accounts/' + id),
   create: (data: { business_id: string; account_id: string; account_name?: string; account_status?: string; currency?: string; timezone?: string; system_status?: SystemStatus; daily_spend_limit?: number; monthly_spend_limit?: number; risk_score?: number; skip_verification?: boolean }) => request.post('/api/v1/accounts', data),
   update: (id: string, data: Partial<{ account_name: string; currency: string; timezone: string; system_status: SystemStatus; system_status_reason: string; daily_spend_limit: number; monthly_spend_limit: number; risk_score: number; business_id: string; skip_verification: boolean; lease_token: string }>) => request.put('/api/v1/accounts/' + id, data),

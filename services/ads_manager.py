@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, Any
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
 from models import (
@@ -18,8 +18,11 @@ from services.fb_connector_client import FBConnectorClient, FBConnectorError
 from config.settings import settings
 from core.logger import logger
 from core.money import to_major, to_minor
+from core.reporting_time import account_today
+from services.revenue import update_financial_metrics
 from core.redis_client import redis_client
 import hashlib
+from decimal import Decimal, InvalidOperation
 
 
 def _minor_int(value) -> Optional[int]:
@@ -212,11 +215,11 @@ class AdsManager:
             return 0
 
         try:
-            today = date.today()
+            today = account_today(account)
             insights = self._account_insights(account, str(today), str(today), 'account')
             
             if insights:
-                return to_minor(float(insights[0].get('spend', 0) or 0))
+                return to_minor(insights[0].get('spend', 0) or 0, account.currency)
             
             return 0
             
@@ -253,13 +256,16 @@ class AdsManager:
         if not insights:
             return 0
 
+        # Lock after the remote read, using the same account lock as income
+        # imports and callbacks so financial values update as one transaction.
+        account = self.db.query(AdAccount).filter(AdAccount.id == account.id).with_for_update().one()
         count = 0
         for row in insights:
             insight_date = self._parse_date(row.get('date_start') or start_date)
             if not insight_date:
                 continue
 
-            spend = to_minor(float(row.get('spend', 0) or 0))
+            spend = to_minor(row.get('spend', 0) or 0, account.currency)
             impressions = int(row.get('impressions', 0) or 0)
             clicks = int(row.get('clicks', 0) or 0)
             action_metrics = self._parse_action_metrics(row.get('actions'), row.get('action_values'))
@@ -283,6 +289,7 @@ class AdsManager:
                 self.db.add(target)
 
             target.spend = spend
+            update_financial_metrics(target)
             target.impressions = impressions
             target.clicks = clicks
             target.conversions = action_metrics["conversions"]
@@ -291,13 +298,13 @@ class AdsManager:
             target.leads = action_metrics["leads"]
             target.purchases = action_metrics["purchases"]
             target.complete_registrations = action_metrics["complete_registrations"]
-            target.conversion_value = to_minor(action_metrics["conversion_value"])
+            target.conversion_value = to_minor(action_metrics["conversion_value"], account.currency)
             target.actions = row.get("actions") or []
             target.action_values = row.get("action_values") or []
             target.synced_at = datetime.utcnow()
             target.ctr = (clicks / impressions) if impressions else 0.0
-            target.cpc = (to_major(spend) / clicks) if clicks else 0.0
-            target.cpm = (to_major(spend) / impressions * 1000) if impressions else 0.0
+            target.cpc = (to_major(spend, account.currency) / clicks) if clicks else 0.0
+            target.cpm = (to_major(spend, account.currency) / impressions * 1000) if impressions else 0.0
             target.extra_data = row
             count += 1
 
@@ -338,7 +345,7 @@ class AdsManager:
                 ).hexdigest()[:32]
                 target = existing or model(id=f"ins_{insight_key}", **{parent: entity.id}, date=insight_date)
                 if not existing: self.db.add(target)
-                action_metrics = self._parse_action_metrics(row.get("actions"), row.get("action_values")); target.spend = to_minor(float(row.get("spend", 0) or 0)); target.impressions = int(row.get("impressions", 0) or 0); target.clicks = int(row.get("clicks", 0) or 0); target.conversions = action_metrics["conversions"]; target.link_clicks = action_metrics["link_clicks"]; target.landing_page_views = action_metrics["landing_page_views"]; target.leads = action_metrics["leads"]; target.purchases = action_metrics["purchases"]; target.complete_registrations = action_metrics["complete_registrations"]; target.conversion_value = to_minor(action_metrics["conversion_value"]); target.actions = row.get("actions") or []; target.action_values = row.get("action_values") or []; target.synced_at = datetime.utcnow(); target.ctr = (target.clicks / target.impressions) if target.impressions else 0.0; target.cpc = to_major(target.spend) / target.clicks if target.clicks else 0.0; target.cpm = to_major(target.spend) / target.impressions * 1000 if target.impressions else 0.0; result[dimension] += 1
+                action_metrics = self._parse_action_metrics(row.get("actions"), row.get("action_values")); target.spend = to_minor(row.get("spend", 0) or 0, account.currency); update_financial_metrics(target); target.impressions = int(row.get("impressions", 0) or 0); target.clicks = int(row.get("clicks", 0) or 0); target.conversions = action_metrics["conversions"]; target.link_clicks = action_metrics["link_clicks"]; target.landing_page_views = action_metrics["landing_page_views"]; target.leads = action_metrics["leads"]; target.purchases = action_metrics["purchases"]; target.complete_registrations = action_metrics["complete_registrations"]; target.conversion_value = to_minor(action_metrics["conversion_value"], account.currency); target.actions = row.get("actions") or []; target.action_values = row.get("action_values") or []; target.synced_at = datetime.utcnow(); target.ctr = (target.clicks / target.impressions) if target.impressions else 0.0; target.cpc = to_major(target.spend, account.currency) / target.clicks if target.clicks else 0.0; target.cpm = to_major(target.spend, account.currency) / target.impressions * 1000 if target.impressions else 0.0; result[dimension] += 1
         self.db.commit()
         return result
     @staticmethod
@@ -374,11 +381,11 @@ class AdsManager:
         return total
 
     @staticmethod
-    def _parse_action_metrics(actions, action_values=None) -> Dict[str, float]:
+    def _parse_action_metrics(actions, action_values=None) -> Dict[str, Any]:
         """按 Meta action_type 拆分动作；conversion 保持兼容的汇总口径。"""
         result = {"link_clicks": 0, "landing_page_views": 0, "leads": 0,
                   "purchases": 0, "complete_registrations": 0,
-                  "conversions": 0, "conversion_value": 0.0}
+                  "conversions": 0, "conversion_value": Decimal(0)}
         conversion_types = {"purchase", "omni_purchase", "lead", "omni_lead",
                             "complete_registration", "offsite_conversion"}
         for item in actions or []:
@@ -407,7 +414,9 @@ class AdsManager:
                 continue
             if str(item.get("action_type") or "") in {"purchase", "omni_purchase", "offsite_conversion"}:
                 try:
-                    result["conversion_value"] += float(item.get("value", 0) or 0)
-                except (TypeError, ValueError):
+                    value = Decimal(str(item.get("value", 0) or 0))
+                    if value.is_finite():
+                        result["conversion_value"] += value
+                except (TypeError, ValueError, InvalidOperation):
                     pass
         return result

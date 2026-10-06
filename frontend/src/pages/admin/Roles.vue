@@ -65,15 +65,15 @@
             <div class="permission-summary">
               <template v-if="row.permissions?.length">
                 <el-tag
-                  v-for="item in permissionSummary(row).slice(0, 3)"
+                  v-for="item in permissionSummary(row as TableRow<typeof filteredRoles>).slice(0, 3)"
                   :key="item.key"
                   size="small"
                   effect="light"
                 >
                   {{ item.label }} {{ item.count }}
                 </el-tag>
-                <el-tag v-if="permissionSummary(row).length > 3" size="small" type="info" effect="plain">
-                  +{{ permissionSummary(row).length - 3 }} 组
+                <el-tag v-if="permissionSummary(row as TableRow<typeof filteredRoles>).length > 3" size="small" type="info" effect="plain">
+                  +{{ permissionSummary(row as TableRow<typeof filteredRoles>).length - 3 }} 组
                 </el-tag>
               </template>
               <el-tag v-else size="small" type="info" effect="plain">未分配权限</el-tag>
@@ -86,8 +86,8 @@
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row)">编辑权限</el-button>
-            <el-button v-if="!row.is_system" link type="danger" @click="remove(row)">删除</el-button>
+            <el-button link type="primary" @click="openEdit(row as TableRow<typeof filteredRoles>)">编辑权限</el-button>
+            <el-button v-if="!row.is_system" link type="danger" @click="remove(row as TableRow<typeof filteredRoles>)">删除</el-button>
           </template>
         </el-table-column>
         <template #empty>

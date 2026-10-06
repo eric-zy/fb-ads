@@ -31,6 +31,7 @@ export interface RiskEventItem {
   is_resolved: boolean
   resolution: string | null
   resolved_at: string | null
+  resolved_by?: string | null
   auto_action_taken: string | null
   requires_manual_review: boolean
   created_at: string | null
@@ -74,6 +75,8 @@ export interface RiskPage<T> {
 }
 
 export const riskControlApi = {
+  automation: () => request.get<RiskAutomationState>('/api/v1/risk-control/automation'),
+  updateAutomation: (kill_switch: boolean) => request.put<RiskAutomationState>('/api/v1/risk-control/automation', { kill_switch }),
   overview: () => request.get('/api/v1/risk-control/overview'),
   accounts: (params?: Record<string, unknown>) => request.get('/api/v1/risk-control/accounts', { params }),
   allEvents: (params?: Record<string, unknown>) => request.get<RiskPage<RiskEventItem>>('/api/v1/risk-control/events', { params }),
@@ -102,4 +105,11 @@ export const riskControlApi = {
   rateLimit: (accountId: string) => request.get<{ rate_limits: { hour: RateLimitHourStatus } }>(
     `/api/v1/accounts/${accountId}/rate-limit-status`,
   ),
+}
+
+export interface RiskAutomationState {
+  tenant_id: string
+  kill_switch: boolean
+  global_kill_switch: boolean
+  effective_kill_switch: boolean
 }

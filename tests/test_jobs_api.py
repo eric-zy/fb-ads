@@ -1,13 +1,14 @@
 """Job API 直接投放配置的契约回归测试。"""
 
 from types import SimpleNamespace
+from datetime import datetime, timedelta
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
-from api.jobs import CampaignCreateRequest, _ensure_template
+from api.jobs import CampaignCreateRequest, _ensure_template, list_jobs
 from core.enums import ActionType
-from models import AdAccount, CampaignTemplate
+from models import AdAccount, CampaignTemplate, CampaignJob, User
 from services import job_service
 from services.job_service import JobService
 
@@ -40,6 +41,25 @@ def _direct_request(**overrides):
         ad_account_ids=["account-1"],
         source="DIRECT",
     )
+
+
+def test_job_list_pages_all_visible_jobs_and_preserves_legacy_limit(db):
+    user = User(id="job-list-admin", tenant_id="test_tenant", role="tenant_admin")
+    db.add_all([
+        CampaignJob(
+            id=f"paged-job-{index}", tenant_id="test_tenant", created_by=user.id,
+            status="SUCCESS", created_at=datetime(2026, 1, 1) + timedelta(minutes=index),
+        ) for index in range(5)
+    ])
+    db.flush()
+
+    response = Response()
+    second_page = list_jobs(response=response, status=None, limit=2, page=2, page_size=2, db=db, current_user=user)
+    assert response.headers["X-Total-Count"] == "5"
+    assert [job["id"] for job in second_page] == ["paged-job-2", "paged-job-1"]
+
+    legacy = list_jobs(response=Response(), status=None, limit=2, page=None, page_size=2, db=db, current_user=user)
+    assert [job["id"] for job in legacy] == ["paged-job-4", "paged-job-3"]
 
 
 def test_ensure_template_forwards_top_level_dataset_and_event(db):

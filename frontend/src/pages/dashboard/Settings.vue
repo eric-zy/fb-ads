@@ -1,22 +1,11 @@
 <template>
   <div class="settings">
     <h2>账户设置</h2>
-    <p class="sub">配置通知偏好与界面语言</p>
+    <p class="sub">配置界面语言与受众资产策略</p>
 
     <div class="card">
-      <h3>通知偏好</h3>
-      <label class="switch">
-        <input type="checkbox" v-model="settings.email_notifications" />
-        邮件通知（账户异常 / 风险告警）
-      </label>
-      <label class="switch">
-        <input type="checkbox" v-model="settings.daily_report" />
-        每日数据报告
-      </label>
-      <label class="switch">
-        <input type="checkbox" v-model="settings.risk_alert" />
-        风险实时告警
-      </label>
+      <h3>界面设置</h3>
+      <p class="hint">风险告警和日报目前由管理员统一配置投递渠道及收件人，个人通知偏好尚未接入。</p>
 
       <div class="field">
         <label>语言</label>
@@ -44,6 +33,7 @@
       <p class="hint">具备 Meta 资产管理权限的用户可按广告账户同步 Custom Audience，并锁定法律/运营要求的排除受众。投放时系统会自动合并这些排除项。</p>
       <div class="field">
         <label>广告账户</label>
+        <input v-model="accountSearch" class="input" placeholder="搜索账户名称或 ID" @input="scheduleAccountSearch" />
         <select v-model="selectedAccountId" class="input" @change="loadAudiences">
           <option value="">请选择广告账户</option>
           <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.account_name || account.account_id }}（{{ account.account_id }}）</option>
@@ -94,23 +84,24 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useUserStore } from '../../stores/userStore'
+import { useLocale } from '@/stores/localeStore'
 import { accountApi, type AdAccountItem } from '@/api/admin'
 import { metaAudiencesApi, type MetaAudienceAsset } from '@/api/metaAudiences'
 
 const userStore = useUserStore()
+const { locale, setLocale } = useLocale()
 const user = userStore.user
 
 const settings = ref({
-  email_notifications: true,
-  daily_report: true,
-  risk_alert: true,
-  language: 'zh-CN',
+  language: locale.value === 'zh' ? 'zh-CN' : 'en',
 })
 const saving = ref(false)
 const saved = ref(false)
 const accounts = ref<AdAccountItem[]>([])
+const accountSearch = ref('')
+let accountsRequestNo = 0
 const selectedAccountId = ref('')
 const audiences = ref<MetaAudienceAsset[]>([])
 const requiredAudienceIds = ref<string[]>([])
@@ -123,21 +114,30 @@ const policyEffectiveFrom = ref('')
 const policyEffectiveUntil = ref('')
 
 function roleLabel(r?: string) {
-  return { admin: '管理员', manager: '经理', user: '普通用户' }[r || ''] || r || '-'
+  return { admin: '管理员', tenant_admin: '租户管理员', platform_admin: '平台管理员', manager: '经理', user: '普通用户' }[r || ''] || r || '-'
 }
 
 onMounted(() => {
   const s = (userStore.user?.settings as Record<string, any>) || {}
-  settings.value = { ...settings.value, ...s }
+  settings.value = { ...settings.value, ...s, language: locale.value === 'zh' ? 'zh-CN' : 'en' }
   if (userStore.isAdmin || userStore.hasPermission('meta_asset:manage')) void loadAccounts()
 })
 
 async function loadAccounts() {
+  const currentRequest = ++accountsRequestNo
   try {
-    const { data } = await accountApi.list({ page: 1, page_size: 100 })
-    accounts.value = Array.isArray(data) ? data : (data?.items || [])
-  } catch { accounts.value = [] }
+    const selected = accounts.value.find(account => account.id === selectedAccountId.value)
+    const { data } = await accountApi.list({ search: accountSearch.value.trim() || undefined, page: 1, page_size: 100 })
+    if (currentRequest !== accountsRequestNo) return
+    accounts.value = selected && !data.some(account => account.id === selected.id) ? [selected, ...data] : data
+  } catch { if (currentRequest === accountsRequestNo) accounts.value = [] }
 }
+let accountSearchTimer: ReturnType<typeof setTimeout> | undefined
+function scheduleAccountSearch() {
+  if (accountSearchTimer) clearTimeout(accountSearchTimer)
+  accountSearchTimer = setTimeout(() => { void loadAccounts() }, 250)
+}
+onUnmounted(() => { if (accountSearchTimer) clearTimeout(accountSearchTimer) })
 
 async function loadAudiences() {
   audiences.value = []
@@ -218,6 +218,7 @@ async function save() {
   saved.value = false
   try {
     await userStore.updateSettings({ ...settings.value })
+    setLocale(settings.value.language === 'zh-CN' ? 'zh' : 'en')
     saved.value = true
     setTimeout(() => (saved.value = false), 2000)
   } catch (e: any) {

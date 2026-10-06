@@ -59,9 +59,9 @@
             <el-table-column prop="account_id" label="Account ID" min-width="150" />
             <el-table-column label="Meta 状态" width="120"><template #default="{ row }"><el-tag v-if="row.account_status" :type="metaStatusType(row.account_status)" effect="plain" size="small">{{ metaStatusLabel(row.account_status) }}</el-tag><span v-else class="sub-text">未同步</span></template></el-table-column>
             <el-table-column label="系统状态" width="120"><template #default="{ row }"><el-tag :type="row.system_status === 'ACTIVE' ? 'success' : 'danger'" effect="light" round size="small">{{ row.system_status === 'ACTIVE' ? '可投放' : '已停用' }}</el-tag></template></el-table-column>
-            <el-table-column label="已消费" min-width="130"><template #default="{ row }">{{ formatMoney(row.amount_spent, row.currency) }}</template></el-table-column>
+            <el-table-column label="已消费" min-width="130"><template #default="{ row }">{{ formatMoney(row.amount_spent,row.currency) }}</template></el-table-column>
             <el-table-column label="最后同步" width="170"><template #default="{ row }">{{ formatTime(row.last_synced_at) }}</template></el-table-column>
-            <el-table-column label="操作" width="120" fixed="right"><template #default="{ row }"><el-button link :type="row.system_status === 'ACTIVE' ? 'danger' : 'success'" size="small" @click="toggleStatus(row)">{{ row.system_status === 'ACTIVE' ? '停用' : '启用' }}</el-button></template></el-table-column>
+            <el-table-column label="操作" width="120" fixed="right"><template #default="{ row }"><el-button link :type="row.system_status === 'ACTIVE' ? 'danger' : 'success'" size="small" @click="toggleStatus(row as TableRow<typeof accounts>)">{{ row.system_status === 'ACTIVE' ? '停用' : '启用' }}</el-button></template></el-table-column>
             <template #empty><el-empty description="该 BM 下暂无账户，可点击「导入账户」" /></template>
           </el-table>
         </el-tab-pane>
@@ -138,7 +138,7 @@ async function withMutationLease<T>(accountId: string, callback: (token: string)
     await accountApi.releaseOperationLease(accountId, token).catch(() => undefined)
   }
 }
-async function toggleStatus(row: AdAccountItem) { try { await withMutationLease(row.id, token => row.system_status === 'ACTIVE' ? accountApi.freeze(row.id, '管理员停用', token) : accountApi.unfreeze(row.id)); await loadDetail() } catch {} }
+async function toggleStatus(row: AdAccountItem) { try { await withMutationLease(row.id, token => row.system_status === 'ACTIVE' ? accountApi.freeze(row.id, '管理员停用', token) : accountApi.unfreeze(row.id, token)); await loadDetail() } catch {} }
 function openImport() { importVisible.value = true; fetchFromMeta() }
 async function fetchFromMeta() { fetching.value = true; try { const { data } = await request.get(`/api/v1/meta-accounts/${businessId.value}/ad-accounts/from-meta`); const existingIds = new Set(accounts.value.map((a) => a.account_id)); candidates.value = (data.accounts || []).map((a: any) => ({ id: a.id, name: a.name, account_status: a.account_status, currency: a.currency, _existing: existingIds.has(a.id) })); if (data.dev_mode) ElMessage.warning('开发模式：未配置 FB 凭据，无法拉取真实账户列表') } catch {} finally { fetching.value = false } }
 function onCandidatesChange(rows: any[]) { selectedCandidates.value = rows }

@@ -101,6 +101,38 @@ class MetaClient:
         act = self.normalize_account_id(account_id)
         return FBAdAccount(act, self._api)
 
+    def get_instagram_identities(self, account_id: str) -> list[dict]:
+        """仅返回账户授权的 IGUser ID、用户名和已关联 Page，不读取 Token。"""
+        def read_all(path, fields):
+            params = {"fields": fields, "limit": 100}
+            rows = []
+            cursors = set()
+            for _ in range(100):
+                result = self._get(path, params)
+                data = result.get("data")
+                if not isinstance(data, list):
+                    raise ValueError("Meta 未返回完整的 Instagram 授权元数据")
+                rows.extend(data)
+                paging = result.get("paging") or {}
+                if not paging.get("next"):
+                    return rows
+                after = (paging.get("cursors") or {}).get("after")
+                if not after or after in cursors:
+                    raise ValueError("Meta Instagram 授权元数据分页不完整")
+                cursors.add(after)
+                params["after"] = after
+            raise ValueError("Meta Instagram 授权元数据超过同步分页上限")
+
+        identities = read_all(f"{self.normalize_account_id(account_id)}/instagram_accounts", "id,username")
+        pages = read_all("me/accounts", "id,instagram_business_account{id,username}")
+        page_ids = {}
+        for page in pages:
+            identity = page.get("instagram_business_account") or {}
+            if identity.get("id") and page.get("id"):
+                page_ids.setdefault(str(identity["id"]), set()).add(str(page["id"]))
+        return [{"id": str(row["id"]), "username": str(row.get("username") or row["id"]),
+                 "page_ids": sorted(page_ids.get(str(row["id"]), []))} for row in identities]
+
     # ------------------------------------------------------------------
     # Meta 账号管理 V1（设计文档 §22）
     # 所有 Meta API 调用统一从这里经过，便于 Token / 版本 / 重试 / 限流 / 错误映射

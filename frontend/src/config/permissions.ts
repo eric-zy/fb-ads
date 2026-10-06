@@ -59,6 +59,7 @@ export const permissionGroups: PermissionGroup[] = [
     description: '查看投放表现和数据报表',
     permissions: [
       { value: 'insight:read', label: '查看报表', description: '查看广告账户消耗和投放报表' },
+      { value: 'revenue:manage', label: '导入业务收入', description: '按授权账户、日期和来源维护业务收入' },
     ],
   },
   {

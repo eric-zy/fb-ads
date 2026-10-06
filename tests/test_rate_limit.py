@@ -3,7 +3,7 @@
 说明：
 - 数据库相关用例统一使用 conftest 的 `db` fixture（SQLite + 事务回滚），
   不会写入开发/生产库，也不会因重复运行而主键冲突。
-- RateLimitManager 基于 Redis，用例使用独立的测试 account_id 并在结束时清理。
+- RateLimitManager 使用内存计数存储替身，真实 Redis 原子性另行集成验收。
 """
 import pytest
 from datetime import datetime, timedelta
@@ -38,11 +38,24 @@ def test_account_resource_route_extracts_real_account_id():
 
 
 @pytest.fixture
-def rate_limiter():
+def rate_limiter(monkeypatch):
+    from tests.redis_memory import MemoryCounterStore
+    monkeypatch.setattr("services.rate_limit.redis_client", MemoryCounterStore())
     limiter = RateLimitManager(RL_ACCOUNT)
     limiter.reset()
     yield limiter
     limiter.reset()
+
+
+def test_rate_limit_sets_window_expiry_without_extending(monkeypatch):
+    from tests.redis_memory import MemoryCounterStore
+    store = MemoryCounterStore()
+    monkeypatch.setattr("services.rate_limit.redis_client", store)
+    limiter = RateLimitManager(RL_ACCOUNT)
+    assert limiter.increment("minute") == 1
+    original_expiry = store.expires[limiter.key_prefix + ":minute"]
+    assert limiter.increment("minute") == 2
+    assert store.expires[limiter.key_prefix + ":minute"] == original_expiry
 
 
 class TestRateLimitManager:

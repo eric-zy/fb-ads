@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from pydantic_settings import BaseSettings
+from pydantic import Field
 from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -213,6 +214,14 @@ class Settings(BaseSettings):
     
     # ========== 通知配置 ==========
     NOTIFY_EMAIL: Optional[str] = os.getenv("NOTIFY_EMAIL")
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USER: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM: Optional[str] = None
+    SMTP_SSL: bool = False
+    SMTP_STARTTLS: bool = True
+    SMTP_TIMEOUT: int = 10
     NOTIFY_DING_WEBHOOK: Optional[str] = os.getenv("NOTIFY_DING_WEBHOOK")
     NOTIFY_SLACK_WEBHOOK: Optional[str] = os.getenv("NOTIFY_SLACK_WEBHOOK")
     
@@ -229,6 +238,9 @@ class Settings(BaseSettings):
 
     # ========== 任务调度配置 ==========
     SCHEDULE_FETCH_INSIGHTS_CRON: str = "0 */2 * * *"  # 每2小时
+    SCHEDULE_INSIGHTS_HISTORY_ENABLED: bool = False
+    SCHEDULE_INSIGHTS_HISTORY_CRON: str = "0 3 * * 0"
+    SCHEDULE_INSIGHTS_HISTORY_DAYS: int = Field(default=30, ge=1, le=90)
     SCHEDULE_RISK_CHECK_CRON: str = "0 * * * *"        # 每小时
     SCHEDULE_REPORT_DAILY_CRON: str = "0 8 * * *"      # 每天8点
     SCHEDULE_REPORT_WEEKLY_CRON: str = "0 9 * * 1"     # 每周一9点

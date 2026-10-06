@@ -26,13 +26,46 @@ export interface TrackingAssetHealthItem {
   assets: Array<Pick<MetaTrackingAsset, 'id' | 'name' | 'asset_type'>>
 }
 
+interface TrackingAssetList {
+  items: MetaTrackingAsset[]
+  account_count: number
+  synced_at: string | null
+  source: string
+  unsynced_account_ids: string[]
+}
+
+async function listTrackingAssets(accountIds: string[]) {
+  const ids = [...new Set(accountIds)]
+  const chunks: string[][] = []
+  for (let offset = 0; offset < ids.length; offset += 50) chunks.push(ids.slice(offset, offset + 50))
+  if (!chunks.length) chunks.push([])
+  const responses = await Promise.all(chunks.map(account_ids => request.get<TrackingAssetList>(
+    '/api/v1/meta-tracking-assets', { params: { account_ids }, paramsSerializer: { indexes: null } },
+  )))
+  if (responses.length === 1) return responses[0]
+  const merged = new Map<string, MetaTrackingAsset>()
+  for (const response of responses) for (const item of response.data.items) {
+    const key = `${item.asset_type}:${item.id}`
+    const previous = merged.get(key)
+    if (!previous) merged.set(key, { ...item })
+    else {
+      previous.account_ids = [...new Set([...previous.account_ids, ...item.account_ids])]
+      previous.account_names = [...new Set([...(previous.account_names || []), ...(item.account_names || [])])]
+      previous.usable = previous.usable !== false && item.usable !== false
+      if (item.status && item.status !== 'ACTIVE') previous.status = item.status
+      previous.last_sync_error = previous.last_sync_error || item.last_sync_error
+      previous.last_synced_at = [previous.last_synced_at, item.last_synced_at].filter((value): value is string => !!value).sort()[0] || null
+    }
+  }
+  return { ...responses[0], data: {
+    items: [...merged.values()], account_count: ids.length, source: 'LOCAL_SNAPSHOT',
+    synced_at: responses.map(response => response.data.synced_at).filter((value): value is string => !!value).sort().at(-1) || null,
+    unsynced_account_ids: [...new Set(responses.flatMap(response => response.data.unsynced_account_ids))],
+  } }
+}
+
 export const metaTrackingAssetsApi = {
-  list: (accountIds: string[]) => request.get<{ items: MetaTrackingAsset[]; account_count: number; synced_at: string }>(
-    '/api/v1/meta-tracking-assets',
-    // FastAPI 接收重复的 account_ids 参数；indexes: null 避免 axios
-    // 默认序列化成 account_ids[]=xxx，保证多账户筛选可被后端正确解析。
-    { params: { account_ids: accountIds }, paramsSerializer: { indexes: null } },
-  ),
+  list: listTrackingAssets,
   health: () => request.get<{ items: TrackingAssetHealthItem[]; summary: Record<string, number> }>('/api/v1/meta-tracking-assets/health'),
   sync: (accountPk: string) => request.post<{ status: string; task_id?: string; account_pk: string }>(`/api/v1/meta-tracking-assets/${accountPk}/sync`),
 }

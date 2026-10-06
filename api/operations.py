@@ -34,7 +34,8 @@ def credential_health(
     _: User = Depends(require_admin),
 ):
     if settings.FB_ACCESS_MODE == "connector":
-        return []
+        from services.connector_health import connector_health_rows
+        return connector_health_rows(db)
     rows = db.query(Credential).order_by(Credential.updated_at.desc()).all()
     now = datetime.utcnow()
     result = []

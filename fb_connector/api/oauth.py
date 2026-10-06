@@ -16,6 +16,15 @@ from fb_connector.credential_store import DatabaseCredentialVault
 router = APIRouter(prefix="/internal/meta/oauth", tags=["Meta OAuth"])
 
 
+class CredentialHealthRequest(BaseModel):
+    credential_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+@router.post("/credential-health")
+def credential_health(payload: CredentialHealthRequest):
+    return {"items": DatabaseCredentialVault().health(payload.credential_ids)}
+
+
 def _report_oauth_auth_failure(credential_id: str, error: Exception) -> None:
     if getattr(error, "auth_failure", False):
         DatabaseCredentialVault().mark_status_and_notify(

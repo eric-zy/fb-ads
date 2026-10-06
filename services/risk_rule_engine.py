@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from config.settings import settings
 from core.money import to_major
+from core.reporting_time import account_today
 from models import AdAccount, AdInsight, AdSetInsight, AccountInsight, CampaignInsight, RiskExecution, RiskRule, Tenant
 
 
@@ -32,6 +33,7 @@ SUPPORTED_METRICS = {
     "cpc",
     "cpm",
     "roas",
+    "revenue_roas",
     "roi",
     "cpa",
     "conversion_rate",
@@ -175,7 +177,7 @@ def load_account_metrics(
     主货币单位计算，和 services.analytics.AnalyticsEngine 的口径一致。
     """
     window_days = max(1, min(int(window_days or 1), 90))
-    end_date = as_of or datetime.utcnow().date()
+    end_date = as_of or account_today(account)
     start_date = end_date - timedelta(days=window_days - 1)
     rows = db.query(AccountInsight).filter(
         AccountInsight.ad_account_id == account.id,
@@ -185,14 +187,13 @@ def load_account_metrics(
 
     sum_fields = ("spend", "impressions", "clicks", "conversions", "leads", "purchases", "conversion_value", "revenue", "profit")
     totals = {field: 0 for field in sum_fields}
-    nullable_seen = {field: False for field in ("conversion_value", "revenue", "profit")}
+    nullable_seen = {field: bool(rows) and all(getattr(row, field, None) is not None for row in rows)
+                     for field in ("conversion_value", "revenue", "profit")}
     for row in rows:
         for field in sum_fields:
             value = getattr(row, field, None)
             if value is not None:
                 totals[field] += int(value or 0) if field not in {"revenue", "profit", "conversion_value"} else int(value)
-                if field in nullable_seen:
-                    nullable_seen[field] = True
 
     currency = account.currency or "USD"
     spend_major = to_major(totals["spend"], currency)
@@ -210,15 +211,16 @@ def load_account_metrics(
         "ctr": (totals["clicks"] / totals["impressions"] * 100) if totals["impressions"] else 0,
         "cpc": (spend_major / totals["clicks"]) if totals["clicks"] else 0,
         "cpm": (spend_major / totals["impressions"] * 1000) if totals["impressions"] else 0,
-        "roas": (revenue_major / spend_major) if spend_major else 0,
-        "roi": ((revenue_major - spend_major) / spend_major) if spend_major else 0,
+        "roas": to_major(totals["conversion_value"], currency) / spend_major if spend_major and nullable_seen["conversion_value"] else None,
+        "revenue_roas": revenue_major / spend_major if spend_major and nullable_seen["revenue"] else None,
+        "roi": (revenue_major - spend_major) / spend_major if spend_major and nullable_seen["revenue"] else None,
         "cpa": (spend_major / totals["conversions"]) if totals["conversions"] else 0,
         "conversion_rate": (totals["conversions"] / totals["clicks"] * 100) if totals["clicks"] else 0,
         "currency": currency,
         "window_days": window_days,
         "from_date": start_date.isoformat(),
         "to_date": end_date.isoformat(),
-        "data_available": bool(rows),
+        "data_available": bool(rows) and all(row.spend is not None for row in rows),
     }
     return metrics
 
@@ -246,7 +248,7 @@ def load_target_metrics(
 
     model, foreign_key = insight_model
     window_days = max(1, min(int(window_days or 1), 90))
-    end_date = as_of or datetime.utcnow().date()
+    end_date = as_of or account_today(account)
     start_date = end_date - timedelta(days=window_days - 1)
     rows = db.query(model).filter(
         foreign_key == target_id,
@@ -255,14 +257,13 @@ def load_target_metrics(
     ).order_by(model.date.asc()).all()
     sum_fields = ("spend", "impressions", "clicks", "conversions", "leads", "purchases", "conversion_value", "revenue", "profit")
     totals = {field: 0 for field in sum_fields}
-    available = {field: False for field in ("conversion_value", "revenue", "profit")}
+    available = {field: bool(rows) and all(getattr(row, field, None) is not None for row in rows)
+                 for field in ("conversion_value", "revenue", "profit")}
     for row in rows:
         for field in sum_fields:
             value = getattr(row, field, None)
             if value is not None:
                 totals[field] += int(value or 0)
-                if field in available:
-                    available[field] = True
     currency = account.currency or "USD"
     spend_major = to_major(totals["spend"], currency)
     revenue_major = to_major(totals["revenue"], currency)
@@ -275,13 +276,14 @@ def load_target_metrics(
         "ctr": (totals["clicks"] / totals["impressions"] * 100) if totals["impressions"] else 0,
         "cpc": (spend_major / totals["clicks"]) if totals["clicks"] else 0,
         "cpm": (spend_major / totals["impressions"] * 1000) if totals["impressions"] else 0,
-        "roas": (revenue_major / spend_major) if spend_major else 0,
-        "roi": ((revenue_major - spend_major) / spend_major) if spend_major else 0,
+        "roas": to_major(totals["conversion_value"], currency) / spend_major if spend_major and available["conversion_value"] else None,
+        "revenue_roas": revenue_major / spend_major if spend_major and available["revenue"] else None,
+        "roi": (revenue_major - spend_major) / spend_major if spend_major and available["revenue"] else None,
         "cpa": (spend_major / totals["conversions"]) if totals["conversions"] else 0,
         "conversion_rate": (totals["conversions"] / totals["clicks"] * 100) if totals["clicks"] else 0,
         "currency": currency, "window_days": window_days,
         "from_date": start_date.isoformat(), "to_date": end_date.isoformat(),
-        "data_available": bool(rows),
+        "data_available": bool(rows) and all(row.spend is not None for row in rows),
     }
 
 
@@ -350,6 +352,9 @@ class RiskRuleEngine:
         if _is_whitelisted(config["whitelist"], account_id, target_id):
             result["reason"] = "WHITELIST"
             return result
+        if metrics.get("data_available") is False:
+            result["reason"] = "DATA_UNAVAILABLE"
+            return result
         if int(config["min_spend"]) > int(metrics.get("spend") or 0):
             result["reason"] = "MIN_SPEND"
             return result
@@ -365,10 +370,16 @@ class RiskRuleEngine:
             result["reason"] = "NO_CONDITIONS"
             return result
         result["conditions"] = [_condition_result(item, metrics) for item in conditions if isinstance(item, Mapping)]
+        if not result["conditions"]:
+            result["reason"] = "NO_CONDITIONS"
+            return result
         matched_values = [item["matched"] for item in result["conditions"]]
         logic = config["logic"] if config["logic"] in {"AND", "OR"} else "AND"
         matched = all(matched_values) if logic == "AND" else any(matched_values)
         result["matched"] = matched
         result["status"] = "MATCHED" if matched else "NOT_MATCHED"
         result["reason"] = "CONDITIONS_MATCHED" if matched else "CONDITIONS_NOT_MATCHED"
+        if not matched and any(item["reason"] == "MISSING_METRIC" for item in result["conditions"]):
+            result["status"] = "SKIPPED"
+            result["reason"] = "MISSING_METRIC"
         return result

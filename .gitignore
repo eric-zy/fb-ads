@@ -63,6 +63,7 @@ celerybeat.pid
 
 # ==================== 前端 (Vue/Vite) ====================
 frontend/node_modules/
+frontend/test-results/
 frontend/dist/
 frontend/dist-ssr/
 frontend/.vite/

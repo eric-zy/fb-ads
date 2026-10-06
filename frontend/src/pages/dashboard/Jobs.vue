@@ -17,7 +17,7 @@
               placeholder="状态筛选"
               clearable
               class="status-select"
-              @change="loadJobs"
+              @change="resetJobsPage"
             >
               <el-option label="全部状态" value="" />
               <el-option label="等待中" value="PENDING" />
@@ -34,10 +34,10 @@
       </template>
 
       <div class="job-summary">
-        <div class="summary-card total"><span class="summary-icon">◷</span><div><span class="summary-label">当前任务</span><strong>{{ summary.total }}</strong></div></div>
-        <div class="summary-card running"><span class="summary-icon">↻</span><div><span class="summary-label">执行中</span><strong>{{ summary.running }}</strong></div></div>
-        <div class="summary-card success"><span class="summary-icon">✓</span><div><span class="summary-label">已完成</span><strong>{{ summary.success }}</strong></div></div>
-        <div class="summary-card failed"><span class="summary-icon">!</span><div><span class="summary-label">需关注</span><strong>{{ summary.failed }}</strong></div></div>
+        <div class="summary-card total"><span class="summary-icon">◷</span><div><span class="summary-label">任务总数</span><strong>{{ jobTotal }}</strong></div></div>
+        <div class="summary-card running"><span class="summary-icon">↻</span><div><span class="summary-label">本页执行中</span><strong>{{ summary.running }}</strong></div></div>
+        <div class="summary-card success"><span class="summary-icon">✓</span><div><span class="summary-label">本页已完成</span><strong>{{ summary.success }}</strong></div></div>
+        <div class="summary-card failed"><span class="summary-icon">!</span><div><span class="summary-label">本页需关注</span><strong>{{ summary.failed }}</strong></div></div>
       </div>
 
       <el-table class="job-table" :data="jobs" v-loading="loading" size="small" row-key="id">
@@ -57,7 +57,7 @@
         <el-table-column label="执行进度" min-width="190">
           <template #default="{ row }">
             <div class="progress-cell">
-              <div class="progress-line"><el-progress :percentage="percent(row)" :stroke-width="8" :show-text="false" :status="progressStatus(row.status)" /><span>{{ percent(row) }}%</span></div>
+              <div class="progress-line"><el-progress :percentage="percent(row as TableRow<typeof jobs>)" :stroke-width="8" :show-text="false" :status="progressStatus(row.status)" /><span>{{ percent(row as TableRow<typeof jobs>) }}%</span></div>
               <small>{{ row.success_count + row.failed_count }} / {{ row.total_accounts }} 个账户已处理</small>
             </div>
           </template>
@@ -73,7 +73,7 @@
           <template #default="{ row }">
             <div class="operation-actions">
               <el-button class="detail-button" size="small" type="primary" plain @click="viewDetail(row.id)">查看详情</el-button>
-              <el-dropdown v-if="hasMoreActions(row)" trigger="click" @command="(command: string) => handleAction(command, row)">
+              <el-dropdown v-if="hasMoreActions(row as TableRow<typeof jobs>)" trigger="click" @command="(command: string) => handleAction(command,row as TableRow<typeof jobs>)">
                 <el-button class="more-button" size="small" plain>更多<el-icon><ArrowDown /></el-icon></el-button>
                 <template #dropdown>
                   <el-dropdown-menu>
@@ -88,6 +88,15 @@
         </el-table-column>
         <template #empty><el-empty description="暂无任务记录" /></template>
       </el-table>
+      <el-pagination
+        v-if="jobTotal > jobPageSize"
+        v-model:current-page="jobPage"
+        :page-size="jobPageSize"
+        :total="jobTotal"
+        layout="total, prev, pager, next"
+        style="justify-content: flex-end; margin-top: 16px"
+        @current-change="loadJobs"
+      />
     </el-card>
 
     <!-- 任务详情 -->
@@ -142,7 +151,7 @@
               v-if="canEditRepublish && ['DRAFT', 'READY', 'INVALID'].includes(row.status) && currentJob"
               link
               type="primary"
-              @click="continueRevision(row)"
+              @click="continueRevision(row as TableRow<typeof revisions>)"
             >
               继续编辑
             </el-button>
@@ -150,14 +159,13 @@
               v-if="canEditRepublish && ['DRAFT', 'READY', 'INVALID'].includes(row.status)"
               link
               type="danger"
-              @click="discardRevision(row)"
+              @click="discardRevision(row as TableRow<typeof revisions>)"
             >
               放弃
             </el-button>
           </template>
         </el-table-column>
       </el-table>
-
       <el-table :data="currentJob?.items || []" size="small" max-height="380">
         <el-table-column prop="ad_account_id" label="广告账户" show-overflow-tooltip />
           <el-table-column label="状态" width="110">
@@ -243,7 +251,7 @@
               <div v-if="row.candidates?.length" class="reconcile-candidates">
                 <div v-for="candidate in row.candidates" :key="candidate.id" class="reconcile-candidate">
                   <span>{{ candidate.id || '-' }} {{ candidate.name || '' }}</span>
-                  <el-button v-if="canRetry" link type="primary" size="small" @click="handleConfirmReconcile(row, candidate)">确认复用</el-button>
+                  <el-button v-if="canRetry" link type="primary" size="small" @click="handleConfirmReconcile(row as TableRow<typeof reconcileRows>, candidate)">确认复用</el-button>
                 </div>
               </div>
               <span v-else>未找到候选</span>
@@ -289,6 +297,9 @@ import { accountApi } from '@/api/admin'
 import { useUserStore } from '@/stores/userStore'
 
 const jobs = ref<CampaignJob[]>([])
+const jobPage = ref(1)
+const jobPageSize = 20
+const jobTotal = ref(0)
 const currentJob = ref<CampaignJob | null>(null)
 type ReconcileDisplayItem = DeliveryReconcileItem & { item_id: string }
 
@@ -312,7 +323,6 @@ const canRetry = computed(() => userStore.isAdmin || userStore.hasPermission('jo
 const canCancel = computed(() => userStore.isAdmin || userStore.hasPermission('job:cancel'))
 const canEditRepublish = computed(() => userStore.isAdmin || userStore.hasPermission('job:create'))
 const summary = computed(() => ({
-  total: jobs.value.length,
   running: jobs.value.filter((job) => !isFinal(job.status)).length,
   success: jobs.value.filter((job) => job.status === 'SUCCESS').length,
   failed: jobs.value.filter((job) => ['FAILED', 'PARTIAL_SUCCESS'].includes(job.status)).length,
@@ -388,10 +398,10 @@ const statusTagType = (status: string) =>
     INVALID: 'danger',
     SUBMITTED: 'warning',
     DISCARDED: 'info',
-  }[status] || 'info')
+  } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[status] || 'info'
 
 const itemTagType = (status: string) =>
-  ({ SUCCESS: 'success', FAILED: 'danger', RUNNING: 'primary', PENDING: 'info' }[status] || 'info')
+  ({ SUCCESS: 'success', FAILED: 'danger', RUNNING: 'primary', PENDING: 'info' } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[status] || 'info'
 
 const createdObjectIds = (row: any): string[] => {
   const objects = row.response_payload?.created_objects || {}
@@ -426,15 +436,20 @@ const handleAction = (command: string, row: CampaignJob) => {
   else if (command === 'cancel') void handleCancel(row)
 }
 
+let jobsRequestNo = 0
 const loadJobs = async () => {
+  const requestNo = ++jobsRequestNo
   loading.value = true
   try {
-    const { data } = await jobsApi.list({ status: statusFilter.value || undefined, limit: 100 })
+    const { data, headers } = await jobsApi.list({ status: statusFilter.value || undefined, page: jobPage.value, page_size: jobPageSize })
+    if (requestNo !== jobsRequestNo) return
     jobs.value = data
+    jobTotal.value = Number(headers['x-total-count'] ?? data.length)
   } finally {
-    loading.value = false
+    if (requestNo === jobsRequestNo) loading.value = false
   }
 }
+const resetJobsPage = () => { jobPage.value = 1; void loadJobs() }
 
 const loadRevisions = async (jobId: string) => {
   if (!canEditRepublish.value) {

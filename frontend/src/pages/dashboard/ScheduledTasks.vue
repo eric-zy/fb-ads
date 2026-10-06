@@ -45,9 +45,9 @@
         <el-table-column prop="created_at" label="创建时间" width="180" show-overflow-tooltip />
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="handleDispatchNow(row)">立即执行</el-button>
+            <el-button link type="primary" @click="handleDispatchNow(row as TableRow<typeof tasks>)">立即执行</el-button>
             <el-button link type="primary" @click="goToJobs(row.id)">查看</el-button>
-            <el-button link type="danger" @click="handleCancel(row)">取消</el-button>
+            <el-button link type="danger" @click="handleCancel(row as TableRow<typeof tasks>)">取消</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -208,7 +208,7 @@ const actionLabel = (action: string) =>
 
 const statusTagType = (status: string) =>
   ({ PENDING: 'info', QUEUED: 'warning', RUNNING: 'primary', SUCCESS: 'success',
-     PARTIAL_SUCCESS: 'warning', FAILED: 'danger', CANCELLED: 'info' }[status] || 'info')
+     PARTIAL_SUCCESS: 'warning', FAILED: 'danger', CANCELLED: 'info' } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[status] || 'info'
 
 const formatTime = (iso?: string | null) => {
   if (!iso) return '-'

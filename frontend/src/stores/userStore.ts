@@ -85,7 +85,7 @@ export const useUserStore = defineStore('user', () => {
       token.value = access_token
       user.value = userData
 
-      Cookies.set(TOKEN_KEY, access_token, { expires: 7 })
+      Cookies.set(TOKEN_KEY, access_token, { expires: 1 })
       localStorage.setItem(USER_KEY, JSON.stringify(userData))
 
       return true
@@ -119,20 +119,10 @@ export const useUserStore = defineStore('user', () => {
 
   // 更新用户设置
   const updateSettings = async (settings: Record<string, any>) => {
-    if (!user.value) return
-
-    try {
-      const response = await request.put(`/api/v1/users/${user.value.id}/settings`, {
-        settings,
-      })
-
-      user.value.settings = response.data.settings
-      localStorage.setItem(USER_KEY, JSON.stringify(user.value))
-      return true
-    } catch (error) {
-      console.error('Update settings error:', error)
-      return false
-    }
+    if (!user.value) throw new Error('请先登录后再保存设置')
+    const response = await request.put(`/api/v1/users/${user.value.id}/settings`, { settings }, { skipErrorMessage: true })
+    user.value.settings = response.data.settings
+    localStorage.setItem(USER_KEY, JSON.stringify(user.value))
   }
 
   // 检查权限

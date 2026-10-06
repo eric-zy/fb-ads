@@ -1,4 +1,5 @@
 import pytest
+from decimal import Decimal
 
 from services.ads_manager import AdsManager
 from services.analytics import AnalyticsEngine
@@ -20,7 +21,12 @@ def test_action_metrics_separate_conversion_types_and_value():
     assert result["leads"] == 3
     assert result["purchases"] == 2
     assert result["conversions"] == 5
-    assert result["conversion_value"] == pytest.approx(49.90)
+    assert result["conversion_value"] == Decimal("49.90")
+
+
+def test_action_value_preserves_large_decimal_precision():
+    result = AdsManager._parse_action_metrics([], [{"action_type": "purchase", "value": "90071992547409.93"}])
+    assert result["conversion_value"] == Decimal("90071992547409.93")
 
 
 def test_calculate_metrics_uses_click_denominator_for_conversion_rate():

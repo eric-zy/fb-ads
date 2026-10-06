@@ -8,7 +8,7 @@ import {
   Setting,
 } from '@element-plus/icons-vue'
 
-export type NavRole = 'admin' | 'manager' | 'user'
+export type NavRole = 'admin' | 'platform_admin' | 'tenant_admin' | 'manager' | 'user'
 
 export interface NavItem {
   key: string
@@ -98,7 +98,7 @@ export const APP_NAVIGATION: NavSection[] = [
 export function canAccessNavItem(item: NavItem, role?: NavRole | null): boolean {
   if (!item.roles || item.roles.length === 0) return true
   if (!role) return false
-  return item.roles.includes(role)
+  return item.roles.includes(role === 'platform_admin' || role === 'tenant_admin' ? 'admin' : role)
 }
 
 export function canAccessPermission(permission: string, permissions?: string[] | null): boolean {

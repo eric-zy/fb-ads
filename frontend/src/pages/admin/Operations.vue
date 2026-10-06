@@ -23,7 +23,7 @@
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane v-if="!connectorMode" label="凭据健康" name="credentials">
+      <el-tab-pane label="凭据健康" name="credentials">
         <el-table :data="credentials" stripe>
           <el-table-column prop="meta_account_id" label="BM" />
           <el-table-column prop="token_type" label="类型" />
@@ -40,7 +40,7 @@
           <el-table-column prop="ad_account_id" label="广告账户" />
           <el-table-column prop="message" label="详情" show-overflow-tooltip />
           <el-table-column prop="created_at" label="时间" />
-          <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" @click="resolveAlert(row)">处理</el-button></template></el-table-column>
+          <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" @click="resolveAlert(row as TableRow<typeof alerts>)">处理</el-button></template></el-table-column>
         </el-table>
         <el-empty v-if="!alerts.length" description="暂无未处理投放告警" />
       </el-tab-pane>
@@ -96,7 +96,6 @@ async function load() {
   loading.value = true
   try {
     connectorMode.value = (await credentialApi.accessMode()).data?.access_mode === 'connector'
-    if (tab.value === 'credentials' && connectorMode.value) tab.value = 'tasks'
     if (tab.value === 'tasks') tasks.value = (await operationsApi.syncTasks()).data
     if (tab.value === 'credentials') credentials.value = (await operationsApi.credentialHealth()).data
     if (tab.value === 'audit') audits.value = (await operationsApi.auditLogs({ resource_id: auditResourceId.value || undefined, action: auditAction.value || undefined, resource_type: auditResourceType.value || undefined })).data

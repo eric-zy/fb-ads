@@ -6,6 +6,9 @@ from api.risk_control import RiskRuleDryRunPayload, dry_run_risk_rule
 from config.settings import settings
 from models import AccountInsight, AdAccount, RiskExecution, RiskRule, Tenant, User, UserAccount
 from services.risk_rule_engine import RiskRuleEngine, load_account_metrics
+import pytest
+from models import CampaignInsight, AdSetInsight, AdInsight
+from services.risk_rule_engine import load_target_metrics
 
 
 def _request() -> Request:
@@ -173,3 +176,40 @@ def test_dry_run_returns_local_metrics_and_evaluation(db):
     assert preview["window_days"] == 7
     assert preview["targets"][0]["metrics"]["spend"] == 5000
     assert preview["targets"][0]["evaluation"]["matched"] is True
+
+
+@pytest.mark.parametrize("level,model,key", [("ACCOUNT", AccountInsight, "ad_account_id"),
+                                            ("CAMPAIGN", CampaignInsight, "campaign_id"),
+                                            ("ADSET", AdSetInsight, "ad_group_id"),
+                                            ("AD", AdInsight, "ad_id")])
+def test_missing_income_never_matches_roi_rule(db, level, model, key):
+    account = _account(db, "missing-income-" + level)
+    row = model(id="missing-income-row", date=datetime.utcnow().date(), spend=10000, **{key: account.id})
+    rule = RiskRule(id="missing-income-rule", name="Negative ROI", rule_type="roi",
+                    conditions=[{"metric": "roi", "operator": "lt", "value": 0}])
+    db.add_all([row, rule])
+    db.commit()
+    metrics = load_target_metrics(db, account, level, account.id)
+    assert metrics["roi"] is None
+    evaluation = RiskRuleEngine(db).evaluate(rule, account.id, metrics=metrics)
+    assert not evaluation["matched"]
+    assert evaluation["reason"] == "MISSING_METRIC"
+
+
+def test_zero_income_and_partial_income_are_distinct(db):
+    account = _account(db, "partial-income")
+    today = datetime.utcnow().date()
+    db.add(AccountInsight(id="zero-income-day", ad_account_id=account.id, date=today,
+                          spend=10000, revenue=0, conversion_value=20000))
+    db.commit()
+    metrics = load_account_metrics(db, account)
+    assert metrics["roi"] == -1
+    assert metrics["roas"] == 2
+    assert metrics["revenue_roas"] == 0
+    db.add(AccountInsight(id="missing-income-day", ad_account_id=account.id,
+                          date=today - timedelta(days=1), spend=10000, revenue=None))
+    db.commit()
+    metrics = load_account_metrics(db, account, window_days=2)
+    assert metrics["roi"] is None
+    assert metrics["revenue"] is None
+    assert metrics["roas"] is None

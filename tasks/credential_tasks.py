@@ -54,7 +54,30 @@ def check_expiring_credentials(self, warn_days: int = None) -> Dict:
         {"expired": int, "expiring": int, "details": [...]}
     """
     if settings.FB_ACCESS_MODE == "connector":
-        return {"expired": 0, "expiring": 0, "permission_missing": 0, "details": [], "skipped": "connector"}
+        from services.connector_health import connector_health_rows
+        from services.risk_reliability import upsert_operational_alert
+        db = SessionLocal()
+        try:
+            rows = connector_health_rows(db)
+            result = {"expired": 0, "expiring": 0, "permission_missing": 0, "unavailable": 0, "details": []}
+            counters = {"EXPIRED": "expired", "EXPIRING": "expiring", "PERMISSION_MISSING": "permission_missing",
+                        "UNAVAILABLE": "unavailable", "MISSING": "unavailable", "INVALID": "unavailable"}
+            for item in rows:
+                health = item.get("health")
+                if health not in counters:
+                    continue
+                result[counters[health]] += 1
+                result["details"].append(item)
+                alert, created = upsert_operational_alert(
+                    db, tenant_id=item["tenant_id"], alert_type="CONNECTOR_CREDENTIAL_" + health,
+                    title="Meta 授权需要检查", message=f"海外授权 {item['id']} 状态：{health}，请检查或重新授权。",
+                    ad_account_id=next(iter(item["account_ids"]), None),
+                )
+                if created:
+                    NotificationService().notify_all(alert.title, alert.message)
+            return result
+        finally:
+            db.close()
 
     warn_days = warn_days or getattr(
         settings, "CREDENTIAL_EXPIRY_WARN_DAYS", DEFAULT_WARN_DAYS

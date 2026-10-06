@@ -48,8 +48,11 @@ def _override_get_db():
 
 
 @pytest.fixture(autouse=True)
-def isolated_db():
+def isolated_db(monkeypatch):
     """每个用例重建内存库，并隔离 dependency_overrides"""
+    from tests.redis_memory import MemoryCounterStore
+    monkeypatch.setattr("services.rate_limit.redis_client", MemoryCounterStore())
+    monkeypatch.setattr("services.meta.client.MetaClient.get_business", lambda self, business_id: {"id": business_id})
     Base.metadata.create_all(bind=engine)
     main.app.dependency_overrides.clear()
     main.app.dependency_overrides[get_db] = _override_get_db
@@ -402,8 +405,13 @@ def test_account_filter_by_bm_does_not_require_asset_access_row(client):
     assert [item["id"] for item in resp.json()] == [account["id"]]
 
 
-def test_transfer_and_bulk_transfer(client):
+def test_transfer_and_bulk_transfer(client, monkeypatch):
     """单个转移与批量转移归属"""
+    verified = []
+    def verify_ownership(self, business_id, target_account_id):
+        verified.append((business_id, target_account_id))
+        return {"verified": True, "account": {"name": "Verified account"}}
+    monkeypatch.setattr("api.accounts.MetaAdsService.verify_account_under_bm", verify_ownership)
     meta_a = _make_meta(client)
     meta_b = _make_meta(client)
     acc = _make_account(client, business_id=meta_a["id"])
@@ -432,6 +440,8 @@ def test_transfer_and_bulk_transfer(client):
 
     resp = client.get("/api/v1/accounts", params={"business_id": meta_a["id"]})
     assert resp.json()[0]["business_id"] == meta_a["id"]
+    assert verified == [(meta_a["business_id"], acc["account_id"]),
+                        (meta_b["business_id"], acc["account_id"]), (meta_a["business_id"], acc["account_id"])]
 
 
 def test_transfer_rejects_unassign(client):

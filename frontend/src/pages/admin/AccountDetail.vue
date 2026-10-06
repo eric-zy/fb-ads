@@ -257,7 +257,7 @@
             :loading="toggling"
             active-text="开启"
             inactive-text="关闭"
-            @change="onDeploySwitch"
+            @change="onDeploySwitch(Boolean($event))"
           />
         </div>
       </el-card>
@@ -288,7 +288,7 @@ const deployEnabled = ref(false)
 const isDeployEnabled = computed(() => detail.value?.system_status === 'ACTIVE')
 const paymentNeedsAttention = computed(() => ['UNKNOWN', 'MISSING', 'PAST_DUE', 'RESTRICTED'].includes((detail.value?.payment_status || 'UNKNOWN').toUpperCase()))
 
-function formatTime(v: string | null) {
+function formatTime(v?: string | null) {
   if (!v) return '-'
   return v.replace('T', ' ').slice(0, 19)
 }

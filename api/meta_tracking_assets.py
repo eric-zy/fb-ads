@@ -10,7 +10,6 @@ from core.auth import get_current_active_user, require_meta_asset_admin
 from core.database import get_db
 from models import AdAccount, AsyncTaskRecord, MetaTrackingAsset, User
 from services.account_access import can_access_account
-from services.meta_tracking_asset_service import MetaTrackingAssetSyncService
 from tasks.meta_tracking_asset_tasks import sync_tracking_assets_task
 
 router = APIRouter(prefix="/api/v1/meta-tracking-assets", tags=["Meta Pixel/Dataset"])
@@ -41,13 +40,12 @@ def list_tracking_assets(
             raise HTTPException(status_code=403, detail="无权访问所选广告账户的 Pixel/数据集")
 
     merged: dict[tuple[str, str], dict] = {}
-    sync_service = MetaTrackingAssetSyncService(db)
+    cached = db.query(MetaTrackingAsset).filter(MetaTrackingAsset.ad_account_id.in_(requested)).all()
+    by_account = {account_id: [] for account_id in requested}
+    for asset in cached:
+        by_account[asset.ad_account_id].append(asset.to_dict())
     for account in accounts:
-        try:
-            result = sync_service.sync_account(account.id)
-            rows = result.get("items", [])
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        rows = by_account[account.id]
 
         for raw in rows if isinstance(rows, list) else []:
             asset_id = str(raw.get("meta_asset_id") or raw.get("id") or "").strip()
@@ -63,7 +61,7 @@ def list_tracking_assets(
                 "asset_type": asset_type,
                 "account_ids": [],
                 "account_names": [],
-                "last_fired_time": raw.get("last_fired_time"),
+                "last_fired_time": (raw.get("raw_json") or {}).get("last_fired_time"),
                 "status": raw.get("status") or "ACTIVE",
                 "usable": raw.get("usable", True),
                 "last_synced_at": raw.get("last_synced_at"),
@@ -76,7 +74,9 @@ def list_tracking_assets(
     return {
         "items": sorted(merged.values(), key=lambda item: (item["asset_type"], item["name"].lower())),
         "account_count": len(accounts),
-        "synced_at": datetime.utcnow().isoformat(),
+        "synced_at": max((asset.last_synced_at for asset in cached if asset.last_synced_at), default=None),
+        "source": "LOCAL_SNAPSHOT",
+        "unsynced_account_ids": [key for key in requested if not by_account[key]],
     }
 
 

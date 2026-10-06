@@ -61,7 +61,7 @@
       <div class="login-footer">
         <p>
           没有账户?
-          <el-link type="primary" @click="goToRegister">立即注册</el-link>
+          <el-link type="primary" @click="goToRegister">账户开通说明</el-link>
         </p>
       </div>
 

@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import uuid
+from datetime import datetime, timedelta
 
 import requests
 from cryptography.fernet import Fernet
@@ -42,9 +43,37 @@ class DatabaseCredentialVault:
         session = connector_session_factory()
         try:
             row = session.get(ConnectorCredential, credential_id)
-            if not row or row.status != "ACTIVE":
+            if not row or row.status != "ACTIVE" or row.expires_at and row.expires_at <= datetime.utcnow():
                 raise KeyError("凭据不存在或已失效")
             return _cipher().decrypt(row.access_token_encrypted.encode()).decode()
+        finally:
+            session.close()
+
+    def health(self, credential_ids: list[str]) -> list[dict]:
+        session = connector_session_factory()
+        try:
+            rows = {row.id: row for row in session.query(ConnectorCredential).filter(ConnectorCredential.id.in_(credential_ids)).all()}
+            now = datetime.utcnow()
+            result = []
+            for key in dict.fromkeys(credential_ids):
+                row = rows.get(key)
+                if not row:
+                    result.append({"id": key, "status": "MISSING", "health": "MISSING"})
+                    continue
+                status = "EXPIRED" if row.expires_at and row.expires_at <= now else row.status
+                health = status
+                if status == "ACTIVE":
+                    if not {"ads_read", "ads_management"}.issubset(row.scopes or []):
+                        health = "PERMISSION_MISSING"
+                    elif row.expires_at and row.expires_at <= now + timedelta(days=7):
+                        health = "EXPIRING"
+                    elif row.last_error:
+                        health = "ERROR"
+                result.append({"id": key, "app_id": row.app_id, "meta_user_id": row.meta_user_id,
+                               "token_type": row.token_type, "status": status, "health": health,
+                               "scopes": row.scopes or [], "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                               "last_error": row.last_error, "last_synced_at": row.updated_at.isoformat() if row.updated_at else None})
+            return result
         finally:
             session.close()
 

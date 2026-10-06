@@ -12,7 +12,7 @@
 
     <el-card class="card-shadow" shadow="never">
       <div class="toolbar">
-        <el-radio-group v-model="assetFilter" size="small" @change="loadAccounts">
+        <el-radio-group v-model="assetFilter" size="small" @change="resetAccountPage">
           <el-radio-button label="ALL">全部</el-radio-button>
           <el-radio-button label="OWNED">自有账户</el-radio-button>
           <el-radio-button label="CLIENT">客户账户</el-radio-button>
@@ -26,16 +26,16 @@
           :prefix-icon="Search"
           @input="debouncedLoad"
         />
-        <el-select v-model="systemStatusFilter" placeholder="系统状态" clearable style="width: 140px" @change="loadAccounts">
+        <el-select v-model="systemStatusFilter" placeholder="系统状态" clearable style="width: 140px" @change="resetAccountPage">
           <el-option label="可投放" value="ACTIVE" />
           <el-option label="已停用" value="DISABLED" />
         </el-select>
-        <el-select v-model="accountStatusFilter" placeholder="Meta 状态" clearable style="width: 140px" @change="loadAccounts">
+        <el-select v-model="accountStatusFilter" placeholder="Meta 状态" clearable style="width: 140px" @change="resetAccountPage">
           <el-option label="正常" value="1" />
           <el-option label="已禁用" value="2" />
           <el-option label="未结算" value="3" />
         </el-select>
-        <el-select v-model="businessFilter" placeholder="归属 BM" clearable filterable style="width: 230px" @change="loadAccounts">
+        <el-select v-model="businessFilter" placeholder="归属 BM" clearable filterable style="width: 230px" @change="resetAccountPage">
           <el-option v-for="m in businesses" :key="m.id" :label="m.name" :value="m.id" />
         </el-select>
         <el-button :icon="Refresh" @click="loadAccounts">刷新</el-button>
@@ -70,7 +70,7 @@
         </el-table-column>
         <el-table-column label="资产类型" width="110">
           <template #default="{ row }">
-            <el-tag v-if="assetType(row) === 'OWNED'" type="success" effect="plain" size="small">自有</el-tag>
+            <el-tag v-if="assetType(row as TableRow<typeof accounts>) === 'OWNED'" type="success" effect="plain" size="small">自有</el-tag>
             <el-tag v-else type="warning" effect="plain" size="small">客户</el-tag>
           </template>
         </el-table-column>
@@ -96,33 +96,33 @@
           </template>
         </el-table-column>
         <el-table-column label="日限额" min-width="120">
-          <template #default="{ row }">{{ formatMoney(row.daily_spend_limit, row.currency) }}</template>
+          <template #default="{ row }">{{ formatMoney(row.daily_spend_limit,row.currency) }}</template>
         </el-table-column>
         <el-table-column label="月限额" min-width="120">
-          <template #default="{ row }">{{ formatMoney(row.monthly_spend_limit, row.currency) }}</template>
+          <template #default="{ row }">{{ formatMoney(row.monthly_spend_limit,row.currency) }}</template>
         </el-table-column>
         <el-table-column label="已消费" min-width="120">
-          <template #default="{ row }">{{ formatMoney(row.amount_spent, row.currency) }}</template>
+          <template #default="{ row }">{{ formatMoney(row.amount_spent,row.currency) }}</template>
         </el-table-column>
         <el-table-column label="分配用户" width="90">
           <template #default="{ row }">{{ userCount[row.id] ?? '-' }}</template>
         </el-table-column>
         <el-table-column v-if="assetFilter !== 'PENDING'" label="操作" width="390" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="goDetail(row)">详情</el-button>
-            <el-button link type="primary" size="small" @click="openTransfer(row)">转移归属</el-button>
-            <el-button link type="primary" size="small" @click="openAssign(row)">分配</el-button>
-            <el-button link type="info" size="small" @click="openUsers(row)">用户</el-button>
-            <el-button link type="warning" size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button link :type="row.system_status === 'ACTIVE' ? 'danger' : 'success'" size="small" @click="toggleStatus(row)">
+            <el-button link type="primary" size="small" @click="goDetail(row as TableRow<typeof accounts>)">详情</el-button>
+            <el-button link type="primary" size="small" @click="openTransfer(row as TableRow<typeof accounts>)">转移归属</el-button>
+            <el-button link type="primary" size="small" @click="openAssign(row as TableRow<typeof accounts>)">分配</el-button>
+            <el-button link type="info" size="small" @click="openUsers(row as TableRow<typeof accounts>)">用户</el-button>
+            <el-button link type="warning" size="small" @click="openEdit(row as TableRow<typeof accounts>)">编辑</el-button>
+            <el-button link :type="row.system_status === 'ACTIVE' ? 'danger' : 'success'" size="small" @click="toggleStatus(row as TableRow<typeof accounts>)">
               {{ row.system_status === 'ACTIVE' ? '停用' : '启用' }}
             </el-button>
-            <el-button link type="danger" size="small" @click="remove(row)">删除</el-button>
+            <el-button link type="danger" size="small" @click="remove(row as TableRow<typeof accounts>)">删除</el-button>
           </template>
         </el-table-column>
         <el-table-column v-else label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openPendingBm(row)">去 BM 导入</el-button>
+            <el-button link type="primary" size="small" @click="openPendingBm(row as TableRow<typeof accounts>)">去 BM 导入</el-button>
           </template>
         </el-table-column>
         <template #empty>
@@ -132,6 +132,7 @@
           </el-empty>
         </template>
       </el-table>
+      <el-pagination v-if="assetFilter !== 'PENDING' && accountTotal > accountPageSize" v-model:current-page="accountPage" :page-size="accountPageSize" :total="accountTotal" layout="total, prev, pager, next" style="justify-content:flex-end;margin-top:16px" @current-change="loadAccounts" />
     </el-card>
 
     <!-- 新建/编辑 -->
@@ -245,8 +246,8 @@
         </el-table-column>
         <el-table-column label="操作" width="90">
           <template #default="{ row }">
-            <el-button v-if="!row.is_primary && row.assignment_status === 'ACTIVE'" link type="primary" size="small" @click="setPrimaryUser(row)">设主投手</el-button>
-            <el-button v-if="row.assignment_status === 'ACTIVE'" link type="danger" size="small" @click="removeUser(row)">移除</el-button>
+            <el-button v-if="!row.is_primary && row.assignment_status === 'ACTIVE'" link type="primary" size="small" @click="setPrimaryUser(row as TableRow<typeof assignedList>)">设主投手</el-button>
+            <el-button v-if="row.assignment_status === 'ACTIVE'" link type="danger" size="small" @click="removeUser(row as TableRow<typeof assignedList>)">移除</el-button>
           </template>
         </el-table-column>
         <template #empty><el-empty description="暂无分配用户" /></template>
@@ -278,6 +279,9 @@ const route = useRoute()
 const router = useRouter()
 
 const accounts = ref<AdAccountItem[]>([])
+const accountPage = ref(1)
+const accountPageSize = 20
+const accountTotal = ref(0)
 const loading = ref(false)
 const syncing = ref(false)
 const search = ref('')
@@ -319,7 +323,7 @@ const assignedList = ref<AccountUser[]>([])
 let timer: number | undefined
 function debouncedLoad() {
   clearTimeout(timer)
-  timer = setTimeout(loadAccounts, 300) as unknown as number
+  timer = setTimeout(resetAccountPage, 300) as unknown as number
 }
 
 /** Meta account_status：Graph API 返回数字，也可能返回枚举名 */
@@ -354,10 +358,13 @@ async function loadBusinesses() {
   }
 }
 
+function resetAccountPage() { accountPage.value = 1; void loadAccounts() }
+let accountRequestNo = 0
 async function loadAccounts() {
+  const requestNo = ++accountRequestNo
   loading.value = true
   try {
-    const params: Record<string, unknown> = { page: 1, page_size: 100 }
+    const params: Record<string, unknown> = { page: accountPage.value, page_size: accountPageSize }
     if (search.value) params.search = search.value
     if (systemStatusFilter.value) params.system_status = systemStatusFilter.value
     if (accountStatusFilter.value) params.account_status = accountStatusFilter.value
@@ -366,6 +373,7 @@ async function loadAccounts() {
 
     if (assetFilter.value === 'PENDING') {
       const { data } = await metaAccountApi.pendingAdAccounts()
+      if (requestNo !== accountRequestNo) return
       accounts.value = (data.accounts || []).map((row: any) => ({
         id: `pending-${row.meta_account_id}-${row.id}`,
         account_id: row.id,
@@ -378,12 +386,14 @@ async function loadAccounts() {
         currency: row.currency,
       })) as AdAccountItem[]
       userCount.value = {}
-      loading.value = false
+      accountTotal.value = accounts.value.length
       return
     }
 
-    const { data } = await accountApi.list(params)
+    const { data, headers } = await accountApi.list(params)
+    if (requestNo !== accountRequestNo) return
     accounts.value = data
+    accountTotal.value = Number(headers['x-total-count'] ?? data.length)
 
     const counts: Record<string, number> = {}
     await Promise.all(
@@ -396,11 +406,11 @@ async function loadAccounts() {
         }
       })
     )
-    userCount.value = counts
+    if (requestNo === accountRequestNo) userCount.value = counts
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   } finally {
-    loading.value = false
+    if (requestNo === accountRequestNo) loading.value = false
   }
 }
 
@@ -646,8 +656,8 @@ async function openAssign(a: AdAccountItem) {
   selectedUsers.value = []
   primaryUserId.value = ''
   try {
-    const [{ data: users }, { data: assigned }] = await Promise.all([
-      userApi.list({ page: 1, page_size: 100 }),
+    const [users, { data: assigned }] = await Promise.all([
+      userApi.listAll(),
       accountApi.users(a.id),
     ])
     allUsers.value = users

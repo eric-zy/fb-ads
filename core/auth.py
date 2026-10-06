@@ -136,7 +136,8 @@ class AuthManager:
             payload = jwt.decode(
                 token,
                 settings.SECRET_KEY,
-                algorithms=["HS256"]
+                algorithms=["HS256"],
+                options={"require": ["exp", "iat", "sub"]},
             )
             return payload
         except jwt.ExpiredSignatureError:
@@ -144,7 +145,7 @@ class AuthManager:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="令牌已过期"
             )
-        except jwt.JWTError:
+        except jwt.InvalidTokenError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="无效的令牌"

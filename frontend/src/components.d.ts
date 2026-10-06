@@ -67,6 +67,7 @@ declare module 'vue' {
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     ElTree: typeof import('element-plus/es')['ElTree']
     ElUpload: typeof import('element-plus/es')['ElUpload']
+    InstagramIdentitySelect: typeof import('./components/InstagramIdentitySelect.vue')['default']
     LanguageSwitcher: typeof import('./components/LanguageSwitcher.vue')['default']
     MetaLanguageSelect: typeof import('./components/MetaLanguageSelect.vue')['default']
     PermissionSelector: typeof import('./components/PermissionSelector.vue')['default']

@@ -109,6 +109,13 @@ celery_app.conf.beat_schedule = {
 }
 
 # 自动发现任务
+if settings.SCHEDULE_INSIGHTS_HISTORY_ENABLED:
+    celery_app.conf.beat_schedule["fetch-insights-history"] = {
+        "task": "tasks.celery_tasks.fetch_all_accounts_insights",
+        "schedule": _cron(settings.SCHEDULE_INSIGHTS_HISTORY_CRON),
+        "args": (settings.SCHEDULE_INSIGHTS_HISTORY_DAYS,),
+    }
+
 celery_app.autodiscover_tasks(['tasks'])
 
 # 显式导入任务模块，确保 shared_task 在 worker 启动时注册
@@ -138,6 +145,7 @@ for _task_module in (
     "tasks.meta_sync_tasks",  # Meta 账号管理 V1：BM / 广告账户同步
     "tasks.meta_audience_tasks",  # Meta Custom Audience 元数据同步
     "tasks.meta_tracking_asset_tasks",  # Meta Pixel / Dataset 元数据同步
+    "tasks.meta_instagram_tasks",  # Instagram 身份及 Page 关联同步
     "tasks.credential_tasks",  # 凭据到期巡检
     "tasks.media_tasks",  # 异步 Meta 素材上传与视频处理
     "tasks.assignment_tasks",  # 广告账户分配关系维护

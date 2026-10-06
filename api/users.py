@@ -1,6 +1,6 @@
 # ==================== 用户管理API端点 ====================
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from pydantic import BaseModel, EmailStr, Field
@@ -101,9 +101,12 @@ async def get_user_accounts(
 async def update_user_settings(
     user_id: str,
     request: UserSettingsUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """更新用户设置"""
+    if current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="只能修改自己的个人设置")
     try:
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
@@ -122,6 +125,8 @@ async def update_user_settings(
             "message": "设置已更新",
             "settings": user.settings
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to update user settings: {str(e)}")
         db.rollback()
@@ -133,11 +138,20 @@ async def update_user_settings(
 @router.get("/{user_id}")
 async def get_user(
     user_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
 ):
     """获取用户信息"""
+    if current_user.id != user_id and not current_user.is_admin():
+        raise HTTPException(status_code=403, detail="无权查看其他用户信息")
     try:
-        user = db.query(User).filter(User.id == user_id).first()
+        query = db.query(User).filter(User.id == user_id)
+        if current_user.id != user_id:
+            tenant_id = effective_tenant_id(current_user)
+            if not tenant_id:
+                raise HTTPException(status_code=403, detail="请先切换到目标租户")
+            query = query.filter(User.tenant_id == tenant_id)
+        user = query.first()
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -155,6 +169,8 @@ async def get_user(
             "created_at": user.created_at.isoformat(),
             "last_login": user.last_login.isoformat() if user.last_login else None
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to get user: {str(e)}")
         raise HTTPException(
@@ -211,6 +227,7 @@ def _user_to_dict(u: User) -> dict:
 
 @router.get("", response_model=List[dict])
 def list_users(
+    response: Response,
     search: Optional[str] = Query(None, description="按邮箱/用户名搜索"),
     role: Optional[str] = Query(None, description="角色过滤"),
     is_active: Optional[bool] = Query(None, description="启用状态过滤"),
@@ -229,7 +246,8 @@ def list_users(
     if is_active is not None:
         q = q.filter(User.is_active == is_active)
     total = q.count()
-    items = q.order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    response.headers["X-Total-Count"] = str(total)
+    items = q.order_by(User.created_at.desc(), User.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return [_user_to_dict(u) for u in items]
 
 

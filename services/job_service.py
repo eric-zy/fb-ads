@@ -41,6 +41,7 @@ from services.meta_delivery_rules import (
     tracking_asset_requirements,
 )
 from services.meta.page_access import page_account_access_error
+from services.instagram_identity import instagram_account_access_error, instagram_references
 from services.fb_connector_client import FBConnectorClient
 from services.targeting_catalog import normalize_targeting, placement_preflight_errors, targeting_preflight_errors
 from services.meta_audience_policy import resolve_required_exclusions
@@ -128,7 +129,7 @@ class JobService:
         status: str = "PAUSED", created_by: Optional[str] = None,
         ad_group_mode: str = "NEW", ad_group_selections: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """返回可读的发布前检查结果；不创建 Job，不调用 Meta 写接口。"""
+        """返回发布前检查结果，不创建投放 Job；必要时派发账户级素材上传。"""
         from services.meta import AdAccountService
 
         errors: List[Dict[str, Any]] = []
@@ -147,6 +148,10 @@ class JobService:
         if budget <= 0:
             errors.append({"code": "INVALID_BUDGET", "message": "预算必须大于 0"})
         config = template.creative_config_json or {}
+        try:
+            instagram_references(config)
+        except ValueError as exc:
+            errors.append({"code": "INSTAGRAM_IDENTITY_INVALID", "message": str(exc)})
         errors.extend(schedule_preflight_errors(budget_type, config.get("schedule")))
         errors.extend(objective_optimization_preflight_errors(template.objective, template.optimization_goal, config))
         errors.extend(tracking_asset_preflight_errors(template.optimization_goal, config))
@@ -347,6 +352,11 @@ class JobService:
             for account_pk in available:
                 account = self.db.query(AdAccount).filter(AdAccount.id == account_pk).first()
                 reason = page_account_access_error(page, account) if account else "账户不存在"
+                if not reason:
+                    try:
+                        reason = instagram_account_access_error(self.db, account, config)
+                    except ValueError as exc:
+                        reason = str(exc)
                 if reason:
                     rejected.append({"account_id": account_pk, "reason": reason})
                 else:
@@ -660,6 +670,10 @@ class JobService:
             for account_pk in ad_account_ids:
                 account = self.db.query(AdAccount).filter(AdAccount.id == account_pk).first()
                 reason = page_account_access_error(page, account) if account else "账户不存在"
+                if not reason:
+                    instagram_error = instagram_account_access_error(self.db, account, template.creative_config_json or {})
+                    if instagram_error:
+                        raise ValueError(f"账户 {account_pk}：{instagram_error}，请重新预检")
                 if reason:
                     rejected.append({"account_id": account_pk, "reason": reason})
                 else:

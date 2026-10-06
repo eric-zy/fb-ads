@@ -169,9 +169,6 @@ class AdSetInsight(TenantMixin, Base):
     revenue = Column(BigInteger, nullable=True)
     profit = Column(BigInteger, nullable=True)
     roi = Column(Float, nullable=True)
-    revenue = Column(BigInteger, nullable=True)
-    profit = Column(BigInteger, nullable=True)
-    roi = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     __table_args__ = (

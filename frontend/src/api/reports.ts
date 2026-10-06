@@ -11,6 +11,31 @@ export const reportsApi = {
   sync: (params?: { account_id?: string; days?: number }) =>
     request.post('/api/v1/reports/sync', undefined, { params }),
   taskStatus: (id: string) => request.get<{ task_id: string; state: string; result?: { status?: string; error_count?: number }; error?: string }>('/api/v1/tasks/' + id),
+  importRevenue: (records: RevenueRecord[]) => request.post<{ count: number }>('/api/v1/reports/revenue-import', { records }),
+}
+
+export interface RevenueRecord {
+  account_id: string
+  date: string
+  source: string
+  currency: string
+  revenue: string
+}
+
+export interface ReportItem {
+  entity_id: string
+  entity_name: string
+  currency: string
+  spend: number | null
+  impressions: number
+  clicks: number
+  conversions: number
+  conversion_rate: number
+  cpa: number | null
+  roas: number | null
+  revenue: number | null
+  profit: number | null
+  roi: number | null
 }
 
 export interface WorkbenchCurrencyTotal {

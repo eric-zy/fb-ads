@@ -1,0 +1,82 @@
+name: Project checks
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    env:
+      ENVIRONMENT: test
+      SECRET_KEY: ci-only-key-for-isolated-tests
+      DB_HOST: localhost
+      DB_PASSWORD: ci-only-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q --disable-warnings
+
+  migrations:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        configuration: [alembic.ini, fb_connector/alembic.ini]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: fb_ads_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-password
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d fb_ads_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ENVIRONMENT: test
+      SECRET_KEY: ci-only-key-for-isolated-tests
+      DB_TYPE: postgresql
+      DB_HOST: localhost
+      DB_PORT: '5432'
+      DB_NAME: fb_ads_ci
+      DB_USER: postgres
+      DB_PASSWORD: ci-only-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m alembic -c ${{ matrix.configuration }} upgrade head
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run type-check
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Frontend UI regression with mocked APIs
+        run: |
+          npm run preview -- --host 127.0.0.1 --port 4178 &
+          preview_pid=$!
+          trap 'kill "$preview_pid"' EXIT
+          npm run test:ui

@@ -11,6 +11,7 @@ from core.logger import logger
 from core.money import to_minor, to_major
 from core.tenant import bypass_tenant, tenant_scope
 from services.ads_manager import AdsManager
+from services.revenue import update_financial_metrics
 from sqlalchemy.orm import Session
 from datetime import datetime, date
 import hashlib
@@ -45,7 +46,7 @@ def _upsert_account_insights(db: Session, account: AdAccount, items: list[dict])
         metrics = AdsManager._parse_action_metrics(
             row.get("actions"), row.get("action_values")
         )
-        spend = to_minor(float(row.get("spend", 0) or 0))
+        spend = to_minor(row.get("spend", 0) or 0, account.currency)
         insight_id = "ins_" + hashlib.sha256(
             f"account:{account.id}:{insight_date}".encode("utf-8")
         ).hexdigest()[:32]
@@ -64,6 +65,7 @@ def _upsert_account_insights(db: Session, account: AdAccount, items: list[dict])
         impressions = int(row.get("impressions", 0) or 0)
         clicks = int(row.get("clicks", 0) or 0)
         target.spend = spend
+        update_financial_metrics(target)
         target.impressions = impressions
         target.clicks = clicks
         target.conversions = metrics["conversions"]
@@ -72,7 +74,7 @@ def _upsert_account_insights(db: Session, account: AdAccount, items: list[dict])
         target.leads = metrics["leads"]
         target.purchases = metrics["purchases"]
         target.complete_registrations = metrics["complete_registrations"]
-        target.conversion_value = to_minor(metrics["conversion_value"])
+        target.conversion_value = to_minor(metrics["conversion_value"], account.currency)
         target.actions = row.get("actions") or []
         target.action_values = row.get("action_values") or []
         target.synced_at = datetime.utcnow()
@@ -99,24 +101,29 @@ async def insights_callback(request: Request, db: Session = Depends(get_db), x_s
     # Callback 没有 SaaS JWT，必须先在禁用租户过滤的上下文里解析账户，
     # 再切换到该账户租户写入快照和 canonical Insights。
     with bypass_tenant():
-        account = db.query(AdAccount).filter(
+        candidates = db.query(AdAccount).filter(
             or_(
                 AdAccount.account_id == payload.account_id,
                 AdAccount.account_id == _account_ref(payload.account_id),
             )
-        ).first()
-        meta = (
-            db.query(MetaAccount).filter(MetaAccount.id == account.business_id).first()
-            if account else None
-        )
-    expected_credential_id = (
-        getattr(account, "connector_credential_id", None)
-        or getattr(meta, "connector_credential_id", None)
-    )
-    if not account or not expected_credential_id or expected_credential_id != payload.credential_id:
+        ).all()
+        matching = []
+        for candidate in candidates:
+            meta = db.query(MetaAccount).filter(MetaAccount.id == candidate.business_id).first() if candidate.business_id else None
+            credential_id = candidate.connector_credential_id or getattr(meta, "connector_credential_id", None)
+            if credential_id == payload.credential_id:
+                matching.append(candidate)
+    if len(matching) != 1:
+        # Do not guess between multiple local owners of the same remote account.
+        if len(matching) > 1:
+            raise HTTPException(status_code=409, detail="Connector 账户映射不唯一，请确认账户归属")
         raise HTTPException(status_code=404, detail="Connector 账户或凭据不匹配")
+    account = matching[0]
 
     with tenant_scope(account.tenant_id):
+        # Share the account lock with income imports; a spend refresh must not
+        # overwrite financial metrics computed from a concurrent income update.
+        account = db.query(AdAccount).filter(AdAccount.id == account.id).with_for_update().one()
         old = db.query(ConnectorInsightsSnapshot).filter(
             ConnectorInsightsSnapshot.request_id == payload.request_id
         ).first()

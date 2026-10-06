@@ -39,6 +39,7 @@ from services.media_binding_service import ensure_asset_bindings, queue_pending_
 from services.account_access import accessible_account_ids
 from services.meta import MetaApiError
 from services.meta.page_access import page_account_access_error
+from services.instagram_identity import instagram_account_access_error
 from services.integrations.sinan_client import SinanClient
 from core.security import decrypt_token
 
@@ -596,6 +597,12 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
             item.mark_failed("PAGE_ACCOUNT_MISMATCH", page_error, ErrorCategory.AUTH)
             db.commit()
             return {"error": page_error}
+
+        instagram_error = instagram_account_access_error(db, account, template.creative_config_json or {})
+        if instagram_error:
+            item.mark_failed("INSTAGRAM_IDENTITY_UNAVAILABLE", instagram_error, ErrorCategory.AUTH)
+            db.commit()
+            return {"error": instagram_error}
 
         params = job.params or {}
         budget_override = params.get("budget_override")

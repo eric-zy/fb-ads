@@ -19,7 +19,7 @@
         <el-table-column prop="business_id" label="Business ID" min-width="150" />
         <el-table-column label="广告账户" width="100" align="center">
           <template #default="{ row }">
-            <el-link type="primary" @click="goAccounts(row)">{{ row.account_count }}</el-link>
+            <el-link type="primary" @click="goAccounts(row as TableRow<typeof list>)">{{ row.account_count }}</el-link>
           </template>
         </el-table-column>
 
@@ -27,13 +27,13 @@
           <template #default="{ row }">
             <div class="cred-cell">
               <div class="cred-main">
-                <el-tag :type="credType(row)" effect="light" round>{{ credLabel(row) }}</el-tag>
+                <el-tag :type="credType(row as TableRow<typeof list>)" effect="light" round>{{ credLabel(row as TableRow<typeof list>) }}</el-tag>
                 <el-button
                   v-if="row.credential_source === 'NONE' || row.credential_is_expired || row.credential_status !== 'ACTIVE'"
                   link
                   type="primary"
                   size="small"
-                  @click="authorizeMeta(row)"
+                  @click="authorizeMeta(row as TableRow<typeof list>)"
                 >
                   {{ row.credential_source === 'NONE' ? '授权 Meta' : '重新授权' }}
                 </el-button>
@@ -46,9 +46,9 @@
         <el-table-column label="同步状态" width="150">
           <template #default="{ row }">
             <el-tooltip v-if="row.last_sync_error" :content="row.last_sync_error" placement="top">
-              <el-tag :type="syncType(row)" effect="plain" size="small">{{ syncLabel(row) }}</el-tag>
+              <el-tag :type="syncType(row as TableRow<typeof list>)" effect="plain" size="small">{{ syncLabel(row as TableRow<typeof list>) }}</el-tag>
             </el-tooltip>
-            <el-tag v-else :type="syncType(row)" effect="plain" size="small">{{ syncLabel(row) }}</el-tag>
+            <el-tag v-else :type="syncType(row as TableRow<typeof list>)" effect="plain" size="small">{{ syncLabel(row as TableRow<typeof list>) }}</el-tag>
             <div v-if="row.last_synced_at" class="sync-time">{{ formatTime(row.last_synced_at) }}</div>
           </template>
         </el-table-column>
@@ -56,23 +56,23 @@
         <el-table-column label="默认" width="90" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.is_default" type="success">当前</el-tag>
-            <el-button v-else link type="primary" size="small" @click="setDefault(row)">设为默认</el-button>
+            <el-button v-else link type="primary" size="small" @click="setDefault(row as TableRow<typeof list>)">设为默认</el-button>
           </template>
         </el-table-column>
 
         <el-table-column label="BM 状态" width="110" align="center">
           <template #default="{ row }">
-            <el-tag :type="statusType(row)" effect="light">{{ statusLabel(row) }}</el-tag>
+            <el-tag :type="statusType(row as TableRow<typeof list>)" effect="light">{{ statusLabel(row as TableRow<typeof list>) }}</el-tag>
           </template>
         </el-table-column>
 
         <el-table-column label="操作" width="360" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="goDetail(row)">查看</el-button>
-            <el-button link type="primary" size="small" @click="syncAccounts(row)">同步</el-button>
-            <el-button link type="info" size="small" @click="openLogs(row)">同步记录</el-button>
-            <el-button link type="info" size="small" @click="verifyConnection(row)">校验</el-button>
-            <el-dropdown trigger="click" @command="(cmd: string) => onMoreCommand(cmd, row)">
+            <el-button link type="primary" size="small" @click="goDetail(row as TableRow<typeof list>)">查看</el-button>
+            <el-button link type="primary" size="small" @click="syncAccounts(row as TableRow<typeof list>)">同步</el-button>
+            <el-button link type="info" size="small" @click="openLogs(row as TableRow<typeof list>)">同步记录</el-button>
+            <el-button link type="info" size="small" @click="verifyConnection(row as TableRow<typeof list>)">校验</el-button>
+            <el-dropdown trigger="click" @command="(cmd: string) => onMoreCommand(cmd,row as TableRow<typeof list>)">
               <el-button link type="danger" size="small">
                 更多<el-icon class="el-icon--right"><ArrowDown /></el-icon>
               </el-button>

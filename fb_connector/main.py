@@ -137,12 +137,17 @@ async def health():
 
 
 @app.get("/internal/ready")
-async def ready():
+def ready():
     required = ("FB_APP_ID", "FB_APP_SECRET", "FB_OAUTH_REDIRECT_URI", "SAAS_INTERNAL_SIGNING_KEY")
     missing = [key for key in required if not os.getenv(key)]
     if missing:
         return JSONResponse(status_code=503, content={"status": "not_ready", "missing": missing})
-    return {"status": "ready", "service": "fb_connector"}
+    from fb_connector.models import engine
+    from core.redis_client import redis_client
+    from services.readiness import dependency_readiness
+    result = dependency_readiness(engine, redis_client.redis_client)
+    result["service"] = "fb_connector"
+    return JSONResponse(status_code=200 if result["status"] == "ready" else 503, content=result)
 
 
 @app.get("/internal/meta/version")

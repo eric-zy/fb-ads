@@ -31,6 +31,17 @@ class TargetingSearchRequest(AudienceListRequest):
 class TrackingAssetsRequest(AudienceListRequest):
     pass
 
+
+@router.post("/instagram/list")
+def list_instagram_identities(payload: AudienceListRequest):
+    try:
+        items = _client(payload.credential_id).get_instagram_identities(payload.account_id)
+        return {"account_id": payload.account_id, "items": items}
+    except Exception as exc:
+        report_meta_auth_failure(payload.credential_id, exc)
+        logger.exception("[ConnectorAssets] Instagram identity sync failed account_id=%s", payload.account_id)
+        raise HTTPException(status_code=400, detail="Instagram 身份读取失败，请检查账户、Page 及 Instagram 授权权限") from exc
+
 def _client(credential_id: str) -> MetaClient:
     try:
         return MetaClient(access_token=DatabaseCredentialVault().get_access_token(credential_id))

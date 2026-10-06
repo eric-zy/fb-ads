@@ -11,9 +11,10 @@ import json
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from core.auth import get_current_active_user, require_permission
 from core.database import get_db
@@ -36,6 +37,7 @@ def _publisher_info(db: Session, user_id: Optional[str]) -> Optional[dict]:
 from core.enums import TemplateStatus
 from services.job_service import JobDispatchError, JobService
 from services.creative_format import normalize_creative_format
+from services.instagram_identity import instagram_references
 from services.meta_creative_options import normalize_cta
 from services.meta_delivery_rules import (
     budget_bid_preflight_errors,
@@ -184,6 +186,11 @@ class RetryJobRequest(BaseModel):
     )
 
 
+class CampaignDryRunRequest(BaseModel):
+    preview_id: str = Field(..., min_length=1)
+    snapshot_hash: str = Field(..., min_length=1)
+
+
 class ReconcileConfirmationRequest(BaseModel):
     group: str = Field(..., pattern="^(campaign|adsets|creatives|ads)$")
     client_key: Optional[str] = Field(None, max_length=128)
@@ -280,7 +287,7 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     creative_config = dict(config.get("creative_config_json") or {})
     # 直接投放的事件源字段位于 inline_config 顶层；统一收进模板 JSON，
     # 否则预检和最终构建拿不到用户刚选择的 Pixel/Dataset。
-    for key in ("page_id", "creatives", "carousel_cards", "adsets", "dataset_id", "pixel_id", "conversion_event", "custom_event_type", "promoted_object", "optimization_goal", "creative_format", "delivery"):
+    for key in ("page_id", "instagram_user_id", "instagram_actor_id", "creatives", "carousel_cards", "adsets", "dataset_id", "pixel_id", "conversion_event", "custom_event_type", "promoted_object", "optimization_goal", "creative_format", "delivery"):
         if key in config and key not in creative_config:
             creative_config[key] = config[key]
     try:
@@ -305,6 +312,10 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     else:
         # 防止从轮播切回单素材后把旧卡片带入模板快照。
         creative_config.pop("carousel_cards", None)
+    try:
+        instagram_references(creative_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     # 直接投放与模板保存走同一套过滤规则；非转化目标不把历史残留的
     # Pixel/Dataset 字段带入临时模板或后续 Meta 请求。
     creative_config = filter_unused_tracking_assets(template_goal, creative_config)
@@ -482,6 +493,12 @@ def _canonical_hash(payload: dict) -> str:
     ).hexdigest()
 
 
+def _template_config_hash(template: CampaignTemplate) -> str:
+    values = template.to_dict()
+    return _canonical_hash({key: value for key, value in values.items()
+                            if key not in {"created_at", "updated_at", "created_by", "is_temporary"}})
+
+
 def _diff_values(before, after, path=""):
     """生成前端可读的配置差异；列表按整体比较，避免误报索引移动。"""
     if isinstance(before, dict) and isinstance(after, dict):
@@ -516,6 +533,9 @@ def _create_preview(
         "source_job_id": req.source_job_id,
         "revision_id": req.revision_id,
     }
+    template = db.query(CampaignTemplate).filter(CampaignTemplate.id == template_id).first()
+    if template:
+        request_snapshot["template_config_hash"] = _template_config_hash(template)
     snapshot_hash = _canonical_hash({"request": request_snapshot, "result": result})
     preview = PublishPreview(
         id=uuid.uuid4().hex,
@@ -544,7 +564,7 @@ def _validate_preview_for_submit(
         raise HTTPException(status_code=400, detail="提交前必须先完成预览校验")
     preview = (
         db.query(PublishPreview)
-        .filter(PublishPreview.id == req.preview_id)
+        .filter(PublishPreview.id == req.preview_id, PublishPreview.tenant_id == tenant_required(current_user))
         .first()
     )
     if not preview or preview.created_by != current_user.id and not current_user.is_admin():
@@ -565,6 +585,18 @@ def _validate_preview_for_submit(
         raise HTTPException(status_code=403, detail="提交账户权限已变化，请重新选择账户")
     if req.template_id and req.template_id != preview.template_id:
         raise HTTPException(status_code=409, detail="提交模板与预览模板不一致")
+    snapshot = preview.request_snapshot or {}
+    for field in ("budget_override", "status", "sinan_promotion_id", "access_business_ids"):
+        actual = getattr(req, field)
+        expected = snapshot.get(field)
+        if field == "access_business_ids":
+            actual, expected = actual or {}, expected or {}
+        if field in snapshot and actual != expected:
+            raise HTTPException(status_code=409, detail="投放配置已变化，请重新预检")
+    if snapshot.get("template_config_hash"):
+        template = db.query(CampaignTemplate).filter(CampaignTemplate.id == preview.template_id).first()
+        if not template or _template_config_hash(template) != snapshot["template_config_hash"]:
+            raise HTTPException(status_code=409, detail="模板内容已变化，请重新预检")
     expected_source_job_id = (preview.request_snapshot or {}).get("source_job_id")
     if (req.source_job_id or None) != (expected_source_job_id or None):
         raise HTTPException(status_code=409, detail="提交来源任务与预览不一致，请重新执行预览")
@@ -611,9 +643,34 @@ def _validate_preview_for_submit(
 
 # ==================== 批量投放 ====================
 
+@router.post("/campaign-dry-run")
+def campaign_dry_run(req: CampaignDryRunRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("job:create"))):
+    """基于已通过的预检快照展开对象；不创建 Job、不派发同步、不调用 Meta。"""
+    from services.delivery_dry_run import build_delivery_dry_run
+    preview = db.query(PublishPreview).filter(
+        PublishPreview.id == req.preview_id, PublishPreview.tenant_id == tenant_required(current_user),
+    ).first()
+    if not preview or (preview.created_by != current_user.id and not current_user.is_admin()):
+        raise HTTPException(status_code=404, detail="预览不存在或无权访问")
+    if not preview.is_valid() or preview.snapshot_hash != req.snapshot_hash:
+        raise HTTPException(status_code=409, detail="预览已变化或过期，请重新预检")
+    snapshot = preview.request_snapshot or {}
+    validation = CampaignCreateRequest(
+        **{key: snapshot[key] for key in ("budget_override", "status", "sinan_promotion_id", "access_business_ids", "source_job_id", "revision_id", "ad_group_mode", "ad_group_selections") if key in snapshot},
+        template_id=preview.template_id, ad_account_ids=preview.account_ids,
+        preview_id=preview.id, snapshot_hash=preview.snapshot_hash,
+    )
+    require_accounts(db, current_user, preview.account_ids, write=True)
+    _validate_preview_for_submit(db, validation, current_user)
+    template = template_query(db.query(CampaignTemplate), current_user).filter(CampaignTemplate.id == preview.template_id).first()
+    if not template or template.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail="模板已失效，请重新预检")
+    return build_delivery_dry_run(db, preview, template)
+
+
 @router.post("/campaign-preflight")
 def campaign_preflight(req: CampaignPreflightRequest, db: Session = Depends(get_db), current_user=Depends(require_permission("job:create"))):
-    """发布前检查；不调用 Meta 写接口。直接配置会先标准化为内部配置。"""
+    """发布前检查，不创建广告对象；会保存内部配置并派发所需素材上传任务。"""
     tenant_required(current_user)
     require_accounts(db, current_user, req.ad_account_ids, write=True)
     if req.source_job_id:
@@ -670,7 +727,8 @@ def create_campaign_batch(
         req.operation_leases,
         "CAMPAIGN_CREATE",
     )
-    template_id = _ensure_template(db, req, effective_tenant_id(current_user), current_user)
+    # 提交必须复用用户检查过的模板；直接配置也已在预检阶段标准化。
+    template_id = preview.template_id
     parent_job_id = None
     edit_mode = None
     if req.source_job_id:
@@ -1105,8 +1163,11 @@ def discard_job_revision(
 
 @router.get("")
 def list_jobs(
+    response: Response,
     status: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
+    page: Optional[int] = Query(None, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_active_user),
 ):
@@ -1114,8 +1175,16 @@ def list_jobs(
     query = _visible_jobs(db, current_user)
     if status:
         query = query.filter(CampaignJob.status == status)
-    jobs = query.order_by(CampaignJob.created_at.desc()).limit(limit).all()
     visible = accessible_account_ids(db, current_user)
+    if visible is not None:
+        query = query.filter(or_(
+            CampaignJob.created_by == current_user.id,
+            CampaignJob.items.any(CampaignJobItem.ad_account_id.in_(visible)),
+        ))
+    response.headers["X-Total-Count"] = str(query.count())
+    ordered = query.order_by(CampaignJob.created_at.desc(), CampaignJob.id.desc())
+    jobs = (ordered.offset((page - 1) * page_size).limit(page_size).all()
+            if page is not None else ordered.limit(limit).all())
     result = []
     for job in jobs:
         if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):

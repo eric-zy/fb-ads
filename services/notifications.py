@@ -1,5 +1,6 @@
 """通知服务 - 支持邮件、钉钉、Slack"""
 import smtplib
+import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional, List, Dict
@@ -13,7 +14,7 @@ class NotificationService:
     """多渠道通知服务"""
     
     def __init__(self):
-        self.email_enabled = bool(settings.NOTIFY_EMAIL)
+        self.email_enabled = bool(settings.NOTIFY_EMAIL and settings.SMTP_HOST)
         self.dingtalk_enabled = bool(settings.NOTIFY_DING_WEBHOOK)
         self.slack_enabled = bool(settings.NOTIFY_SLACK_WEBHOOK)
     
@@ -36,6 +37,8 @@ class NotificationService:
         """
         results = {}
         selected = set(channels) if channels is not None else {"email", "dingtalk", "slack"}
+        if "email" in selected and not self.email_enabled:
+            results["email"] = "disabled"
 
         if self.email_enabled and "email" in selected:
             try:
@@ -72,14 +75,12 @@ class NotificationService:
             html: HTML格式内容（可选）
         """
         if not self.email_enabled:
-            return
+            raise RuntimeError("邮件渠道未配置")
         
         try:
-            # 这里需要根据实际的邮件服务器配置调整
-            # 示例使用本地邮件配置或Gmail/企业邮箱
             msg = MIMEMultipart('alternative')
             msg['Subject'] = subject
-            msg['From'] = settings.NOTIFY_EMAIL or 'noreply@fb-ads.local'
+            msg['From'] = settings.SMTP_FROM or settings.SMTP_USER or settings.NOTIFY_EMAIL
             msg['To'] = settings.NOTIFY_EMAIL
             msg['Date'] = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S +0000')
             
@@ -90,12 +91,19 @@ class NotificationService:
             if html:
                 msg.attach(MIMEText(html, 'html', 'utf-8'))
             
-            # 这里应该配置实际的SMTP服务器
-            # 示例配置（需要根据实际情况修改）
-            # with smtplib.SMTP('smtp.gmail.com', 587) as server:
-            #     server.starttls()
-            #     server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            #     server.send_message(msg)
+            context = ssl.create_default_context()
+            smtp_class = smtplib.SMTP_SSL if settings.SMTP_SSL else smtplib.SMTP
+            kwargs = {"timeout": settings.SMTP_TIMEOUT}
+            if settings.SMTP_SSL:
+                kwargs["context"] = context
+            with smtp_class(settings.SMTP_HOST, settings.SMTP_PORT, **kwargs) as server:
+                if not settings.SMTP_SSL and settings.SMTP_STARTTLS:
+                    server.starttls(context=context)
+                if settings.SMTP_USER:
+                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD or "")
+                refused = server.send_message(msg)
+                if refused:
+                    raise smtplib.SMTPRecipientsRefused(refused)
             
             logger.info(f"Email notification sent to {settings.NOTIFY_EMAIL}")
         except Exception as e:

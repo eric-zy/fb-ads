@@ -12,16 +12,14 @@
     </div>
 
     <el-alert v-if="connectorMode" type="info" :closable="false" show-icon class="mb12">
-      当前使用海外 Connector OAuth。凭据和授权连接由海外服务托管，本页不读取国内 Credential 表；请在 BM 页面查看授权状态和同步结果。
+      当前使用海外 Connector OAuth。本页展示海外授权的状态、权限和有效期，可同步资产或重新授权。
+      使用 Instagram 身份时，还需授权专业账户及其关联 Page；权限缺失时，请管理员更新 Meta 应用的授权配置后重新授权。
     </el-alert>
     <el-alert v-else type="info" :closable="false" show-icon class="mb12">
       连接页只负责授权和连接健康检查；BM、广告账户和投放权限请在对应资产页面管理。Access Token 仅在服务端加密保存。
     </el-alert>
 
-    <el-card v-if="connectorMode" shadow="never" class="card-shadow connector-card">
-      <el-empty description="Connector 授权连接不在国内落库展示，请通过 BM 页面管理" />
-    </el-card>
-    <el-card v-else shadow="never" class="card-shadow">
+    <el-card shadow="never" class="card-shadow">
       <el-table :data="connections" v-loading="loading" stripe>
         <el-table-column label="Meta 用户" min-width="180">
           <template #default="{ row }">{{ row.meta_user_id }}</template>
@@ -45,7 +43,7 @@
         </el-table-column>
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" :loading="syncingId === row.id" @click="sync(row)">立即同步</el-button>
+            <el-button link type="primary" :loading="syncingId === row.id" @click="sync(row as TableRow<typeof connections>)">立即同步</el-button>
             <el-button link type="warning" @click="reauthorize">重新授权</el-button>
           </template>
         </el-table-column>
@@ -69,7 +67,7 @@ const loading = ref(false)
 const syncingId = ref<string | null>(null)
 const connectorMode = ref(false)
 const formatTime = (value?: string | null) => value ? new Date(value).toLocaleString() : '-'
-const connectionLabel = (status: string) => ({ ACTIVE: '正常', EXPIRED: '已过期', REVOKED: '已撤销', DISABLED: '已停用' } as Record<string, string>)[status] || status
+const connectionLabel = (status: string) => ({ ACTIVE: '正常', EXPIRED: '已过期', REVOKED: '已撤销', DISABLED: '已停用', EXPIRING: '即将过期', PERMISSION_MISSING: '缺少权限', UNAVAILABLE: '暂不可用', MISSING: '未找到' } as Record<string, string>)[status] || status
 const connectionType = (status: string): 'success' | 'danger' | 'warning' | 'info' => status === 'ACTIVE' ? 'success' : (status === 'EXPIRED' || status === 'REVOKED' ? 'danger' : 'warning')
 
 async function load() {
@@ -77,7 +75,7 @@ async function load() {
   try {
     const mode = await credentialApi.accessMode()
     connectorMode.value = mode.data?.access_mode === 'connector'
-    connections.value = connectorMode.value ? [] : (await metaConnectionsApi.list()).data
+    connections.value = (await metaConnectionsApi.list()).data
   } finally { loading.value = false }
 }
 

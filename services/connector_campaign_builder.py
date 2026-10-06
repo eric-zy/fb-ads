@@ -10,6 +10,7 @@ from typing import Any
 
 from services.campaign_builder import CampaignBuilder, AdSetBuilder, CreativeBuilder
 from services.creative_format import normalize_creative_format
+from services.instagram_identity import instagram_user_id
 
 
 class _PayloadService:
@@ -168,6 +169,14 @@ def build_connector_payload(template: Any, meta_account_id: str, *, budget_overr
                 asset_types,
                 asset_thumbnail_hashes,
             )
+            identity = (
+                instagram_user_id(config) or instagram_user_id(creative_config)
+                if cfg is creative_config else
+                instagram_user_id(resolved_cfg) or instagram_user_id(config) or instagram_user_id(creative_config)
+            )
+            if identity:
+                resolved_cfg["instagram_user_id"] = identity
+                resolved_cfg.pop("instagram_actor_id", None)
             creative = CreativeBuilder(service, meta_account_id, resolved_cfg,
                                        page_id=config.get("page_id") or creative_config.get("page_id"),
                                        name=f"{template.name} G{index} C{cindex}").build_params()

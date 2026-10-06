@@ -104,15 +104,9 @@ class RateLimitManager:
             else:  # day
                 ttl = 86400
 
-            # 尝试原子自增并设置 ttl
-            current = redis_client.incr(key)
-            # 设置 ttl 仅当第一次创建（ttl == -1 或 ttl == None）
-            try:
-                if redis_client.ttl(key) == -1:
-                    redis_client.expire(key, ttl)
-            except Exception:
-                # 部分 redis client 实现可能不支持 ttl 返回 -1
-                pass
+            # RedisClient performs INCR + EXPIRE NX in one pipeline. Its public
+            # API has no ttl()/expire(); using those left counters permanent.
+            current = redis_client.incr(key, ttl=ttl)
 
             return int(current)
         except Exception as e:

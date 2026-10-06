@@ -39,8 +39,8 @@
             <el-table-column prop="updated_at" label="最近更新" width="180" show-overflow-tooltip />
             <el-table-column label="操作" width="140" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" @click="openEditRegion(row)">编辑</el-button>
-                <el-button link type="danger" @click="archiveRegion(row)">归档</el-button>
+                <el-button link type="primary" @click="openEditRegion(row as TableRow<typeof regionGroups>)">编辑</el-button>
+                <el-button link type="danger" @click="archiveRegion(row as TableRow<typeof regionGroups>)">归档</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -72,8 +72,8 @@
             <el-table-column prop="updated_at" label="最近更新" width="180" show-overflow-tooltip />
             <el-table-column label="操作" width="140" fixed="right">
               <template #default="{ row }">
-                <el-button link type="primary" @click="openEditPackage(row)">编辑</el-button>
-                <el-button link type="danger" @click="archivePackage(row)">归档</el-button>
+                <el-button link type="primary" @click="openEditPackage(row as TableRow<typeof targetingPackages>)">编辑</el-button>
+                <el-button link type="danger" @click="archivePackage(row as TableRow<typeof targetingPackages>)">归档</el-button>
               </template>
             </el-table-column>
           </el-table>

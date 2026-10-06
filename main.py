@@ -33,6 +33,7 @@ from api import risk_control as risk_control_api
 from api import meta_targeting as meta_targeting_api
 from api import meta_audiences as meta_audiences_api
 from api import meta_tracking_assets as meta_tracking_assets_api
+from api import meta_instagram as meta_instagram_api
 from api.targeting_packages import region_router as region_groups_api_router, package_router as targeting_packages_api_router
 from core.auth import AuthManager, get_current_active_user
 from core.tenant import bypass_tenant
@@ -73,6 +74,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count", "X-Request-ID"],
 )
 
 # ==================== 数据模型 ====================
@@ -162,6 +164,7 @@ app.include_router(risk_control_api.router)
 app.include_router(meta_targeting_api.router)
 app.include_router(meta_audiences_api.router)
 app.include_router(meta_tracking_assets_api.router)
+app.include_router(meta_instagram_api.router)
 app.include_router(region_groups_api_router)
 app.include_router(targeting_packages_api_router)
 
@@ -247,6 +250,15 @@ async def health_check():
         "version": settings.APP_VERSION,
         "environment": settings.ENVIRONMENT
     }
+
+
+@app.get("/ready")
+def readiness_check():
+    from core.database import engine
+    from core.redis_client import redis_client
+    from services.readiness import dependency_readiness
+    result = dependency_readiness(engine, redis_client.redis_client)
+    return JSONResponse(status_code=200 if result["status"] == "ready" else 503, content=result)
 
 # ==================== 认证：当前用户 ====================
 
