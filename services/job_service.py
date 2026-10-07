@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from core.enums import ActionType, InstanceStatus, JobItemStatus, JobStatus
 from core.logger import logger
+from core.idempotency import bounded_idempotency_key
 from models import (
     AdAccount,
     CampaignInstance,
@@ -630,6 +631,8 @@ class JobService:
         preview_id = params.get("_preview_id")
         idempotency_key = params.get("_idempotency_key")
         if idempotency_key:
+            idempotency_key = bounded_idempotency_key(idempotency_key)
+            params = {**params, "_idempotency_key": idempotency_key}
             existing = (
                 self.db.query(CampaignJob)
                 .filter(CampaignJob.idempotency_key == idempotency_key,

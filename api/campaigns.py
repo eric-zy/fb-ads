@@ -12,6 +12,7 @@ from core.auth import get_current_active_user
 from core.audit import record_audit
 from core.database import get_db
 from core.enums import ActionType
+from core.idempotency import bounded_idempotency_key
 from models import AdAccount, AdGroup, Campaign, AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, AsyncTaskRecord, DeliveryAction, SyncAlert, User
 from services.job_service import JobDispatchError, JobService
 from services.account_access import accessible_account_ids
@@ -805,7 +806,7 @@ def campaign_action(
                 row = db.query(AdSetInstance).filter(AdSetInstance.id == target["id"]).first() if target["type"] == "ADSET" else db.query(AdInstance).filter(AdInstance.id == target["id"]).first()
                 if action == "RESTORE" and row.status not in {"ARCHIVED", "DELETED"}:
                     raise HTTPException(status_code=409, detail="只有已归档或已移除的对象可以恢复")
-                action_key = f"{request_key}:{target['type']}:{target['id']}"
+                action_key = bounded_idempotency_key(f"{request_key}:{target['type']}:{target['id']}")
                 existing = db.query(DeliveryAction).filter(
                     DeliveryAction.idempotency_key == action_key,
                     DeliveryAction.requested_by == current_user.id,

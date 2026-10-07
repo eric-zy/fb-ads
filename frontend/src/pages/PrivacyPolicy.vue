@@ -1,2 +1,15 @@
-<template><PublicPage><h1>隐私政策</h1><p>最后更新：2026年9月5日</p><p>本政策说明安徽品城网络科技有限公司运营的 myAds 如何处理您通过 Facebook 登录及 Meta API 授权的广告账户信息。</p><h2>一、收集的信息</h2><p>经您授权后，系统可能获取 Facebook 用户标识、广告账户标识、名称、状态、币种、时区、投放及花费数据。</p><h2>二、信息用途</h2><p>数据仅用于广告账户接入、广告创建与管理、批量投放、状态同步、花费统计和报表分析，不出售或出租给第三方。</p><h2>三、保存与安全</h2><p>授权凭据经过加密保存，并通过访问控制和安全措施保护。您可以在 Facebook 的应用和网站设置中撤销授权。</p><h2>四、数据删除</h2><p>如需删除授权信息或相关数据，请访问 <RouterLink to="/data-deletion">数据删除说明</RouterLink>，或联系 <a href="mailto:yz6837053@gmail.com">yz6837053@gmail.com</a>。</p><h2>English Summary</h2><p>This Privacy Policy explains how myAds, operated by Anhui Pincheng Network Technology Co., Ltd., processes information authorized through Facebook Login and Meta APIs. Meta data is used only to connect Business Managers and ad accounts, manage campaigns, synchronize delivery status, and provide reporting. We do not sell or share Meta data with third parties. Users may revoke authorization or request deletion by contacting <a href="mailto:yz6837053@gmail.com">yz6837053@gmail.com</a>.</p></PublicPage></template>
-<script setup lang="ts">import PublicPage from '@/components/PublicPage.vue'</script>
+<template>
+  <PublicPage>
+    <h1>{{ copy.nav.privacy }}</h1>
+    <p>{{ copy.privacy.updated }}</p>
+    <p>{{ copy.privacy.intro }}</p>
+    <section v-for="section in copy.privacy.sections" :key="section.title"><h2>{{ section.title }}</h2><p>{{ section.text }}</p></section>
+    <h2>{{ copy.privacy.deletionTitle }}</h2>
+    <p>{{ copy.privacy.deletionBefore }} <RouterLink to="/data-deletion">{{ copy.privacy.deletionLink }}</RouterLink> {{ copy.privacy.deletionAfter }} <a :href="`mailto:${CONTACT_EMAIL}`">{{ CONTACT_EMAIL }}</a>.</p>
+  </PublicPage>
+</template>
+<script setup lang="ts">
+import PublicPage from '@/components/PublicPage.vue'
+import { CONTACT_EMAIL, usePublicCopy } from '@/locales/public'
+const copy = usePublicCopy()
+</script>
