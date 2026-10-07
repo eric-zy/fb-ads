@@ -41,6 +41,10 @@
       </div>
 
       <el-table class="job-table" :data="jobs" v-loading="loading" size="small" row-key="id">
+        <el-table-column prop="campaign_name" label="广告系列名称" min-width="200" show-overflow-tooltip />
+        <el-table-column label="广告名称" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.ad_names?.join('、') || '-' }}</template>
+        </el-table-column>
         <el-table-column label="任务 ID" width="180" show-overflow-tooltip>
           <template #default="{ row }"><span class="job-id">{{ shortId(row.id) }}</span></template>
         </el-table-column>
@@ -103,6 +107,8 @@
     <el-dialog v-model="detailVisible" title="任务详情" width="900px">
       <el-descriptions :column="3" border size="small" style="margin-bottom: 16px">
         <el-descriptions-item label="Job ID">{{ currentJob?.id }}</el-descriptions-item>
+        <el-descriptions-item label="广告系列">{{ currentJob?.campaign_name || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="广告名称" :span="2">{{ currentJob?.ad_names?.join('、') || '-' }}</el-descriptions-item>
         <el-descriptions-item label="动作">{{ currentJob?.action_type }}</el-descriptions-item>
         <el-descriptions-item label="修订版本">
           v{{ currentJob?.revision_no || 1 }}{{ currentJob?.edit_mode === 'EDIT_REPUBLISH' ? '（编辑重投）' : '' }}
@@ -167,6 +173,9 @@
         </el-table-column>
       </el-table>
       <el-table :data="currentJob?.items || []" size="small" max-height="380">
+        <el-table-column label="广告名称" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.ad_names?.join('、') || row.campaign_name || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="ad_account_id" label="广告账户" show-overflow-tooltip />
           <el-table-column label="状态" width="110">
           <template #default="{ row }">

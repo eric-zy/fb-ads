@@ -14,7 +14,6 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
 
 from core.auth import get_current_active_user, require_permission
 from core.database import get_db
@@ -53,10 +52,13 @@ router = APIRouter(prefix="/api/v1/jobs", tags=["Job Center"])
 
 
 def _scope_jobs(query, current_user):
-    """限制 Job Center 到当前生效租户；平台管理员必须先切换租户。"""
+    """任务归创建人所有；管理员可查看当前生效租户的全部任务。"""
     tenant_id = effective_tenant_id(current_user)
     if tenant_id:
-        return query.filter(CampaignJob.tenant_id == tenant_id)
+        query = query.filter(CampaignJob.tenant_id == tenant_id)
+        if not current_user.is_admin():
+            query = query.filter(CampaignJob.created_by == current_user.id)
+        return query
     raise HTTPException(status_code=403, detail="当前账号未绑定租户")
 
 
@@ -65,7 +67,7 @@ def _scope_revisions(query, current_user):
 
 
 def _require_job_controller(job: CampaignJob, current_user: User) -> None:
-    """任务结果可按账户共享查看，但写操作仅限创建人或租户管理员。"""
+    """任务读写仅限创建人或当前租户管理员。"""
     if job.tenant_id != tenant_required(current_user) or (not current_user.is_admin() and job.created_by != current_user.id):
         # 与资源不可见统一返回 404，避免泄露任务存在性。
         raise HTTPException(status_code=404, detail="任务不存在或无权操作")
@@ -105,31 +107,22 @@ def _require_submission_leases(
 
 
 def _visible_jobs(db, user):
-    query = _scope_jobs(db.query(CampaignJob), user)
-    if not user.is_admin():
-        visible = account_ids_for_action(db, user)
-        query = query.filter(CampaignJob.items.any(CampaignJobItem.ad_account_id.in_(visible)))
-    return query
+    return _scope_jobs(db.query(CampaignJob), user)
 
 
-def _job_payload(job, user, visible, *, detail=False):
-    items = [item for item in job.items if visible is None or item.ad_account_id in visible]
+def _job_payload(job, user, *, detail=False):
+    from services.job_display import job_display_names
+    _require_job_controller(job, user)
+    items = list(job.items)
     payload = job.to_dict()
-    full = user.is_admin() or (job.created_by == user.id and len(items) == len(job.items))
-    if not full:
-        # params and connector payloads can contain all accounts, private
-        # template snapshots and credential references of a multi-account job.
-        for key in ("params", "error_message", "preview_id", "idempotency_key", "celery_task_id"):
-            payload.pop(key, None)
+    payload.update(job_display_names(job, items))
     payload.update(total_accounts=len(items),
                    success_count=sum(item.status in ("SUCCESS", "SKIPPED") for item in items),
                    failed_count=sum(item.status == "FAILED" for item in items))
     if detail:
-        payload["items"] = [item.to_dict() for item in items]
-        if not full:
-            for item in payload["items"]:
-                for key in ("response_payload", "error_message", "connector_task_id", "request_hash", "access_business_id"):
-                    item.pop(key, None)
+        payload["items"] = [
+            {**item.to_dict(), **job_display_names(job, [item])} for item in items
+        ]
     return payload
 
 
@@ -843,11 +836,8 @@ def list_scheduled_jobs(
         CampaignJob.scheduled_at.isnot(None), CampaignJob.status.in_(["PENDING", "QUEUED"])
     ).order_by(CampaignJob.scheduled_at.asc()).limit(limit).all()
     result = []
-    visible = accessible_account_ids(db, current_user)
     for job in jobs:
-        if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
-            continue
-        payload = _job_payload(job, current_user, visible)
+        payload = _job_payload(job, current_user)
         payload["publisher"] = _publisher_info(db, job.created_by)
         result.append(payload)
     return result
@@ -1175,26 +1165,13 @@ def list_jobs(
     query = _visible_jobs(db, current_user)
     if status:
         query = query.filter(CampaignJob.status == status)
-    visible = accessible_account_ids(db, current_user)
-    if visible is not None:
-        query = query.filter(or_(
-            CampaignJob.created_by == current_user.id,
-            CampaignJob.items.any(CampaignJobItem.ad_account_id.in_(visible)),
-        ))
     response.headers["X-Total-Count"] = str(query.count())
     ordered = query.order_by(CampaignJob.created_at.desc(), CampaignJob.id.desc())
     jobs = (ordered.offset((page - 1) * page_size).limit(page_size).all()
             if page is not None else ordered.limit(limit).all())
     result = []
     for job in jobs:
-        if visible is not None and job.created_by != current_user.id and not any(item.ad_account_id in visible for item in job.items):
-            continue
-        payload = _job_payload(job, current_user, visible)
-        if visible is not None:
-            items = [item for item in job.items if item.ad_account_id in visible]
-            payload["total_accounts"] = len(items)
-            payload["success_count"] = sum(item.status in ("SUCCESS", "SKIPPED") for item in items)
-            payload["failed_count"] = sum(item.status == "FAILED" for item in items)
+        payload = _job_payload(job, current_user)
         payload["publisher"] = _publisher_info(db, job.created_by)
         result.append(payload)
     return result
@@ -1210,17 +1187,8 @@ def get_job(
     owned = _visible_jobs(db, current_user).filter(CampaignJob.id == job_id).first()
     if not owned:
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
-    visible = accessible_account_ids(db, current_user)
-    if visible is not None and owned.created_by != current_user.id and not any(item.ad_account_id in visible for item in owned.items):
-        raise HTTPException(status_code=404, detail="任务不存在或无权访问")
-    detail = _job_payload(owned, current_user, visible, detail=True)
-    if not detail:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    if visible is not None:
-        detail["items"] = [item for item in detail["items"] if item["ad_account_id"] in visible]
-        detail["total_accounts"] = len(detail["items"])
-        detail["success_count"] = sum(item["status"] in ("SUCCESS", "SKIPPED") for item in detail["items"])
-        detail["failed_count"] = sum(item["status"] == "FAILED" for item in detail["items"])
+    # 本人历史记录不随广告账户分配变化而消失；写操作另行校验账户权限。
+    detail = _job_payload(owned, current_user, detail=True)
     detail["publisher"] = _publisher_info(db, owned.created_by)
     return detail
 

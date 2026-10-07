@@ -71,6 +71,11 @@ def test_real_delete_marks_state_only_after_meta_ack(db, monkeypatch, context, o
         assert context[3].status == context[4].status == "DELETED"
     if object_type != "AD":
         assert context[4].meta_status == "PARENT_DELETED"
+    # Deleting a child must never delete shared parent objects.
+    if object_type in {"ADSET", "AD"}:
+        assert context[2].status == "ACTIVE"
+    if object_type == "AD":
+        assert context[3].status == "ACTIVE"
     execute(row)
     assert connector.delete_object.call_count == 1
 

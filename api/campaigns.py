@@ -304,12 +304,11 @@ def list_delivery_actions(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_active_user),
 ):
-    """查看当前用户可见账户的启停/归档操作记录。"""
+    """普通用户查看本人操作记录，管理员查看当前租户的全部记录。"""
     limit = max(1, min(limit, 200))
-    visible = _visible_accounts(db, current_user)
     query = _scope(db.query(DeliveryAction), DeliveryAction, current_user)
-    if visible is not None:
-        query = query.filter(DeliveryAction.account_id.in_(visible or {"__no_accounts__"}))
+    if not current_user.is_admin():
+        query = query.filter(DeliveryAction.requested_by == current_user.id)
     if status:
         query = query.filter(DeliveryAction.status == status.upper())
     return [row.to_dict() for row in query.order_by(DeliveryAction.created_at.desc()).limit(limit).all()]
@@ -317,10 +316,11 @@ def list_delivery_actions(
 
 @router.get("/delivery-actions/{action_id}")
 def get_delivery_action(action_id: str, db: Session = Depends(get_db), current_user=Depends(get_current_active_user)):
-    visible = _visible_accounts(db, current_user)
     query = _scope(db.query(DeliveryAction), DeliveryAction, current_user).filter(DeliveryAction.id == action_id)
+    if not current_user.is_admin():
+        query = query.filter(DeliveryAction.requested_by == current_user.id)
     row = query.first()
-    if not row or not _can_see_account(visible, row.account_id):
+    if not row:
         raise HTTPException(status_code=404, detail="操作记录不存在或无权访问")
     return row.to_dict()
 
@@ -505,13 +505,13 @@ def delivery_object_detail(
         raise HTTPException(status_code=404, detail="投放对象不存在或无权访问")
 
     account = target.ad_account if object_type == "CAMPAIGN" else target.campaign_instance.ad_account if object_type == "ADSET" else target.adset_instance.campaign_instance.ad_account
-    actions = (
+    actions_query = (
         _scope(db.query(DeliveryAction), DeliveryAction, current_user)
         .filter(DeliveryAction.object_type == object_type, DeliveryAction.object_id == object_id)
-        .order_by(DeliveryAction.created_at.desc())
-        .limit(30)
-        .all()
     )
+    if not current_user.is_admin():
+        actions_query = actions_query.filter(DeliveryAction.requested_by == current_user.id)
+    actions = actions_query.order_by(DeliveryAction.created_at.desc()).limit(30).all()
     return {
         "object_type": object_type,
         "object": target.to_dict(),
@@ -583,12 +583,11 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
     job_item = None
     if template:
         for job in reversed(template.jobs or []):
+            if not current_user.is_admin() and job.created_by != current_user.id:
+                continue
             item = next((row for row in job.items if row.ad_account_id == campaign.ad_account_id), None)
             if item:
                 job_item = item.to_dict()
-                if not current_user.is_admin() and job.created_by != current_user.id:
-                    for key in ("response_payload", "error_message", "connector_task_id", "request_hash", "access_business_id"):
-                        job_item.pop(key, None)
                 job_item["publisher"] = _publisher_info(db, job.created_by)
                 break
     recent_jobs = (
@@ -599,13 +598,16 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
             CampaignJob.template_id == campaign.template_id,
             CampaignJobItem.ad_account_id == campaign.ad_account_id,
         )
-        .order_by(CampaignJob.created_at.desc())
-        .limit(30)
-        .all()
     )
-    recent_actions = [action.to_dict() for action in db.query(DeliveryAction).filter_by(
+    if not current_user.is_admin():
+        recent_jobs = recent_jobs.filter(CampaignJob.created_by == current_user.id)
+    recent_jobs = recent_jobs.order_by(CampaignJob.created_at.desc()).limit(30).all()
+    action_query = db.query(DeliveryAction).filter_by(
         object_type="CAMPAIGN", object_id=campaign.id
-    ).order_by(DeliveryAction.created_at.desc()).limit(30).all()]
+    )
+    if not current_user.is_admin():
+        action_query = action_query.filter(DeliveryAction.requested_by == current_user.id)
+    recent_actions = [action.to_dict() for action in action_query.order_by(DeliveryAction.created_at.desc()).limit(30).all()]
     for job, item in recent_jobs:
         connector_status = (item.response_payload or {}).get("connector_status") or {}
         recent_actions.append({

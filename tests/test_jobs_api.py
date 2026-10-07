@@ -215,3 +215,7 @@ def test_existing_campaign_action_does_not_require_page(monkeypatch, db):
 
     assert job.action_type == ActionType.ENABLE.value
     assert job.total_accounts == 1
+    assert job.params["_display_names"]["campaign_name"] == "Legacy template"
+    template.name = "Later template name"
+    from services.job_display import job_display_names
+    assert job_display_names(job, job.items)["campaign_name"] == "Legacy template"

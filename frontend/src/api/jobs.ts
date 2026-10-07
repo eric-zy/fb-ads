@@ -4,6 +4,8 @@ import request from '@/utils/request'
 
 export interface CampaignJobItem {
   id: string
+  campaign_name?: string | null
+  ad_names?: string[]
   job_id: string
   ad_account_id: string
   access_business_id?: string | null
@@ -23,6 +25,8 @@ export interface CampaignJobItem {
 
 export interface CampaignJob {
   id: string
+  campaign_name?: string | null
+  ad_names?: string[]
   template_id: string | null
   action_type: string
   status: string

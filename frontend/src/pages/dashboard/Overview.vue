@@ -6,21 +6,14 @@
         <p>只展示当前用户有权访问的广告账户、投放任务和 Meta 数据。</p>
       </div>
       <div class="toolbar-actions">
-        <el-date-picker
+        <DateRangeFields
           v-model="dateRange"
-          type="daterange"
-          single-panel
-          value-format="YYYY-MM-DD"
-          range-separator="至"
-          start-placeholder="开始日期"
-          end-placeholder="结束日期"
-          popper-class="date-range-popper"
-          placement="bottom-start"
           :clearable="false"
-          :disabled="loading"
+          :disabled="loading || syncLoading"
+          @validity-change="dateRangeValid = $event"
           @change="scheduleLoad"
         />
-        <el-button :icon="Refresh" :loading="loading" @click="loadSummary">刷新</el-button>
+        <el-button :icon="Refresh" :loading="loading" :disabled="!dateRangeValid" @click="loadSummary">刷新</el-button>
       </div>
     </div>
 
@@ -38,7 +31,7 @@
 
     <div v-if="summary && summary.freshness.status !== 'FRESH' && summary.scope.account_count" class="alert-with-action">
       <el-alert :title="freshnessText" :description="freshnessDescription" type="warning" :closable="false" show-icon />
-      <el-button v-if="canSyncReports" link type="primary" :loading="syncLoading" @click="syncReports">立即同步</el-button>
+      <el-button v-if="canSyncReports" link type="primary" :disabled="!dateRangeValid" :loading="syncLoading" @click="syncReports">立即同步</el-button>
       <el-button v-else link type="primary" @click="goToReports">查看同步入口</el-button>
     </div>
 
@@ -115,6 +108,7 @@
             <div class="card-header"><span>最近任务</span><el-button link type="primary" @click="goToTasks">查看全部</el-button></div>
           </template>
           <el-table :data="summary?.recent_tasks || []" size="small" height="300" @row-click="goToTasks">
+            <el-table-column prop="campaign_name" label="广告系列" min-width="160" show-overflow-tooltip />
             <el-table-column label="动作" width="100">
               <template #default="{ row }">{{ actionLabel(row.action_type) }}</template>
             </el-table-column>
@@ -172,6 +166,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import DateRangeFields from '@/components/DateRangeFields.vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Money, PieChart, Promotion, Refresh, Timer, TrendCharts, Warning } from '@element-plus/icons-vue'
@@ -220,6 +215,7 @@ const summary = ref<WorkbenchSummary | null>(null)
 const loadError = ref('')
 const syncLoading = ref(false)
 const dateRange = ref<[string, string] | null>(null)
+const dateRangeValid = ref(true)
 const selectedCurrency = ref('')
 const chartMetric = ref<ChartMetric>('spend')
 const chartGranularity = ref<ChartGranularity>('day')
@@ -249,16 +245,16 @@ const hasAccounts = computed(() => (summary.value?.scope.account_count || 0) > 0
 const freshnessText = computed(() => {
   if (!summary.value) return ''
   const freshness = summary.value.freshness
-  if (freshness.status === 'NEVER') return '当前可见账户尚未同步报表数据'
+  if (freshness.status === 'NEVER') return '所选日期尚未同步报表数据'
   return `有 ${freshness.stale_account_count + freshness.never_synced_account_count} 个账户的数据需要关注`
 })
 const freshnessDescription = computed(() => {
   if (!summary.value) return ''
   const freshness = summary.value.freshness
   const details: string[] = []
-  if (freshness.stale_account_count) details.push(`${freshness.stale_account_count} 个账户已延迟`)
-  if (freshness.never_synced_account_count) details.push(`${freshness.never_synced_account_count} 个账户从未同步`)
-  return `${details.join('，')}。当前工作台不会用 0 代替未知数据，请到报表页检查同步状态。`
+  if (freshness.stale_account_count) details.push(`${freshness.stale_account_count} 个账户需要补齐或刷新`)
+  if (freshness.never_synced_account_count) details.push(`${freshness.never_synced_account_count} 个账户在所选日期没有完整同步记录`)
+  return `${details.join('，')}。当前汇总可能不完整，显示 0 不代表实际消耗为 0，请到报表页检查日期覆盖和同步状态。`
 })
 const scopeText = computed(() => {
   const count = summary.value?.scope.account_count ?? 0
@@ -396,6 +392,7 @@ const comparisonDateParams = () => {
 }
 
 const loadSummary = async () => {
+  if (dateRange.value && !dateRangeValid.value) return
   const sequence = ++requestSequence
   abortController?.abort()
   const controller = new AbortController()
@@ -442,6 +439,7 @@ const loadSummary = async () => {
 
 let reportController: AbortController | undefined
 const syncReports = async () => {
+  if (!dateRangeValid.value) return
   reportController = new AbortController()
   syncLoading.value = true
   try {

@@ -157,6 +157,27 @@ def test_report_task_ownership_committed_before_dispatch_and_queue_failure_visib
     result = sync_report_data(account_id=account.id, days=30, start_date=date(2026, 1, 1), end_date=date(2026, 1, 30), db=db, current_user=admin)
     assert result["status"] == "partial_failure"
     assert db.query(AsyncTaskRecord).one().status == account.insights_sync_status == "FAILED"
+    assert db.query(AsyncTaskRecord).one().result_summary["start_date"] == "2026-01-01"
+
+
+def test_explicit_sync_window_overrides_default_days_and_is_auditable(db, monkeypatch):
+    from api.reports import sync_report_data
+    from models import AuditLog
+    account = AdAccount(id="window-audit-account", account_id="act_window_audit")
+    admin = User(id="window-audit-admin", username="window-audit-admin", email="window-audit@test.local", hashed_password="unused", role="tenant_admin")
+    db.add_all([account, admin]); db.commit()
+    dispatched = []
+    def dispatch(*, args, kwargs, task_id):
+        dispatched.append((args, kwargs))
+        assert db.query(AsyncTaskRecord).filter_by(task_id=task_id).one().result_summary["days"] == 30
+    monkeypatch.setattr("api.reports.fetch_account_insights", SimpleNamespace(apply_async=dispatch))
+    result = sync_report_data(account_id=account.id, days=3, start_date=date(2026, 1, 1), end_date=date(2026, 1, 30), db=db, current_user=admin)
+    assert result["days"] == 30
+    assert result["start_date"] == "2026-01-01"
+    assert dispatched[0][0] == [account.id, 30]
+    log = db.query(AuditLog).filter_by(action="SYNC_REPORT_DATA", resource_id=account.id).one()
+    assert log.request_data["days"] == 30
+    assert log.request_data["end_date"] == "2026-01-30"
 
 
 def test_successful_database_report_record_remains_queryable_when_celery_result_expired(db, monkeypatch):

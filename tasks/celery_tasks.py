@@ -108,7 +108,7 @@ def fetch_account_insights(self, account_id: str, days: int = 3, start_date: str
         record = db.query(AsyncTaskRecord).filter_by(task_id=self.request.id).first()
         if record:
             record.status = "RETRY" if self.request.retries < self.max_retries else "FAILED"
-            record.result_summary = {"status": "failed", "error": str(exc)[:2000]}
+            record.result_summary = {**(record.result_summary or {}), "status": "failed", "error": str(exc)[:2000]}
             record.finished_at = datetime.utcnow() if record.status == "FAILED" else None
             db.commit()
         raise self.retry(exc=exc, countdown=60)

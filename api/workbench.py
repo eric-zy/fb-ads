@@ -21,12 +21,14 @@ from models import (
     AccountInsight,
     AdAccount,
     CampaignInstance,
+    Campaign,
     CampaignJob,
     CampaignJobItem,
     SyncAlert,
 )
 from services.account_access import accessible_account_ids
 from services.report_quality import report_quality
+from services.job_display import job_display_names
 
 
 router = APIRouter(prefix="/api/v1/workbench", tags=["工作台"])
@@ -101,7 +103,7 @@ def workbench_summary(
     start = start_date or (end - timedelta(days=6))
     if start > end:
         raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
-    if (end - start).days > 90:
+    if (end - start).days >= 90:
         raise HTTPException(status_code=400, detail="工作台时间范围不能超过 90 天")
 
     tenant_id = effective_tenant_id(current_user)
@@ -204,17 +206,32 @@ def workbench_summary(
     # 投放对象健康度。
     campaign_query = _scope(db.query(CampaignInstance), CampaignInstance, current_user, tenant_id)
     campaign_query = campaign_query.filter(CampaignInstance.ad_account_id.in_(account_ids or empty_ids))
-    campaign_status_rows = campaign_query.with_entities(
-        CampaignInstance.status, func.count(CampaignInstance.id)
-    ).group_by(CampaignInstance.status).all()
-    campaign_status = {str(status): int(count) for status, count in campaign_status_rows}
+    # Meta 同步对象包含外部创建的广告系列；同一 Meta ID 不与发布实例重复计数。
+    canonical_query = _scope(db.query(Campaign), Campaign, current_user, tenant_id).filter(
+        Campaign.ad_account_id.in_(account_ids or empty_ids))
+    campaign_states = {
+        (row.ad_account_id, row.campaign_id): str(getattr(row.status, "value", row.status))
+        for row in canonical_query.all()
+    }
+    for row in campaign_query.all():
+        key = (row.ad_account_id, row.meta_campaign_id or row.id)
+        if row.status in {"ARCHIVED", "DELETED"} and campaign_states.get(key) != "DELETED":
+            # 本地归档/删除标记由执行结果维护，远端 PAUSED 不能冲掉归档分类。
+            campaign_states[key] = row.status
+        else:
+            campaign_states.setdefault(key, row.status)
+    campaign_status = defaultdict(int)
+    for status in campaign_states.values():
+        campaign_status[str(status)] += 1
+    campaign_status = dict(campaign_status)
     drift_count = campaign_query.filter(
         CampaignInstance.desired_status.isnot(None),
+        CampaignInstance.desired_status.in_(["ACTIVE", "PAUSED", "DELETED"]),
         CampaignInstance.meta_status.isnot(None),
         CampaignInstance.desired_status != CampaignInstance.meta_status,
     ).count()
 
-    # Job Center：只统计有当前用户可见账户子项的任务，防止通过数量侧信道泄漏其他账户。
+    # Job Center：普通角色只统计本人任务，再按当前账户范围缩小。
     # 不要对包含 JSON 字段（CampaignJob.params）的实体查询直接调用 DISTINCT。
     # PostgreSQL 的 json 类型没有等值操作符，会导致工作台接口 500；先取
     # 可见 job_id，再按主键过滤任务实体，同时保持租户和账户范围隔离。
@@ -225,6 +242,8 @@ def workbench_summary(
         visible_job_ids = visible_job_ids.filter(CampaignJobItem.tenant_id == tenant_id)
     job_query = _scope(db.query(CampaignJob), CampaignJob, current_user, tenant_id)
     job_query = job_query.filter(CampaignJob.id.in_(visible_job_ids))
+    if not current_user.is_admin():
+        job_query = job_query.filter(CampaignJob.created_by == current_user.id)
     job_status_rows = job_query.with_entities(
         CampaignJob.status, func.count(CampaignJob.id)
     ).group_by(CampaignJob.status).all()
@@ -248,6 +267,7 @@ def workbench_summary(
         if not items:
             continue
         recent_tasks.append({
+            **job_display_names(job, items),
             "id": job.id,
             "action_type": job.action_type,
             "status": job.status,
@@ -355,6 +375,8 @@ def workbench_notifications(
         CampaignJob.id.in_(visible_job_ids),
         CampaignJob.status.in_(_FAILED_JOB_STATUSES),
     )
+    if not current_user.is_admin():
+        job_query = job_query.filter(CampaignJob.created_by == current_user.id)
     alert_count = alert_query.count()
     failed_job_count = job_query.with_entities(func.count(CampaignJob.id)).scalar() or 0
     return {

@@ -99,17 +99,10 @@
           <el-radio-button value="card">卡片</el-radio-button>
           <el-radio-button value="list">列表</el-radio-button>
         </el-radio-group>
-        <el-date-picker
+        <DateRangeFields
           class="overview-picker"
           v-model="overviewRange"
-          type="daterange"
-          single-panel
-          value-format="YYYY-MM-DD"
-          range-separator="至"
-          start-placeholder="统计开始"
-          end-placeholder="统计结束"
-          popper-class="date-range-popper"
-          placement="bottom-start"
+          @validity-change="overviewRangeValid = $event"
           :clearable="true"
           @change="loadOverview"
         />
@@ -346,16 +339,9 @@
     <el-dialog v-model="statsVisible" :title="`${statsAsset?.name || '素材'} · 使用统计`" width="760px">
       <div class="stats-toolbar">
         <span>统计区间</span>
-        <el-date-picker
+        <DateRangeFields
           v-model="statsRange"
-          type="daterange"
-          single-panel
-          value-format="YYYY-MM-DD"
-          range-separator="至"
-          start-placeholder="开始日期"
-          end-placeholder="结束日期"
-          popper-class="date-range-popper"
-          placement="bottom-start"
+          @validity-change="statsRangeValid = $event"
           :clearable="true"
           @change="reloadStats"
         />
@@ -457,6 +443,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import DateRangeFields from '@/components/DateRangeFields.vue'
 import { UploadFilled, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { mediaApi, type MediaItem, type MediaOverviewStats, type MediaUsageStats, type MediaPerformanceStats, type CreativeAssetGroup, type CreativeAssetTag, type CreativeAssetTagCategory, type MediaStatusFilter } from '@/api/media'
@@ -512,6 +499,7 @@ const recentDateRange = (days = 30): [string, string] => {
   return [toDateInput(start), toDateInput(end)]
 }
 const overviewRange = ref<[string, string] | null>(recentDateRange())
+const overviewRangeValid = ref(true), statsRangeValid = ref(true)
 const overview = ref<MediaOverviewStats | null>(null)
 const performanceOverview = ref<MediaPerformanceStats | null>(null)
 const performanceOverviewError = ref(false)
@@ -655,6 +643,7 @@ const syncAssetPolling = () => {
 }
 
 const loadOverview = async () => {
+  if (!overviewRangeValid.value) return
   performanceOverviewError.value = false
   try {
     const [start_date, end_date] = overviewRange.value || []
@@ -1137,6 +1126,7 @@ const remove = async (item: MediaItem) => {
 
 const refreshBindings = async () => { if (!bindingAssetId.value) return; const { data } = await mediaApi.bindings(bindingAssetId.value); bindings.value = data }
 const reloadStats = async () => {
+  if (!statsRangeValid.value) return
   if (!statsAsset.value) return
   statsLoading.value = true
   performanceStatsError.value = false
@@ -1323,7 +1313,7 @@ onMounted(async () => {
   .filter-account { width: 245px; }
   .filter-group { width: 170px; }
   .filter-tag { width: 150px; }
-  .overview-picker { width: 250px; margin-left: auto; }
+  .overview-picker { width: 100%; margin-top: 8px; }
   .view-switch { margin-left: auto; }
 }
 .overview-section { margin-bottom: 20px; }

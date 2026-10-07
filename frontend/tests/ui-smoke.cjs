@@ -93,7 +93,7 @@ async function main() {
         submitted = request.postDataJSON()
         return respond({ job_id: 'submitted-job', source: 'TEMPLATE', total_accounts: 1, status: 'PENDING' })
       }
-      const job = (id) => ({ id, action_type: 'CREATE', status: 'SUCCESS', total_accounts: 1, success_count: 1, failed_count: 0, created_at: '2026-10-06T00:00:00', publisher: { username: '测试管理员' }, items: [] })
+      const job = (id) => ({ id, campaign_name: 'His Scent, Her Dreams_第2集', ad_names: ['His Scent, Her Dreams_第2集 G1 A1'], action_type: 'CREATE', status: 'SUCCESS', total_accounts: 1, success_count: 1, failed_count: 0, created_at: '2026-10-06T00:00:00', publisher: { username: '测试管理员' }, items: [] })
       if (path === '/jobs') return respond([job(url.searchParams.get('page') === '2' ? 'job-page-two' : 'job-page-one')], { 'x-total-count': '121' })
       if (path === '/jobs/submitted-job') return respond(job('submitted-job'))
       return respond([])
@@ -113,12 +113,14 @@ async function main() {
 
     await page.goto(`${baseURL}/dashboard/jobs`)
     await page.locator('.job-id').waitFor()
+    await page.getByText('His Scent, Her Dreams_第2集 G1 A1', { exact: true }).waitFor()
     await page.locator('.el-pagination .number').filter({ hasText: /^2$/ }).click()
     await page.locator('.job-id').filter({ hasText: 'ge-two' }).waitFor()
     assert(calls.some(item => item.path === '/jobs' && item.query.includes('page=2')))
     console.log('PASS jobs: server pagination reads page two')
 
     await page.goto(`${baseURL}/dashboard/batch-publish`)
+    await page.getByText('His Scent, Her Dreams_第2集 G1 A1', { exact: true }).waitFor()
     await page.locator('.el-form-item').filter({ hasText: /^投放模板/ }).locator('.el-select').click()
     await page.getByRole('option').filter({ hasText: template.name }).click()
     await page.getByRole('button', { name: '下一步', exact: true }).click()

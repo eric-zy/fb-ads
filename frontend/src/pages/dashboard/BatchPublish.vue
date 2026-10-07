@@ -542,7 +542,7 @@
       <template v-if="currentJob">
         <el-divider>任务进度</el-divider>
         <p class="job-line">
-          任务 <b>{{ currentJob.id }}</b> ·
+          任务 <b>{{ currentJob.campaign_name || currentJob.id }}</b> ·
           <el-tag size="small" type="info" style="margin-right:6px">{{ currentJob.params?.source === 'DIRECT' ? '直接配置' : '模板投放' }}</el-tag>
           <span v-if="currentJob.template_id" class="job-meta">模板 {{ currentJob.template_id }}</span>
           <el-tag :type="statusTagType(currentJob.status)" size="small">
@@ -557,6 +557,9 @@
         </p>
 
         <el-table :data="currentJob.items || []" size="small" max-height="300">
+          <el-table-column label="广告名称" min-width="220" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.ad_names?.join('、') || row.campaign_name || '-' }}</template>
+          </el-table-column>
           <el-table-column prop="ad_account_id" label="账户" show-overflow-tooltip />
           <el-table-column label="状态" width="110">
             <template #default="{ row }">
@@ -590,6 +593,10 @@
       <!-- 历史任务 -->
       <el-divider>历史任务</el-divider>
       <el-table :data="jobs" size="small" v-loading="loadingJobs">
+        <el-table-column prop="campaign_name" label="广告系列名称" min-width="220" show-overflow-tooltip />
+        <el-table-column label="广告名称" min-width="240" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.ad_names?.join('、') || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="id" label="Job ID" width="240" show-overflow-tooltip />
         <el-table-column prop="action_type" label="动作" width="120" />
         <el-table-column label="状态" width="150">

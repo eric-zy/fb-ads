@@ -296,6 +296,30 @@ docker compose logs --tail=200 celery-worker | grep "meta_audiences"
 
 验收状态：`PENDING → STARTED → SUCCESS`；Meta/Connector 请求失败时应进入 `RETRY`，达到重试上限后为 `FAILURE`。重复点击同一账户的同步按钮，在已有活动任务期间应返回 `ALREADY_QUEUED`，不会新增并发任务。
 
+### 6.2 报表与工作台统计验收
+
+在项目根目录执行以下命令。验收工具直接读取 `deploy/.env` 的 `FRONTEND_BASE_URL`，不接受 shell 中同名变量覆盖。登录密码交互输入，不写入命令行；已有登录令牌时也可使用 `REPORT_VERIFY_TOKEN`。
+
+```bash
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml run --rm --no-deps \
+  -v "$PWD/deploy/.env:/app/deploy/.env:ro" \
+  -v "$PWD/scripts/check_report_sync.py:/app/scripts/check_report_sync.py:ro" \
+  api python scripts/check_report_sync.py --username test001 \
+  --start-date 2026-09-08 --end-date 2026-10-07
+```
+
+只读挂载配置和脚本，避免依赖镜像中包含私密 `.env`；此工具除登录外只执行 GET，不触发报表采集，也不修改 Meta 广告。默认检查账号可见范围，管理员检查租户全部账户。可追加 `--account-id <本地账户主键>` 缩小范围。
+
+验收检查：账户总览、四层级日期覆盖、明细/趋势接口是否真正接受所选日期，以及工作台与账户总览的消耗、展示、点击、转化是否一致。完整空快照允许为零；仅接口 HTTP 200 或容器 Healthy 不算报表验收通过。没有子对象而接口未返回覆盖信息时会输出 WARN，不会冒充已确认覆盖。
+
+退出码：`0` 无失败项（仍需阅读 WARN）；`2` 覆盖、日期协议或统计一致性检查失败；`1` 登录、网络、参数或配置错误。部署前旧 API 可能忽略自定义日期，此时日期协议应检查失败；部署新 API 后重跑。工具只校验本地报表一致性，与 Meta 后台的账户时区和归因口径仍需人工对账。
+
+国内 Worker/Beat 日志排查：
+
+```bash
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs --tail=300 celery-worker celery-beat
+```
+
 ---
 
 ## 7. HTTPS（暂不部署）

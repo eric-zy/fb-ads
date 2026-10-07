@@ -8,7 +8,7 @@ const account = { id: 'local-account', account_id: 'act_meta_123', account_name:
 
 async function main() {
   const browser = await chromium.launch({ executablePath: process.env.UI_TEST_BROWSER_PATH || undefined, headless: true })
-  const errors = [], posts = []
+  const errors = [], posts = [], queries = []
   let state = 'PENDING', outcome = 'success', reads = 0
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
@@ -27,12 +27,14 @@ async function main() {
       if (path === '/workbench/notifications') return respond({ alerts: 0, failed_jobs: 0, total: 0 })
       if (path === '/reports/breakdown') {
         reads++
+        queries.push(Object.fromEntries(url.searchParams))
+        const days = Math.round((Date.parse(url.searchParams.get('end_date')) - Date.parse(url.searchParams.get('start_date'))) / 86400000) + 1
         return respond({ items: [{ entity_id: 'local-account', meta_id: 'act_meta_123', entity_name: '测试账户', currency: 'USD', spend: 10, impressions: 100, clicks: 10, conversions: 1, conversion_rate: 10 }],
-          data_quality: [{ status: 'INCOMPLETE', covered_days: 3, expected_days: Number(url.searchParams.get('days')) }] })
+          data_quality: [{ status: 'INCOMPLETE', covered_days: 3, expected_days: days }] })
       }
       if (path === '/reports/account-overview') {
         reads++
-        return respond({ items: [{ account_name: '测试账户', meta_account_id: 'act_meta_123', currency: 'USD', spend: 10, sync_status: outcome === 'success' ? 'FRESH' : 'FAILED', sync_error: outcome === 'success' ? null : 'Meta timeout' }], currency_totals: [] })
+        return respond({ items: [{ account_name: '测试账户', meta_account_id: 'act_meta_123', currency: 'USD', spend: 10, sync_status: outcome === 'success' ? 'FRESH' : 'FAILED', sync_error: outcome === 'success' ? null : 'Meta timeout', data_quality: { complete: outcome === 'success', covered_days: outcome === 'success' ? 3 : 0, expected_days: 3 } }], currency_totals: [] })
       }
       if (path === '/reports/sync') {
         posts.push(Object.fromEntries(url.searchParams))
@@ -44,31 +46,46 @@ async function main() {
     await page.goto(baseURL + '/dashboard/reports')
     await page.getByText('act_meta_123', { exact: true }).waitFor()
     assert.ok((await page.locator('.metric-note').allTextContents()).some(text => text.includes('已覆盖 3/30 天')))
-    await page.locator('.filters .el-select').nth(1).click()
-    await page.getByRole('option', { name: '近 90 天' }).click()
-    await page.getByRole('button', { name: '同步最近 90 天' }).waitFor()
+    assert.equal(await page.locator('.date-range-inputs input').count(), 2)
+    const start = page.getByPlaceholder('选择或输入开始日期'), end = page.getByPlaceholder('选择或输入结束日期')
+    await start.fill('2026-09-10'); await start.press('Enter'); await start.blur()
+    await end.fill('2026-09-12'); await end.press('Enter'); await end.blur()
+    await page.waitForFunction(() => document.querySelector('.metric-note') != null)
+    await page.getByText('报表同步：日期未补全；已覆盖 3/3 天', { exact: true }).waitFor()
+    assert.equal(queries.at(-1).start_date, '2026-09-10')
+    assert.equal(queries.at(-1).end_date, '2026-09-12')
+    const invalidReads = reads
+    await start.fill('2026-09-15'); await start.press('Enter'); await start.blur()
+    await page.getByText('开始日期不能晚于结束日期', { exact: true }).waitFor()
+    assert.ok(await page.getByRole('button', { name: '同步所选日期', exact: true }).isDisabled())
+    assert.equal(reads, invalidReads)
+    assert.equal(posts.length, 0)
+    await page.getByRole('button', { name: '近 90 天', exact: true }).click()
+    await page.getByText('报表同步：日期未补全；已覆盖 3/90 天', { exact: true }).waitFor()
     const before = reads
-    await page.getByRole('button', { name: '同步最近 90 天' }).click()
+    await page.getByRole('button', { name: '同步所选日期', exact: true }).click()
     await page.waitForTimeout(300)
-    assert.equal(posts.at(-1).days, '90')
+    assert.equal(Math.round((Date.parse(posts.at(-1).end_date) - Date.parse(posts.at(-1).start_date)) / 86400000) + 1, 90)
+    assert.equal(posts.at(-1).days, undefined)
     assert.equal(reads, before, 'must wait for task completion before refreshing reports')
     state = 'SUCCESS'
     await page.getByText('报表同步完成', { exact: true }).waitFor()
     assert.equal(reads, before + 1)
     outcome = 'failed'
-    await page.getByRole('button', { name: '同步最近 90 天' }).click()
+    await page.getByRole('button', { name: '同步所选日期', exact: true }).click()
     await page.getByText('1 个账户同步失败，请查看同步错误后重试', { exact: true }).waitFor()
     await page.goto(baseURL + '/dashboard/account-overview')
     await page.getByRole('button', { name: '同步所选日期' }).click()
     await page.getByText('1 个账户同步失败，请查看同步错误后重试', { exact: true }).waitFor()
     assert.ok(posts.at(-1).start_date && posts.at(-1).end_date)
+    await page.getByText('1 个账户的所选日期报表尚未完整同步，当前汇总可能不完整；显示 0 不代表实际消耗为 0。', { exact: true }).waitFor()
     assert.equal(posts.at(-1).days, undefined)
     await page.waitForTimeout(300)
     assert.ok(await page.getByText('1 个账户同步失败，请查看同步错误后重试', { exact: true }).isVisible(), 'refresh must preserve failure notice')
     assert.deepEqual(errors, [])
     fs.mkdirSync('test-results', { recursive: true })
     await page.screenshot({ path: 'test-results/report-sync-smoke.png', fullPage: true })
-    console.log('PASS: daily window coverage, Meta ID, 90-day sync, completion polling, failure notice and selected date range')
+    console.log('PASS: independent date inputs, invalid range blocks requests, daily coverage, Meta ID, 90-day sync, completion polling and failure notice')
   } finally {
     await browser.close()
   }

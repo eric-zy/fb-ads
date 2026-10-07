@@ -44,6 +44,9 @@ def sync_report_data(
         raise HTTPException(400, "start_date 和 end_date 必须同时提供")
     if start_date and (start_date > end_date or (end_date - start_date).days >= 90):
         raise HTTPException(400, "同步窗口必须为 1 至 90 天")
+    effective_days = (end_date - start_date).days + 1 if start_date else days
+    window = {"days": effective_days, "start_date": str(start_date) if start_date else None,
+              "end_date": str(end_date) if end_date else None}
     query = db.query(AdAccount).filter(AdAccount.system_status.in_(["ACTIVE", "DISABLED"]))
     if tenant_id:
         query = query.filter(AdAccount.tenant_id == tenant_id)
@@ -60,13 +63,13 @@ def sync_report_data(
         account.insights_last_sync_error = None
         db.add(AsyncTaskRecord(task_id=task_id, tenant_id=account.tenant_id,
                                task_type="REPORT_SYNC", object_type="ACCOUNT_INSIGHTS",
-                               object_ids=[account.id], created_by=current_user.id))
+                               object_ids=[account.id], created_by=current_user.id, result_summary=window.copy()))
     # Persist ownership before dispatch; a fast worker can now find its record.
     db.commit()
     failures = []
     for account, task_id in zip(accounts, task_ids):
         try:
-            fetch_account_insights.apply_async(args=[account.id, days],
+            fetch_account_insights.apply_async(args=[account.id, effective_days],
                 kwargs={"start_date": str(start_date) if start_date else None,
                         "end_date": str(end_date) if end_date else None}, task_id=task_id)
         except Exception as exc:
@@ -74,7 +77,7 @@ def sync_report_data(
             account.insights_last_sync_error = f"报表任务入队失败：{exc}"[:2000]
             record = db.query(AsyncTaskRecord).filter_by(task_id=task_id).one()
             record.status = "FAILED"
-            record.result_summary = {"status": "failed", "error": account.insights_last_sync_error}
+            record.result_summary = {**window, "status": "failed", "error": account.insights_last_sync_error}
             record.finished_at = datetime.utcnow()
             failures.append(task_id)
     db.commit()
@@ -84,10 +87,10 @@ def sync_report_data(
         resource_type="ad_account",
         resource_id=account_id or "batch",
         user_id=current_user.id,
-        request_data={"account_id": account_id, "days": days, "account_count": len(accounts)},
-        response_data={"status": "QUEUED", "task_ids": task_ids},
+        request_data={"account_id": account_id, **window, "account_count": len(accounts)},
+        response_data={"status": "PARTIAL_FAILURE" if failures else "QUEUED", "task_ids": task_ids, "failed_task_ids": failures},
     )
-    return {"status": "partial_failure" if failures else "queued", "days": days, "account_count": len(accounts), "task_ids": task_ids, "failed_task_ids": failures}
+    return {"status": "partial_failure" if failures else "queued", **window, "account_count": len(accounts), "task_ids": task_ids, "failed_task_ids": failures}
 
 @router.get("/account-overview")
 def account_overview(
@@ -103,6 +106,8 @@ def account_overview(
     start = start_date or (end - timedelta(days=2))
     if start > end:
         raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
+    if (end - start).days >= 90:
+        raise HTTPException(status_code=400, detail="日期范围最多 90 天（含起止日期）")
     tenant_id = effective_tenant_id(current_user)
     account_query = db.query(AdAccount).filter(AdAccount.system_status.in_(["ACTIVE", "DISABLED"]))
     if tenant_id:
@@ -142,8 +147,8 @@ def account_overview(
     currency_totals = {}
     for item in items:
         item["ctr"] = item["clicks"] / item["impressions"] * 100 if item["impressions"] else 0
-        item["cpa"] = item["spend"] / item["conversions"] if item["conversions"] else 0
-        item["roas"] = item["conversion_value"] / item["spend"] if item["spend"] else 0
+        item["cpa"] = item["spend"] / item["conversions"] if item["conversions"] else None
+        item["roas"] = item["conversion_value"] / item["spend"] if item["spend"] else None
         currency = item["currency"]
         total = currency_totals.setdefault(currency, {"currency": currency, "spend": 0, "impressions": 0, "clicks": 0, "conversions": 0})
         total["spend"] += item["spend"]
@@ -156,6 +161,10 @@ def account_overview(
         item["latest_synced_at"] = quality["latest_synced_at"]
         item["sync_age_hours"] = quality["age_hours"]
         item["data_quality"] = quality
+
+    for total in currency_totals.values():
+        total["cpa"] = total["spend"] / total["conversions"] if total["conversions"] else None
+        total["ctr"] = total["clicks"] / total["impressions"] * 100 if total["impressions"] else None
 
     return {
         "start_date": str(start), "end_date": str(end),
@@ -171,9 +180,11 @@ def report_breakdown(
     parent_id: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_active_user),
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
 ):
     from services.reporting import breakdown
-    return breakdown(db, current_user, dimension, days, parent_id)
+    return breakdown(db, current_user, dimension, days, parent_id, start_date=start_date, end_date=end_date)
 
 
 @router.get("/trend")
@@ -183,6 +194,8 @@ def report_trend(
     days: int = Query(30, ge=1, le=90),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_active_user),
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
 ):
     from services.reporting import trend
-    return trend(db, current_user, dimension, days, entity_id)
+    return trend(db, current_user, dimension, days, entity_id, start_date=start_date, end_date=end_date)

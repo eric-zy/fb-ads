@@ -4,9 +4,9 @@ import type { AxiosRequestConfig } from 'axios'
 export const reportsApi = {
   accountOverview: (params?: { start_date?: string; end_date?: string }) =>
     request.get('/api/v1/reports/account-overview', { params }),
-  breakdown: (params: { dimension: string; days: number; parent_id?: string }) =>
+  breakdown: (params: { dimension: string; days?: number; start_date?: string; end_date?: string; parent_id?: string }) =>
     request.get('/api/v1/reports/breakdown', { params }),
-  trend: (params: { dimension: string; days: number; entity_id?: string }) =>
+  trend: (params: { dimension: string; days?: number; start_date?: string; end_date?: string; entity_id?: string }) =>
     request.get('/api/v1/reports/trend', { params }),
   sync: (params?: { account_id?: string; days?: number; start_date?: string; end_date?: string }) =>
     request.post('/api/v1/reports/sync', undefined, { params }),
@@ -105,7 +105,7 @@ export interface WorkbenchSummary {
     cpa: number | null
     roas: number | null
   }>
-  recent_tasks: Array<{ id: string; action_type: string; status: string; total_accounts: number; success_count: number; failed_count: number; created_by?: string; created_at?: string | null }>
+  recent_tasks: Array<{ id: string; campaign_name?: string | null; ad_names?: string[]; action_type: string; status: string; total_accounts: number; success_count: number; failed_count: number; created_by?: string; created_at?: string | null }>
   alerts: Array<{ id: string; ad_account_id?: string; alert_type: string; title: string; message: string; created_at?: string }>
 }
 

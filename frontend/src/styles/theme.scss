@@ -94,6 +94,23 @@
 }
 
 // 日期选择器统一弹层：贴近输入框、尺寸克制，避免日期面板漂浮在页面正中间。
+.date-single-popper.el-popper {
+  border: 1px solid #e7edf5;
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(31, 55, 88, 0.16);
+  max-width: calc(100vw - 24px);
+}
+.date-single-popper .el-date-picker__header,
+.date-time-popper .el-date-picker__header { margin: 12px; }
+.date-single-popper .el-date-table,
+.date-time-popper .el-date-table { font-size: 14px; }
+.date-single-popper .el-date-table td,
+.date-time-popper .el-date-table td { height: 36px; }
+.date-single-popper .el-picker-panel__icon-btn,
+.date-time-popper .el-picker-panel__icon-btn { min-width: 28px; min-height: 28px; border-radius: 4px; }
+.date-single-popper .el-picker-panel__icon-btn:hover,
+.date-time-popper .el-picker-panel__icon-btn:hover { background: #edf6fd; }
+.date-time-popper.el-popper { overflow: visible !important; }
 .date-range-popper.el-popper,
 .date-time-popper.el-popper,
 .date-range-popper.el-picker-panel,

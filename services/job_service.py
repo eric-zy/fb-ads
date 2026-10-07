@@ -720,6 +720,8 @@ class JobService:
             params = dict(params)
             params["rejected_accounts"] = rejected
         key_params = self._key_params_for_hash(action_value, params)
+        from services.job_display import snapshot_job_names
+        params = {**params, "_display_names": snapshot_job_names(template, action_value, params)}
 
         # 仅在时间为「未来」时才按定时处理，过去的时间退化为立即执行
         is_scheduled = scheduled_at is not None and scheduled_at > datetime.utcnow()

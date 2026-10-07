@@ -15,18 +15,49 @@ COUNTS = ("impressions", "clicks", "conversions", "link_clicks", "landing_page_v
 MONEY = ("spend", "conversion_value", "revenue", "profit")
 
 
-def report_rows(db, user, dimension, days, entity_id=None, parent_id=None):
-    models = {"account": (AccountInsight, "ad_account_id"), "campaign": (CampaignInsight, "campaign_id"),
-              "adset": (AdSetInsight, "ad_group_id"), "ad": (AdInsight, "ad_id")}
-    if dimension not in models:
-        raise HTTPException(status_code=400, detail="不支持的报表维度")
+def report_window(account, days, start_date=None, end_date=None):
+    if bool(start_date) != bool(end_date):
+        raise HTTPException(400, "开始日期和结束日期必须同时提供")
+    end = end_date or account_today(account)
+    start = start_date or (end - timedelta(days=days - 1))
+    if start > end or (end - start).days >= 90:
+        raise HTTPException(400, "日期范围必须为 1 至 90 天（含起止日期）")
+    return start, end
+
+
+def visible_report_accounts(db, user):
     query = db.query(AdAccount)
     tenant_id = effective_tenant_id(user)
     if tenant_id:
         query = query.filter(AdAccount.tenant_id == tenant_id)
     if not user.is_admin():
         query = query.filter(AdAccount.id.in_(accessible_account_ids(db, user) or {"__none__"}))
-    accounts = {account.id: account for account in query.all()}
+    return {account.id: account for account in query.all()}
+
+
+def quality_accounts(db, user, dimension, parent_id=None):
+    # Coverage belongs to account snapshots even when there are no child objects.
+    accounts = visible_report_accounts(db, user)
+    if not parent_id:
+        return accounts
+    if dimension in {"account", "campaign"}:
+        return {key: value for key, value in accounts.items() if key == parent_id}
+    if dimension == "adset":
+        parent = db.query(Campaign.ad_account_id).filter(Campaign.id == parent_id, Campaign.ad_account_id.in_(accounts)).first()
+    else:
+        parent = db.query(Campaign.ad_account_id).join(AdGroup, AdGroup.campaign_id == Campaign.id).filter(
+            AdGroup.id == parent_id, Campaign.ad_account_id.in_(accounts)).first()
+    return {parent[0]: accounts[parent[0]]} if parent else {}
+
+
+def report_rows(db, user, dimension, days, entity_id=None, parent_id=None, *, start_date=None, end_date=None):
+    # Validate even when there are no visible accounts/entities.
+    report_window(None, days, start_date, end_date)
+    models = {"account": (AccountInsight, "ad_account_id"), "campaign": (CampaignInsight, "campaign_id"),
+              "adset": (AdSetInsight, "ad_group_id"), "ad": (AdInsight, "ad_id")}
+    if dimension not in models:
+        raise HTTPException(status_code=400, detail="不支持的报表维度")
+    accounts = visible_report_accounts(db, user)
     if dimension == "account":
         entities = {key: (account.account_name or account.account_id, account) for key, account in accounts.items()
                     if not parent_id or key == parent_id}
@@ -52,8 +83,7 @@ def report_rows(db, user, dimension, days, entity_id=None, parent_id=None):
         return [], entities
     windows = {}
     for key, (_, account) in entities.items():
-        end = account_today(account)
-        windows[key] = (end - timedelta(days=days - 1), end)
+        windows[key] = report_window(account, days, start_date, end_date)
     model, foreign_key = models[dimension]
     rows = db.query(model).filter(
         getattr(model, foreign_key).in_(entities),
@@ -85,8 +115,8 @@ def aggregate_metrics(rows, currency):
     return result
 
 
-def breakdown(db, user, dimension, days, parent_id):
-    rows, entities = report_rows(db, user, dimension, days, parent_id=parent_id)
+def breakdown(db, user, dimension, days, parent_id, *, start_date=None, end_date=None):
+    rows, entities = report_rows(db, user, dimension, days, parent_id=parent_id, start_date=start_date, end_date=end_date)
     grouped = {}
     for row, key in rows:
         grouped.setdefault(key, []).append(row)
@@ -94,14 +124,15 @@ def breakdown(db, user, dimension, days, parent_id):
     meta_ids = {row.id: getattr(row, field) for row in db.query(model).filter(model.id.in_(entities)).all()}
     items = [{"entity_id": key, "meta_id": meta_ids.get(key), "entity_name": entities[key][0],
               **aggregate_metrics(values, entities[key][1].currency or "USD")} for key, values in grouped.items()]
-    accounts = {value[1].id: value[1] for value in entities.values()}
-    quality = [{"account_id": account.id, **report_quality(db, account, account_today(account) - timedelta(days=days - 1), account_today(account), dimension)} for account in accounts.values()]
-    return {"dimension": dimension, "days": days, "parent_id": parent_id,
+    accounts = quality_accounts(db, user, dimension, parent_id)
+    quality = [{"account_id": account.id, **report_quality(db, account, *report_window(account, days, start_date, end_date), dimension)} for account in accounts.values()]
+    return {"dimension": dimension, "days": (end_date - start_date).days + 1 if start_date else days,
+            "start_date": str(start_date) if start_date else None, "end_date": str(end_date) if end_date else None, "parent_id": parent_id,
             "items": sorted(items, key=lambda item: item["spend"] or 0, reverse=True), "data_quality": quality}
 
 
-def trend(db, user, dimension, days, entity_id):
-    rows, entities = report_rows(db, user, dimension, days, entity_id=entity_id)
+def trend(db, user, dimension, days, entity_id, *, start_date=None, end_date=None):
+    rows, entities = report_rows(db, user, dimension, days, entity_id=entity_id, start_date=start_date, end_date=end_date)
     daily, currencies = {}, {}
     for row, key in rows:
         currency = entities[key][1].currency or "USD"
@@ -118,10 +149,11 @@ def trend(db, user, dimension, days, entity_id):
         total.update({field: None for field in (*MONEY, "cpc", "cpm", "cpa", "roas", "revenue_roas", "roi")})
         total.update(currency=None, ctr=total["clicks"] / total["impressions"] * 100 if total["impressions"] else 0,
                      conversion_rate=total["conversions"] / total["clicks"] * 100 if total["clicks"] else 0)
-    accounts = {value[1].id: value[1] for value in entities.values()}
-    qualities = [{"account_id": account.id, **report_quality(db, account, account_today(account) - timedelta(days=days - 1), account_today(account), dimension)} for account in accounts.values()]
+    accounts = {value[1].id: value[1] for value in entities.values()} if entity_id else visible_report_accounts(db, user)
+    qualities = [{"account_id": account.id, **report_quality(db, account, *report_window(account, days, start_date, end_date), dimension)} for account in accounts.values()]
     synced = [row.synced_at for row, _ in rows if row.synced_at]
-    return {"dimension": dimension, "entity_id": entity_id, "days": days, "total": total,
+    return {"dimension": dimension, "entity_id": entity_id, "days": (end_date - start_date).days + 1 if start_date else days,
+            "start_date": str(start_date) if start_date else None, "end_date": str(end_date) if end_date else None, "total": total,
             "series": series, "currency_totals": currency_totals,
             "currency_note": "不同币种未进行汇率换算，currency_totals 分组展示",
             "data_quality": {"row_count": len(rows), "latest_synced_at": max(synced).isoformat() if synced else None,

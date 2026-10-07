@@ -1,12 +1,12 @@
 <template>
   <div class="reports-page">
     <div class="page-head">
-      <div><div class="eyebrow">数据分析</div><h2>投放统计</h2><p>按账户时区统计最近 {{ days }} 天，点击数据行查看下级投放对象。</p></div>
-      <div><el-button v-if="userStore.isAdmin" :disabled="!selectedAccount" :loading="syncing" @click="syncReports">同步最近 {{ days }} 天</el-button><el-button v-if="canManageRevenue" :disabled="!selectedAccount" @click="openRevenue">导入业务收入</el-button><el-button :disabled="!parentStack.length" @click="goBack">返回上级</el-button></div>
+      <div><div class="eyebrow">数据分析</div><h2>投放统计</h2><p>按账户时区统计 {{ dateRange?.[0] }} 至 {{ dateRange?.[1] }}（{{ days }} 天），点击数据行查看下级投放对象。</p></div>
+      <div><el-button v-if="userStore.isAdmin" :disabled="!selectedAccount || !dateRangeValid" :loading="syncing" @click="syncReports">同步所选日期</el-button><el-button v-if="canManageRevenue" :disabled="!selectedAccount" @click="openRevenue">导入业务收入</el-button><el-button :disabled="!parentStack.length" @click="goBack">返回上级</el-button></div>
     </div>
     <el-card shadow="never" class="filters">
       <el-select v-model="accountId" placeholder="搜索广告账户名称或 ID" filterable remote :remote-method="searchAccounts" :loading="accountsLoading" @change="resetAndLoad"><el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} · ${account.currency}`" :value="account.id" /></el-select>
-      <el-select v-model="days" @change="loadBreakdown"><el-option label="近 7 天" :value="7"/><el-option label="近 30 天" :value="30"/><el-option label="近 90 天" :value="90"/></el-select>
+      <DateRangeFields v-model="dateRange" :today="todayInAccount()" :disabled="syncing" @validity-change="dateRangeValid = $event" @change="loadBreakdown" />
     </el-card>
     <el-alert v-if="error" :title="error" type="warning" :closable="false"/>
     <el-alert title="转化合计为购买、线索和注册动作去重后的合计。ROAS 使用 Meta 回传的转化价值。业务收入、利润和 ROI 使用导入收入；缺少收入时显示 —。" type="info" :closable="false" class="metric-note"/>
@@ -42,10 +42,16 @@ import { accountApi, type AdAccountItem } from '@/api/admin'
 import { reportsApi, type ReportItem } from '@/api/reports'
 import { waitForReportSync } from '@/utils/reportSync'
 import { useUserStore } from '@/stores/userStore'
+import DateRangeFields from '@/components/DateRangeFields.vue'
+import { inclusiveDays, rangeForDays } from '@/utils/dateRange'
 
 type Level = 'account' | 'campaign' | 'adset' | 'ad'
 const userStore = useUserStore()
-const accounts = ref<AdAccountItem[]>([]), accountId = ref(''), days = ref(30)
+const accounts = ref<AdAccountItem[]>([]), accountId = ref('')
+const dateRange = ref<[string, string] | null>(rangeForDays(30))
+const dateRangeValid = ref(true)
+const days = computed(() => dateRange.value ? inclusiveDays(...dateRange.value) : 30)
+const dateParams = computed(() => dateRange.value ? { start_date: dateRange.value[0], end_date: dateRange.value[1] } : { days: 30 })
 const accountsLoading = ref(false)
 const level = ref<Level>('account'), parentId = ref(''), items = ref<ReportItem[]>([])
 const parentStack = ref<Array<{ level: Level; parentId: string }>>([])
@@ -82,10 +88,11 @@ async function searchAccounts(query = '') {
   }
 }
 async function loadBreakdown() {
+  if (!dateRangeValid.value) return
   const currentRequest = ++requestNo
   if (!accountId.value) return
   loading.value = true; error.value = ''; items.value = []
-  try { const { data } = await reportsApi.breakdown({ dimension: level.value, days: days.value, parent_id: parentId.value || accountId.value }); if (currentRequest === requestNo) {
+  try { const { data } = await reportsApi.breakdown({ dimension: level.value, ...dateParams.value, parent_id: parentId.value || accountId.value }); if (currentRequest === requestNo) {
       items.value = data.items || []
       const quality = data.data_quality || []
       qualityNote.value = quality.length ? quality.map((item: { status: string; covered_days: number; expected_days: number }) => {
@@ -98,11 +105,12 @@ async function loadBreakdown() {
 }
 let reportController: AbortController | undefined
 async function syncReports() {
+  if (!dateRangeValid.value) return
   syncing.value = true
   reportController = new AbortController()
   let syncError = ''
   try {
-    const { data } = await reportsApi.sync({ account_id: accountId.value, days: days.value })
+    const { data } = await reportsApi.sync({ account_id: accountId.value, ...dateParams.value })
     await waitForReportSync(data.task_ids || [], reportController.signal)
     ElMessage.success('报表同步完成')
   } catch (err) {
@@ -131,7 +139,7 @@ async function saveRevenue() {
   catch (err: unknown) { const detail = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail; revenueError.value = typeof detail === 'string' ? detail : '保存失败，请检查金额精度和账户权限' }
   finally { savingRevenue.value = false }
 }
-onMounted(async () => { await searchAccounts(); await loadBreakdown() })
+onMounted(async () => { await searchAccounts(); dateRange.value = rangeForDays(30, todayInAccount()); await loadBreakdown() })
 </script>
 <style scoped>
 .reports-page{padding:4px}.page-head{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px}.eyebrow{color:#829ab1;font-size:12px}.page-head h2{margin:6px 0;color:#102a43}.page-head p{margin:0;color:#627d98;font-size:13px}.filters{margin-bottom:16px}.filters .el-select{width:260px;margin-right:12px}.metric-note{margin:12px 0}small{color:#9aaabd;font-size:11px}.el-table{cursor:pointer}.revenue-form{margin-top:20px}@media(max-width:700px){.page-head{flex-direction:column;align-items:start}.filters .el-select{width:100%;margin:4px 0}}

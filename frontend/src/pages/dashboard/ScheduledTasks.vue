@@ -18,6 +18,10 @@
       </template>
 
       <el-table :data="tasks" v-loading="loading" size="small">
+        <el-table-column prop="campaign_name" label="广告系列名称" min-width="220" show-overflow-tooltip />
+        <el-table-column label="广告名称" min-width="240" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.ad_names?.join('、') || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="id" label="Job ID" width="240" show-overflow-tooltip />
         <el-table-column label="动作" width="110">
           <template #default="{ row }">
