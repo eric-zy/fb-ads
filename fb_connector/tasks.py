@@ -755,7 +755,7 @@ def fetch_insights_task(self, credential_id: str, account_id: str, days: int = 1
         token = DatabaseCredentialVault().get_access_token(credential_id)
         rows = MetaAdsService(MetaClient(access_token=token)).get_insights(
             account_id,
-            {"date_preset": f"last_{days}d", "level": "account"},
+            {"date_preset": f"last_{days}d", "time_increment": 1, "level": "account"},
         )
         payload = {
             "event": "insights.completed",

@@ -8,7 +8,7 @@ export const reportsApi = {
     request.get('/api/v1/reports/breakdown', { params }),
   trend: (params: { dimension: string; days: number; entity_id?: string }) =>
     request.get('/api/v1/reports/trend', { params }),
-  sync: (params?: { account_id?: string; days?: number }) =>
+  sync: (params?: { account_id?: string; days?: number; start_date?: string; end_date?: string }) =>
     request.post('/api/v1/reports/sync', undefined, { params }),
   taskStatus: (id: string) => request.get<{ task_id: string; state: string; result?: { status?: string; error_count?: number }; error?: string }>('/api/v1/tasks/' + id),
   importRevenue: (records: RevenueRecord[]) => request.post<{ count: number }>('/api/v1/reports/revenue-import', { records }),
@@ -25,6 +25,7 @@ export interface RevenueRecord {
 export interface ReportItem {
   entity_id: string
   entity_name: string
+  meta_id?: string
   currency: string
   spend: number | null
   impressions: number
@@ -64,12 +65,12 @@ export interface WorkbenchSummary {
       name: string
       currency: string
       system_status: string
-      freshness: { status: 'FRESH' | 'STALE' | 'NEVER'; latest_synced_at?: string | null; age_hours?: number | null }
+      freshness: { status: 'FRESH' | 'STALE' | 'NEVER' | 'INCOMPLETE' | 'FAILED' | 'PENDING' | 'SYNCING'; latest_synced_at?: string | null; age_hours?: number | null }
     }>
   }
   range: { start_date: string; end_date: string }
   freshness: {
-    status: 'FRESH' | 'STALE' | 'NEVER'
+    status: 'FRESH' | 'STALE' | 'NEVER' | 'INCOMPLETE' | 'FAILED' | 'PENDING' | 'SYNCING'
     latest_synced_at?: string | null
     age_hours?: number | null
     account_count: number

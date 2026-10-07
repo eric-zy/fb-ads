@@ -30,8 +30,11 @@ def _minor_int(value) -> Optional[int]:
     if value is None or value == "":
         return None
     try:
-        return int(float(value))
-    except (TypeError, ValueError):
+        amount = Decimal(str(value))
+        if not amount.is_finite() or amount != amount.to_integral_value():
+            raise ValueError("Meta 预算字段必须为整数")
+        return int(amount)
+    except (TypeError, ValueError, InvalidOperation):
         return None
 
 
@@ -40,15 +43,43 @@ class AdsManager:
     
     def __init__(self, db: Session):
         self.db = db
+        self.preloaded_reports = None
+        self.commit_reports = True
 
     def _account_insights(self, account: AdAccount, start_date: str, end_date: str, level: str):
         """使用账户绑定凭据访问 Meta，禁止回退到全局单例客户端。"""
+        if self.preloaded_reports is not None:
+            return self.preloaded_reports[level]
         ref = CredentialResolver(self.db).for_account(account.id)
-        return FBConnectorClient().get_insights(
+        response = FBConnectorClient().get_insights(
             account.account_id, ref.credential_id,
             level=level, since=start_date, until=end_date,
-        ).get("items", [])
+        )
+        if response.get("complete") is not True or response.get("time_increment") != 1:
+            raise ValueError("Connector 未确认完整的逐日报表，请先升级海外 Connector")
+        rows = response.get("items")
+        self._validate_daily_rows(rows, start_date, end_date, account)
+        return rows
     
+    @staticmethod
+    def _validate_daily_rows(rows, start_date, end_date, account):
+        if not isinstance(rows, list):
+            raise ValueError("报表 items 必须为数组")
+        start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+        seen = set()
+        for row in rows:
+            day = date.fromisoformat(str(row.get("date_start", "")))
+            if row.get("date_stop") != str(day) or not start <= day <= end:
+                raise ValueError("报表必须按天返回且位于请求窗口内，拒绝写入区间聚合数据")
+            if row.get("account_id") and str(row["account_id"]).removeprefix("act_") != str(account.account_id).removeprefix("act_"):
+                raise ValueError("报表账户与请求账户不匹配")
+            if row.get("account_currency") and row["account_currency"] != account.currency:
+                raise ValueError("Meta 报表币种与本地账户币种不一致，请同步账户信息")
+            key = (day, row.get("campaign_id"), row.get("adset_id"), row.get("ad_id"))
+            if key in seen:
+                raise ValueError("报表返回重复对象日期，拒绝覆盖")
+            seen.add(key)
+
     def sync_campaigns(self, account_id: str) -> Tuple[int, int]:
         """同步系列数据
 
@@ -165,7 +196,8 @@ class AdsManager:
             ).all()
             
             paused_count = 0
-            yesterday = date.today() - timedelta(days=1)
+            account = resolve_ad_account(self.db, account_id)
+            yesterday = account_today(account) - timedelta(days=1)
             
             for campaign in campaigns:
                 perf = self.get_campaign_performance(
@@ -183,11 +215,14 @@ class AdsManager:
                         account = resolve_ad_account(self.db, campaign.ad_account_id)
                         if account:
                             ref = CredentialResolver(self.db).for_account(account.id)
-                            FBConnectorClient().pause_campaign(
+                            response = FBConnectorClient().pause_campaign(
                                 campaign.campaign_id,
                                 ref.credential_id,
                                 idempotency_key=f"pause:{campaign.campaign_id}:{yesterday}",
                             )
+                            from services.meta_updates import confirmed_fields, project_status
+                            observed = confirmed_fields(response, {"status": "PAUSED"})
+                            project_status(self.db, account.id, "CAMPAIGN", campaign.campaign_id, "PAUSED", observed.get("effective_status"))
                             campaign.status = CampaignStatus.PAUSED
                             paused_count += 1
             
@@ -261,7 +296,7 @@ class AdsManager:
         account = self.db.query(AdAccount).filter(AdAccount.id == account.id).with_for_update().one()
         count = 0
         for row in insights:
-            insight_date = self._parse_date(row.get('date_start') or start_date)
+            insight_date = date.fromisoformat(row["date_start"])
             if not insight_date:
                 continue
 
@@ -282,7 +317,7 @@ class AdsManager:
                 target = existing
             else:
                 target = AccountInsight(
-                    id=f"ins_{account.id}_{insight_date}",
+                    id="ins_" + hashlib.sha256(f"{account.id}:{insight_date}".encode()).hexdigest()[:32],
                     ad_account_id=account.id,
                     date=insight_date,
                 )
@@ -308,7 +343,8 @@ class AdsManager:
             target.extra_data = row
             count += 1
 
-        self.db.commit()
+        if self.commit_reports:
+            self.db.commit()
         logger.info(
             f"[AdsManager] 账户 {account.account_id} 洞察落库 {count} 条 "
             f"({start_date} ~ {end_date})"
@@ -325,16 +361,17 @@ class AdsManager:
         for dimension, level in levels:
             rows = self._account_insights(account, start_date, end_date, level)
             for row in rows:
-                insight_date = self._parse_date(row.get("date_start") or start_date)
+                insight_date = date.fromisoformat(row["date_start"])
                 external_id = row.get(f"{dimension}_id")
-                if not insight_date or not external_id:
-                    continue
+                if not external_id:
+                    raise ValueError(f"{dimension} 报表缺少 Meta ID")
                 model, parent = (CampaignInsight, "campaign_id") if dimension == "campaign" else (AdSetInsight, "ad_group_id") if dimension == "adset" else (AdInsight, "ad_id")
                 entity = None
                 if dimension == "campaign": entity = self.db.query(Campaign).filter(Campaign.campaign_id == external_id, Campaign.ad_account_id == account.id).first()
-                elif dimension == "adset": entity = self.db.query(AdGroup).filter(AdGroup.ad_group_id == external_id).first()
-                else: entity = self.db.query(Ad).filter(Ad.ad_id == external_id).first()
-                if not entity: continue
+                elif dimension == "adset": entity = self.db.query(AdGroup).join(Campaign).filter(AdGroup.ad_group_id == external_id, Campaign.ad_account_id == account.id).first()
+                else: entity = self.db.query(Ad).join(AdGroup).join(Campaign).filter(Ad.ad_id == external_id, Campaign.ad_account_id == account.id).first()
+                if not entity:
+                    raise ValueError(f"{dimension} 报表对象 {external_id} 缺少账户内映射，请同步对象后重试")
                 filter_column = getattr(model, parent)
                 existing = self.db.query(model).filter(filter_column == entity.id, model.date == insight_date).first()
                 # Keep insight IDs within the VARCHAR(50) schema limit.  Internal
@@ -346,7 +383,8 @@ class AdsManager:
                 target = existing or model(id=f"ins_{insight_key}", **{parent: entity.id}, date=insight_date)
                 if not existing: self.db.add(target)
                 action_metrics = self._parse_action_metrics(row.get("actions"), row.get("action_values")); target.spend = to_minor(row.get("spend", 0) or 0, account.currency); update_financial_metrics(target); target.impressions = int(row.get("impressions", 0) or 0); target.clicks = int(row.get("clicks", 0) or 0); target.conversions = action_metrics["conversions"]; target.link_clicks = action_metrics["link_clicks"]; target.landing_page_views = action_metrics["landing_page_views"]; target.leads = action_metrics["leads"]; target.purchases = action_metrics["purchases"]; target.complete_registrations = action_metrics["complete_registrations"]; target.conversion_value = to_minor(action_metrics["conversion_value"], account.currency); target.actions = row.get("actions") or []; target.action_values = row.get("action_values") or []; target.synced_at = datetime.utcnow(); target.ctr = (target.clicks / target.impressions) if target.impressions else 0.0; target.cpc = to_major(target.spend, account.currency) / target.clicks if target.clicks else 0.0; target.cpm = to_major(target.spend, account.currency) / target.impressions * 1000 if target.impressions else 0.0; result[dimension] += 1
-        self.db.commit()
+        if self.commit_reports:
+            self.db.commit()
         return result
     @staticmethod
     def _parse_date(value) -> Optional[date]:
@@ -362,61 +400,37 @@ class AdsManager:
 
     @staticmethod
     def _parse_conversions(actions) -> int:
-        """从 Meta 的 actions 数组里取转化数（取 purchase / lead 等常见类型之和）"""
-        if not actions:
-            return 0
-        total = 0
-        for item in actions:
-            if not isinstance(item, dict):
-                continue
-            action_type = item.get('action_type') or ''
-            if action_type in (
-                'purchase', 'omni_purchase', 'lead', 'omni_lead',
-                'complete_registration', 'offsite_conversion',
-            ):
-                try:
-                    total += int(float(item.get('value', 0) or 0))
-                except (TypeError, ValueError):
-                    continue
-        return total
+        return AdsManager._parse_action_metrics(actions)["conversions"]
 
     @staticmethod
     def _parse_action_metrics(actions, action_values=None) -> Dict[str, Any]:
-        """按 Meta action_type 拆分动作；conversion 保持兼容的汇总口径。"""
-        result = {"link_clicks": 0, "landing_page_views": 0, "leads": 0,
-                  "purchases": 0, "complete_registrations": 0,
-                  "conversions": 0, "conversion_value": Decimal(0)}
-        conversion_types = {"purchase", "omni_purchase", "lead", "omni_lead",
-                            "complete_registration", "offsite_conversion"}
-        for item in actions or []:
-            if not isinstance(item, dict):
-                continue
-            action_type = str(item.get("action_type") or "")
-            try:
-                value = float(item.get("value", 0) or 0)
-            except (TypeError, ValueError):
-                continue
-            count = int(value)
-            if action_type in {"link_click", "inline_link_click", "outbound_click"}:
-                result["link_clicks"] += count
-            if action_type in {"landing_page_view", "landing_page_views"}:
-                result["landing_page_views"] += count
-            if action_type in {"lead", "omni_lead"}:
-                result["leads"] += count
-            if action_type in {"purchase", "omni_purchase"}:
-                result["purchases"] += count
-            if action_type == "complete_registration":
-                result["complete_registrations"] += count
-            if action_type in conversion_types:
-                result["conversions"] += count
-        for item in action_values or []:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("action_type") or "") in {"purchase", "omni_purchase", "offsite_conversion"}:
+        def parse(items):
+            values = {}
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
                 try:
                     value = Decimal(str(item.get("value", 0) or 0))
-                    if value.is_finite():
-                        result["conversion_value"] += value
-                except (TypeError, ValueError, InvalidOperation):
+                    if value.is_finite() and value >= 0:
+                        values[str(item.get("action_type") or "")] = value
+                except (ValueError, TypeError, InvalidOperation):
                     pass
+            return values
+
+        def first(values, *aliases):
+            return next((values[key] for key in aliases if key in values), Decimal(0))
+
+        counts = parse(actions)
+        values = parse(action_values)
+        result = {
+            "link_clicks": int(first(counts, "link_click", "inline_link_click", "outbound_click")),
+            "landing_page_views": int(first(counts, "landing_page_view", "landing_page_views")),
+            "leads": int(first(counts, "omni_lead", "lead")),
+            "purchases": int(first(counts, "omni_purchase", "purchase")),
+            "complete_registrations": int(first(counts, "complete_registration")),
+            "conversion_value": first(values, "omni_purchase", "purchase", "offsite_conversion"),
+        }
+        result["conversions"] = result["leads"] + result["purchases"] + result["complete_registrations"]
+        if not any(key in counts for key in ("omni_lead", "lead", "omni_purchase", "purchase", "complete_registration")):
+            result["conversions"] = int(first(counts, "offsite_conversion"))
         return result

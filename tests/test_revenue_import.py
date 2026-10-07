@@ -36,7 +36,7 @@ def test_daily_revenue_replaces_replay_and_adds_separate_sources(db):
     assert insight.revenue == 20000
     assert db.query(RevenueDailyTotal).count() == 2
     assert db.query(AuditLog).filter(AuditLog.action == "IMPORT_REVENUE").count() == 4
-    _upsert_account_insights(db, account, [{"date_start": str(day), "spend": "80.00"}])
+    _upsert_account_insights(db, account, [{"date_start": str(day), "date_stop": str(day), "spend": "80.00"}])
     assert insight.revenue == 20000
     assert insight.profit == 12000
     assert insight.roi == 1.5
@@ -85,6 +85,6 @@ def test_income_before_meta_sync_keeps_cost_and_freshness_unknown(db):
                     is_active=True, conditions=[{"metric": "spend", "operator": "lt", "value": 100}])
     metrics = load_account_metrics(db, account)
     assert RiskRuleEngine(db).evaluate(rule, account.id, metrics=metrics)["reason"] == "DATA_UNAVAILABLE"
-    _upsert_account_insights(db, account, [{"date_start": str(account_today(account)), "spend": "10"}])
+    _upsert_account_insights(db, account, [{"date_start": str(account_today(account)), "date_stop": str(account_today(account)), "spend": "10"}])
     assert row.profit == 4000
     assert row.roi == 4

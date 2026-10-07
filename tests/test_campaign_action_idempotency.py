@@ -43,28 +43,19 @@ def action_context(db, monkeypatch):
 def test_batch_campaign_delete_long_key_and_replay(db, monkeypatch, action_context):
     user, instances, leases = action_context
     dispatched = []
-
-    def dispatch(job_id):
-        dispatched.append(job_id)
-        return SimpleNamespace(id=f"task-{len(dispatched)}")
-
-    monkeypatch.setattr("services.job_service.execute_campaign_job", SimpleNamespace(delay=dispatch))
-    request = CampaignActionRequest(action="DELETE", object_type="CAMPAIGN", ids=CAMPAIGN_IDS, operation_leases=leases, idempotency_key=REQUEST_KEY)
-    assert len(f"{REQUEST_KEY}:{instances[0].template_id}") == 133
+    def dispatch(*, args, task_id):
+        dispatched.append(args)
+        return SimpleNamespace(id=task_id)
+    monkeypatch.setattr("api.campaigns.update_delivery_object_task", SimpleNamespace(apply_async=dispatch))
+    request = CampaignActionRequest(action="DELETE", object_type="CAMPAIGN", ids=CAMPAIGN_IDS,
+                                    operation_leases=leases, idempotency_key=REQUEST_KEY)
     first = campaign_action(request, db, user)
     repeated = campaign_action(request, db, user)
-    assert first["job_id"] == repeated["job_id"]
-    assert dispatched == [first["job_id"]]
-    assert db.query(CampaignJobItem).filter_by(job_id=first["job_id"]).count() == 2
-    job = db.query(CampaignJob).filter_by(id=first["job_id"]).one()
-    assert job.idempotency_key == job.params["_idempotency_key"]
-    assert len(job.idempotency_key) <= 128
-
-    # Different request suffixes must not collapse like a truncated key would.
-    request.idempotency_key = REQUEST_KEY + "-new-click"
-    next_result = campaign_action(request, db, user)
-    assert next_result["job_id"] != first["job_id"]
+    assert first["action_ids"] == repeated["action_ids"]
     assert len(dispatched) == 2
+    assert {args[1] for args in dispatched} == set(CAMPAIGN_IDS)
+    assert db.query(CampaignJob).count() == 0
+    assert all(len(row.idempotency_key) <= 128 for row in db.query(DeliveryAction))
 
 
 def test_batch_adset_delete_long_key_and_replay(db, monkeypatch, action_context):
@@ -74,11 +65,11 @@ def test_batch_adset_delete_long_key_and_replay(db, monkeypatch, action_context)
     db.commit()
     dispatched = []
 
-    def dispatch(*args):
+    def dispatch(*, args, task_id):
         dispatched.append(args)
-        return SimpleNamespace(id=f"object-task-{len(dispatched)}")
+        return SimpleNamespace(id=task_id)
 
-    monkeypatch.setattr("api.campaigns.update_delivery_object_task", SimpleNamespace(delay=dispatch))
+    monkeypatch.setattr("api.campaigns.update_delivery_object_task", SimpleNamespace(apply_async=dispatch))
     request = CampaignActionRequest(action="DELETE", object_type="ADSET", ids=[row.id for row in adsets], operation_leases=leases, idempotency_key=REQUEST_KEY)
     first = campaign_action(request, db, user)
     repeated = campaign_action(request, db, user)

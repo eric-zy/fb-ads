@@ -15,6 +15,7 @@ from core.enums import ActionType
 from core.idempotency import bounded_idempotency_key
 from models import AdAccount, AdGroup, Campaign, AdSetInstance, AdInstance, CampaignInstance, CampaignJob, CampaignJobItem, AsyncTaskRecord, DeliveryAction, SyncAlert, User
 from services.job_service import JobDispatchError, JobService
+from services.delivery_actions import OBJECT_MODELS, META_ID_FIELDS, object_account_id, validate_action, deletion_state, finish_action_task_record
 from services.account_access import accessible_account_ids
 from services.account_operation_lease import AccountOperationLeaseService
 from services.business_access import account_ids_for_action, require_accounts, tenant_required
@@ -252,6 +253,11 @@ def get_async_task_status(task_id: str, db: Session = Depends(get_db), current_u
     record = _scope(db.query(AsyncTaskRecord), AsyncTaskRecord, current_user).filter(AsyncTaskRecord.task_id == task_id).first()
     if not record or (not current_user.is_admin() and record.created_by != current_user.id):
         raise HTTPException(status_code=404, detail="任务不存在或无权访问")
+    if record.task_type == "REPORT_SYNC" and record.status in {"SUCCESS", "FAILED"}:
+        value = record.result_summary or {}
+        return {"task_id": task_id, "state": "SUCCESS" if record.status == "SUCCESS" else "FAILURE",
+                "result": {"status": value.get("status"), "error_count": 0 if record.status == "SUCCESS" else 1},
+                "error": value.get("error")}
     result = celery_app.AsyncResult(task_id)
     payload = {"task_id": task_id, "state": result.state}
     if result.successful():
@@ -267,11 +273,13 @@ def get_async_task_status(task_id: str, db: Session = Depends(get_db), current_u
             payload["result"]["ad_group_id"] = str(value["ad_group_id"])
         if value.get("updated_at"):
             payload["result"]["updated_at"] = value["updated_at"]
-        if str(value.get("status", "")).lower() == "failed":
+        if str(value.get("status", "")).lower() in {"failed", "unknown"}:
             payload["error"] = str(value.get("error") or "Meta 同步任务失败")
     elif result.failed():
         payload["error"] = str(result.result)
     record.status = result.state
+    if payload.get("result", {}).get("status") in {"failed", "unknown"}:
+        record.status = payload["result"]["status"].upper()
     if payload.get("result"):
         record.result_summary = payload["result"]
     if result.ready():
@@ -324,75 +332,56 @@ def retry_delivery_action(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_active_user),
 ):
-    """仅重试失败的 AdSet/Ad 状态操作，创建新的动作记录避免覆盖原始失败证据。"""
+    """Retry only failures; uncertain deletions may only be reconciled."""
     visible = _visible_accounts(db, current_user)
-    row = _scope(db.query(DeliveryAction), DeliveryAction, current_user).filter(DeliveryAction.id == action_id).first()
+    row = _scope(db.query(DeliveryAction), DeliveryAction, current_user).filter_by(id=action_id).first()
     if not row or not _can_see_account(visible, row.account_id):
-        raise HTTPException(status_code=404, detail="操作记录不存在或无权访问")
-    if row.status != "FAILED":
-        raise HTTPException(status_code=409, detail="只有失败的操作可以重试")
+        raise HTTPException(404, "操作记录不存在或无权访问")
+    if row.requested_by == "risk-engine":
+        raise HTTPException(409, "风控操作请通过风控执行记录重试")
+    if row.status not in {"FAILED", "UNKNOWN"}:
+        raise HTTPException(409, "只有失败或待确认的操作可以处理")
+    if row.status == "UNKNOWN" and row.action != "DELETE":
+        raise HTTPException(409, "该操作不支持删除结果核对")
     _require_action_permission(current_user, row.action)
     require_accounts(db, current_user, [row.account_id], write=True)
-    _require_operation_leases(
-        db,
-        current_user,
-        [row.account_id],
-        {row.account_id: req.lease_token},
-        "CAMPAIGN_RETRY",
-    )
+    _require_operation_leases(db, current_user, [row.account_id], {row.account_id: req.lease_token}, "CAMPAIGN_RETRY")
     if not current_user.is_admin() and row.requested_by != current_user.id:
-        raise HTTPException(status_code=404, detail="操作记录不存在或无权操作")
-    if row.object_type == "ADSET":
-        target = _scope(db.query(AdSetInstance), AdSetInstance, current_user).filter(AdSetInstance.id == row.object_id).first()
-        meta_id = target.meta_adset_id if target else None
-    elif row.object_type == "AD":
-        target = _scope(db.query(AdInstance), AdInstance, current_user).filter(AdInstance.id == row.object_id).first()
-        meta_id = target.meta_ad_id if target else None
+        raise HTTPException(404, "操作记录不存在或无权操作")
+    model = OBJECT_MODELS.get(row.object_type)
+    target = _scope(db.query(model), model, current_user).filter_by(id=row.object_id).first() if model else None
+    if not target or not getattr(target, META_ID_FIELDS[row.object_type]):
+        raise HTTPException(409, "本地对象或 Meta ID 不存在，无法处理")
+    if object_account_id(target, row.object_type) != row.account_id:
+        raise HTTPException(409, "操作记录与对象账户不一致")
+    if row.status == "UNKNOWN":
+        retry_row = row
+        retry_row.request_payload = {**(row.request_payload or {}), "delete_dispatched": True}
     else:
-        raise HTTPException(status_code=400, detail="Campaign 操作请从投放任务中重试")
-    if not target or not meta_id:
-        raise HTTPException(status_code=409, detail="本地对象或 Meta ID 不存在，无法重试")
-    target_account_id = (
-        target.campaign_instance.ad_account_id
-        if row.object_type == "ADSET"
-        else target.adset_instance.campaign_instance.ad_account_id
-    )
-    if target_account_id != row.account_id:
-        raise HTTPException(status_code=409, detail="操作记录与对象账户不一致，拒绝重试")
-    desired_status = (
-        "DELETED" if row.action == "DELETE" else
-        "ARCHIVED" if row.action == "ARCHIVE" else
-        "ACTIVE" if row.action == "ENABLE" else "PAUSED"
-    )
-    retry_row = DeliveryAction(
-        id=uuid.uuid4().hex,
-        object_type=row.object_type,
-        object_id=row.object_id,
-        account_id=row.account_id,
-        action=row.action,
-        requested_by=current_user.id,
-        before_status=getattr(target, "status", None),
-        desired_status=desired_status,
-        idempotency_key=f"retry:{row.id}:{uuid.uuid4().hex}",
-        request_payload={"retry_of": row.id},
-    )
-    db.add(retry_row)
+        try:
+            validate_action(target, row.action)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        pending = db.query(DeliveryAction).filter(
+            DeliveryAction.object_type == row.object_type, DeliveryAction.object_id == row.object_id,
+            DeliveryAction.status.in_(["REQUESTED", "RUNNING", "UNKNOWN"]),
+        ).first()
+        if pending:
+            raise HTTPException(409, "对象有未完成或待确认操作")
+        retry_row = DeliveryAction(id=uuid.uuid4().hex, object_type=row.object_type, object_id=row.object_id,
+                                   account_id=row.account_id, action=row.action, requested_by=current_user.id,
+                                   before_status=target.status, desired_status=row.desired_status,
+                                   idempotency_key=f"retry:{row.id}:{uuid.uuid4().hex}",
+                                   request_payload={**(row.request_payload or {}), "retry_of": row.id,
+                                                    "delete_dispatched": False, "deletion_version": 2})
+        db.add(retry_row)
     db.commit()
-    task = update_delivery_object_task.delay(row.object_type, row.object_id, row.account_id, row.action, retry_row.id)
-    retry_row.task_id = task.id
-    retry_row.status = "RUNNING"
-    db.add(AsyncTaskRecord(task_id=task.id, task_type="META_STATUS_UPDATE", object_type=row.object_type, object_ids=[row.object_id], created_by=current_user.id))
-    db.commit()
-    record_audit(
-        db,
-        action="RETRY_DELIVERY_ACTION",
-        resource_type="delivery_action",
-        resource_id=retry_row.id,
-        user_id=current_user.id,
-        request_data={"retry_of": row.id, "action": row.action, "object_id": row.object_id},
-        response_data={"status": "QUEUED", "task_id": task.id},
-    )
-    return {"status": "QUEUED", "action_id": retry_row.id, "task_id": task.id, "retry_of": row.id}
+    task_id = _dispatch_delivery_action(db, retry_row)
+    record_audit(db, action="RECONCILE_DELIVERY_ACTION" if row.id == retry_row.id else "RETRY_DELIVERY_ACTION",
+                 resource_type="delivery_action", resource_id=retry_row.id, user_id=current_user.id,
+                 request_data={"source_action_id": row.id, "object_id": row.object_id},
+                 response_data={"status": retry_row.status, "task_id": task_id})
+    return {"status": retry_row.status, "action_id": retry_row.id, "task_id": task_id, "retry_of": row.id}
 
 @router.get("/campaigns")
 def list_campaigns(
@@ -413,7 +402,7 @@ def list_campaigns(
     if status:
         query = query.filter(CampaignInstance.status == status.upper())
     else:
-        # 删除是可恢复的业务状态，默认从发布列表隐藏；审计/恢复场景通过 status=DELETED 查询。
+        # 删除保留历史记录；默认隐藏，可通过 status=DELETED 查询。
         query = query.filter(CampaignInstance.status != "DELETED")
     if keyword and keyword.strip():
         value = f"%{keyword.strip()}%"
@@ -440,10 +429,13 @@ def list_campaigns(
         payload = row.to_dict()
         payload["grouped"] = len(group) > 1
         payload["grouped_ids"] = [item.id for item in group]
+        payload["deletion_state"] = "REMOTE_DELETED" if all(deletion_state(item) == "REMOTE_DELETED" for item in group) else "LOCAL_REMOVED" if all(item.status == "DELETED" for item in group) else None
         payload["account_count"] = len(group)
         payload["grouped_accounts"] = [
             {
                 "id": item.ad_account_id,
+                "instance_id": item.id,
+                "deletion_state": deletion_state(item),
                 "name": item.ad_account.account_name if item.ad_account else item.ad_account_id,
                 "meta_campaign_id": item.meta_campaign_id,
                 "status": item.status,
@@ -611,7 +603,9 @@ def campaign_detail(campaign_id: str, db: Session = Depends(get_db), current_use
         .limit(30)
         .all()
     )
-    recent_actions = []
+    recent_actions = [action.to_dict() for action in db.query(DeliveryAction).filter_by(
+        object_type="CAMPAIGN", object_id=campaign.id
+    ).order_by(DeliveryAction.created_at.desc()).limit(30).all()]
     for job, item in recent_jobs:
         connector_status = (item.response_payload or {}).get("connector_status") or {}
         recent_actions.append({
@@ -707,6 +701,91 @@ def list_ads(
         "page_size": page_size,
     }
 
+def _dispatch_delivery_action(db, row):
+    # Persist the Celery ID before enqueue; the worker may finish immediately.
+    task_id = uuid.uuid4().hex
+    row.task_id = task_id
+    row.status = "REQUESTED"
+    row.finished_at = None
+    db.add(AsyncTaskRecord(task_id=task_id, task_type="META_DELETE" if row.action == "DELETE" else "META_STATUS_UPDATE",
+                           object_type=row.object_type, object_ids=[row.object_id], created_by=row.requested_by))
+    db.commit()
+    try:
+        update_delivery_object_task.apply_async(
+            args=[row.object_type, row.object_id, row.account_id, row.action, row.id], task_id=task_id
+        )
+    except Exception as exc:
+        # A failed reconciliation enqueue cannot prove the original DELETE failed.
+        row.status = "UNKNOWN" if row.action == "DELETE" and (row.request_payload or {}).get("delete_dispatched") else "FAILED"
+        row.error_message = f"任务入队失败：{exc}"[:1000]
+        row.finished_at = datetime.utcnow()
+        finish_action_task_record(db, row)
+        db.commit()
+    return task_id
+
+
+def _queue_object_actions(req, db, user, visible):
+    object_type = (req.object_type or "CAMPAIGN").upper()
+    model = OBJECT_MODELS.get(object_type)
+    if not model:
+        raise HTTPException(400, "不支持的投放对象类型")
+    ids = list(dict.fromkeys(req.ids))
+    if not ids or len(ids) > 500:
+        raise HTTPException(400, "请选择 1 至 500 个投放对象")
+    objects = _scope(db.query(model), model, user).filter(model.id.in_(ids)).all()
+    if len(objects) != len(ids) or any(not _can_see_account(visible, object_account_id(obj, object_type)) for obj in objects):
+        raise HTTPException(404, "部分投放对象不存在或无权访问，未提交操作")
+    account_ids = sorted({object_account_id(obj, object_type) for obj in objects})
+    require_accounts(db, user, account_ids, write=True)
+    _require_operation_leases(db, user, account_ids, req.operation_leases, "CAMPAIGN_ACTION")
+    action = req.action.upper()
+    request_key = req.idempotency_key or uuid.uuid4().hex
+    rows = []
+    for obj in objects:
+        key = bounded_idempotency_key(f"{user.tenant_id}:{user.id}:{request_key}:{object_type}:{obj.id}")
+        existing = db.query(DeliveryAction).filter_by(idempotency_key=key, requested_by=user.id).first()
+        if existing:
+            if existing.action != action:
+                db.rollback()
+                raise HTTPException(409, "幂等键已用于其他操作")
+            rows.append(existing)
+            continue
+        try:
+            validate_action(obj, action)
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(409, str(exc)) from exc
+        if not getattr(obj, META_ID_FIELDS[object_type]):
+            db.rollback()
+            raise HTTPException(409, "对象缺少 Meta ID，未提交操作")
+        pending = db.query(DeliveryAction).filter(
+            DeliveryAction.object_type == object_type, DeliveryAction.object_id == obj.id,
+            DeliveryAction.status.in_(["REQUESTED", "RUNNING", "UNKNOWN"]),
+        ).first()
+        if pending:
+            db.rollback()
+            raise HTTPException(409, "对象有未完成或待确认操作，请先查看任务结果")
+        row = DeliveryAction(id=uuid.uuid4().hex, object_type=object_type, object_id=obj.id,
+                             account_id=object_account_id(obj, object_type), action=action, requested_by=user.id,
+                             before_status=obj.status, desired_status="DELETED" if action == "DELETE" else "ARCHIVED" if action == "ARCHIVE" else "ACTIVE" if action == "ENABLE" else "PAUSED",
+                             idempotency_key=key,
+                             request_payload={"deletion_version": 2, "object_name": obj.name,
+                                              "meta_object_id": getattr(obj, META_ID_FIELDS[object_type]),
+                                              "account_name": db.query(AdAccount).filter_by(id=object_account_id(obj, object_type)).one().account_name})
+        db.add(row)
+        rows.append(row)
+    db.commit()
+    for row in rows:
+        if not row.task_id:
+            _dispatch_delivery_action(db, row)
+    record_audit(db, action=f"{action}_DELIVERY_OBJECTS", resource_type="delivery_action",
+                 resource_id=rows[0].id, user_id=user.id,
+                 request_data={"object_type": object_type, "object_ids": ids, "account_ids": account_ids},
+                 response_data={"action_ids": [row.id for row in rows], "status": "QUEUED"})
+    return {"status": "QUEUED", "task_ids": [row.task_id for row in rows], "action_ids": [row.id for row in rows],
+            "object_count": len(rows), "enqueue_failed": sum(row.status == "FAILED" for row in rows)}
+
+
 @router.post("/campaigns/actions")
 def campaign_action(
     req: CampaignActionRequest,
@@ -769,92 +848,16 @@ def campaign_action(
     if not action_type:
         raise HTTPException(status_code=400, detail="不支持的操作")
 
+    if action != "UPDATE_BUDGET":
+        return _queue_object_actions(req, db, current_user, visible)
+    if (req.object_type or "CAMPAIGN").upper() != "CAMPAIGN":
+        raise HTTPException(400, "预算操作仅支持广告系列")
     instances = _scope(db.query(CampaignInstance), CampaignInstance, current_user).filter(CampaignInstance.id.in_(req.ids)).all()
-    instances = [row for row in instances if _can_see_account(visible, row.ad_account_id)]
+    if len(instances) != len(set(req.ids)) or not instances:
+        raise HTTPException(404, "部分广告系列不存在或无权访问")
     instance_account_ids = sorted({row.ad_account_id for row in instances})
     require_accounts(db, current_user, instance_account_ids, write=True)
-    if instances:
-        _require_operation_leases(
-            db,
-            current_user,
-            instance_account_ids,
-            req.operation_leases,
-            "CAMPAIGN_ACTION",
-        )
-    if action == "RESTORE" and instances:
-        invalid = [row.id for row in instances if row.status not in {"ARCHIVED", "DELETED"}]
-        if invalid:
-            raise HTTPException(status_code=409, detail="只有已归档或已移除的广告系列可以恢复")
-    if not instances and action in ("PAUSE", "ENABLE", "ARCHIVE", "DELETE", "RESTORE"):
-        adsets = _scope(db.query(AdSetInstance), AdSetInstance, current_user).filter(AdSetInstance.id.in_(req.ids)).all()
-        ads = _scope(db.query(AdInstance), AdInstance, current_user).filter(AdInstance.id.in_(req.ids)).all()
-        targets = [{"type": "ADSET", "id": row.id, "account_id": row.campaign_instance.ad_account_id} for row in adsets if _can_see_account(visible, row.campaign_instance.ad_account_id)]
-        targets += [{"type": "AD", "id": row.id, "account_id": row.adset_instance.campaign_instance.ad_account_id} for row in ads if _can_see_account(visible, row.adset_instance.campaign_instance.ad_account_id)]
-        if targets:
-            target_account_ids = sorted({target["account_id"] for target in targets})
-            require_accounts(db, current_user, target_account_ids, write=True)
-            _require_operation_leases(
-                db,
-                current_user,
-                target_account_ids,
-                req.operation_leases,
-                "CAMPAIGN_ACTION",
-            )
-            actions = []
-            request_key = req.idempotency_key or uuid.uuid4().hex
-            for target in targets:
-                row = db.query(AdSetInstance).filter(AdSetInstance.id == target["id"]).first() if target["type"] == "ADSET" else db.query(AdInstance).filter(AdInstance.id == target["id"]).first()
-                if action == "RESTORE" and row.status not in {"ARCHIVED", "DELETED"}:
-                    raise HTTPException(status_code=409, detail="只有已归档或已移除的对象可以恢复")
-                action_key = bounded_idempotency_key(f"{request_key}:{target['type']}:{target['id']}")
-                existing = db.query(DeliveryAction).filter(
-                    DeliveryAction.idempotency_key == action_key,
-                    DeliveryAction.requested_by == current_user.id,
-                    DeliveryAction.tenant_id == tenant_required(current_user),
-                ).first()
-                if existing:
-                    actions.append(existing)
-                    continue
-                action_row = DeliveryAction(
-                    id=uuid.uuid4().hex,
-                    object_type=target["type"],
-                    object_id=target["id"],
-                    account_id=target["account_id"],
-                    action=action,
-                    requested_by=current_user.id,
-                    before_status=getattr(row, "status", None),
-                    desired_status=(
-                        "DELETED" if action == "DELETE" else
-                        "ARCHIVED" if action == "ARCHIVE" else
-                        "PAUSED" if action in {"PAUSE", "RESTORE"} else "ACTIVE"
-                    ),
-                    idempotency_key=action_key,
-                )
-                db.add(action_row)
-                actions.append(action_row)
-            db.commit()
-            tasks = []
-            for target, action_row in zip(targets, actions):
-                if action_row.task_id:
-                    continue
-                tasks.append((target, action_row, update_delivery_object_task.delay(target["type"], target["id"], target["account_id"], action, action_row.id)))
-            for target, action_row, task in tasks:
-                action_row.task_id = task.id
-                action_row.status = "RUNNING"
-                db.add(AsyncTaskRecord(task_id=task.id, task_type="META_STATUS_UPDATE", object_type=target["type"], object_ids=[target["id"]], created_by=current_user.id))
-            db.commit()
-            record_audit(
-                db,
-                action=f"{action}_DELIVERY_OBJECTS",
-                resource_type="delivery_action",
-                resource_id=actions[0].id if actions else None,
-                user_id=current_user.id,
-                request_data={"action": action, "object_ids": [row.id for row in actions]},
-                response_data={"status": "QUEUED", "task_ids": [task.id for _, _, task in tasks]},
-            )
-            return {"status": "QUEUED", "task_ids": [task.id for _, _, task in tasks], "action_ids": [row.id for row in actions], "object_count": len(actions)}
-    if not instances:
-        raise HTTPException(status_code=404, detail="未找到可操作的广告系列")
+    _require_operation_leases(db, current_user, instance_account_ids, req.operation_leases, "CAMPAIGN_ACTION")
     grouped = defaultdict(list)
     for instance in instances:
         grouped[instance.template_id].append(instance.ad_account_id)
@@ -862,12 +865,12 @@ def campaign_action(
     jobs = []
     try:
         for template_id, account_ids in grouped.items():
-            params = {"budget_override": req.budget} if action_type == ActionType.UPDATE_BUDGET else {}
+            params = {"budget_override": req.budget, "selected_instance_ids": [row.id for row in instances if row.template_id == template_id]}
             if req.idempotency_key:
                 params["_idempotency_key"] = f"{req.idempotency_key}:{template_id}"
             jobs.append(JobService(db).create_job(
                 template_id=template_id,
-                ad_account_ids=account_ids,
+                ad_account_ids=sorted(set(account_ids)),
                 action_type=action_type,
                 params=params,
                 created_by=current_user.id,

@@ -65,6 +65,21 @@ class ConnectorDeliveryTask(ConnectorBase):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
+class ConnectorObjectDeletion(ConnectorBase):
+    """Durable deletion receipts; retries query before any further write."""
+    __tablename__ = "connector_object_deletions"
+    idempotency_key = Column(String(128), primary_key=True)
+    object_type = Column(String(20), nullable=False)
+    object_id = Column(String(128), nullable=False)
+    credential_id = Column(String(50), nullable=False)
+    account_id = Column(String(64), nullable=False)
+    status = Column(String(32), nullable=False, default="SUBMITTING")
+    result_payload = Column(JSON)
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class ConnectorCallbackEvent(ConnectorBase):
     """Connector → SaaS 的可靠回调事件 outbox。"""
 

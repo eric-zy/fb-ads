@@ -21,7 +21,7 @@ def test_callback_matches_credential_and_rejects_ambiguous_local_owners(db, monk
             db.flush()
     body = json.dumps({"request_id": "mapping-request", "credential_id": "same-credential" if ambiguous else "credential-1",
                        "account_id": "act_mapping_duplicate", "days": 1,
-                       "items": [{"date_start": "2026-10-06", "spend": "10"}]}).encode()
+                       "items": [{"date_start": "2026-10-06", "date_stop": "2026-10-06", "spend": "10"}]}).encode()
     path = "/api/v1/internal/fb-connector/insights"
     headers = build_signature_headers("mapping-test-key", "fb_connector", "mapping-request", "POST", path, body, "mapping-request")
     async def receive():

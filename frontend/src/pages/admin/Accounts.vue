@@ -623,7 +623,7 @@ function goDetail(a: AdAccountItem) {
 async function toggleStatus(a: AdAccountItem) {
   const disabling = a.system_status === 'ACTIVE'
   try {
-    await ElMessageBox.confirm(`确认${disabling ? '停用' : '启用'}账户 ${a.account_id}？`, '提示', { type: 'warning' })
+    await ElMessageBox.confirm(`确认${disabling ? '限制' : '恢复'}账户 ${a.account_id} 的新建投放资格？现有广告的暂停请在投放管理操作。`, '本地投放资格', { type: 'warning' })
   } catch {
     return
   }

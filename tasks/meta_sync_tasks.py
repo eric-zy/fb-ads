@@ -43,6 +43,8 @@ from services.meta import MetaSyncService
 from services.meta.page_service import MetaPageSyncService
 from services.credential_resolver import CredentialResolver
 from services.fb_connector_client import FBConnectorClient, FBConnectorError
+from services.delivery_actions import OBJECT_MODELS, META_ID_FIELDS, object_account_id, validate_action, mark_remote_deleted, finish_action_task_record
+from services.delivery_deletion import delete_remote_object
 from services.notifications import NotificationService
 from tasks.meta_tracking_asset_tasks import sync_tracking_assets_task
 from tasks.meta_instagram_tasks import sync_instagram_task
@@ -373,11 +375,20 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
         remote_ads_by_adset = {}
         updated = 0
         canonical_created = {"campaign": 0, "adset": 0, "ad": 0}
+        if campaign_fetch_ok:
+            from services.report_sync import sync_canonical_hierarchy
+            sync_canonical_hierarchy(db, account, remote_campaigns, remote_adsets_by_campaign, remote_ads_by_adset)
 
         def sync_instance_state(instance, remote, object_type: str, object_id: str) -> int:
             """同步远端状态，同时保留本地归档/删除语义并记录漂移。"""
             now = datetime.utcnow()
+            if instance.status == "DELETED" and instance.meta_status == "PARENT_DELETED":
+                instance.last_synced_at = now
+                return 0
             if remote is None:
+                if instance.status == "DELETED" and instance.meta_status in {"DELETED", "PARENT_DELETED"}:
+                    instance.last_synced_at = now
+                    return 0
                 instance.meta_status = "NOT_FOUND"
                 instance.last_synced_at = now
                 if instance.last_error != "REMOTE_NOT_FOUND":
@@ -396,7 +407,11 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
             instance.last_synced_at = now
 
             expected_remote = instance.desired_status
-            if expected_remote in {"ARCHIVED", "DELETED"}:
+            if expected_remote == "ARCHIVED":
+                expected_remote = "PAUSED"
+            elif expected_remote == "DELETED" and instance.status == "DELETED" and instance.meta_status == "PAUSED":
+                # Legacy removal meant pause-and-hide; it is not a failed
+                # media DELETE and must not be automatically upgraded.
                 expected_remote = "PAUSED"
             drift = bool(expected_remote and remote_status and remote_status != expected_remote)
             next_error = f"REMOTE_STATUS_DRIFT:{remote_status}" if drift else None
@@ -444,7 +459,7 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                         canonical_campaign.tenant_id = account.tenant_id
                     canonical_campaign.name = remote.get("name") or canonical_campaign.name
                     canonical_campaign.objective = remote.get("objective") or canonical_campaign.objective
-                    canonical_campaign.status = remote.get("status") or remote.get("effective_status") or canonical_campaign.status
+                    canonical_campaign.status = remote.get("status") if remote.get("status") in {"ACTIVE", "PAUSED", "DELETED"} else "PAUSED"
                     # 即使 Meta 字段没有变化，也要记录本次成功拉取时间，
                     # 否则前端会持续把稳定不变的广告组判定为过期。
                     canonical_campaign.updated_at = datetime.utcnow()
@@ -736,7 +751,7 @@ def sync_all_delivery_objects_task(self) -> Dict:
     db = SessionLocal()
     try:
         with bypass_tenant():
-            account_ids = [row.ad_account_id for row in db.query(CampaignInstance.ad_account_id).distinct().all()]
+            account_ids = [row.id for row in db.query(AdAccount.id).filter(AdAccount.system_status.in_(["ACTIVE", "DISABLED"])).all()]
         task_ids = [sync_delivery_objects_task.delay(account_id).id for account_id in account_ids]
         return {"status": "queued", "account_count": len(account_ids), "task_ids": task_ids}
     except Exception as exc:
@@ -753,108 +768,105 @@ def sync_all_delivery_objects_task(self) -> Dict:
 @shared_task(bind=True, name="meta.update_delivery_object", max_retries=2, default_retry_delay=30)
 @tenant_task(lambda self, object_type, object_id, account_id, action, action_record_id=None: resolve_tenant_of(AdAccount, account_id))
 def update_delivery_object_task(self, object_type: str, object_id: str, account_id: str, action: str, action_record_id: str | None = None) -> Dict:
-    """异步暂停/启用单个 AdSet 或 Ad。"""
+    """Execute a single scoped media operation and keep its audit result."""
     db = SessionLocal()
     lock = None
     lock_acquired = False
+    action_row = None
+    validated_record = False
     try:
-        account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+        action_row = db.query(DeliveryAction).filter_by(id=action_record_id).first()
+        if not action_row or (action_row.account_id, action_row.object_id, action_row.object_type, action_row.action) != (account_id, object_id, object_type, action):
+            raise PermissionError("操作记录与目标不匹配")
+        validated_record = True
+        if action_row.status == "SUCCESS":
+            return {"status": "success", "state": action_row.remote_status}
+        account = db.query(AdAccount).filter_by(id=account_id).first()
         if not account:
-            return {"status": "failed", "error": "广告账户不存在"}
+            raise RuntimeError("广告账户不存在")
+        require_accounts(db, task_actor(db, action_row.requested_by, account.tenant_id), [account.id], write=True)
+        actor = task_actor(db, action_row.requested_by, account.tenant_id)
+        permission = {"DELETE": "campaign:delete", "RESTORE": "campaign:restore", "ARCHIVE": "campaign:archive", "PAUSE": "campaign:pause", "ENABLE": "campaign:enable"}.get(action)
+        if not actor.is_admin() and permission not in (actor.permissions or []) and not (action in {"PAUSE", "ENABLE"} and "job:create" in (actor.permissions or [])):
+            raise PermissionError("操作权限已撤销")
         lock = redis_client.redis_client.lock(
             f"fbads:account-operation:{account.tenant_id}:{account.id}",
-            timeout=max(int(settings.FB_CONNECTOR_REPORT_TIMEOUT) * 3, 1800),
-            blocking=False,
+            timeout=max(int(settings.FB_CONNECTOR_REPORT_TIMEOUT) * 3, 1800), blocking=False,
         )
         if not lock.acquire(blocking=False):
-            raise RuntimeError(f"账户 {account_id} 的投放写操作正在执行")
+            raise self.retry(exc=RuntimeError("账户投放写操作正在执行"), countdown=15)
         lock_acquired = True
+        obj = db.query(OBJECT_MODELS[object_type]).filter_by(id=object_id).first()
+        if not obj or not getattr(obj, META_ID_FIELDS[object_type]):
+            raise RuntimeError("本地对象或 Meta ID 不存在")
+        if object_account_id(obj, object_type) != account.id:
+            raise PermissionError("投放对象不属于目标账户")
+        confirm_only = bool((action_row.request_payload or {}).get("delete_dispatched"))
+        if not (action == "DELETE" and confirm_only):
+            validate_action(obj, action)
         ref = CredentialResolver(db).for_account(account.id)
-        remote_status = "PAUSED" if action in {"PAUSE", "ARCHIVE", "DELETE", "RESTORE"} else "ACTIVE"
-        desired_status = (
-            "DELETED" if action == "DELETE"
-            else "ARCHIVED" if action == "ARCHIVE"
-            else remote_status
-        )
-        action_row = db.query(DeliveryAction).filter(DeliveryAction.id == action_record_id).first() if action_record_id else None
-        if not action_row or (action_row.account_id, action_row.object_id, action_row.object_type, action_row.action) != (account.id, object_id, object_type, action):
-            raise PermissionError("操作记录与目标不匹配")
-        require_accounts(db, task_actor(db, action_row.requested_by, account.tenant_id), [account.id], write=True)
-        if action_row:
-            action_row.status = "RUNNING"
-            action_row.started_at = datetime.utcnow()
-            db.commit()
-        if object_type == "ADSET":
-            obj = db.query(AdSetInstance).filter(AdSetInstance.id == object_id).first()
-            if not obj or not obj.meta_adset_id:
-                raise RuntimeError("广告组 Meta ID 不存在")
-            if obj.campaign_instance.ad_account_id != account.id:
-                raise PermissionError("广告组不属于目标账户")
-            FBConnectorClient().update_object(
-                "ADSET",
-                obj.meta_adset_id,
-                ref.credential_id,
-                {"status": remote_status},
-                idempotency_key=f"{action}:adset:{obj.meta_adset_id}",
-            )
-            obj.meta_status = remote_status
-            obj.status = desired_status
-            obj.desired_status = desired_status
-            now = datetime.utcnow()
-            obj.archived_at = now if action == "ARCHIVE" else None
-            obj.deleted_at = now if action == "DELETE" else None
-            obj.last_action_id = action_record_id
-            obj.last_synced_at = datetime.utcnow()
-        elif object_type == "AD":
-            obj = db.query(AdInstance).filter(AdInstance.id == object_id).first()
-            if not obj or not obj.meta_ad_id:
-                raise RuntimeError("广告 Meta ID 不存在")
-            if obj.adset_instance.campaign_instance.ad_account_id != account.id:
-                raise PermissionError("广告不属于目标账户")
-            FBConnectorClient().update_object(
-                "AD",
-                obj.meta_ad_id,
-                ref.credential_id,
-                {"status": remote_status},
-                idempotency_key=f"{action}:ad:{obj.meta_ad_id}",
-            )
-            obj.meta_status = remote_status
-            obj.status = desired_status
-            obj.desired_status = desired_status
-            now = datetime.utcnow()
-            obj.archived_at = now if action == "ARCHIVE" else None
-            obj.deleted_at = now if action == "DELETE" else None
-            obj.last_action_id = action_record_id
-            obj.last_synced_at = datetime.utcnow()
-        else:
-            raise RuntimeError("不支持的投放对象类型")
-        if action_row:
-            action_row.status = "SUCCESS"
-            action_row.remote_status = remote_status
-            action_row.result_payload = {"state": desired_status}
-            action_row.finished_at = datetime.utcnow()
+        connector = FBConnectorClient()
+        action_row.status = "RUNNING"
+        action_row.started_at = datetime.utcnow()
+        action_row.error_message = None
+        obj.last_action_id = action_row.id
+        if action == "DELETE":
+            action_row.request_payload = {**(action_row.request_payload or {}), "delete_dispatched": True, "deletion_version": 2}
         db.commit()
-        return {"status": "success", "object_type": object_type, "object_id": object_id, "state": remote_status}
+        if action == "DELETE":
+            result = delete_remote_object(connector, obj, object_type, ref.credential_id, account.account_id,
+                                          action_row.idempotency_key, confirm_only=confirm_only)
+            action_row.status = result["status"]
+            action_row.result_payload = result
+            action_row.error_message = result.get("error")
+            if result["status"] == "SUCCESS":
+                mark_remote_deleted(obj, object_type, action_row.id, db)
+                action_row.remote_status = "DELETED"
+            else:
+                obj.last_error = result.get("error")
+            action_row.finished_at = datetime.utcnow()
+            finish_action_task_record(db, action_row)
+            db.commit()
+            return {"status": result["status"].lower(), "error": result.get("error"), "state": action_row.remote_status}
+        remote_status = "ACTIVE" if action == "ENABLE" else "PAUSED"
+        response = connector.update_object(object_type, getattr(obj, META_ID_FIELDS[object_type]), ref.credential_id,
+                                {"status": remote_status}, idempotency_key=action_row.idempotency_key)
+        from services.meta_updates import confirmed_fields, project_status
+        observed = confirmed_fields(response, {"status": remote_status})
+        project_status(db, account.id, object_type, getattr(obj, META_ID_FIELDS[object_type]), remote_status, observed.get("effective_status"))
+        obj.status = obj.desired_status = "ARCHIVED" if action == "ARCHIVE" else remote_status
+        obj.meta_status = observed.get("effective_status") or remote_status
+        obj.archived_at = datetime.utcnow() if action == "ARCHIVE" else None
+        obj.deleted_at = None
+        obj.last_error = None
+        obj.last_synced_at = datetime.utcnow()
+        action_row.status = "SUCCESS"
+        action_row.remote_status = remote_status
+        action_row.result_payload = {"state": obj.status, "configured_status": remote_status, "effective_status": obj.meta_status, "receipt": response}
+        action_row.finished_at = datetime.utcnow()
+        finish_action_task_record(db, action_row)
+        db.commit()
+        return {"status": "success", "state": remote_status}
     except Exception as exc:
+        from celery.exceptions import Retry
+        if isinstance(exc, Retry):
+            raise
         db.rollback()
-        if action_record_id:
-            action_row = db.query(DeliveryAction).filter(DeliveryAction.id == action_record_id).first()
-            if action_row:
-                action_row.status = "FAILED"
-                action_row.error_message = str(exc)[:1000]
-                action_row.finished_at = datetime.utcnow()
-                db.commit()
-        logger.error(f"[meta] {object_type} {object_id} 操作失败: {exc}")
-        try:
-            raise self.retry(exc=exc)
-        except self.MaxRetriesExceededError:
-            return {"status": "failed", "error": str(exc)}
+        row = db.query(DeliveryAction).filter_by(id=action_record_id).first() if validated_record else None
+        if row:
+            row.status = "UNKNOWN" if action == "DELETE" and (row.request_payload or {}).get("delete_dispatched") else "FAILED"
+            row.error_message = str(exc)[:1000]
+            row.finished_at = datetime.utcnow()
+            finish_action_task_record(db, row)
+            db.commit()
+        logger.exception("[meta] %s %s operation failed", object_type, object_id)
+        return {"status": row.status.lower() if row else "failed", "error": str(exc)}
     finally:
         if lock is not None and lock_acquired:
             try:
                 lock.release()
-            except Exception as exc:
-                logger.warning("[meta_sync] 投放写锁释放失败 account_id=%s error=%s", account_id, exc)
+            except Exception:
+                logger.warning("[meta] account write lock release failed account_id=%s", account_id)
         db.close()
 
 

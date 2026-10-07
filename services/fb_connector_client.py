@@ -360,6 +360,16 @@ class FBConnectorClient:
             idempotency_key=idempotency_key,
         )
 
+    def delete_object(self, object_type: str, object_id: str, credential_id: str,
+                      account_id: str, *, idempotency_key: str, confirm_only: bool = False) -> dict[str, Any]:
+        return self._request(
+            "POST", "/internal/meta/campaigns/delete-object",
+            {"object_type": object_type, "object_id": object_id, "credential_id": credential_id,
+             "account_id": account_id, "idempotency_key": idempotency_key, "confirm_only": confirm_only},
+            idempotency_key=idempotency_key,
+            timeout=settings.FB_CONNECTOR_REPORT_TIMEOUT,
+        )
+
     def cleanup_deployment(
         self,
         connector_task_id: str,

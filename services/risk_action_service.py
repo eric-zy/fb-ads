@@ -213,6 +213,9 @@ class RiskActionService:
                     {"status": "PAUSED"},
                     idempotency_key=key,
                 )
+            from services.meta_updates import confirmed_fields, project_status
+            observed = confirmed_fields(response, {"status": "PAUSED"})
+            project_status(self.db, account.id, object_type, remote_id, "PAUSED", observed.get("effective_status"))
             if object_type == "CAMPAIGN":
                 local_object.status = CampaignStatus.PAUSED
             else:

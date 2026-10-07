@@ -1,5 +1,5 @@
 <template>
-  <div class="page"><div class="head"><div><div class="eyebrow">数据中心</div><h2>广告账户消耗总览</h2><p>按账户和币种查看消耗，数据不会跨币种直接相加。</p></div><el-button v-if="userStore.isAdmin" type="primary" :loading="syncing" @click="sync">回补最近 3 天</el-button></div>
+  <div class="page"><div class="head"><div><div class="eyebrow">数据中心</div><h2>广告账户消耗总览</h2><p>按账户和币种查看消耗，数据不会跨币种直接相加。</p></div><el-button v-if="userStore.isAdmin" type="primary" :loading="syncing" @click="sync">同步所选日期</el-button></div>
     <el-card shadow="never" class="filters"><el-date-picker v-model="range" type="daterange" single-panel value-format="YYYY-MM-DD" start-placeholder="开始日期" end-placeholder="结束日期" popper-class="date-range-popper" placement="bottom-start" @change="load"/><el-button @click="load">刷新</el-button></el-card>
     <el-alert v-if="error" :title="error" type="warning" :closable="false"/>
     <el-card v-for="total in currencyTotals" :key="total.currency" shadow="never" class="currency"><template #header>{{ total.currency }} 汇总</template><span>消耗 {{ money(total.spend) }}</span><span>展示 {{ total.impressions }}</span><span>点击 {{ total.clicks }}</span><span>转化 {{ total.conversions }}</span><span>CPA {{ money(total.cpa) }}</span></el-card>
@@ -9,6 +9,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { reportsApi } from '@/api/reports'
+import { waitForReportSync } from '@/utils/reportSync'
 import { useUserStore } from '@/stores/userStore'
 function formatDate(date: Date) {
   const year = date.getFullYear()
@@ -23,23 +24,28 @@ const range = ref<string[]>([formatDate(defaultStart), formatDate(today)]), item
 const userStore = useUserStore()
 const params = computed(() => range.value?.length === 2 ? { start_date: range.value[0], end_date: range.value[1] } : undefined)
 const money = (value: number) => Number(value || 0).toFixed(2)
-const syncLabel = (status: string) => ({ FRESH: '正常', STALE: '延迟', FAILED: '失败', SYNCING: '同步中', PENDING: '待同步', NEVER: '未同步' } as Record<string, string>)[status] || status || '未同步'
+const syncLabel = (status: string) => ({ FRESH: '正常', STALE: '延迟', FAILED: '失败', SYNCING: '同步中', PENDING: '待同步', NEVER: '未同步', INCOMPLETE: '日期未补全' } as Record<string, string>)[status] || status || '未同步'
 const syncType = (status: string): 'success' | 'warning' | 'danger' | 'info' => status === 'FRESH' ? 'success' : ['STALE', 'SYNCING'].includes(status) ? 'warning' : status === 'FAILED' ? 'danger' : 'info'
 async function load() { loading.value = true; error.value = ''; try { const { data } = await reportsApi.accountOverview(params.value); items.value = data.items || []; currencyTotals.value = data.currency_totals || [] } catch { error.value = '消耗数据加载失败，请检查同步状态' } finally { loading.value = false } }
-let syncTimer: ReturnType<typeof setTimeout> | undefined
-async function waitForSync(taskIds: string[], round = 0): Promise<void> {
-  const statuses = await Promise.all(taskIds.map(id => reportsApi.taskStatus(id).then(({ data }) => data).catch(() => ({ state: 'UNKNOWN' }))))
-  const finished = statuses.filter(item => ['SUCCESS', 'FAILURE', 'REVOKED'].includes(item.state))
-  if (finished.length === statuses.length || round >= 60) {
-    if (finished.some(item => item.state !== 'SUCCESS')) error.value = '同步任务部分失败，请查看任务中心或重试'
-    await load()
-    return
+let reportController: AbortController | undefined
+async function sync() {
+  syncing.value = true; error.value = ''
+  reportController = new AbortController()
+  let syncError = ''
+  try {
+    const { data } = await reportsApi.sync(params.value || { days: 3 })
+    await waitForReportSync(data.task_ids || [], reportController.signal)
+  } catch (err) {
+    if (!reportController.signal.aborted) syncError = err instanceof Error ? err.message : '回补任务提交失败'
+  } finally {
+    if (!reportController.signal.aborted) {
+      await load()
+      if (syncError) error.value = syncError
+    }
+    syncing.value = false
   }
-  await new Promise<void>(resolve => { syncTimer = setTimeout(resolve, 2000) })
-  return waitForSync(taskIds, round + 1)
 }
-async function sync() { syncing.value = true; error.value = ''; try { const { data } = await reportsApi.sync({ days: 3 }); if (data.task_ids?.length) await waitForSync(data.task_ids); else await load() } catch { error.value = '回补任务提交失败' } finally { syncing.value = false } }
 onMounted(load)
-onUnmounted(() => { if (syncTimer) clearTimeout(syncTimer) })
+onUnmounted(() => reportController?.abort())
 </script>
 <style scoped>.page{padding:4px}.head{display:flex;justify-content:space-between;margin-bottom:18px}.eyebrow{color:#829ab1;font-size:12px}.head h2{margin:6px 0;color:#102a43}.head p{margin:0;color:#627d98;font-size:13px}.filters{display:flex;gap:12px;margin-bottom:16px}.currency{display:inline-block;width:calc(33.333% - 12px);margin:0 12px 16px 0}.currency span{display:inline-block;margin-right:18px;color:#486581}@media(max-width:1000px){.currency{width:100%}}</style>

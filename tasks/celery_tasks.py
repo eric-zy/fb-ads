@@ -32,8 +32,8 @@ def _resolve_account_tenant(account_id: str) -> Optional[str]:
 # ==================== 洞察数据采集 ====================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=300)
-@tenant_task(lambda self, account_id, days=3: resolve_tenant_of(AdAccount, account_id))
-def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
+@tenant_task(lambda self, account_id, days=3, start_date=None, end_date=None: resolve_tenant_of(AdAccount, account_id))
+def fetch_account_insights(self, account_id: str, days: int = 3, start_date: str | None = None, end_date: str | None = None) -> Dict:
     """拉取账户洞察数据
     
     Args:
@@ -59,11 +59,7 @@ def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
             )
             if not lock.acquire(blocking=False):
                 logger.warning("Insights sync already running for account %s", account_id)
-                return {
-                    "status": "skipped",
-                    "account_id": account_id,
-                    "reason": "same_account_task_running",
-                }
+                raise RuntimeError("同一账户报表正在同步，请稍后重试")
             lock_acquired = True
         except Exception as lock_exc:
             # 锁服务不可用时不能放任任务并发写报表；让 Celery 稍后重试。
@@ -73,7 +69,7 @@ def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
         account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
         if not account:
             logger.warning("[Insights] 账户不存在，跳过同步: %s", account_id)
-            return {"status": "skipped", "account_id": account_id, "reason": "account_not_found"}
+            raise ValueError("广告账户不存在")
 
         # 即使 Meta 返回空报表，也要让页面知道任务正在执行。
         account.insights_sync_status = "SYNCING"
@@ -82,41 +78,39 @@ def fetch_account_insights(self, account_id: str, days: int = 3) -> Dict:
 
         logger.info(f"Fetching insights for account {account_id}")
 
-        ads_manager = AdsManager(db)
-        # days 表示包含今天在内的自然日数量。
+        from services.report_sync import sync_report_window
+        from models import AsyncTaskRecord
         today = account_today(account)
-        start_date = (today - timedelta(days=max(days - 1, 0))).strftime('%Y-%m-%d')
-        end_date = today.strftime('%Y-%m-%d')
-        
-        insights_count = ads_manager.fetch_insights(account_id, start_date, end_date)
-        delivery_counts = ads_manager.fetch_delivery_insights(account_id, start_date, end_date)
-
-        # 不能用 insights_count 判断成功：无消耗账户可能合法返回 0 行。
-        account.insights_sync_status = "SUCCESS"
-        account.insights_last_synced_at = datetime.utcnow()
-        account.insights_last_sync_error = None
-        db.commit()
-
-        logger.info(f"Successfully fetched {insights_count} insights for {account_id}")
-        return {
-            "status": "success",
-            "account_id": account_id,
-            "insights_count": insights_count,
-            "delivery_counts": delivery_counts,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+        if bool(start_date) != bool(end_date):
+            raise ValueError("start_date 和 end_date 必须同时提供")
+        start_date = start_date or str(today - timedelta(days=max(days - 1, 0)))
+        end_date = end_date or str(today)
+        result = sync_report_window(db, account, start_date, end_date, self.request.id)
+        record = db.query(AsyncTaskRecord).filter_by(task_id=self.request.id).first()
+        if record:
+            record.status = "SUCCESS"
+            record.result_summary = result
+            record.finished_at = datetime.utcnow()
+            db.commit()
+        return result
     except Exception as exc:
         logger.error(f"Failed to fetch insights for {account_id}: {str(exc)}")
         try:
             db.rollback()
             account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
-            if account:
+            if account and lock_acquired:
                 account.insights_sync_status = "FAILED"
                 account.insights_last_sync_error = str(exc)[:2000]
                 db.commit()
         except Exception:
             db.rollback()
-        # 重试
+        from models import AsyncTaskRecord
+        record = db.query(AsyncTaskRecord).filter_by(task_id=self.request.id).first()
+        if record:
+            record.status = "RETRY" if self.request.retries < self.max_retries else "FAILED"
+            record.result_summary = {"status": "failed", "error": str(exc)[:2000]}
+            record.finished_at = datetime.utcnow() if record.status == "FAILED" else None
+            db.commit()
         raise self.retry(exc=exc, countdown=60)
     finally:
         if lock is not None and lock_acquired:
@@ -138,7 +132,7 @@ def fetch_all_accounts_insights(self, days: int = 3) -> Dict:
         # 导致定时任务每次都抛错、实际一次都没跑起来）
         accounts = (
             db.query(AdAccount)
-            .filter(AdAccount.system_status == SystemStatus.ACTIVE.value)
+            .filter(AdAccount.system_status.in_(["ACTIVE", "DISABLED"]))
             .all()
         )
         results = []
@@ -147,7 +141,7 @@ def fetch_all_accounts_insights(self, days: int = 3) -> Dict:
             try:
                 result = fetch_account_insights.apply_async(
                     args=(account.id, days),
-                    countdown=5  # 错开请求
+                    countdown=5 * len(results)  # 按账户错开请求
                 )
                 results.append(result.id)
             except Exception as e:

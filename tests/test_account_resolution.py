@@ -110,8 +110,8 @@ def test_mark_invalid_by_account_marks_bm_credential(db, bm_and_account):
 # --------------------------------------------------------------------------
 def test_execute_risk_actions_reports_events_created(db, bm_and_account, monkeypatch):
     """花费超限时既要暂停系列，也要返回新建的风险事件数"""
-    monkeypatch.setattr(FBConnectorClient, "get_insights", lambda *a, **k: {"items": [{"spend": "90.00"}]})
-    monkeypatch.setattr(FBConnectorClient, "pause_campaign", lambda *a, **k: True)
+    monkeypatch.setattr(FBConnectorClient, "get_insights", lambda *a, **k: {"complete": True, "time_increment": 1, "items": [{"spend": "90.00", "date_start": k["since"], "date_stop": k["until"]}]})
+    monkeypatch.setattr(FBConnectorClient, "pause_campaign", lambda *a, **k: {"result": {"confirmed": True, "status": "PAUSED"}})
 
     result = RiskDetector(db).execute_risk_actions("acc1")
 
@@ -140,9 +140,10 @@ def test_fetch_insights_persists_by_primary_key(db, bm_and_account, monkeypatch)
     monkeypatch.setattr(
         FBConnectorClient,
         "get_insights",
-        lambda *a, **k: {"items": [
+        lambda *a, **k: {"complete": True, "time_increment": 1, "items": [
             {
                 "date_start": "2026-09-01",
+                "date_stop": "2026-09-01",
                 "spend": "10.50",
                 "impressions": "1000",
                 "clicks": "50",
@@ -166,9 +167,9 @@ def test_fetch_insights_persists_by_primary_key(db, bm_and_account, monkeypatch)
 def test_fetch_insights_is_idempotent(db, bm_and_account, monkeypatch):
     """重复拉取同一天应 upsert，不产生重复行"""
     payload = [
-        {"date_start": "2026-09-01", "spend": "10.00", "impressions": "100", "clicks": "5"}
+        {"date_start": "2026-09-01", "date_stop": "2026-09-01", "spend": "10.00", "impressions": "100", "clicks": "5"}
     ]
-    monkeypatch.setattr(FBConnectorClient, "get_insights", lambda *a, **k: {"items": payload})
+    monkeypatch.setattr(FBConnectorClient, "get_insights", lambda *a, **k: {"complete": True, "time_increment": 1, "items": payload})
 
     AdsManager(db).fetch_insights("acc1", "2026-09-01", "2026-09-01")
     payload[0]["spend"] = "20.00"
@@ -187,7 +188,7 @@ def test_fetch_insights_unknown_account_returns_zero(db, monkeypatch):
 def test_get_account_spend_today_converts_unit(db, bm_and_account, monkeypatch):
     """Meta 返回主单位，库内统一最小货币单位"""
     monkeypatch.setattr(
-        FBConnectorClient, "get_insights", lambda *a, **k: {"items": [{"spend": "12.34"}]}
+        FBConnectorClient, "get_insights", lambda *a, **k: {"complete": True, "time_increment": 1, "items": [{"spend": "12.34", "date_start": k["since"], "date_stop": k["until"]}]}
     )
     assert AdsManager(db).get_account_spend_today("acc1") == 1234
 

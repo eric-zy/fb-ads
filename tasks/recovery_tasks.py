@@ -3,20 +3,47 @@
 from datetime import datetime, timedelta
 
 from celery import shared_task
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 
 from config.settings import settings
 from core.database import SessionLocal
 from core.enums import JobItemStatus
 from core.logger import logger
 from core.tenant import bypass_tenant
-from models import CampaignJobItem, CreativeAsset, MetaAssetBinding, MediaUploadSession
+from models import CampaignJobItem, CreativeAsset, MetaAssetBinding, MediaUploadSession, DeliveryAction
 from services.media_binding_service import queue_pending_asset_bindings
 from services.storage import AliyunOSSStorage
+from services.delivery_actions import finish_action_task_record
 
 
 def _cutoff() -> datetime:
     return datetime.utcnow() - timedelta(seconds=settings.ASYNC_TASK_STALE_SECONDS)
+
+
+def _recover_delivery_actions(db, limit):
+    rows = db.query(DeliveryAction).filter(
+        DeliveryAction.status.in_(["REQUESTED", "RUNNING"]),
+        DeliveryAction.requested_by != "risk-engine",
+        func.coalesce(DeliveryAction.started_at, DeliveryAction.created_at) < _cutoff(),
+    ).with_for_update(skip_locked=True).limit(limit).all()
+    for row in rows:
+        # delete_dispatched is retained: a killed worker resumes as read-only
+        # reconciliation, rather than issuing a second DELETE.
+        row.status = "REQUESTED"
+        row.started_at = datetime.utcnow()
+        db.commit()
+        try:
+            from tasks.meta_sync_tasks import update_delivery_object_task
+            update_delivery_object_task.apply_async(
+                args=[row.object_type, row.object_id, row.account_id, row.action, row.id], task_id=row.task_id,
+            )
+        except Exception as exc:
+            row.status = "UNKNOWN" if row.action == "DELETE" and (row.request_payload or {}).get("delete_dispatched") else "FAILED"
+            row.error_message = f"任务恢复入队失败：{exc}"[:1000]
+            row.finished_at = datetime.utcnow()
+            finish_action_task_record(db, row)
+            db.commit()
+    return len(rows)
 
 
 def _mark_upload_completed(db, session, asset, *, storage, result) -> bool:
@@ -101,6 +128,7 @@ def recover_stale_domestic_work(limit: int = 100):
         "upload_sessions_aborted": 0,
         "bindings": 0,
         "job_items": 0,
+        "delivery_actions": 0,
         "failed": 0,
     }
     try:
@@ -278,6 +306,7 @@ def recover_stale_domestic_work(limit: int = 100):
                         db.commit()
                     result["failed"] += 1
                     logger.exception("[Recovery] job item enqueue failed job_item_id=%s", job_item_id)
+            result["delivery_actions"] = _recover_delivery_actions(db, limit)
         return result
     finally:
         db.close()

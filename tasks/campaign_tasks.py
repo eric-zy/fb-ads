@@ -68,7 +68,13 @@ def _validate_item_actor(db, item):
     account = item.ad_account
     if not job or not account or job.tenant_id != item.tenant_id or account.tenant_id != item.tenant_id:
         raise PermissionError("任务、子项与账户归属不一致")
-    require_accounts(db, task_actor(db, job.created_by, item.tenant_id), [account.id], write=True)
+    actor = task_actor(db, job.created_by, item.tenant_id)
+    require_accounts(db, actor, [account.id], write=True)
+    if not actor.is_admin():
+        permission = {"CREATE": "job:create", "PAUSE": "campaign:pause", "ENABLE": "campaign:enable", "ARCHIVE": "campaign:archive", "DELETE": "campaign:delete", "RESTORE": "campaign:restore", "UPDATE_BUDGET": "campaign:update_budget"}.get(job.action_type)
+        compatible = job.action_type in {"PAUSE", "ENABLE"} and "job:create" in (actor.permissions or [])
+        if permission not in (actor.permissions or []) and not compatible:
+            raise PermissionError("投放操作权限已撤销")
     return job.status == JobStatus.CANCELLED.value
 
 
@@ -997,6 +1003,11 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
 
         # 优先用子项记录的实例，其次按 模板+账户 反查
         instance = item.campaign_instance
+        if action == ActionType.UPDATE_BUDGET.value and params.get("selected_instance_ids") is not None:
+            instance = db.query(CampaignInstance).filter(
+                CampaignInstance.id.in_(params["selected_instance_ids"]),
+                CampaignInstance.ad_account_id == item.ad_account_id,
+                CampaignInstance.template_id == job.template_id).first()
         if not instance and job.template_id:
             instance = (
                 db.query(CampaignInstance)
@@ -1013,63 +1024,85 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
             db.commit()
             return {"error": "no instance"}
 
-        if action in (ActionType.PAUSE.value, ActionType.ARCHIVE.value, ActionType.DELETE.value, ActionType.RESTORE.value):
-            connector.update_object(
+        from services.delivery_actions import validate_action, mark_remote_deleted
+        from services.delivery_deletion import delete_remote_object
+        if action == ActionType.DELETE.value:
+            checkpoint = dict(item.response_payload or {})
+            confirm_only = bool(checkpoint.get("delete_dispatched"))
+            checkpoint["delete_dispatched"] = True
+            item.response_payload = checkpoint
+            db.commit()
+            account = db.query(AdAccount).filter_by(id=item.ad_account_id).one()
+            result = delete_remote_object(connector, instance, "CAMPAIGN", credential.credential_id,
+                                          account.account_id, f"legacy-delete:{item.id}", confirm_only=confirm_only)
+            item.response_payload = {**checkpoint, "deletion_result": result}
+            if result["status"] != "SUCCESS":
+                item.mark_failed("DELETE_PENDING_CONFIRMATION" if result["status"] == "UNKNOWN" else "META_DELETE_FAILED",
+                                 result.get("error") or "Meta 删除尚未成功", ErrorCategory.TEMPORARY)
+                db.commit()
+                return {"status": result["status"].lower(), "error": result.get("error")}
+            mark_remote_deleted(instance, "CAMPAIGN", db=db)
+            item.status = JobItemStatus.SUCCESS.value
+            item.meta_campaign_id = instance.meta_campaign_id
+            db.commit()
+            return {"ok": True, "action": action, "campaign_id": instance.meta_campaign_id}
+        validate_action(instance, action)
+        if action in (ActionType.PAUSE.value, ActionType.ARCHIVE.value, ActionType.RESTORE.value):
+            response = connector.update_object(
                 "CAMPAIGN",
                 instance.meta_campaign_id,
                 credential.credential_id,
                 {"status": "PAUSED"},
                 idempotency_key=f"{action}:campaign:{instance.meta_campaign_id}",
             )
+            from services.meta_updates import confirmed_fields, project_status
+            observed = confirmed_fields(response, {"status": "PAUSED"})
+            project_status(db, item.ad_account_id, "CAMPAIGN", instance.meta_campaign_id, "PAUSED", observed.get("effective_status"))
             instance.status = (
-                InstanceStatus.DELETED.value if action == ActionType.DELETE.value
-                else InstanceStatus.ARCHIVED.value if action == ActionType.ARCHIVE.value
+                InstanceStatus.ARCHIVED.value if action == ActionType.ARCHIVE.value
                 else InstanceStatus.PAUSED.value
             )
-            instance.meta_status = InstanceStatus.PAUSED.value
+            instance.meta_status = observed.get("effective_status") or InstanceStatus.PAUSED.value
             instance.desired_status = instance.status
             now = datetime.utcnow()
             instance.archived_at = now if action == ActionType.ARCHIVE.value else None
-            instance.deleted_at = now if action == ActionType.DELETE.value else None
+            instance.deleted_at = None
             instance.last_synced_at = datetime.utcnow()
         elif action == ActionType.ENABLE.value:
-            connector.update_object(
+            response = connector.update_object(
                 "CAMPAIGN",
                 instance.meta_campaign_id,
                 credential.credential_id,
                 {"status": "ACTIVE"},
                 idempotency_key=f"{action}:campaign:{instance.meta_campaign_id}",
             )
+            from services.meta_updates import confirmed_fields, project_status
+            observed = confirmed_fields(response, {"status": "ACTIVE"})
+            project_status(db, item.ad_account_id, "CAMPAIGN", instance.meta_campaign_id, "ACTIVE", observed.get("effective_status"))
             instance.status = InstanceStatus.ACTIVE.value
-            instance.meta_status = InstanceStatus.ACTIVE.value
+            instance.meta_status = observed.get("effective_status") or InstanceStatus.ACTIVE.value
             instance.desired_status = InstanceStatus.ACTIVE.value
             instance.archived_at = None
             instance.deleted_at = None
             instance.last_synced_at = datetime.utcnow()
         elif action == ActionType.UPDATE_BUDGET.value:
-            budget = params.get("budget_override")
-            if not budget:
-                item.mark_failed(
-                    "NO_BUDGET", "未提供 budget_override", ErrorCategory.VALIDATION
-                )
-                db.commit()
-                return {"error": "budget required"}
-            # 预算在 AdSet 维度（设计文档第 22 节：找到实例 → 改预算）
-            daily_budget = int(round(float(budget) * 100))
-            if daily_budget <= 0:
-                item.mark_failed(
-                    "INVALID_BUDGET", "budget_override 必须为正数", ErrorCategory.VALIDATION
-                )
-                db.commit()
-                return {"error": "invalid budget"}
-            for adset in instance.adsets:
-                connector.update_object(
-                    "ADSET",
-                    adset.meta_adset_id,
-                    credential.credential_id,
-                    {"daily_budget": daily_budget},
-                    idempotency_key=f"{action}:adset:{adset.meta_adset_id}:{daily_budget}",
-                )
+            from services.budget_updates import apply_budget_updates
+            selected = params.get("selected_instance_ids")
+            if selected is not None:
+                instances = db.query(CampaignInstance).filter(
+                    CampaignInstance.id.in_(selected), CampaignInstance.ad_account_id == item.ad_account_id,
+                    CampaignInstance.template_id == job.template_id).all()
+                if not instances:
+                    raise ValueError("该账户没有选中的广告系列实例")
+            else:
+                candidates = db.query(CampaignInstance).filter_by(template_id=job.template_id, ad_account_id=item.ad_account_id).all()
+                if len(candidates) != 1 and not item.campaign_instance_id:
+                    raise ValueError("模板对应多个实例，请从广告系列页明确选择目标")
+                instances = [instance]
+            for target in instances:
+                validate_action(target, action)
+            account = db.query(AdAccount).filter_by(id=item.ad_account_id).one()
+            apply_budget_updates(db, item, instances, account, connector, credential.credential_id, params.get("budget_override"))
         else:
             item.mark_failed(
                 "UNSUPPORTED_ACTION", f"不支持的动作: {action}", ErrorCategory.VALIDATION

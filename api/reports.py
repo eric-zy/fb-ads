@@ -1,6 +1,6 @@
 from datetime import date, timedelta, datetime
 from typing import Optional
-from celery import chain
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from core.auth import get_current_active_user, require_admin, require_permission
@@ -12,7 +12,7 @@ from core.money import to_major
 from models import AccountInsight, CampaignInsight, AdSetInsight, AdInsight, Campaign, AdGroup, Ad, AdAccount, AsyncTaskRecord
 from services.account_access import accessible_account_ids
 from tasks.celery_tasks import fetch_account_insights
-from tasks.meta_sync_tasks import sync_delivery_objects_task
+from services.report_quality import report_quality
 
 router = APIRouter(prefix="/api/v1/reports", tags=["报表分析"])
 
@@ -25,7 +25,9 @@ def revenue_import(payload: RevenueImport, request: Request, db: Session = Depen
 @router.post("/sync")
 def sync_report_data(
     account_id: Optional[str] = Query(None),
-    days: int = Query(3, ge=1, le=30),
+    days: int = Query(3, ge=1, le=90),
+    start_date: Optional[date] = Query(None),
+    end_date: Optional[date] = Query(None),
     db: Session = Depends(get_db),
     current_user=Depends(require_admin),
 ):
@@ -38,7 +40,11 @@ def sync_report_data(
             status_code=400,
             detail="请先切换到目标租户，或显式指定 account_id",
         )
-    query = db.query(AdAccount).filter(AdAccount.system_status == "ACTIVE")
+    if bool(start_date) != bool(end_date):
+        raise HTTPException(400, "start_date 和 end_date 必须同时提供")
+    if start_date and (start_date > end_date or (end_date - start_date).days >= 90):
+        raise HTTPException(400, "同步窗口必须为 1 至 90 天")
+    query = db.query(AdAccount).filter(AdAccount.system_status.in_(["ACTIVE", "DISABLED"]))
     if tenant_id:
         query = query.filter(AdAccount.tenant_id == tenant_id)
     if account_id:
@@ -46,27 +52,31 @@ def sync_report_data(
     accounts = query.all()
     if account_id and not accounts:
         raise HTTPException(status_code=404, detail="广告账户不存在或无权访问")
-    # 报表回补必须先同步规范对象层级，再写入 Campaign/AdSet/Ad Insights。
-    # 否则 Meta 已返回数据，但本地缺少父对象时，洞察会被安全地跳过。
     task_ids = []
     for account in accounts:
+        task_id = uuid.uuid4().hex
+        task_ids.append(task_id)
         account.insights_sync_status = "PENDING"
         account.insights_last_sync_error = None
-        task_id = chain(
-            sync_delivery_objects_task.si(account.id),
-            fetch_account_insights.si(account.id, days),
-        ).apply_async().id
-        task_ids.append(task_id)
-        # 报表同步也纳入统一任务状态接口，否则前端拿到 task_id 后无法
-        # 判断链式任务是否已经真正完成，只能在提交后立即读取旧数据。
-        db.add(AsyncTaskRecord(
-            task_id=task_id,
-            tenant_id=account.tenant_id,
-            task_type="REPORT_SYNC",
-            object_type="ACCOUNT_INSIGHTS",
-            object_ids=[account.id],
-            created_by=current_user.id,
-        ))
+        db.add(AsyncTaskRecord(task_id=task_id, tenant_id=account.tenant_id,
+                               task_type="REPORT_SYNC", object_type="ACCOUNT_INSIGHTS",
+                               object_ids=[account.id], created_by=current_user.id))
+    # Persist ownership before dispatch; a fast worker can now find its record.
+    db.commit()
+    failures = []
+    for account, task_id in zip(accounts, task_ids):
+        try:
+            fetch_account_insights.apply_async(args=[account.id, days],
+                kwargs={"start_date": str(start_date) if start_date else None,
+                        "end_date": str(end_date) if end_date else None}, task_id=task_id)
+        except Exception as exc:
+            account.insights_sync_status = "FAILED"
+            account.insights_last_sync_error = f"报表任务入队失败：{exc}"[:2000]
+            record = db.query(AsyncTaskRecord).filter_by(task_id=task_id).one()
+            record.status = "FAILED"
+            record.result_summary = {"status": "failed", "error": account.insights_last_sync_error}
+            record.finished_at = datetime.utcnow()
+            failures.append(task_id)
     db.commit()
     record_audit(
         db,
@@ -77,7 +87,7 @@ def sync_report_data(
         request_data={"account_id": account_id, "days": days, "account_count": len(accounts)},
         response_data={"status": "QUEUED", "task_ids": task_ids},
     )
-    return {"status": "queued", "days": days, "account_count": len(accounts), "task_ids": task_ids}
+    return {"status": "partial_failure" if failures else "queued", "days": days, "account_count": len(accounts), "task_ids": task_ids, "failed_task_ids": failures}
 
 @router.get("/account-overview")
 def account_overview(
@@ -94,7 +104,7 @@ def account_overview(
     if start > end:
         raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
     tenant_id = effective_tenant_id(current_user)
-    account_query = db.query(AdAccount).filter(AdAccount.system_status == "ACTIVE")
+    account_query = db.query(AdAccount).filter(AdAccount.system_status.in_(["ACTIVE", "DISABLED"]))
     if tenant_id:
         account_query = account_query.filter(AdAccount.tenant_id == tenant_id)
     if not current_user.is_admin():
@@ -141,32 +151,12 @@ def account_overview(
         total["clicks"] += item["clicks"]
         total["conversions"] += item["conversions"]
         account = account_map[item["account_id"]]
-        # 有消耗时使用报表行的实际同步时间；无消耗时使用任务成功时间。
-        # 这样不会把合法的空报表误显示成“未同步”。
-        report_synced_at = item["latest_synced_at"]
-        if account.insights_last_synced_at and (
-            not report_synced_at or account.insights_last_synced_at > report_synced_at
-        ):
-            report_synced_at = account.insights_last_synced_at
-        item["latest_synced_at"] = report_synced_at
-        current_status = str(account.insights_sync_status or "NEVER").upper()
-        if current_status == "FAILED":
-            item["sync_status"] = "FAILED"
-            item["sync_age_hours"] = None
-        elif current_status in {"PENDING", "SYNCING"}:
-            item["sync_status"] = current_status
-            item["sync_age_hours"] = None
-        elif report_synced_at:
-            age_hours = (datetime.utcnow() - report_synced_at).total_seconds() / 3600
-            item["sync_status"] = "FRESH" if age_hours <= 3 else "STALE"
-            item["sync_age_hours"] = round(max(age_hours, 0), 1)
-            item["latest_synced_at"] = report_synced_at.isoformat()
-        else:
-            item["sync_status"] = "NEVER"
-            item["sync_age_hours"] = None
-    for total in currency_totals.values():
-        total["ctr"] = total["clicks"] / total["impressions"] * 100 if total["impressions"] else 0
-        total["cpa"] = total["spend"] / total["conversions"] if total["conversions"] else 0
+        quality = report_quality(db, account, start, end)
+        item["sync_status"] = quality["status"]
+        item["latest_synced_at"] = quality["latest_synced_at"]
+        item["sync_age_hours"] = quality["age_hours"]
+        item["data_quality"] = quality
+
     return {
         "start_date": str(start), "end_date": str(end),
         "items": sorted(items, key=lambda x: x["spend"], reverse=True),

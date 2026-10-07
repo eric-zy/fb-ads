@@ -3,7 +3,7 @@
 from datetime import date, timedelta, datetime
 
 from api.reports import account_overview
-from models import AccountInsight, AdAccount, User
+from models import AccountInsight, AdAccount, User, ReportSyncRun
 
 
 def test_account_overview_defaults_to_recent_three_days(db):
@@ -65,6 +65,9 @@ def test_account_overview_shows_successful_sync_when_meta_returns_no_rows(db):
         insights_last_synced_at=synced_at,
     )
     db.add_all([admin, account])
+    db.add(ReportSyncRun(id="empty-complete-run", account_id=account.id,
+                         start_date=date.today() - timedelta(days=2), end_date=date.today(),
+                         status="SUCCESS", snapshots={"account": []}, finished_at=synced_at))
     db.commit()
 
     payload = account_overview(start_date=None, end_date=None, db=db, current_user=admin)

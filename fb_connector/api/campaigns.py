@@ -8,6 +8,8 @@ from core.logger import logger
 from config.settings import settings
 
 router = APIRouter(prefix="/internal/meta/campaigns", tags=["Meta Delivery"])
+from fb_connector.api.deletions import router as deletion_router
+router.include_router(deletion_router)
 
 class CampaignCreateRequest(BaseModel):
     task_id: str = Field(..., min_length=1, max_length=64)
@@ -202,11 +204,15 @@ async def update_object(payload: ObjectRequest):
     try:
         service = _meta_service(payload.credential_id)
         fields = payload.fields
+        if not fields:
+            raise HTTPException(status_code=400, detail="更新字段不能为空")
         if set(fields) - {"status", "daily_budget"}:
             raise HTTPException(status_code=400, detail="只允许更新 status 或 daily_budget")
         if "status" in fields and fields["status"] not in {"ACTIVE", "PAUSED"}:
             raise HTTPException(status_code=400, detail="status 必须为 ACTIVE 或 PAUSED")
         if "daily_budget" in fields:
+            if isinstance(fields["daily_budget"], bool):
+                raise HTTPException(status_code=400, detail="daily_budget 必须为整数")
             try:
                 fields["daily_budget"] = int(fields["daily_budget"])
             except (TypeError, ValueError):

@@ -24,6 +24,7 @@ from models.ad_group import AdGroup
 from models.ad import Ad
 from models.publish_task import PublishTask, PublishedAd
 from models.insights import AccountInsight, CampaignInsight, AdInsight, AdSetInsight
+from models.report_sync import ReportSyncRun
 from models.revenue import RevenueDailyTotal
 from models.risk_control import RiskEvent, RiskExecution, RiskLevel, RiskEventType, RiskRule
 from models.user import User, UserAccount

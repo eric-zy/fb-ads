@@ -38,3 +38,17 @@ def test_calculate_metrics_uses_click_denominator_for_conversion_rate():
     assert metrics["cpc"] == pytest.approx(0.5)
     assert metrics["cpm"] == pytest.approx(100.0)
     assert metrics["conversion_rate"] == pytest.approx(5.0)
+
+
+def test_aliases_do_not_double_count_omni_purchase_lead_or_clicks():
+    actions = [{"action_type": key, "value": "2"} for key in ("purchase", "omni_purchase", "lead", "omni_lead", "link_click", "inline_link_click")]
+    values = [{"action_type": key, "value": "10.50"} for key in ("purchase", "omni_purchase")]
+    result = AdsManager._parse_action_metrics(actions, values)
+    assert result["purchases"] == result["leads"] == result["link_clicks"] == 2
+    assert result["conversions"] == 4
+    assert result["conversion_value"] == Decimal("10.50")
+
+
+def test_zero_omni_metric_does_not_fall_back_to_duplicate_nonzero_alias():
+    result = AdsManager._parse_action_metrics([{"action_type": "omni_purchase", "value": "0"}, {"action_type": "purchase", "value": "2"}])
+    assert result["purchases"] == 0

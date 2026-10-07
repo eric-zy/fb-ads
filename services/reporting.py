@@ -8,6 +8,7 @@ from core.reporting_time import account_today
 from core.tenant import effective_tenant_id
 from models import AccountInsight, CampaignInsight, AdSetInsight, AdInsight, AdAccount, Campaign, AdGroup, Ad
 from services.account_access import accessible_account_ids
+from services.report_quality import report_quality
 
 
 COUNTS = ("impressions", "clicks", "conversions", "link_clicks", "landing_page_views", "leads", "purchases")
@@ -89,10 +90,14 @@ def breakdown(db, user, dimension, days, parent_id):
     grouped = {}
     for row, key in rows:
         grouped.setdefault(key, []).append(row)
-    items = [{"entity_id": key, "entity_name": entities[key][0],
+    model, field = {"account": (AdAccount, "account_id"), "campaign": (Campaign, "campaign_id"), "adset": (AdGroup, "ad_group_id"), "ad": (Ad, "ad_id")}[dimension]
+    meta_ids = {row.id: getattr(row, field) for row in db.query(model).filter(model.id.in_(entities)).all()}
+    items = [{"entity_id": key, "meta_id": meta_ids.get(key), "entity_name": entities[key][0],
               **aggregate_metrics(values, entities[key][1].currency or "USD")} for key, values in grouped.items()]
+    accounts = {value[1].id: value[1] for value in entities.values()}
+    quality = [{"account_id": account.id, **report_quality(db, account, account_today(account) - timedelta(days=days - 1), account_today(account), dimension)} for account in accounts.values()]
     return {"dimension": dimension, "days": days, "parent_id": parent_id,
-            "items": sorted(items, key=lambda item: item["spend"] or 0, reverse=True)}
+            "items": sorted(items, key=lambda item: item["spend"] or 0, reverse=True), "data_quality": quality}
 
 
 def trend(db, user, dimension, days, entity_id):
@@ -113,9 +118,11 @@ def trend(db, user, dimension, days, entity_id):
         total.update({field: None for field in (*MONEY, "cpc", "cpm", "cpa", "roas", "revenue_roas", "roi")})
         total.update(currency=None, ctr=total["clicks"] / total["impressions"] * 100 if total["impressions"] else 0,
                      conversion_rate=total["conversions"] / total["clicks"] * 100 if total["clicks"] else 0)
+    accounts = {value[1].id: value[1] for value in entities.values()}
+    qualities = [{"account_id": account.id, **report_quality(db, account, account_today(account) - timedelta(days=days - 1), account_today(account), dimension)} for account in accounts.values()]
     synced = [row.synced_at for row, _ in rows if row.synced_at]
     return {"dimension": dimension, "entity_id": entity_id, "days": days, "total": total,
             "series": series, "currency_totals": currency_totals,
             "currency_note": "不同币种未进行汇率换算，currency_totals 分组展示",
             "data_quality": {"row_count": len(rows), "latest_synced_at": max(synced).isoformat() if synced else None,
-                             "has_data": bool(rows)}}
+                             "has_data": bool(rows), "accounts": qualities}}

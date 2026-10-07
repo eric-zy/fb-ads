@@ -26,6 +26,7 @@ from models import (
     SyncAlert,
 )
 from services.account_access import accessible_account_ids
+from services.report_quality import report_quality
 
 
 router = APIRouter(prefix="/api/v1/workbench", tags=["工作台"])
@@ -139,7 +140,7 @@ def workbench_summary(
     trend = defaultdict(lambda: defaultdict(float))
     latest_synced_at = None
     total_impressions = total_clicks = 0
-    account_latest_synced_at = {account.id: account.last_synced_at for account in accounts}
+    account_latest_synced_at = {account.id: account.insights_last_synced_at for account in accounts}
 
     for row in insight_rows:
         account = account_map.get(row.account_id)
@@ -170,7 +171,7 @@ def workbench_summary(
             account_latest_synced_at[row.account_id] = row.latest_synced_at
 
     if not latest_synced_at:
-        account_sync_times = [row.last_synced_at for row in accounts if row.last_synced_at]
+        account_sync_times = [row.insights_last_synced_at for row in accounts if row.insights_last_synced_at]
         latest_synced_at = max(account_sync_times) if account_sync_times else None
 
     currency_totals = []
@@ -265,17 +266,20 @@ def workbench_summary(
     alerts = [row.to_dict() for row in alert_query.order_by(SyncAlert.created_at.desc()).limit(8).all()]
 
     account_freshness = {
-        account.id: _freshness(account_latest_synced_at.get(account.id))
+        account.id: report_quality(db, account, start, end)
         for account in accounts
     }
     never_synced_count = sum(item["status"] == "NEVER" for item in account_freshness.values())
-    stale_count = sum(item["status"] == "STALE" for item in account_freshness.values())
-    if not accounts or never_synced_count == len(accounts):
+    stale_count = sum(item["status"] not in {"FRESH", "NEVER"} for item in account_freshness.values())
+    statuses = {item["status"] for item in account_freshness.values()}
+    if not accounts or statuses == {"NEVER"}:
         freshness_status = "NEVER"
-    elif stale_count or never_synced_count:
-        freshness_status = "STALE"
-    else:
+    elif statuses == {"FRESH"}:
         freshness_status = "FRESH"
+    else:
+        freshness_status = next((value for value in ("FAILED", "SYNCING", "PENDING", "INCOMPLETE", "STALE") if value in statuses), "INCOMPLETE")
+    report_timestamps = [datetime.fromisoformat(item["latest_synced_at"]) for item in account_freshness.values() if item["latest_synced_at"]]
+    latest_synced_at = min(report_timestamps) if report_timestamps else None
     freshness = {
         **_freshness(latest_synced_at),
         "status": freshness_status,

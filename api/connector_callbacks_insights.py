@@ -41,7 +41,9 @@ def _upsert_account_insights(db: Session, account: AdAccount, items: list[dict])
         try:
             insight_date = date.fromisoformat(str(raw_date)[:10])
         except (TypeError, ValueError):
-            continue
+            raise ValueError("报表日期无效")
+        if row.get("date_stop") != str(insight_date):
+            raise ValueError("回调报表必须为逐日数据")
 
         metrics = AdsManager._parse_action_metrics(
             row.get("actions"), row.get("action_values")

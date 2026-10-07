@@ -71,8 +71,8 @@
             </div>
             <div v-if="canSyncAccounts || isAdmin || canCreateJobs" class="batch-actions">
             <el-button v-if="canSyncAccounts" type="primary" plain :disabled="!selectedAccountRows.length" @click="syncSelectedAccounts">批量同步</el-button>
-            <el-button v-if="isAdmin" type="success" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('unfreeze')">批量启用</el-button>
-            <el-button v-if="isAdmin" type="warning" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('freeze')">批量停用</el-button>
+            <el-button v-if="isAdmin" type="success" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('unfreeze')">恢复新建投放</el-button>
+            <el-button v-if="isAdmin" type="warning" plain :disabled="!selectedAccountRows.length" @click="setSelectedAccountsStatus('freeze')">限制新建投放</el-button>
             <el-button v-if="canCreateJobs" type="primary" :disabled="!selectedAccountRows.length" @click="goBatchPublish">批量投放</el-button>
             </div>
           </div>
@@ -158,7 +158,7 @@
     </el-dialog>
 
     <el-drawer v-model="drawerVisible" :title="drawerTitle" size="520px">
-      <template #footer v-if="selectedAccount && isAdmin"><div class="drawer-actions"><el-button type="warning" plain @click="setAccountStatus(selectedAccount.source, 'freeze')">停用投放</el-button><el-button type="danger" plain @click="unbindAccount(selectedAccount.source)">解绑账号</el-button></div></template>
+      <template #footer v-if="selectedAccount && isAdmin"><div class="drawer-actions"><el-button type="warning" plain @click="setAccountStatus(selectedAccount.source, 'freeze')">限制新建投放</el-button><el-button type="danger" plain @click="unbindAccount(selectedAccount.source)">解绑账号</el-button></div></template>
       <template v-if="selectedBusiness"><el-descriptions :column="1" border><el-descriptions-item label="类型">{{ selectedBusiness.businessId ? 'Business / BM' : '个人授权' }}</el-descriptions-item><el-descriptions-item label="名称">{{ selectedBusiness.label }}</el-descriptions-item><el-descriptions-item label="Business ID">{{ selectedBusiness.metaBusinessId || '-' }}</el-descriptions-item><el-descriptions-item label="授权"><el-tag :type="credentialTagType(selectedBusiness.credentialStatus)">{{ credentialLabel(selectedBusiness.credentialStatus) }}</el-tag></el-descriptions-item><el-descriptions-item label="广告账户">{{ selectedBusiness.accountCount || 0 }}</el-descriptions-item><el-descriptions-item label="同步">{{ syncLabel(selectedBusiness.syncStatus) }}</el-descriptions-item></el-descriptions><el-button v-if="isAdmin && selectedBusiness.businessId" type="primary" class="drawer-button" @click="authorizeBusiness(selectedBusiness)">重新授权 Meta</el-button></template>
       <template v-else-if="selectedAccount"><el-descriptions :column="1" border><el-descriptions-item label="账号">{{ selectedAccount.label }}</el-descriptions-item><el-descriptions-item label="Account ID">{{ selectedAccount.accountId }}</el-descriptions-item><el-descriptions-item label="账号来源">{{ selectedAccount.source?.owner_type === 'PERSONAL' ? '个人授权' : 'BM 资产' }}</el-descriptions-item><el-descriptions-item label="BM ID">{{ selectedAccount.source?.meta_business_id || '-' }}</el-descriptions-item><el-descriptions-item label="授权人">{{ selectedAccount.source?.authorized_by_username || selectedAccount.source?.authorized_by_user_id || '-' }}</el-descriptions-item><el-descriptions-item label="凭证状态"><el-tag :type="credentialTagType(selectedAccount.source?.credential_status)">{{ credentialLabel(selectedAccount.source?.credential_status) }}</el-tag><div class="status-detail">过期时间：{{ selectedAccount.source?.credential_expires_at || '-' }}</div></el-descriptions-item><el-descriptions-item label="Meta 状态">{{ selectedAccount.effectiveStatus || selectedAccount.accountStatus || '待同步' }}</el-descriptions-item><el-descriptions-item label="投放可用性"><el-tag :type="accountAvailabilityType(selectedAccount.source!)">{{ accountAvailabilityLabel(selectedAccount.source!) }}</el-tag><div class="status-detail">{{ selectedAccount.source?.availability_reason || '-' }}</div></el-descriptions-item><el-descriptions-item label="最近同步">{{ selectedAccount.source?.last_synced_at || '未同步' }}</el-descriptions-item><el-descriptions-item label="同步错误">{{ selectedAccount.source?.last_sync_error || '-' }}</el-descriptions-item><el-descriptions-item label="已消费">{{ formatMoney(selectedAccount.amountSpent, selectedAccount.currency) }}</el-descriptions-item></el-descriptions><el-button v-if="isAdmin && selectedAccount.source && !accountIsDeployable(selectedAccount.source)" type="primary" class="drawer-button" @click="reauthorizeAccount(selectedAccount.source)">重新授权</el-button></template>
     </el-drawer>
@@ -221,7 +221,7 @@ async function setSelectedAccountsStatus(action: 'freeze' | 'unfreeze') {
   if (!ids.length) return
   try {
     await withMutationLeases(ids, tokens => accountApi.bulk({ action, account_ids: ids, reason: action === 'freeze' ? '管理员批量停用' : undefined, operation_leases: tokens }))
-    ElMessage.success(`已批量${action === 'freeze' ? '停用' : '启用'} ${ids.length} 个账号`)
+    ElMessage.success(`已${action === 'freeze' ? '限制' : '恢复'} ${ids.length} 个账号的新建投放资格`)
     selectedAccountRows.value = []
     await load()
   } catch { /* 全局请求拦截器提示错误 */ }
@@ -229,7 +229,7 @@ async function setSelectedAccountsStatus(action: 'freeze' | 'unfreeze') {
 async function setAccountStatus(account: AdAccountItem | undefined, action: 'freeze' | 'unfreeze') {
   if (!account) return
   await withMutationLeases([account.id], tokens => accountApi.bulk({ action, account_ids: [account.id], reason: action === 'freeze' ? '管理员停用账号' : undefined, operation_leases: tokens }))
-  ElMessage.success(action === 'freeze' ? '账号已停用' : '账号已启用')
+  ElMessage.success(action === 'freeze' ? '已限制该账号新建投放' : '已恢复该账号新建投放资格')
   await load()
 }
 async function unbindAccount(account: AdAccountItem | undefined) {

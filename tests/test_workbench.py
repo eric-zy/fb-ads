@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from api.workbench import workbench_summary
-from models import AccountInsight, AdAccount, CampaignJob, CampaignJobItem, User, UserAccount
+from models import AccountInsight, AdAccount, CampaignJob, CampaignJobItem, User, UserAccount, ReportSyncRun
 from api.users import get_user_accounts
 
 
@@ -191,6 +191,12 @@ def test_workbench_summary_keeps_currency_totals_separate_and_reports_partial_st
     ])
     db.commit()
 
+    db.add_all([ReportSyncRun(id=f"complete-{account.id}", account_id=account.id,
+                             start_date=date.today() - timedelta(days=6), end_date=date.today(),
+                             status="SUCCESS", snapshots={"account": []},
+                             finished_at=datetime.utcnow() - timedelta(hours=hours))
+                for account, hours in ((usd, 0), (cny, 4))])
+    db.commit()
     payload = workbench_summary(db=db, current_user=user)
 
     totals = {item["currency"]: item["spend"] for item in payload["currency_totals"]}

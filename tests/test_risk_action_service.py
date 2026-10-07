@@ -13,7 +13,7 @@ class _FakeConnector:
         self.calls.append((campaign_id, credential_id, idempotency_key))
         if self.should_fail:
             raise RuntimeError("模拟 Meta 暂停失败")
-        return {"remote": "PAUSED", "campaign_id": campaign_id}
+        return {"result": {"confirmed": True, "status": "PAUSED", "id": campaign_id}}
 
 
 def _fixture(db):

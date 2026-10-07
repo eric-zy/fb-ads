@@ -183,6 +183,7 @@ import { formatRequestError } from '@/utils/request'
 import { useAccountStore } from '@/stores/accountStore'
 import { useUserStore } from '@/stores/userStore'
 import { reportsApi, workbenchApi, type WorkbenchSummary } from '@/api/reports'
+import { waitForReportSync } from '@/utils/reportSync'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
 
@@ -439,12 +440,21 @@ const loadSummary = async () => {
   }
 }
 
+let reportController: AbortController | undefined
 const syncReports = async () => {
+  reportController = new AbortController()
   syncLoading.value = true
   try {
-    const { data } = await reportsApi.sync({ account_id: accountStore.selectedAccountId || undefined, days: 7 })
+    const { data } = await reportsApi.sync({ ...dateParams(), days: 7 })
     ElMessage.success(`已提交 ${data.account_count || 0} 个账户的同步任务`)
+    await waitForReportSync(data.task_ids || [], reportController.signal)
     await loadSummary()
+    ElMessage.success('报表同步完成')
+  } catch (err) {
+    if (!reportController.signal.aborted) {
+      await loadSummary()
+      ElMessage.warning(err instanceof Error ? err.message : '报表同步失败')
+    }
   } finally {
     syncLoading.value = false
   }
@@ -484,6 +494,7 @@ watch([chartMetric, chartGranularity, chartCurrency, comparisonSummary], async (
 })
 onMounted(() => void loadSummary())
 onBeforeUnmount(() => {
+  reportController?.abort()
   if (loadTimer) clearTimeout(loadTimer)
   abortController?.abort()
   resizeObserver?.disconnect()

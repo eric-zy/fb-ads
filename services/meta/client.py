@@ -245,7 +245,7 @@ class MetaClient:
             raise classify_facebook_error(exc)
 
     def _delete(self, path: str) -> dict:
-        """删除 Meta 对象（仅用于投放失败补偿，不作为业务删除入口）。"""
+        """删除 Meta 对象；调用方负责确认范围和持久化执行结果。"""
         try:
             logger.info("[MetaAPI] DELETE path=%s", path)
             response = requests.delete(

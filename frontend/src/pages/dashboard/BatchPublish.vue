@@ -2227,6 +2227,8 @@ onMounted(() => {
   loadJobs()
   const presetAccounts = String(route.query.account_ids || '').split(',').filter(Boolean)
   if (presetAccounts.length) form.ad_account_ids = presetAccounts
+  const presetTemplate = String(route.query.template_id || '')
+  if (presetTemplate) { form.publish_mode = 'TEMPLATE'; form.template_id = presetTemplate; form.status = 'PAUSED' }
   const sourceJobId = String(route.query.source_job_id || '')
   const revisionId = String(route.query.revision_id || '')
   if (sourceJobId) loadEditSource(sourceJobId, revisionId || undefined)

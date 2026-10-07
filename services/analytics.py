@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from models import AccountInsight, CampaignInsight, AdInsight, Campaign, Ad
 from core.logger import logger
 from core.money import to_major
+from core.reporting_time import account_today
+from services.reporting import aggregate_metrics
 from services.ad_account_resolver import resolve_ad_account
 import numpy as np
 from sklearn.ensemble import IsolationForest
@@ -44,12 +46,17 @@ class AnalyticsEngine:
     def get_account_performance_trend(self, account_id: str, days: int = 30) -> pd.DataFrame:
         """获取账户性能趋势"""
         try:
-            start_date = date.today() - timedelta(days=days)
-            account_key = self._account_key(account_id)
+            account = resolve_ad_account(self.db, account_id)
+            if not account:
+                return pd.DataFrame()
+            account_key = account.id
 
+            end_date = account_today(account)
+            start_date = end_date - timedelta(days=days - 1)
             insights = self.db.query(AccountInsight).filter(
                 AccountInsight.ad_account_id == account_key,
-                AccountInsight.date >= start_date
+                AccountInsight.date >= start_date,
+                AccountInsight.date <= end_date
             ).order_by(AccountInsight.date).all()
             
             if not insights:
@@ -59,11 +66,11 @@ class AnalyticsEngine:
             for insight in insights:
                 data.append({
                     'date': insight.date,
-                    'spend': to_major(insight.spend),
+                    'spend': to_major(insight.spend, account.currency),
                     'impressions': insight.impressions,
                     'clicks': insight.clicks,
                     'conversions': insight.conversions,
-                    'ctr': insight.ctr,
+                    'ctr': insight.clicks / insight.impressions * 100 if insight.impressions else 0,
                     'cpc': insight.cpc,
                     'cpm': insight.cpm,
                 })
@@ -110,7 +117,10 @@ class AnalyticsEngine:
         2. 低质量指标 (20%)
         """
         try:
-            account_key = self._account_key(account_id)
+            account = resolve_ad_account(self.db, account_id)
+            if not account:
+                return {}
+            account_key = account.id
 
             # 异常检测评分
             anomaly_score, is_anomaly = self.detect_spend_anomaly(account_key, window_days)
@@ -155,7 +165,10 @@ class AnalyticsEngine:
             account_id: 广告账户内部主键
         """
         try:
-            account_key = self._account_key(account_id)
+            account = resolve_ad_account(self.db, account_id)
+            if not account:
+                return {}
+            account_key = account.id
 
             insight = self.db.query(AccountInsight).filter(
                 AccountInsight.ad_account_id == account_key,
@@ -177,14 +190,14 @@ class AnalyticsEngine:
                 # 回显归一后的主键：前端拿到的是稳定标识，便于后续接口串联
                 'account_id': account_key,
                 'metrics': {
-                    'spend': to_major(insight.spend),
+                    'spend': to_major(insight.spend, account.currency),
                     'impressions': insight.impressions,
                     'clicks': insight.clicks,
                     'conversions': insight.conversions,
-                    'ctr': insight.ctr,
+                    'ctr': insight.clicks / insight.impressions * 100 if insight.impressions else 0,
                     'cpc': insight.cpc,
                     'cpm': insight.cpm,
-                    'roas': insight.roas,
+                    'roas': aggregate_metrics([insight], account.currency)['roas'],
                 },
                 'trend': {}
             }
@@ -209,11 +222,12 @@ class AnalyticsEngine:
             account_id: 广告账户内部主键
         """
         try:
-            if end_date is None:
-                end_date = date.today()
-
-            start_date = end_date - timedelta(days=7)
-            account_key = self._account_key(account_id)
+            account = resolve_ad_account(self.db, account_id)
+            if not account:
+                return {}
+            account_key = account.id
+            end_date = end_date or account_today(account)
+            start_date = end_date - timedelta(days=6)
 
             insights = self.db.query(AccountInsight).filter(
                 AccountInsight.ad_account_id == account_key,
@@ -226,7 +240,7 @@ class AnalyticsEngine:
             
             # 汇总指标：先按最小单位累加（避免浮点误差），最后统一转主单位输出
             total_spend_minor = sum(i.spend or 0 for i in insights)
-            total_spend = to_major(total_spend_minor)
+            total_spend = to_major(total_spend_minor, account.currency)
             total_impressions = sum(i.impressions for i in insights)
             total_clicks = sum(i.clicks for i in insights)
             total_conversions = sum(i.conversions for i in insights)

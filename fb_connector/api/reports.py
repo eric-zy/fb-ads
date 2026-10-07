@@ -38,6 +38,8 @@ class InsightsRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_time_range(self):
+        if bool(self.since) != bool(self.until):
+            raise ValueError("since 和 until 必须同时提供")
         if self.since and self.until:
             try:
                 if date.fromisoformat(self.since) > date.fromisoformat(self.until):
@@ -63,14 +65,14 @@ def insights(payload: InsightsRequest):
     )
     try:
         token = DatabaseCredentialVault().get_access_token(payload.credential_id)
-        params = {"level": payload.level}
+        params = {"level": payload.level, "time_increment": 1}
         if payload.since and payload.until:
             params["time_range"] = {"since": payload.since, "until": payload.until}
         else:
             params["date_preset"] = f"last_{payload.days}d"
         rows = MetaAdsService(MetaClient(access_token=token)).get_insights(payload.account_id, params)
         logger.info("[ConnectorInsightsAPI] success account_id=%s rows=%s", payload.account_id, len(rows))
-        return {"account_id": payload.account_id, "days": payload.days, "level": payload.level, "items": rows}
+        return {"account_id": payload.account_id, "days": payload.days, "level": payload.level, "items": rows, "complete": True, "time_increment": 1}
     except KeyError as exc:
         logger.warning("[ConnectorInsightsAPI] credential failed credential_id=%s error=%s", payload.credential_id, exc)
         raise HTTPException(status_code=404, detail=str(exc)) from exc

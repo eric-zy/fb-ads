@@ -192,7 +192,8 @@ def test_existing_campaign_action_does_not_require_page(monkeypatch, db):
         account_status="1",
         system_status="ACTIVE",
     )
-    db.add_all([template, account])
+    actor = User(id="legacy-action-admin", username="legacy-action-admin", email="legacy-action@test.local", hashed_password="unused", role="tenant_admin", is_active=True)
+    db.add_all([template, account, actor])
     db.commit()
 
     monkeypatch.setattr(
@@ -209,6 +210,7 @@ def test_existing_campaign_action_does_not_require_page(monkeypatch, db):
         template_id=template.id,
         ad_account_ids=[account.id],
         action_type=ActionType.ENABLE,
+        created_by=actor.id,
     )
 
     assert job.action_type == ActionType.ENABLE.value

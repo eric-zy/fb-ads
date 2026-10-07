@@ -232,33 +232,24 @@ class MetaAdsService:
         return self._execute(_do, f"create_ad(act={act})", account_id=account_id)
 
     def delete_object(self, object_id: str) -> Dict[str, Any]:
-        """删除投放失败补偿阶段创建的 Meta 对象。"""
+        """删除 Meta 对象；业务删除由 Connector 保存回执并控制重试。"""
         return self._execute(lambda: self.client._delete(object_id), f"delete_object({object_id})")
+
+    def get_delivery_object(self, object_id: str) -> Dict[str, Any]:
+        return self._execute(
+            lambda: self.client._get(object_id, {"fields": "id,account_id,status,effective_status"}),
+            f"get_delivery_object({object_id})",
+        )
 
     # ------------------------------------------------------------------
     # 批量操作 Action（设计文档第 22 / 23 节）
     # ------------------------------------------------------------------
-    def update_budget(
-        self, object_id: str, budget_usd: float, level: str = "adset"
-    ) -> Dict[str, Any]:
-        """修改预算。Meta 以「分」为单位。
-
-        Args:
-            level: adset（日预算）或 campaign
-        """
-        if budget_usd is None or budget_usd <= 0:
-            raise MetaApiError(
-                f"预算必须为正数，收到 {budget_usd}", category=ErrorCategory.VALIDATION
-            )
-
-        def _do():
-            self.client._post(
-                object_id,
-                {"daily_budget": int(round(budget_usd * 100))},
-            )
-            return {"id": object_id, "daily_budget": budget_usd}
-
-        return self._execute(_do, f"update_budget({level}={object_id})")
+    def update_budget(self, object_id: str, budget_usd: float, level: str = "adset") -> Dict[str, Any]:
+        from core.money import to_minor
+        budget = to_minor(budget_usd, "USD")
+        if budget <= 0:
+            raise MetaApiError("预算必须为正数", category=ErrorCategory.VALIDATION)
+        return self._confirmed_update(object_id, {"daily_budget": budget})
 
     def pause_campaign(self, campaign_id: str) -> Dict[str, Any]:
         """暂停 Campaign"""
@@ -268,16 +259,43 @@ class MetaAdsService:
         """启用 Campaign"""
         return self._set_campaign_status(campaign_id, "ACTIVE")
 
-    def _set_campaign_status(self, campaign_id: str, status: str) -> Dict[str, Any]:
-        def _do():
-            self.client._post(campaign_id, {"status": status})
-            return {"id": campaign_id, "status": status}
+    def _confirmed_update(self, object_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        before_fields = "id,status,lifetime_budget" if "daily_budget" in params else "id,status"
+        before = self._execute(lambda: self.client._get(object_id, {"fields": before_fields}), f"precheck_update({object_id})")
+        if before.get("status") in {"ARCHIVED", "DELETED"}:
+            raise MetaApiError("Meta 对象已归档或删除，不能直接修改", category=ErrorCategory.VALIDATION)
+        if "daily_budget" in params and int(before.get("lifetime_budget") or 0):
+            raise MetaApiError("不能将总预算对象直接修改为日预算", category=ErrorCategory.VALIDATION)
+        receipt = self.client._post(object_id, params)
+        if receipt is not True and not (isinstance(receipt, dict) and receipt.get("success") is True):
+            raise MetaApiError("Meta 更新未返回 success=true", category=ErrorCategory.UNKNOWN)
+        fields = list(dict.fromkeys(["id", *params, *(["effective_status"] if "status" in params else [])]))
+        # Retry the read, never replay the acknowledged write because a GET failed.
+        observed = self._execute(lambda: self.client._get(object_id, {"fields": ",".join(fields)}), f"confirm_update({object_id})")
+        if str(observed.get("id")) != str(object_id):
+            raise MetaApiError("Meta 更新确认对象 ID 不一致", category=ErrorCategory.UNKNOWN)
+        for field, expected in params.items():
+            if str(observed.get(field)) != str(expected):
+                raise MetaApiError(f"Meta 更新已受理但字段 {field} 尚未确认，请同步后重试", category=ErrorCategory.UNKNOWN)
+        return {**observed, "confirmed": True, "receipt": receipt}
 
-        return self._execute(_do, f"set_campaign_status({campaign_id}={status})")
+    def _set_campaign_status(self, campaign_id: str, status: str) -> Dict[str, Any]:
+        return self._confirmed_update(campaign_id, {"status": status})
 
     # ------------------------------------------------------------------
     # 读取与素材
     # ------------------------------------------------------------------
+    @staticmethod
+    def _next_cursor(payload, seen):
+        paging = payload.get("paging") or {}
+        if not paging.get("next"):
+            return None
+        after = (paging.get("cursors") or {}).get("after")
+        if not after or after in seen:
+            raise MetaApiError("Meta 分页游标缺失或重复", category=ErrorCategory.VALIDATION)
+        seen.add(after)
+        return after
+
     def get_insights(self, account_id: str, params: Dict[str, Any]) -> List[Dict]:
         """拉取洞察数据（设计文档第 32 节：由 Sync Worker 落库，而非前端实时调用）"""
         act = self.client.normalize_account_id(account_id)
@@ -290,18 +308,19 @@ class MetaAdsService:
             date_preset = params.get("date_preset", "yesterday")
             request_params = {
                 "level": params.get("level", "account"),
+                "time_increment": 1,
                 "fields": params.get(
                     "fields",
                     "date_start,date_stop,spend,impressions,clicks,actions,action_values,"
                     "cost_per_action_type,ctr,cpc,cpm,frequency,reach,"
-                    "account_id,campaign_id,adset_id,ad_id",
+                    "account_id,account_currency,campaign_id,adset_id,ad_id",
                 ),
             }
             # Meta Graph API 不允许 date_preset=custom；自定义日期必须只传 time_range。
-            if date_preset != "custom":
+            if date_preset != "custom" and not params.get("time_range"):
                 request_params["date_preset"] = date_preset
             for key, value in params.items():
-                if key not in {"date_preset", "level", "fields"}:
+                if key not in {"date_preset", "level", "fields", "time_increment"}:
                     request_params[key] = value
             for key, value in list(request_params.items()):
                 if isinstance(value, (dict, list)):
@@ -309,7 +328,8 @@ class MetaAdsService:
 
             rows: List[Dict[str, Any]] = []
             after = None
-            for page_index in range(20):
+            seen_cursors = set()
+            for page_index in range(1000):
                 page_params = dict(request_params)
                 page_params["limit"] = min(int(page_params.get("limit", 500)), 500)
                 if after:
@@ -347,11 +367,15 @@ class MetaAdsService:
                         http_status=response.status_code,
                         fbtrace_id=error.get("fbtrace_id"),
                     )
-                rows.extend(payload.get("data", []) if isinstance(payload, dict) else [])
+                if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                    raise MetaApiError("Meta 报表响应缺少 data 数组", category=ErrorCategory.UNKNOWN)
+                rows.extend(payload["data"])
                 logger.info("[MetaAPI] GET insights page complete account=%s rows=%s", act, len(rows))
-                after = ((payload.get("paging") or {}).get("cursors") or {}).get("after")
+                after = self._next_cursor(payload, seen_cursors)
                 if not after:
                     break
+            else:
+                raise MetaApiError("Meta 分页超过安全上限，拒绝保存不完整数据", category=ErrorCategory.VALIDATION)
             return rows
 
         return self._execute(_do, f"get_insights(act={act})", account_id=account_id)
@@ -383,15 +407,20 @@ class MetaAdsService:
             )
             rows: List[Dict[str, Any]] = []
             after = None
-            for _ in range(20):
+            seen_cursors = set()
+            for _ in range(1000):
                 params = {"fields": fields, "limit": limit}
                 if after:
                     params["after"] = after
                 payload = self.client._get(f"{act}/campaigns", params=params)
-                rows.extend(payload.get("data", []))
-                after = (payload.get("paging") or {}).get("cursors", {}).get("after")
+                if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                    raise MetaApiError("Meta 列表响应缺少 data 数组", category=ErrorCategory.UNKNOWN)
+                rows.extend(payload["data"])
+                after = self._next_cursor(payload, seen_cursors)
                 if not after:
                     break
+            else:
+                raise MetaApiError("Meta 分页超过安全上限，拒绝使用不完整结果", category=ErrorCategory.VALIDATION)
             return rows
 
         return self._execute(_do, f"list_campaigns(act={act})", account_id=account_id)
@@ -401,7 +430,8 @@ class MetaAdsService:
         def _do():
             rows: List[Dict[str, Any]] = []
             after = None
-            for _ in range(20):
+            seen_cursors = set()
+            for _ in range(1000):
                 params = {
                     "fields": "id,name,status,effective_status,daily_budget,"
                               "lifetime_budget,optimization_goal,billing_event,"
@@ -411,10 +441,14 @@ class MetaAdsService:
                 if after:
                     params["after"] = after
                 payload = self.client._get(f"{campaign_id}/adsets", params)
-                rows.extend(payload.get("data", []))
-                after = ((payload.get("paging") or {}).get("cursors") or {}).get("after")
+                if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                    raise MetaApiError("Meta 列表响应缺少 data 数组", category=ErrorCategory.UNKNOWN)
+                rows.extend(payload["data"])
+                after = self._next_cursor(payload, seen_cursors)
                 if not after:
                     break
+            else:
+                raise MetaApiError("Meta 分页超过安全上限，拒绝使用不完整结果", category=ErrorCategory.VALIDATION)
             return rows
 
         return self._execute(_do, f"list_adsets(campaign={campaign_id})")
@@ -434,7 +468,8 @@ class MetaAdsService:
         def _do():
             rows: List[Dict[str, Any]] = []
             after = None
-            for _ in range(20):
+            seen_cursors = set()
+            for _ in range(1000):
                 params = {
                     "fields": "id,name,status,effective_status,creative,created_time,updated_time",
                     "limit": limit,
@@ -442,10 +477,14 @@ class MetaAdsService:
                 if after:
                     params["after"] = after
                 payload = self.client._get(f"{adset_id}/ads", params)
-                rows.extend(payload.get("data", []))
-                after = ((payload.get("paging") or {}).get("cursors") or {}).get("after")
+                if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                    raise MetaApiError("Meta 列表响应缺少 data 数组", category=ErrorCategory.UNKNOWN)
+                rows.extend(payload["data"])
+                after = self._next_cursor(payload, seen_cursors)
                 if not after:
                     break
+            else:
+                raise MetaApiError("Meta 分页超过安全上限，拒绝使用不完整结果", category=ErrorCategory.VALIDATION)
             return rows
 
         return self._execute(_do, f"list_ads(adset={adset_id})")
@@ -457,7 +496,8 @@ class MetaAdsService:
         def _do():
             rows: List[Dict[str, Any]] = []
             after = None
-            for _ in range(20):
+            seen_cursors = set()
+            for _ in range(1000):
                 params = {
                     "fields": "id,name,created_time,updated_time",
                     "limit": limit,
@@ -465,10 +505,14 @@ class MetaAdsService:
                 if after:
                     params["after"] = after
                 payload = self.client._get(f"{act}/adcreatives", params)
-                rows.extend(payload.get("data", []))
-                after = ((payload.get("paging") or {}).get("cursors") or {}).get("after")
+                if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+                    raise MetaApiError("Meta 列表响应缺少 data 数组", category=ErrorCategory.UNKNOWN)
+                rows.extend(payload["data"])
+                after = self._next_cursor(payload, seen_cursors)
                 if not after:
                     break
+            else:
+                raise MetaApiError("Meta 分页超过安全上限，拒绝使用不完整结果", category=ErrorCategory.VALIDATION)
             return rows
 
         return self._execute(_do, f"list_creatives(act={act})", account_id=account_id)
@@ -484,28 +528,13 @@ class MetaAdsService:
         return self._execute(_do, f"get_adset({adset_id})")
 
     def update_campaign(self, campaign_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """更新 Campaign 属性，例如名称、预算或状态。"""
-        def _do():
-            self.client._post(campaign_id, params)
-            return {"id": campaign_id, **params}
-
-        return self._execute(_do, f"update_campaign({campaign_id})")
+        return self._confirmed_update(campaign_id, params)
 
     def update_adset(self, adset_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """更新 AdSet 属性，例如预算、定向或状态。"""
-        def _do():
-            self.client._post(adset_id, params)
-            return {"id": adset_id, **params}
-
-        return self._execute(_do, f"update_adset({adset_id})")
+        return self._confirmed_update(adset_id, params)
 
     def update_ad(self, ad_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """更新 Ad 属性，例如名称或状态。"""
-        def _do():
-            self.client._post(ad_id, params)
-            return {"id": ad_id, **params}
-
-        return self._execute(_do, f"update_ad({ad_id})")
+        return self._confirmed_update(ad_id, params)
 
     def upload_image(
         self,

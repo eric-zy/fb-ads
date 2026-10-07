@@ -660,14 +660,22 @@ class JobService:
 
         requested_status = params.get("status", InstanceStatus.PAUSED.value)
         # 投放账户资格由 AdAccountService 统一判断；用户支付状态不参与拦截。
-        ad_account_ids, rejected = AdAccountService(self.db).filter_available_ids(
-            ad_account_ids,
-            user_id=created_by,
-            allow_paused_debug=(
-                action_type == ActionType.CREATE
-                and requested_status == InstanceStatus.PAUSED.value
-            ),
-        )
+        rejected = []
+        if action_value == ActionType.CREATE.value:
+            ad_account_ids, rejected = AdAccountService(self.db).filter_available_ids(
+                ad_account_ids,
+                user_id=created_by,
+                allow_paused_debug=(
+                    action_type == ActionType.CREATE
+                    and requested_status == InstanceStatus.PAUSED.value
+                ),
+            )
+        else:
+            from services.business_access import require_accounts
+            actor = self.db.query(User).filter_by(id=created_by).first()
+            if not actor:
+                raise ValueError("投放操作必须由真实用户发起")
+            require_accounts(self.db, actor, ad_account_ids, write=True)
         compatible_ids = []
         if page is not None:
             for account_pk in ad_account_ids:

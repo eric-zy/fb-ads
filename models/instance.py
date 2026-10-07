@@ -7,6 +7,12 @@ from core.enums import InstanceStatus
 from core.tenant import TenantMixin
 
 
+def _deletion_state(row):
+    if row.meta_status in {"DELETED", "PARENT_DELETED"}:
+        return "REMOTE_DELETED"
+    return "LOCAL_REMOVED" if row.status == "DELETED" else None
+
+
 class CampaignInstance(TenantMixin, Base):
     """Campaign 实例映射（设计文档第 12 节）
 
@@ -69,6 +75,7 @@ class CampaignInstance(TenantMixin, Base):
             "last_error": self.last_error,
             "archived_at": self.archived_at.isoformat() if self.archived_at else None,
             "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
+            "deletion_state": _deletion_state(self),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -124,6 +131,7 @@ class AdSetInstance(TenantMixin, Base):
             "last_error": self.last_error,
             "archived_at": self.archived_at.isoformat() if self.archived_at else None,
             "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
+            "deletion_state": _deletion_state(self),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -182,6 +190,7 @@ class AdInstance(TenantMixin, Base):
             "last_error": self.last_error,
             "archived_at": self.archived_at.isoformat() if self.archived_at else None,
             "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
+            "deletion_state": _deletion_state(self),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
