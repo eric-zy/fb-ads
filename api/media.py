@@ -19,7 +19,7 @@ from core.tenant import effective_tenant_id
 from core.auth import get_current_active_user
 from core.logger import logger
 from core.money import to_major
-from models import CreativeAsset, AdAccount, MetaAssetBinding, CreativeAssetUsageEvent, CreativeAssetUsageDailyStat, CreativeAssetUsageAccountDailyStat, User, CreativeAssetGroup, MediaUploadSession
+from models import CreativeAsset, CreativeAssetTag, AdAccount, MetaAssetBinding, CreativeAssetUsageEvent, CreativeAssetUsageDailyStat, CreativeAssetUsageAccountDailyStat, User, CreativeAssetGroup, MediaUploadSession
 from models import Ad, AdGroup, AdInsight, AdInstance, Campaign, PublishedAd
 from models.creative_asset_group import creative_asset_group_members
 from models.creative_asset_tag import creative_asset_tag_links
@@ -117,6 +117,7 @@ class MediaUploadSessionRequest(BaseModel):
     account_id: Optional[str] = None
     meta_account_id: Optional[str] = None
     group_id: Optional[str] = None
+    tag_ids: Optional[List[str]] = Field(None, max_length=30)
     asset_id: Optional[str] = None
     version_of_asset_id: Optional[str] = None
 
@@ -221,6 +222,7 @@ def _apply_asset_view_filters(
     *,
     group_id: Optional[str] = None,
     tag_id: Optional[str] = None,
+    tag_ids: Optional[str] = None,
     workspace_mode: Optional[str] = None,
     status_filter: Optional[str] = None,
 ):
@@ -233,11 +235,33 @@ def _apply_asset_view_filters(
     """
     if group_id:
         query = query.filter(CreativeAsset.group_id == group_id)
-    if tag_id:
-        query = query.join(
-            creative_asset_tag_links,
-            creative_asset_tag_links.c.asset_id == CreativeAsset.id,
-        ).filter(creative_asset_tag_links.c.tag_id == tag_id)
+    legacy_tag_id = tag_id if isinstance(tag_id, str) and tag_id else None
+    category_tag_ids = tag_ids if isinstance(tag_ids, str) else ""
+    if legacy_tag_id and not category_tag_ids:
+        # Keep the original single-tag filter contract for older clients.
+        query = query.filter(CreativeAsset.id.in_(
+            select(creative_asset_tag_links.c.asset_id).where(creative_asset_tag_links.c.tag_id == legacy_tag_id)
+        ))
+    selected_tag_ids = list(dict.fromkeys(([legacy_tag_id] if legacy_tag_id and category_tag_ids else []) + [
+        value.strip() for value in category_tag_ids.split(",") if value.strip()
+    ]))
+    if selected_tag_ids:
+        if len(selected_tag_ids) > 30:
+            raise HTTPException(status_code=400, detail="标签筛选最多选择 30 个")
+        tags = db.query(CreativeAssetTag).filter(
+            CreativeAssetTag.tenant_id == effective_tenant_id(user),
+            CreativeAssetTag.id.in_(selected_tag_ids),
+        ).all()
+        if len(tags) != len(selected_tag_ids):
+            raise HTTPException(status_code=400, detail="包含不存在或无权使用的标签")
+        grouped: dict[str, list[str]] = {}
+        for tag in tags:
+            grouped.setdefault(tag.category_id, []).append(tag.id)
+        # Same category = OR; each category contributes one AND condition.
+        for ids in grouped.values():
+            query = query.filter(CreativeAsset.id.in_(
+                select(creative_asset_tag_links.c.asset_id).where(creative_asset_tag_links.c.tag_id.in_(ids))
+            ))
 
     if workspace_mode == "mine":
         query = query.filter(CreativeAsset.created_by == user.id)
@@ -529,6 +553,8 @@ def create_media_upload_session(
     tenant_id = account.tenant_id if account else effective_tenant_id(user)
     if not tenant_id:
         raise HTTPException(status_code=400, detail="当前用户未绑定租户")
+    from api.creative_asset_tags import validate_tag_ids
+    requested_tags = validate_tag_ids(db, payload.tag_ids, tenant_id) if payload.tag_ids is not None else None
 
     retry_asset = None
     version_base = None
@@ -690,6 +716,8 @@ def create_media_upload_session(
         is_current=not bool(version_base),
         previous_version_id=previous_version_id,
     )
+    if not retry_asset:
+        asset.tags = requested_tags if requested_tags is not None else list(version_base.tags) if version_base else []
     use_multipart = payload.size >= settings.OSS_MULTIPART_THRESHOLD_BYTES
     part_size = settings.OSS_MULTIPART_PART_SIZE_BYTES if use_multipart else None
     part_count = ((payload.size + part_size - 1) // part_size) if part_size else None
@@ -899,6 +927,7 @@ def list_media(
     asset_type: Optional[str] = None,
     group_id: Optional[str] = None,
     tag_id: Optional[str] = None,
+    tag_ids: Optional[str] = None,
     workspace_mode: Optional[str] = Query(None, pattern="^(mine|team|testing|archive)$"),
     status_filter: Optional[str] = Query(None, pattern="^(unused|delivering|processing|failed|ready)$"),
     include_archived: bool = False,
@@ -923,6 +952,7 @@ def list_media(
         user,
         group_id=group_id,
         tag_id=tag_id,
+        tag_ids=tag_ids,
         workspace_mode=workspace_mode,
         status_filter=status_filter,
     )
@@ -1055,6 +1085,7 @@ def get_media_stats_overview(
     account_id: Optional[str] = Query(None),
     group_id: Optional[str] = Query(None),
     tag_id: Optional[str] = Query(None),
+    tag_ids: Optional[str] = Query(None),
     workspace_mode: Optional[str] = Query(None, pattern="^(mine|team|testing|archive)$"),
     status_filter: Optional[str] = Query(None, pattern="^(unused|delivering|processing|failed|ready)$"),
     include_archived: bool = Query(False),
@@ -1080,6 +1111,7 @@ def get_media_stats_overview(
         user,
         group_id=group_id,
         tag_id=tag_id,
+        tag_ids=tag_ids,
         workspace_mode=workspace_mode,
         status_filter=status_filter,
     )
@@ -1282,6 +1314,7 @@ def get_media_performance_stats(
     account_id: Optional[str] = Query(None),
     group_id: Optional[str] = Query(None),
     tag_id: Optional[str] = Query(None),
+    tag_ids: Optional[str] = Query(None),
     workspace_mode: Optional[str] = Query(None, pattern="^(mine|team|testing|archive)$"),
     status_filter: Optional[str] = Query(None, pattern="^(unused|delivering|processing|failed|ready)$"),
     include_archived: bool = Query(False),
@@ -1313,6 +1346,7 @@ def get_media_performance_stats(
         user,
         group_id=group_id,
         tag_id=tag_id,
+        tag_ids=tag_ids,
         workspace_mode=workspace_mode,
         status_filter=status_filter,
     )

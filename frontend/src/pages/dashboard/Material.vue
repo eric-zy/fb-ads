@@ -13,6 +13,7 @@
               <el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} (${account.account_id})`" :value="account.id" />
             </el-select>
             <el-upload
+              multiple
               :auto-upload="false"
               :show-file-list="false"
               :on-change="onSelect"
@@ -87,10 +88,13 @@
         <el-select v-model="filterAccount" placeholder="搜索归属账户（可选）" clearable filterable remote :remote-method="loadAccountOptions" class="filter-account" @change="load">
             <el-option v-for="account in accounts" :key="account.id" :label="`${account.account_name || account.account_id} (${account.account_id})`" :value="account.id" />
         </el-select>
-        <el-select v-model="filterTag" placeholder="素材标签" clearable filterable class="filter-tag" @change="load">
-          <el-option v-for="tag in tags" :key="tag.id" :label="tag.name" :value="tag.id" />
+        <el-select v-model="filterTagIds" multiple collapse-tags collapse-tags-tooltip placeholder="按标签筛选" clearable filterable class="filter-tag" @change="load">
+          <el-option-group v-for="category in activeCategories" :key="category.id" :label="category.name">
+            <el-option v-for="tag in activeTagsFor(category.id)" :key="tag.id" :label="tag.name" :value="tag.id" />
+          </el-option-group>
         </el-select>
-        <el-button class="new-tag" @click="createTagVisible = true">新建标签</el-button>
+        <el-button v-if="canManageTags" class="new-tag" @click="createTagVisible = true">新建标签</el-button>
+        <el-button v-if="canManageTags" @click="manageTagsVisible = true">管理分类</el-button>
         <el-radio-group v-model="viewMode" size="small" class="view-switch">
           <el-radio-button value="card">卡片</el-radio-button>
           <el-radio-button value="list">列表</el-radio-button>
@@ -168,10 +172,15 @@
         </el-select>
         <el-button type="primary" size="small" @click="moveSelected">移动</el-button>
         <el-button size="small" :loading="bulkSyncing" @click="syncSelected">同步账户</el-button>
-        <el-select v-model="batchTagId" placeholder="覆盖标签" clearable style="width: 160px">
-          <el-option v-for="tag in tags" :key="tag.id" :label="tag.name" :value="tag.id" />
+        <el-select v-model="batchTagMode" style="width: 105px">
+          <el-option label="追加" value="APPEND" /><el-option label="移除" value="REMOVE" /><el-option label="覆盖" value="REPLACE" />
         </el-select>
-        <el-button size="small" :disabled="!batchTagId" @click="applyBatchTag">覆盖标签</el-button>
+        <el-select v-model="batchTagIds" multiple collapse-tags placeholder="选择标签" style="width: 190px">
+          <el-option-group v-for="category in activeCategories" :key="category.id" :label="category.name">
+            <el-option v-for="tag in tagsFor(category.id, batchTagMode === 'REMOVE')" :key="tag.id" :label="tag.name" :value="tag.id" />
+          </el-option-group>
+        </el-select>
+        <el-button size="small" :disabled="!batchTagIds.length && batchTagMode !== 'REPLACE'" @click="applyBatchTag">应用标签</el-button>
         <el-button size="small" @click="selectedIds = []">取消选择</el-button>
       </div>
       <div v-loading="loading" v-if="viewMode === 'card'" class="grid">
@@ -207,7 +216,7 @@
               <span v-if="item.duration" class="size">{{ formatDuration(item.duration) }}</span>
             </div>
             <div v-if="item.tag_ids?.length" class="tags">
-              <el-tag v-for="tagId in item.tag_ids" :key="tagId" size="small" effect="plain">{{ tagName(tagId) }}</el-tag>
+              <el-tag v-for="tagId in item.tag_ids" :key="tagId" size="small" effect="plain">{{ tagDisplayName(tagId) }}</el-tag>
             </div>
             <div v-if="placementAdvice(item)" class="placement-tip">{{ placementAdvice(item) }}</div>
             <div class="status">
@@ -222,6 +231,7 @@
             </div>
           </div>
           <div class="actions">
+            <el-button v-if="item.can_edit && item.status !== 'ARCHIVED'" link type="primary" size="small" @click="openAssetTags(item)">编辑标签</el-button>
             <el-popconfirm v-if="item.can_edit && item.status !== 'ARCHIVED'" title="确定删除该素材？" @confirm="remove(item)">
               <template #reference>
                 <el-button link type="danger" size="small">删除</el-button>
@@ -263,8 +273,50 @@
       <template #footer><el-button @click="createGroupVisible = false">取消</el-button><el-button type="primary" @click="createGroup">创建</el-button></template>
     </el-dialog>
     <el-dialog v-model="createTagVisible" title="新建素材标签" width="420px">
+      <el-select v-model="newTagCategoryId" placeholder="选择分类" style="width:100%;margin-bottom:12px">
+        <el-option v-for="category in activeCategories" :key="category.id" :label="category.name" :value="category.id" />
+      </el-select>
       <el-input v-model="newTagName" maxlength="64" placeholder="例如：US、UGC、V2" />
       <template #footer><el-button @click="createTagVisible = false">取消</el-button><el-button type="primary" @click="createTag">创建</el-button></template>
+    </el-dialog>
+    <el-dialog v-model="manageTagsVisible" title="标签分类管理" width="620px">
+      <div class="tag-manage-form">
+        <el-input v-model="newCategoryName" maxlength="64" placeholder="分类名称，例如：国家/地区" />
+        <el-select v-model="newCategoryMode" style="width:130px"><el-option label="可多选" value="MULTIPLE" /><el-option label="单选" value="SINGLE" /></el-select>
+        <el-button type="primary" @click="createCategory">创建分类</el-button>
+      </div>
+      <div v-for="category in categories" :key="category.id" class="tag-manage-category">
+        <strong>{{ category.name }}</strong><span>{{ category.selection_mode === 'SINGLE' ? '单选' : '可多选' }}</span>
+        <el-button link type="primary" @click="editCategory(category)">编辑</el-button>
+        <el-button link type="primary" @click="toggleCategoryMode(category)">{{ category.selection_mode === 'SINGLE' ? '改为多选' : '改为单选' }}</el-button>
+        <el-button link :type="category.status === 'ACTIVE' ? 'danger' : 'success'" @click="toggleCategory(category)">{{ category.status === 'ACTIVE' ? '停用' : '启用' }}</el-button>
+        <div class="tag-manage-tags">
+          <span v-for="tag in tagsFor(category.id, true)" :key="tag.id"><el-tag :type="tag.status === 'ACTIVE' ? 'primary' : 'info'" class="clickable" @click="editTag(tag)">{{ tag.name }}</el-tag><el-button link size="small" @click="toggleTag(tag)">{{ tag.status === 'ACTIVE' ? '停用' : '启用' }}</el-button></span>
+        </div>
+      </div>
+    </el-dialog>
+    <el-dialog v-model="uploadConfirmVisible" :title="uploadVersionOfId ? '上传素材新版本' : '上传素材'" width="600px" :close-on-click-modal="false">
+      <div class="upload-file-list"><div v-for="(file, index) in stagedFiles" :key="file.name + index">{{ file.name }} · {{ formatSize(file.size) }} <el-button link type="danger" @click="stagedFiles.splice(index, 1)">移除</el-button></div></div>
+      <el-form label-width="85px">
+        <el-form-item label="目标分组"><el-select v-model="uploadGroupId" clearable placeholder="租户共享素材库" style="width:100%"><el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" /></el-select></el-form-item>
+        <el-form-item label="素材标签">
+          <el-select v-model="uploadTagIds" multiple clearable filterable placeholder="选择标签（可选）" style="width:100%" @change="normalizeUploadTagSelection">
+            <el-option-group v-for="category in activeCategories" :key="category.id" :label="`${category.name} · ${category.selection_mode === 'SINGLE' ? '单选' : '多选'}`">
+              <el-option v-for="tag in activeTagsFor(category.id)" :key="tag.id" :label="tag.name" :value="tag.id" />
+            </el-option-group>
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <small v-if="uploadVersionOfId">默认继承原版本标签；修改选择后将覆盖新版本标签。</small>
+      <small v-else>相同文件会复用原素材，复用时不会覆盖原有标签，可上传后编辑。</small>
+      <template #footer><el-button @click="uploadConfirmVisible = false">取消</el-button><el-button type="primary" :disabled="!stagedFiles.length" @click="confirmUpload">确认上传 {{ stagedFiles.length }} 个文件</el-button></template>
+    </el-dialog>
+    <el-dialog v-model="editAssetTagsVisible" :title="`编辑标签 · ${editAsset?.name || ''}`" width="520px">
+      <el-select v-model="editAssetTagIds" multiple clearable filterable style="width:100%" @change="normalizeEditTagSelection">
+        <el-option-group v-for="category in activeCategories" :key="category.id" :label="category.name"><el-option v-for="tag in activeTagsFor(category.id)" :key="tag.id" :label="tag.name" :value="tag.id" /></el-option-group>
+      </el-select>
+      <div v-if="editAssetRetainedTagIds.length" class="retained-tags">已停用标签将保留：<el-tag v-for="id in editAssetRetainedTagIds" :key="id" closable size="small" type="info" @close="editAssetRetainedTagIds = editAssetRetainedTagIds.filter(value => value !== id)">{{ tagDisplayName(id) }}</el-tag></div>
+      <template #footer><el-button @click="editAssetTagsVisible = false">取消</el-button><el-button type="primary" @click="saveAssetTags">保存</el-button></template>
     </el-dialog>
     <el-dialog v-model="membersVisible" title="分组成员管理" width="620px">
       <el-select v-model="memberGroupId" placeholder="选择分组" style="width:100%;margin-bottom:12px" @change="loadMembers">
@@ -407,8 +459,12 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { UploadFilled, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { mediaApi, type MediaItem, type MediaOverviewStats, type MediaUsageStats, type MediaPerformanceStats, type CreativeAssetGroup, type CreativeAssetTag, type MediaStatusFilter } from '@/api/media'
+import { mediaApi, type MediaItem, type MediaOverviewStats, type MediaUsageStats, type MediaPerformanceStats, type CreativeAssetGroup, type CreativeAssetTag, type CreativeAssetTagCategory, type MediaStatusFilter } from '@/api/media'
 import { accountApi, type AdAccountItem } from '@/api/admin'
+import { useUserStore } from '@/stores/userStore'
+
+const userStore = useUserStore()
+const canManageTags = computed(() => userStore.isAdmin || userStore.isManager)
 
 const list = ref<MediaItem[]>([])
 const loading = ref(false)
@@ -416,7 +472,7 @@ const filterType = ref('')
 const filterAccount = ref('')
 const uploadAccountId = ref('')
 const filterGroup = ref('')
-const filterTag = ref('')
+const filterTagIds = ref<string[]>([])
 const filterStatus = ref<MediaStatusFilter | ''>('')
 const searchKeyword = ref('')
 const viewMode = ref<'card' | 'list'>('card')
@@ -432,14 +488,15 @@ const restoreSavedView = () => {
     if (typeof saved.filterAccount === 'string') filterAccount.value = saved.filterAccount
     if (typeof saved.filterGroup === 'string') filterGroup.value = saved.filterGroup
     if (typeof saved.filterStatus === 'string') filterStatus.value = saved.filterStatus
-    if (typeof saved.filterTag === 'string') filterTag.value = saved.filterTag
+    if (Array.isArray(saved.filterTagIds)) filterTagIds.value = saved.filterTagIds.filter((id: unknown) => typeof id === 'string')
+    else if (typeof saved.filterTag === 'string' && saved.filterTag) filterTagIds.value = [saved.filterTag]
   } catch { /* 忽略损坏的本地视图配置 */ }
 }
-watch([workspaceMode, viewMode, searchKeyword, filterType, filterAccount, filterGroup, filterStatus, filterTag], () => {
+watch([workspaceMode, viewMode, searchKeyword, filterType, filterAccount, filterGroup, filterStatus, filterTagIds], () => {
   localStorage.setItem(savedFilterKey, JSON.stringify({
     workspaceMode: workspaceMode.value, viewMode: viewMode.value, searchKeyword: searchKeyword.value,
     filterType: filterType.value, filterAccount: filterAccount.value, filterGroup: filterGroup.value,
-    filterStatus: filterStatus.value, filterTag: filterTag.value,
+    filterStatus: filterStatus.value, filterTagIds: filterTagIds.value,
   }))
 })
 const toDateInput = (value: Date) => {
@@ -460,13 +517,32 @@ const performanceOverview = ref<MediaPerformanceStats | null>(null)
 const performanceOverviewError = ref(false)
 const groups = ref<CreativeAssetGroup[]>([])
 const tags = ref<CreativeAssetTag[]>([])
+const categories = ref<CreativeAssetTagCategory[]>([])
+const activeCategories = computed(() => categories.value.filter(category => category.status === 'ACTIVE'))
+const tagsFor = (categoryId: string, includeInactive = false) => tags.value.filter(tag => tag.category_id === categoryId && (includeInactive || tag.status === 'ACTIVE'))
+const activeTagsFor = (categoryId: string) => tagsFor(categoryId)
 const selectedIds = ref<string[]>([])
 const moveTargetGroup = ref('')
-const batchTagId = ref('')
+const batchTagIds = ref<string[]>([])
+const batchTagMode = ref<'APPEND' | 'REMOVE' | 'REPLACE'>('APPEND')
 const bulkSyncing = ref(false)
 const createGroupVisible = ref(false)
 const createTagVisible = ref(false)
 const newTagName = ref('')
+const newTagCategoryId = ref('')
+const manageTagsVisible = ref(false)
+const newCategoryName = ref('')
+const newCategoryMode = ref<'SINGLE' | 'MULTIPLE'>('MULTIPLE')
+const uploadConfirmVisible = ref(false)
+const stagedFiles = ref<File[]>([])
+const uploadGroupId = ref('')
+const uploadTagIds = ref<string[]>([])
+const uploadVersionOfId = ref('')
+const uploadTagSelectionTouched = ref(false)
+const editAssetTagsVisible = ref(false)
+const editAsset = ref<MediaItem | null>(null)
+const editAssetTagIds = ref<string[]>([])
+const editAssetRetainedTagIds = ref<string[]>([])
 const membersVisible = ref(false)
 const memberGroupId = ref('')
 const memberUserId = ref('')
@@ -588,7 +664,7 @@ const loadOverview = async () => {
       asset_type: filterType.value || undefined,
       account_id: filterAccount.value || undefined,
       group_id: filterGroup.value || undefined,
-      tag_id: filterTag.value || undefined,
+      tag_ids: filterTagIds.value.join(',') || undefined,
       workspace_mode: workspaceMode.value,
       status_filter: filterStatus.value || undefined,
       include_archived: workspaceMode.value === 'archive' || undefined,
@@ -601,7 +677,7 @@ const loadOverview = async () => {
         asset_type: filterType.value || undefined,
         account_id: filterAccount.value || undefined,
         group_id: filterGroup.value || undefined,
-        tag_id: filterTag.value || undefined,
+        tag_ids: filterTagIds.value.join(',') || undefined,
         workspace_mode: workspaceMode.value,
         status_filter: filterStatus.value || undefined,
         include_archived: workspaceMode.value === 'archive' || undefined,
@@ -624,7 +700,7 @@ const load = async () => {
       asset_type: filterType.value || undefined,
       account_id: filterAccount.value || undefined,
       group_id: filterGroup.value || undefined,
-      tag_id: filterTag.value || undefined,
+      tag_ids: filterTagIds.value.join(',') || undefined,
       workspace_mode: workspaceMode.value,
       status_filter: filterStatus.value || undefined,
       include_archived: workspaceMode.value === 'archive' || undefined,
@@ -658,22 +734,23 @@ watch(workspaceMode, (next, previous) => {
 
 // Element Plus 的 change 回调第二个参数是当前文件列表，不能当成 asset_id 传给后端。
 // 重传场景走独立的原生 file input，由 uploadFile 显式传入原素材 ID。
-const uploadFile = async (file: any, assetId = '', versionOfAssetId = '') => {
+const uploadFile = async (file: any, assetId = '', versionOfAssetId = '', options?: { group_id?: string; tag_ids?: string[] }) => {
   const raw: File = file.raw
-  if (!raw) return
+  if (!raw) return false
   const validation = await validateMediaFile(raw)
   if (validation) {
     ElMessage.warning(validation)
-    return
+    return false
   }
-  if (uploading.value) return
+  if (uploading.value) return false
   uploading.value = true
   uploadProgress.value = 0
   uploadStage.value = '计算文件指纹'
   try {
     const res = await mediaApi.upload(raw, {
       account_id: uploadAccountId.value || undefined,
-      group_id: filterGroup.value || undefined,
+      group_id: options?.group_id,
+      tag_ids: options?.tag_ids,
       asset_id: assetId || undefined,
       version_of_asset_id: versionOfAssetId || undefined,
     }, (event) => {
@@ -697,9 +774,11 @@ const uploadFile = async (file: any, assetId = '', versionOfAssetId = '') => {
       await waitForAsset(res.data.id)
       await load()
     }
+    return true
   } catch (e: any) {
     const detail = e?.response?.data?.detail || e?.message || '素材上传失败'
     ElMessage.error(String(detail))
+    return false
   } finally {
     uploading.value = false
     if (assetId) retryAssetId.value = ''
@@ -719,10 +798,69 @@ const onVersionFileSelected = async (event: Event) => {
   input.value = ''
   versionAssetId.value = ''
   if (!raw || !assetId) return
-  await uploadFile({ raw }, '', assetId)
+  stageUpload([raw], assetId)
 }
 
-const onSelect = async (file: any) => uploadFile(file)
+const stageUpload = (files: File[], versionOfId = '') => {
+  if (versionOfId) {
+    const original = list.value.find(item => item.id === versionOfId)
+    uploadVersionOfId.value = versionOfId
+    uploadGroupId.value = original?.group_id || ''
+    uploadTagIds.value = (original?.tag_ids || []).filter(id => tags.value.some(tag => tag.id === id && tag.status === 'ACTIVE'))
+    previousUploadTagIds = [...uploadTagIds.value]
+    uploadTagSelectionTouched.value = false
+    stagedFiles.value = files
+  } else {
+    if (!uploadConfirmVisible.value) {
+      uploadGroupId.value = ''
+      uploadTagIds.value = []
+      previousUploadTagIds = []
+      stagedFiles.value = []
+    }
+    uploadVersionOfId.value = ''
+    for (const file of files) if (!stagedFiles.value.includes(file)) stagedFiles.value.push(file)
+  }
+  uploadConfirmVisible.value = true
+}
+const onSelect = (file: any) => { if (file.raw) stageUpload([file.raw]) }
+const normalizeTagSelection = (ids: string[], previous: string[]) => {
+  const result = [...ids]
+  for (const category of activeCategories.value.filter(item => item.selection_mode === 'SINGLE')) {
+    const inCategory = result.filter(id => tags.value.some(tag => tag.id === id && tag.category_id === category.id))
+    if (inCategory.length > 1) {
+      const added = inCategory.find(id => !previous.includes(id)) || inCategory[inCategory.length - 1]
+      for (const id of inCategory) if (id !== added) result.splice(result.indexOf(id), 1)
+    }
+  }
+  return result
+}
+let previousUploadTagIds: string[] = []
+const normalizeUploadTagSelection = (ids: string[]) => {
+  uploadTagIds.value = normalizeTagSelection(ids, previousUploadTagIds)
+  previousUploadTagIds = [...uploadTagIds.value]
+  uploadTagSelectionTouched.value = true
+}
+let previousEditTagIds: string[] = []
+const normalizeEditTagSelection = (ids: string[]) => {
+  editAssetTagIds.value = normalizeTagSelection(ids, previousEditTagIds)
+  previousEditTagIds = [...editAssetTagIds.value]
+}
+const confirmUpload = async () => {
+  const pending = [...stagedFiles.value]
+  const versionId = uploadVersionOfId.value
+  const options = { group_id: uploadGroupId.value || undefined, tag_ids: versionId && !uploadTagSelectionTouched.value ? undefined : [...uploadTagIds.value] }
+  uploadConfirmVisible.value = false
+  for (const file of pending) {
+    const success = await uploadFile({ raw: file }, '', versionId, options)
+    if (!success) {
+      stagedFiles.value = pending.slice(pending.indexOf(file))
+      uploadConfirmVisible.value = true
+      return
+    }
+  }
+  stagedFiles.value = []
+  uploadVersionOfId.value = ''
+}
 
 const beginRetryUpload = (item: MediaItem) => {
   retryAssetId.value = item.id
@@ -811,6 +949,28 @@ const createGroup = async () => {
 }
 
 const tagName = (id: string) => tags.value.find(tag => tag.id === id)?.name || id
+const tagDisplayName = (id: string) => {
+  const tag = tags.value.find(item => item.id === id)
+  const category = categories.value.find(item => item.id === tag?.category_id)
+  return category ? `${category.name} / ${tag?.name}` : tagName(id)
+}
+const openAssetTags = (item: MediaItem) => {
+  editAsset.value = item
+  const selectable = new Set(tags.value.filter(tag => tag.status === 'ACTIVE' && activeCategories.value.some(category => category.id === tag.category_id)).map(tag => tag.id))
+  editAssetTagIds.value = (item.tag_ids || []).filter(id => selectable.has(id))
+  editAssetRetainedTagIds.value = (item.tag_ids || []).filter(id => !selectable.has(id))
+  previousEditTagIds = [...editAssetTagIds.value]
+  editAssetTagsVisible.value = true
+}
+const saveAssetTags = async () => {
+  if (!editAsset.value) return
+  try {
+    await mediaApi.tags.setAssetTags(editAsset.value.id, [...editAssetTagIds.value, ...editAssetRetainedTagIds.value])
+    editAssetTagsVisible.value = false
+    await load()
+    ElMessage.success('素材标签已更新')
+  } catch { /* 全局请求层提示错误 */ }
+}
 const placementAdvice = (item: MediaItem) => {
   if (!item.width || !item.height) return ''
   const ratio = item.width / item.height
@@ -821,13 +981,58 @@ const placementAdvice = (item: MediaItem) => {
 }
 const createTag = async () => {
   if (!newTagName.value.trim()) { ElMessage.warning('请输入标签名称'); return }
+  if (!newTagCategoryId.value) { ElMessage.warning('请选择标签分类'); return }
   try {
-    const { data } = await mediaApi.tags.create({ name: newTagName.value.trim() })
+    const { data } = await mediaApi.tags.create({ name: newTagName.value.trim(), category_id: newTagCategoryId.value })
     tags.value.push(data)
     newTagName.value = ''
     createTagVisible.value = false
     ElMessage.success('标签已创建')
   } catch { /* 全局拦截器提示错误 */ }
+}
+const createCategory = async () => {
+  if (!newCategoryName.value.trim()) { ElMessage.warning('请输入分类名称'); return }
+  try {
+    const { data } = await mediaApi.tags.createCategory({ name: newCategoryName.value.trim(), selection_mode: newCategoryMode.value })
+    categories.value.push(data)
+    newTagCategoryId.value = data.id
+    newCategoryName.value = ''
+    ElMessage.success('分类已创建')
+  } catch { /* 全局请求层提示错误 */ }
+}
+const editCategory = async (category: CreativeAssetTagCategory) => {
+  const name = window.prompt('分类名称', category.name)?.trim()
+  if (!name) return
+  try {
+    const { data } = await mediaApi.tags.updateCategory(category.id, { name })
+    categories.value = categories.value.map(item => item.id === data.id ? data : item)
+  } catch { /* 全局请求层提示错误 */ }
+}
+const toggleCategory = async (category: CreativeAssetTagCategory) => {
+  try {
+    const { data } = await mediaApi.tags.updateCategory(category.id, { status: category.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' })
+    categories.value = categories.value.map(item => item.id === data.id ? data : item)
+  } catch { /* 全局请求层提示错误 */ }
+}
+const toggleCategoryMode = async (category: CreativeAssetTagCategory) => {
+  try {
+    const { data } = await mediaApi.tags.updateCategory(category.id, { selection_mode: category.selection_mode === 'SINGLE' ? 'MULTIPLE' : 'SINGLE' })
+    categories.value = categories.value.map(item => item.id === data.id ? data : item)
+  } catch { /* 全局请求层提示冲突 */ }
+}
+const editTag = async (tag: CreativeAssetTag) => {
+  const name = window.prompt('标签名称', tag.name)?.trim()
+  if (!name) return
+  try {
+    const { data } = await mediaApi.tags.update(tag.id, { name })
+    tags.value = tags.value.map(item => item.id === data.id ? data : item)
+  } catch { /* 全局请求层提示错误 */ }
+}
+const toggleTag = async (tag: CreativeAssetTag) => {
+  try {
+    const { data } = await mediaApi.tags.update(tag.id, { status: tag.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE' })
+    tags.value = tags.value.map(item => item.id === data.id ? data : item)
+  } catch { /* 全局请求层提示错误 */ }
 }
 
 const openMembers = () => {
@@ -865,16 +1070,16 @@ const moveSelected = async () => {
 }
 
 const applyBatchTag = async () => {
-  if (!batchTagId.value || !selectedIds.value.length) return
+  if ((!batchTagIds.value.length && batchTagMode.value !== 'REPLACE') || !selectedIds.value.length) return
   try {
-    await mediaApi.tags.setBatch(selectedIds.value, [batchTagId.value])
-    const tagId = batchTagId.value
+    const { data } = await mediaApi.tags.setBatch(selectedIds.value, batchTagIds.value, batchTagMode.value)
     list.value.forEach((item) => {
-      if (selectedIds.value.includes(item.id)) item.tag_ids = [tagId]
+      if (data.tag_ids_by_asset[item.id]) item.tag_ids = data.tag_ids_by_asset[item.id]
     })
     selectedIds.value = []
-    batchTagId.value = ''
-    ElMessage.success('已为选中素材设置标签')
+    batchTagIds.value = []
+    ElMessage.success('已更新选中素材的标签')
+    await loadOverview()
   } catch { /* 全局拦截器提示错误 */ }
 }
 
@@ -1053,6 +1258,12 @@ onMounted(async () => {
   } catch {
     tags.value = []
   }
+  try {
+    categories.value = (await mediaApi.tags.categories()).data || []
+    newTagCategoryId.value = activeCategories.value[0]?.id || ''
+  } catch {
+    categories.value = []
+  }
   await load()
 })
 </script>
@@ -1060,6 +1271,13 @@ onMounted(async () => {
 <style scoped lang="scss">
 .material { color: #1f2937; }
 .retry-file-input { display: none; }
+.upload-file-list { max-height: 160px; overflow: auto; margin-bottom: 16px; padding: 8px 12px; border-radius: 8px; background: #f7faff; }
+.upload-file-list > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 4px 0; }
+.tag-manage-form { display: flex; gap: 8px; margin-bottom: 16px; }
+.tag-manage-category { padding: 12px 0; border-top: 1px solid #edf1f7; }
+.tag-manage-category > span { margin-left: 10px; color: #718096; font-size: 12px; }
+.tag-manage-tags { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.retained-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; color: #718096; font-size: 12px; }
 .library-shell { border: 0; border-radius: 16px; background: #fff; box-shadow: 0 8px 28px rgba(15, 35, 70, .06); }
 .library-shell :deep(.el-card__header) { padding: 24px 28px 18px; border-bottom: 1px solid #edf1f7; }
 .library-shell :deep(.el-card__body) { padding: 20px 28px 28px; }

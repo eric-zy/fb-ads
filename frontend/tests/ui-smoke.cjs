@@ -56,8 +56,18 @@ async function main() {
           { id: 'archived-image', name: '已归档图片', asset_type: 'image', status: 'ARCHIVED', storage_status: 'DELETED', processing_status: 'READY', can_edit: true },
           { id: 'archived-video', name: '已归档视频', asset_type: 'video', status: 'ARCHIVED', storage_status: 'DELETED', processing_status: 'PENDING', can_edit: true },
         ])
-        return respond([{ id: 'asset-1', name: '测试图片', asset_type: 'image', status: 'READY', is_current: true }])
+        return respond([{ id: 'asset-1', name: '测试图片', asset_type: 'image', status: 'READY', storage_status: 'READY', processing_status: 'READY', is_current: true, can_edit: true, created_by: user.id, tag_ids: ['tag-us'] }])
       }
+      if (path === '/creative-asset-tags/categories') return respond([
+        { id: 'category-region', name: '地区', selection_mode: 'SINGLE', status: 'ACTIVE', sort_order: 0 },
+        { id: 'category-format', name: '形式', selection_mode: 'MULTIPLE', status: 'ACTIVE', sort_order: 1 },
+      ])
+      if (path === '/creative-asset-tags') return respond([
+        { id: 'tag-us', name: 'US', category_id: 'category-region', status: 'ACTIVE' },
+        { id: 'tag-uk', name: 'UK', category_id: 'category-region', status: 'ACTIVE' },
+        { id: 'tag-ugc', name: 'UGC', category_id: 'category-format', status: 'ACTIVE' },
+      ])
+      if (path === '/creative-asset-tags/assets/asset-1' && method === 'PUT') return respond({ asset_id: 'asset-1', tag_ids: request.postDataJSON().tag_ids })
       if (path === '/media/stats/overview') return respond({ asset_count: 2, ready_asset_count: 0, used_asset_count: 0, unused_asset_count: 2, inventory_usage_rate: 0, account_coverage_rate: 0, bound_account_count: 0, available_account_count: 0, binding_count: 0, ready_binding_count: 0, usage_count: 0, successful_usage_count: 0, failed_usage_count: 0, success_rate: 0, funnel: [{ key: 'inventory', label: '库存素材', count: 2, rate: 100 }, { key: 'ready', label: '就绪素材', count: 0, rate: 0 }], top_assets: [] })
       if (path === '/media/stats/performance') return respond({ has_data: false, items: [] })
       if (path === '/meta-instagram') return respond({ source: 'LOCAL_SNAPSHOT', items: url.searchParams.get('page_id') === 'page-1' ? [{ id: '200', username: 'brand', account_ids: [account.id] }] : [], accounts: [{ account_pk: account.id, account_name: account.account_name, sync_status: 'HEALTHY' }] })
@@ -181,6 +191,11 @@ async function main() {
     await page.getByRole('option').filter({ hasText: '测试 Page' }).click()
     await page.locator('.instagram-selector .el-select').click()
     await page.getByRole('option').filter({ hasText: '@brand' }).click()
+    await page.locator('.el-form-item').filter({ hasText: /^标签筛选/ }).locator('.el-select').click()
+    await Promise.all([
+      page.waitForRequest(req => new URL(req.url()).pathname === '/api/v1/media' && new URL(req.url()).searchParams.get('tag_ids') === 'tag-us'),
+      page.getByRole('option', { name: 'US', exact: true }).click(),
+    ])
     await page.locator('.direct-creative .el-select').click()
     await page.getByRole('option').filter({ hasText: '测试图片' }).last().click()
     await page.getByPlaceholder('https://example.com/landing（图片广告最终必须有有效链接）', { exact: true }).fill('https://example.com')
@@ -195,6 +210,17 @@ async function main() {
     console.log('PASS Instagram direct: selected identity reaches preflight configuration')
 
     await page.goto(`${baseURL}/dashboard/material`)
+    await page.locator('.card').filter({ hasText: '测试图片' }).waitFor()
+    await page.locator('.card').getByRole('button', { name: '编辑标签' }).click()
+    await page.getByRole('dialog', { name: /编辑标签/ }).getByRole('button', { name: '保存' }).click()
+    assert(calls.some(item => item.path === '/creative-asset-tags/assets/asset-1' && item.method === 'PUT'))
+    const uploadSessionCalls = () => calls.filter(item => item.path === '/media/upload-sessions').length
+    const beforeChoose = uploadSessionCalls()
+    await page.locator('.header-actions input[type="file"]').first().setInputFiles({ name: 'sample.png', mimeType: 'image/png', buffer: Buffer.from('fake image') })
+    await page.getByRole('dialog', { name: '上传素材' }).getByText('sample.png', { exact: false }).waitFor()
+    assert.equal(uploadSessionCalls(), beforeChoose)
+    await page.getByRole('dialog', { name: '上传素材' }).getByRole('button', { name: '取消' }).click()
+    console.log('PASS materials: edit tags; file selection opens confirmation without submitting an upload')
     await page.getByRole('button', { name: '已归档', exact: true }).click()
     await page.locator('.card').filter({ hasText: '已归档图片' }).waitFor()
     assert.equal(await page.locator('.card .status').filter({ hasText: '素材就绪' }).count(), 0)

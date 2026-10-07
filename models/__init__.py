@@ -14,7 +14,7 @@ from models.meta_account import MetaAccount, BusinessStatus, SyncStatus
 from models.creative_asset import CreativeAsset
 from models.media_upload_session import MediaUploadSession
 from models.creative_asset_group import CreativeAssetGroup, creative_asset_group_members
-from models.creative_asset_tag import CreativeAssetTag, creative_asset_tag_links
+from models.creative_asset_tag import CreativeAssetTag, CreativeAssetTagCategory, creative_asset_tag_links
 from models.meta_asset_binding import MetaAssetBinding
 from models.creative_asset_usage_event import CreativeAssetUsageEvent
 from models.creative_asset_usage_daily_stat import CreativeAssetUsageDailyStat

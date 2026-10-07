@@ -310,6 +310,13 @@
         <el-form-item label="公共标题"><el-input v-model="creativeForm.shared.headline" /></el-form-item>
         <el-form-item label="公共描述"><el-input v-model="creativeForm.shared.description" /></el-form-item>
         <el-form-item label="公共行动号召"><el-select v-model="creativeForm.shared.cta" style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
+        <el-form-item label="标签筛选">
+          <el-select v-model="pickerTagIds" multiple collapse-tags clearable filterable placeholder="按分类筛选素材" style="width:100%" @change="loadMediaAssets">
+            <el-option-group v-for="category in pickerCategories" :key="category.id" :label="category.name">
+              <el-option v-for="tag in pickerTags.filter(item => item.category_id === category.id && item.status === 'ACTIVE')" :key="tag.id" :label="tag.name" :value="tag.id" />
+            </el-option-group>
+          </el-select>
+        </el-form-item>
         <div v-for="(creative, index) in creativeForm.creatives" :key="index" class="creative-block">
           <div class="creative-head"><b>{{ creativeForm.creative_format === 'CAROUSEL' ? `轮播卡片 ${index + 1}` : `创意 ${index + 1}` }}</b><el-button v-if="creativeForm.creatives.length > 1" link type="danger" @click="removeCreative(index)">删除</el-button></div>
           <el-form-item v-if="creativeForm.creative_format !== 'CAROUSEL'" label="素材类型">
@@ -407,6 +414,10 @@ const userStore = useUserStore()
 
 const templates = ref<CampaignTemplate[]>([])
 const mediaAssets = ref<MediaItem[]>([])
+const pickerTagIds = ref<string[]>([])
+const pickerTags = ref<Array<{ id: string; name: string; category_id: string; status: string }>>([])
+const pickerCategories = ref<Array<{ id: string; name: string }>>([])
+const pickerMatchedAssetIds = ref<Set<string> | null>(null)
 const metaPages = ref<MetaPage[]>([])
 const regionGroups = ref<RegionGroup[]>([])
 const targetingPackages = ref<TargetingPackage[]>([])
@@ -629,7 +640,8 @@ function setTemplateInstagramIdentity(value: string) {
 }
 // 异步素材流程使用大写 READY；兼容历史数据中的小写 ready。
 const availableAssets = (type: string) => mediaAssets.value.filter(
-  asset => asset.asset_type === type && String(asset.status).toUpperCase() === 'READY',
+  asset => asset.asset_type === type && String(asset.status).toUpperCase() === 'READY' &&
+    (!pickerMatchedAssetIds.value || pickerMatchedAssetIds.value.has(asset.id) || creativeForm.creatives.some(item => item.asset_id === asset.id)),
 )
 const selectedAsset = (id: string) => mediaAssets.value.find(asset => asset.id === id)
 const addCreative = () => creativeForm.creatives.push(newCreative())
@@ -776,10 +788,13 @@ const loadTemplates = async () => {
 }
 const loadMediaAssets = async () => {
   try {
-    const { data } = await mediaApi.list()
+    const { data } = await mediaApi.list({ tag_ids: pickerTagIds.value.join(',') || undefined })
     // 素材主表的 status 可能仍是 PENDING；模板投放实际使用账户级 binding。
     // 用 READY binding 回填 Meta ID，避免素材库已映射但模板仍显示“待同步”。
-    mediaAssets.value = await Promise.all(data.map(async asset => {
+    const selectedIds = new Set(creativeForm.creatives.map(item => item.asset_id).filter(Boolean))
+    const retained = mediaAssets.value.filter(asset => selectedIds.has(asset.id) && !data.some(item => item.id === asset.id))
+    pickerMatchedAssetIds.value = pickerTagIds.value.length ? new Set(data.map(item => item.id)) : null
+    mediaAssets.value = [...await Promise.all(data.map(async asset => {
       try {
         const bindingRes = await mediaApi.bindings(asset.id)
         const ready = bindingRes.data.find(binding => String(binding.status).toUpperCase() === 'READY' && binding.meta_asset_id)
@@ -793,8 +808,13 @@ const loadMediaAssets = async () => {
       } catch {
         return asset
       }
-    }))
-  } catch { mediaAssets.value = [] }
+    })), ...retained]
+  } catch { /* 请求失败时保留当前已选素材，避免清空编辑中的模板 */ }
+}
+const loadPickerTaxonomy = async () => {
+  const [categories, tags] = await Promise.allSettled([mediaApi.tags.categories(), mediaApi.tags.list()])
+  pickerCategories.value = categories.status === 'fulfilled' ? (categories.value.data || []).filter(item => item.status === 'ACTIVE') : []
+  pickerTags.value = tags.status === 'fulfilled' ? tags.value.data || [] : []
 }
 const loadMetaPages = async () => {
   try { const { data } = await metaPagesApi.list(); metaPages.value = data } catch { metaPages.value = [] }
@@ -865,6 +885,7 @@ const resetForm = () => {
 
 const openCreate = () => {
   resetForm()
+  void loadPickerTaxonomy()
   loadMediaAssets()
   loadMetaPages()
   loadTargetingResources()
@@ -872,6 +893,7 @@ const openCreate = () => {
 }
 
 const openEdit = (row: CampaignTemplate) => {
+  void loadPickerTaxonomy()
   templateStep.value = 0
   isEdit.value = true
   editingId.value = row.id

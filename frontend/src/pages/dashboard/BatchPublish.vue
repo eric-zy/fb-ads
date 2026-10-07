@@ -182,6 +182,13 @@
             <el-alert type="info" :closable="false" show-icon :title="creativeFormat === 'CAROUSEL' ? '轮播广告' : '单图片或视频广告'">
               {{ creativeFormat === 'CAROUSEL' ? '2-10 张图片组成 1 个轮播广告；所有图片同步完成后才允许发布。' : delivery.split_level === 'AD' ? `每个广告使用一张图片或一个视频；可一次选择多份素材批量生成广告，共 ${directForm.creatives.length} 个。` : '按广告组拆分时一次选择一份素材；每份素材会单独生成一个广告组。' }}
             </el-alert>
+            <el-form-item label="标签筛选">
+              <el-select v-model="pickerTagIds" multiple collapse-tags clearable filterable placeholder="按分类筛选素材" style="width:100%" @change="reloadPickerAssets">
+                <el-option-group v-for="category in pickerCategories" :key="category.id" :label="category.name">
+                  <el-option v-for="tag in pickerTags.filter(item => item.category_id === category.id && item.status === 'ACTIVE')" :key="tag.id" :label="tag.name" :value="tag.id" />
+                </el-option-group>
+              </el-select>
+            </el-form-item>
             <el-form-item label="批量选素材">
               <el-select
                 v-model="batchAssetSelection"
@@ -747,6 +754,10 @@ const regionGroupSourceAdset = ref<any | null>(null)
 const targetingPackageDraft = reactive({ name: '', description: '', account_ids: [] as string[] })
 const regionGroupDraft = reactive({ name: '', description: '', account_ids: [] as string[] })
 const mediaAssets = ref<any[]>([])
+const pickerTagIds = ref<string[]>([])
+const pickerTags = ref<Array<{ id: string; name: string; category_id: string; status: string }>>([])
+const pickerCategories = ref<Array<{ id: string; name: string }>>([])
+const pickerMatchedAssetIds = ref<Set<string> | null>(null)
 const activeStep = ref(0)
 const adGroupMode = ref<'NEW' | 'EXISTING' | 'COPY'>('NEW')
 const existingAdGroups = reactive<Record<string, SyncedAdGroup[]>>({})
@@ -800,7 +811,9 @@ const currentMediaAssets = computed(() => mediaAssets.value.filter(asset => asse
 const readyImageAssets = computed(() => currentMediaAssets.value.filter(asset =>
   String(asset.asset_type || '').toLowerCase() === 'image' && String(asset.status || '').toUpperCase() === 'READY',
 ))
-const creativeAssetOptions = computed(() => creativeFormat.value === 'CAROUSEL' ? readyImageAssets.value : currentMediaAssets.value)
+const creativeAssetOptions = computed(() => (creativeFormat.value === 'CAROUSEL' ? readyImageAssets.value : currentMediaAssets.value).filter(asset =>
+  !pickerMatchedAssetIds.value || pickerMatchedAssetIds.value.has(asset.id) || directForm.creatives.some(item => item.asset_id === asset.id),
+))
 const batchAssetOptions = creativeAssetOptions
 // 按广告拆分时，单图/视频允许一次选择多份素材批量生成广告；
 // 按广告组拆分时，一次只选择一份素材，避免选择器和拆分语义不一致。
@@ -1798,10 +1811,22 @@ const loadDirectResources = async () => {
     loadMetaPages(),
     loadRegionGroups(),
     loadTargetingPackages(),
-    mediaApi.list()
+    mediaApi.tags.categories().then(({ data }) => { pickerCategories.value = (data || []).filter(item => item.status === 'ACTIVE') }).catch(() => { pickerCategories.value = [] }),
+    mediaApi.tags.list().then(({ data }) => { pickerTags.value = data || [] }).catch(() => { pickerTags.value = [] }),
+    mediaApi.list({ tag_ids: pickerTagIds.value.join(',') || undefined })
       .then(({ data }) => { mediaAssets.value = (data || []).filter((item: any) => ['READY', 'PENDING', 'PROCESSING'].includes(item.status)) })
       .catch(() => { mediaAssets.value = [] }),
   ])
+  pickerMatchedAssetIds.value = pickerTagIds.value.length ? new Set(mediaAssets.value.map(item => item.id)) : null
+}
+const reloadPickerAssets = async () => {
+  try {
+    const { data } = await mediaApi.list({ tag_ids: pickerTagIds.value.join(',') || undefined })
+    const selectedIds = new Set(directForm.creatives.map(item => item.asset_id).filter(Boolean))
+    const retained = mediaAssets.value.filter(asset => selectedIds.has(asset.id) && !data.some(item => item.id === asset.id))
+    mediaAssets.value = [...data, ...retained].filter((item: any) => ['READY', 'PENDING', 'PROCESSING'].includes(item.status))
+    pickerMatchedAssetIds.value = pickerTagIds.value.length ? new Set(data.map(item => item.id)) : null
+  } catch { /* 全局请求层提示错误；保留已选素材 */ }
 }
 
 const pollAssetBindings = (assetIds: string[]): Promise<void> => {

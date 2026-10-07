@@ -63,7 +63,20 @@ export interface CreativeAssetGroup {
   owner_id?: string | null
   visibility: 'PRIVATE' | 'TENANT' | string
 }
-export interface CreativeAssetTag { id: string; name: string; color?: string | null }
+export interface CreativeAssetTagCategory {
+  id: string
+  name: string
+  selection_mode: 'SINGLE' | 'MULTIPLE'
+  status: 'ACTIVE' | 'INACTIVE'
+  sort_order: number
+}
+export interface CreativeAssetTag {
+  id: string
+  name: string
+  color?: string | null
+  category_id: string
+  status: 'ACTIVE' | 'INACTIVE'
+}
 
 export interface MediaUsageStats {
   asset_id: string
@@ -236,6 +249,7 @@ export interface MediaViewParams {
   account_id?: string
   group_id?: string
   tag_id?: string
+  tag_ids?: string
   workspace_mode?: MediaWorkspaceMode
   status_filter?: MediaStatusFilter
   include_archived?: boolean
@@ -260,7 +274,7 @@ export const mediaApi = {
     request.get<MediaItem[]>('/api/v1/media', { params }),
   upload: (
     file: File,
-    extra?: { meta_account_id?: string; account_id?: string; group_id?: string; asset_id?: string; version_of_asset_id?: string },
+    extra?: { meta_account_id?: string; account_id?: string; group_id?: string; tag_ids?: string[]; asset_id?: string; version_of_asset_id?: string },
     onProgress?: (e: AxiosProgressEvent) => void,
     onHashProgress?: (loaded: number, total: number) => void,
   ): Promise<UploadResult> => {
@@ -276,6 +290,7 @@ export const mediaApi = {
         account_id: extra?.account_id,
         meta_account_id: extra?.meta_account_id,
         group_id: extra?.group_id,
+        tag_ids: extra?.tag_ids,
         asset_id: extra?.asset_id,
         version_of_asset_id: extra?.version_of_asset_id,
       })
@@ -387,9 +402,17 @@ export const mediaApi = {
   },
   tags: {
     list: () => request.get<CreativeAssetTag[]>('/api/v1/creative-asset-tags'),
-    create: (data: { name: string; color?: string }) => request.post<CreativeAssetTag>('/api/v1/creative-asset-tags', data),
+    categories: () => request.get<CreativeAssetTagCategory[]>('/api/v1/creative-asset-tags/categories'),
+    createCategory: (data: { name: string; selection_mode: 'SINGLE' | 'MULTIPLE'; sort_order?: number }) =>
+      request.post<CreativeAssetTagCategory>('/api/v1/creative-asset-tags/categories', data),
+    updateCategory: (id: string, data: Partial<CreativeAssetTagCategory>) =>
+      request.patch<CreativeAssetTagCategory>(`/api/v1/creative-asset-tags/categories/${id}`, data),
+    create: (data: { name: string; color?: string; category_id?: string }) => request.post<CreativeAssetTag>('/api/v1/creative-asset-tags', data),
+    update: (id: string, data: { name?: string; color?: string | null; status?: 'ACTIVE' | 'INACTIVE' }) =>
+      request.patch<CreativeAssetTag>(`/api/v1/creative-asset-tags/${id}`, data),
     setAssetTags: (assetId: string, tag_ids: string[]) => request.put(`/api/v1/creative-asset-tags/assets/${assetId}`, { tag_ids }),
-    setBatch: (asset_ids: string[], tag_ids: string[]) => request.put('/api/v1/creative-asset-tags/assets/batch', { asset_ids, tag_ids }),
+    setBatch: (asset_ids: string[], tag_ids: string[], mode: 'APPEND' | 'REMOVE' | 'REPLACE' = 'REPLACE') =>
+      request.put<{ asset_ids: string[]; tag_ids_by_asset: Record<string, string[]> }>('/api/v1/creative-asset-tags/assets/batch', { asset_ids, tag_ids, mode }),
   },
   remove: (id: string) => request.delete('/api/v1/media/' + id),
   refreshMetadata: (id: string) => request.post<MediaItem | { asset: MediaItem; status: string; task_id?: string }>(`/api/v1/media/${id}/refresh-metadata`),
