@@ -12,6 +12,7 @@
 import axios, { AxiosError, type AxiosProgressEvent } from 'axios'
 import { ElMessage } from 'element-plus'
 import Cookies from 'js-cookie'
+import { safeAuthRedirect } from '@/utils/authRedirect'
 import { translate } from '@/stores/localeStore'
 
 // 扩展 axios 请求配置：业务方可声明静默，跳过全局错误弹框
@@ -121,7 +122,8 @@ request.interceptors.response.use(
       localStorage.removeItem(USER_KEY)
       if (!window.location.pathname.includes('/login')) {
         ElMessage.error('登录已过期，请重新登录')
-        window.location.href = '/login'
+        const destination = safeAuthRedirect(window.location.pathname + window.location.search + window.location.hash)
+        window.location.href = destination ? `/login?redirect=${encodeURIComponent(destination)}` : '/login'
       }
       return Promise.reject(new Error(formatRequestError(error) || '登录已过期'))
     }

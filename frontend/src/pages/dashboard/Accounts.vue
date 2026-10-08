@@ -123,17 +123,18 @@
     </el-tabs>
 
     <el-dialog v-model="addDialogVisible" title="添加 Meta 广告用户" width="620px" destroy-on-close>
+      <el-alert v-if="oauthError" type="error" :closable="false" show-icon :title="oauthError" style="margin-bottom:16px" />
       <div v-if="oauthStep === 'login'" class="oauth-content">
-        <div class="oauth-hero"><div class="oauth-logo"><Platform /></div><div><div class="oauth-title">Facebook 登录授权</div><div class="oauth-subtitle">将在独立的 Meta 官方授权窗口中完成登录和权限确认，本系统不会获取你的 Facebook 密码。</div></div></div>
+        <div class="oauth-hero"><div class="oauth-logo"><Platform /></div><div><div class="oauth-title">Facebook 登录授权</div><div class="oauth-subtitle">将在当前页面跳转到 Meta 官方授权页，完成后返回并选择广告账户，本系统不会获取你的 Facebook 密码。</div></div></div>
         <div class="steps">
-          <div><b>1　Facebook 登录</b><p>在官方弹窗中登录需要接入广告资产的账号。</p></div>
+          <div><b>1　Facebook 登录</b><p>在 Meta 官方页面登录需要接入广告资产的账号。</p></div>
           <div><b>2　确认授权</b><p>确认广告管理、广告读取和业务资产权限。</p></div>
           <div><b>3　选择广告账户</b><p>系统读取可访问广告账户，BM 由后端自动关联。</p></div>
         </div>
         <el-alert type="info" :closable="false" show-icon title="安全说明">Access Token 仅由服务端加密保存，不会显示给前端。</el-alert>
       </div>
-      <div v-else-if="oauthStep === 'businesses'">
-        <el-alert v-if="oauthError" type="error" :closable="false" show-icon :title="oauthError" />
+      <div v-else-if="oauthStep === 'verifying'" v-loading="true" style="min-height:120px;padding:24px">正在确认本次 Meta 授权，完成后将显示可接入的广告账户。</div>
+      <div v-else-if="oauthStep === 'businesses'" v-loading="authorizing">
         <div class="select-title">选择要接入的广告账户</div>
         <p class="select-desc">个人账户无需关联 BM；企业账户会保留 Meta 返回的 BM 归属。</p>
         <el-radio-group v-model="oauthOwnerFilter" size="small" class="owner-filter">
@@ -154,7 +155,8 @@
         <el-button @click="closeAddDialog">取消</el-button>
         <el-button v-if="oauthStep === 'login'" type="primary" :loading="authorizing" :icon="Connection" @click="startOAuth">登录 Meta 并授权</el-button>
         <el-button v-else-if="oauthStep === 'businesses'" type="primary" :loading="completing" :disabled="!selectedOAuthAccountIds.length" @click="completeOAuth">确认接入并同步</el-button>
-        <el-button v-else type="primary" @click="closeAddDialog">完成</el-button>
+        <el-button v-else-if="oauthStep === 'success'" type="primary" @click="closeAddDialog">完成</el-button>
+        <el-button v-if="oauthStep === 'businesses' && oauthError" :loading="authorizing" @click="openBusinessDiscovery(oauthCredentialId || undefined)">重新读取账户</el-button>
       </template>
     </el-dialog>
 
@@ -168,7 +170,7 @@
 
 <script setup lang="ts">
 import { formatDateTime as displayDateTime } from '@/utils/dateTime'
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ElTree } from 'element-plus'
@@ -182,7 +184,7 @@ const { t } = useLocale()
 
 type DiscoveredBusiness = { id: string; name?: string | null; verification_status?: string | null }
 type TreeNode = { id: string; label: string; type: 'platform' | 'business' | 'account'; children?: TreeNode[]; businessId?: string; metaBusinessId?: string; credentialStatus?: string; syncStatus?: string; accountCount?: number; accountId?: string; accountStatus?: string | null; effectiveStatus?: string | null; systemStatus?: string; amountSpent?: number; currency?: string; businessName?: string | null; source?: AdAccountItem }
-const router = useRouter(); const route = useRoute(); const userStore = useUserStore(); const activeTab = ref('accounts-list'); const treeRef = ref<InstanceType<typeof ElTree>>(); const loading = ref(false); const credentialLoading = ref(false); const syncLoading = ref(false); const trackingHealthLoading = ref(false); const trackingHealth = ref<TrackingAssetHealthItem[]>([]); const trackingHealthSummary = ref<Record<string, number>>({}); const trackingSyncing = reactive<Record<string, boolean>>({}); const filterText = ref(''); const accountSearch = ref(''); const accountMetaStatus = ref(''); const accountSystemStatus = ref(''); const selectedAccountRows = ref<AdAccountItem[]>([]); const accountPage = ref(1); const accountPageSize = 20; const accountTotal = ref(0); const accounts = ref<AdAccountItem[]>([]); const metaAccounts = ref<MetaAccountItem[]>([]); const credentialRows = ref<CredentialItem[]>([]); const syncRows = ref<Array<SyncLogItem & { business_name: string }>>([]); const drawerVisible = ref(false); const selectedBusiness = ref<TreeNode | null>(null); const selectedAccount = ref<TreeNode | null>(null); const addDialogVisible = ref(false); const authorizing = ref(false); const completing = ref(false); const oauthCredentialId = ref<string | null>(null); const oauthStep = ref<'login' | 'businesses' | 'success'>('login'); const oauthError = ref(''); const discoveredBusinesses = ref<DiscoveredBusiness[]>([]); const selectedDiscoveredBusinessId = ref<string | null>(null); const oauthAdAccounts = ref<any[]>([]); const selectedOAuthAccountIds = ref<string[]>([]); const oauthOwnerFilter = ref<'ALL'|'PERSONAL'|'BUSINESS'>('ALL'); const isAdmin = computed(() => userStore.isAdmin); const activeCount = computed(() => accounts.value.filter(a => a.system_status === 'ACTIVE').length); const treeProps = { children: 'children', label: 'label' }
+const router = useRouter(); const route = useRoute(); const userStore = useUserStore(); const activeTab = ref('accounts-list'); const treeRef = ref<InstanceType<typeof ElTree>>(); const loading = ref(false); const credentialLoading = ref(false); const syncLoading = ref(false); const trackingHealthLoading = ref(false); const trackingHealth = ref<TrackingAssetHealthItem[]>([]); const trackingHealthSummary = ref<Record<string, number>>({}); const trackingSyncing = reactive<Record<string, boolean>>({}); const filterText = ref(''); const accountSearch = ref(''); const accountMetaStatus = ref(''); const accountSystemStatus = ref(''); const selectedAccountRows = ref<AdAccountItem[]>([]); const accountPage = ref(1); const accountPageSize = 20; const accountTotal = ref(0); const accounts = ref<AdAccountItem[]>([]); const metaAccounts = ref<MetaAccountItem[]>([]); const credentialRows = ref<CredentialItem[]>([]); const syncRows = ref<Array<SyncLogItem & { business_name: string }>>([]); const drawerVisible = ref(false); const selectedBusiness = ref<TreeNode | null>(null); const selectedAccount = ref<TreeNode | null>(null); const addDialogVisible = ref(false); const authorizing = ref(false); const completing = ref(false); const oauthCredentialId = ref<string | null>(null); const oauthStep = ref<'login' | 'verifying' | 'businesses' | 'success'>('login'); const oauthError = ref(''); const discoveredBusinesses = ref<DiscoveredBusiness[]>([]); const selectedDiscoveredBusinessId = ref<string | null>(null); const oauthAdAccounts = ref<any[]>([]); const selectedOAuthAccountIds = ref<string[]>([]); const oauthOwnerFilter = ref<'ALL'|'PERSONAL'|'BUSINESS'>('ALL'); const isAdmin = computed(() => userStore.isAdmin); const activeCount = computed(() => accounts.value.filter(a => a.system_status === 'ACTIVE').length); const treeProps = { children: 'children', label: 'label' }
 const canSyncAccounts = computed(() => isAdmin.value || userStore.hasPermission('campaign:sync'))
 const canCreateJobs = computed(() => isAdmin.value || userStore.hasPermission('job:create'))
 const accountCredentialStatus = (account: AdAccountItem) => {
@@ -261,8 +263,36 @@ function openBusiness(n: TreeNode) { if (n.businessId) router.push(`/admin/busin
 function openAccount(n: TreeNode) { if (n.source?.id) router.push(`/admin/accounts/${n.source.id}`) }
 function openAddDialog() { oauthStep.value = 'login'; oauthError.value = ''; discoveredBusinesses.value = []; selectedDiscoveredBusinessId.value = null; oauthAdAccounts.value = []; selectedOAuthAccountIds.value = []; oauthCredentialId.value = null; oauthOwnerFilter.value = 'ALL'; addDialogVisible.value = true }
 function closeAddDialog() { addDialogVisible.value = false; if (route.query.meta_auth || route.query.credential_id) router.replace({ query: { ...route.query, meta_auth: undefined, credential_id: undefined, message: undefined, state: undefined, receipt: undefined } }) }
-async function startOAuth() { const popup = window.open('', 'meta-oauth', 'width=620,height=760,resizable=yes,scrollbars=yes'); authorizing.value = true; oauthError.value = ''; try { const { data } = await credentialApi.oauthAuthorizeFirst(); if (!data.authorization_url) throw new Error('Meta 未返回授权地址'); if (popup) popup.location.href = data.authorization_url; else window.location.assign(data.authorization_url) } catch (e: any) { popup?.close(); oauthError.value = e?.response?.data?.detail || e?.message || '无法启动 Facebook 登录'; ElMessage.error(oauthError.value) } finally { authorizing.value = false } }
-async function openBusinessDiscovery(id?: string) { addDialogVisible.value = true; oauthStep.value = 'businesses'; oauthError.value = ''; const credentialId = id || String(route.query.credential_id || ''); if (!credentialId) { oauthError.value = '缺少本次 OAuth 授权凭据，请重新授权'; return } oauthCredentialId.value = credentialId; try { const { data } = await credentialApi.oauthAdAccounts(credentialId); oauthAdAccounts.value = data.accounts || []; } catch (e: any) { oauthError.value = e?.response?.data?.detail || '无法读取 Meta 可访问广告账户，请重新授权' } }
+async function startOAuth() {
+  if (authorizing.value) return
+  authorizing.value = true
+  oauthError.value = ''
+  try {
+    const { data } = await credentialApi.oauthAuthorizeFirst()
+    if (!data.authorization_url) throw new Error('Meta 未返回授权地址')
+    window.location.assign(data.authorization_url)
+  } catch (e: any) {
+    oauthError.value = e?.response?.data?.detail || e?.message || '无法启动 Facebook 登录'
+    ElMessage.error(oauthError.value)
+  } finally { authorizing.value = false }
+}
+async function openBusinessDiscovery(id?: string) {
+  addDialogVisible.value = true
+  oauthStep.value = 'businesses'
+  oauthError.value = ''
+  oauthAdAccounts.value = []
+  selectedOAuthAccountIds.value = []
+  const credentialId = id || ''
+  if (!credentialId) { oauthError.value = '缺少本次 OAuth 授权凭据，请重新授权'; return }
+  oauthCredentialId.value = credentialId
+  authorizing.value = true
+  try {
+    const { data } = await credentialApi.oauthAdAccounts(credentialId)
+    oauthAdAccounts.value = data.accounts || []
+  } catch (e: any) {
+    oauthError.value = e?.response?.data?.detail || '无法读取 Meta 可访问广告账户，请重试或重新授权'
+  } finally { authorizing.value = false }
+}
 async function completeOAuth() {
   if (!oauthCredentialId.value || !selectedOAuthAccountIds.value.length) return
   completing.value = true
@@ -293,16 +323,29 @@ function trackingHealthType(status: string): 'success'|'warning'|'danger'|'info'
 async function loadTrackingHealth() { trackingHealthLoading.value = true; try { const { data } = await metaTrackingAssetsApi.health(); trackingHealth.value = data.items || []; trackingHealthSummary.value = data.summary || {} } catch { trackingHealth.value = []; trackingHealthSummary.value = {} } finally { trackingHealthLoading.value = false } }
 async function syncTrackingAsset(accountPk: string) { trackingSyncing[accountPk] = true; try { await metaTrackingAssetsApi.sync(accountPk); ElMessage.success('已提交 Pixel / Dataset 同步任务'); await loadTrackingHealth() } finally { trackingSyncing[accountPk] = false } }
 async function handleTabChange(tab: string | number) { if (tab === 'credentials') await loadCredentials(); if (tab === 'sync') await loadSyncLogs(); if (tab === 'tracking-health') await loadTrackingHealth() }
+let processingOAuthResult = false
 async function acceptOAuthResult(result: { credential_id?: string; state?: string; receipt?: string }) {
+  if (processingOAuthResult) return
+  processingOAuthResult = true
+  addDialogVisible.value = true
+  oauthStep.value = 'verifying'
+  oauthError.value = ''
+  oauthCredentialId.value = null
   try {
+    if (result.receipt && !result.state) throw new Error('授权回调缺少 state，请重新发起授权')
     const id = result.receipt ? (await credentialApi.oauthClaim({ state: result.state || '', receipt: result.receipt })).data.credential_id : result.credential_id
-    await router.replace({ query: { ...route.query, meta_auth: undefined, credential_id: undefined, state: undefined, receipt: undefined } })
+    if (!id) throw new Error('授权回调缺少有效凭据，请重新发起授权')
+    await clearOAuthQuery()
     await openBusinessDiscovery(id)
   } catch (e: any) {
-    addDialogVisible.value = true; oauthStep.value = 'login'; oauthError.value = e?.response?.data?.detail || '授权归属校验失败，请重新接入'
-  }
+    oauthStep.value = 'login'
+    oauthError.value = e?.response?.data?.detail || e?.message || '授权归属校验失败，请重新接入'
+    await clearOAuthQuery()
+  } finally { processingOAuthResult = false }
 }
-function handleOAuthMessage(e: MessageEvent) { if (e.origin !== window.location.origin) return; if (e.data?.type === 'meta-oauth-ready') void acceptOAuthResult(e.data); if (e.data?.type === 'meta-oauth-completed') load(); if (e.data?.type === 'meta-oauth-error') { addDialogVisible.value = true; oauthStep.value = 'login'; oauthError.value = e.data.message || 'Meta 授权失败' } }
+async function clearOAuthQuery() {
+  await router.replace({ query: { ...route.query, meta_auth: undefined, credential_id: undefined, state: undefined, receipt: undefined, message: undefined } })
+}
 async function authorizeBusiness(n: TreeNode | null) { if (!n?.businessId) return; try { const { data } = await credentialApi.oauthAuthorize(n.businessId); window.location.assign(data.authorization_url) } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '无法发起 Meta 重新授权') } }
 async function reauthorizeCredential(row: CredentialItem) { try { const { data } = row.meta_account_id ? await credentialApi.oauthAuthorize(row.meta_account_id) : await credentialApi.oauthAuthorizeFirst(); window.location.assign(data.authorization_url) } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '无法发起 Meta 重新授权') } }
 async function reauthorizeAccount(account: AdAccountItem) {
@@ -314,18 +357,20 @@ async function load(page = accountPage.value) { accountPage.value = page; loadin
 function handleOAuthRoute() {
   const auth = String(route.query.meta_auth || '')
   if (auth === 'businesses') {
-    const result = { credential_id: String(route.query.credential_id || ''), state: String(route.query.state || ''), receipt: String(route.query.receipt || '') }
-    if (window.opener) { window.opener.postMessage({ type: 'meta-oauth-ready', ...result }, window.location.origin); setTimeout(() => window.close(), 200) }
-    else void acceptOAuthResult(result)
-  } else if (auth === 'success') { ElMessage.success('Meta 授权成功'); void load() }
-  else if (auth === 'error') {
-    const message = String(route.query.message || 'Meta 授权失败或已取消')
-    if (window.opener) { window.opener.postMessage({ type: 'meta-oauth-error', message }, window.location.origin); setTimeout(() => window.close(), 200) }
-    else { addDialogVisible.value = true; oauthStep.value = 'login'; oauthError.value = message }
+    void acceptOAuthResult({ credential_id: String(route.query.credential_id || ''), state: String(route.query.state || ''), receipt: String(route.query.receipt || '') })
+  } else if (auth === 'success') {
+    ElMessage.success('Meta 授权成功')
+    void clearOAuthQuery()
+    void load()
+  } else if (auth === 'error') {
+    addDialogVisible.value = true
+    oauthStep.value = 'login'
+    oauthError.value = String(route.query.message || 'Meta 授权失败或已取消')
+    void clearOAuthQuery()
   }
 }
-onMounted(async () => { window.addEventListener('message', handleOAuthMessage); await load(); handleOAuthRoute() })
-onBeforeUnmount(() => window.removeEventListener('message', handleOAuthMessage))
+watch(() => route.query.meta_auth, handleOAuthRoute)
+onMounted(() => { handleOAuthRoute(); void load() })
 </script>
 
 <style scoped lang="scss">

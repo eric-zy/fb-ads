@@ -20,6 +20,7 @@ ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
 # Compose 文件中的 env_file 使用 CONNECTOR_ENV_FILE；显式导出绝对路径，
 # 确保自定义环境文件和默认环境文件在 Linux 部署机上解析一致。
 export CONNECTOR_ENV_FILE="$ENV_FILE"
+echo "[connector] environment file: $ENV_FILE; compose project: $PROJECT_NAME"
 
 cd "$PROJECT_DIR"
 
@@ -56,6 +57,9 @@ docker builder prune -f
 echo "[connector] building image..."
 "${compose[@]}" build --pull fb-connector
 
+echo "[connector] checking Meta and OAuth signing configuration..."
+"${compose[@]}" run --rm --no-deps fb-connector python -c 'from config.settings import settings; settings.validate_connector_config(); print("connector config ok")'
+
 echo "[connector] starting database and redis..."
 "${compose[@]}" up -d --wait db redis
 
@@ -82,6 +86,21 @@ done
 if [[ "$health_ok" != true ]]; then
   echo "[connector] health check failed; recent API logs:" >&2
   "${compose[@]}" logs --tail=100 fb-connector >&2 || true
+  exit 1
+fi
+echo "[connector] checking database, Redis and OAuth readiness..."
+python_probe='import json, urllib.request; response = urllib.request.urlopen("http://127.0.0.1:8100/internal/ready", timeout=5); result = json.load(response); assert result.get("status") == "ready" and result.get("oauth_callback_contract") == "signed_receipt_v1" and result.get("checks", {}).get("oauth_receipt_signing") == "ok", "Connector readiness or OAuth version check failed"; print("connector readiness and OAuth signing ok")'
+ready_ok=false
+for attempt in $(seq 1 30); do
+  if "${compose[@]}" exec -T fb-connector python -c "$python_probe"; then
+    ready_ok=true
+    break
+  fi
+  echo "[connector] readiness not ready ($attempt/30), waiting 2s..."
+  sleep 2
+done
+if [[ "$ready_ok" != true ]]; then
+  echo "[connector] readiness check failed; refuse to complete deployment" >&2
   exit 1
 fi
 echo "[connector] deployment complete; volumes were preserved."

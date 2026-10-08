@@ -81,8 +81,14 @@ def bind_connection(db, user, result, *, mode, expected_connection_id=None):
 
 
 def grant_asset(db, connection, asset_type, asset_id, tasks=None):
-    row = db.query(MetaConnectionAsset).filter_by(tenant_id=connection.tenant_id,
-        connection_id=connection.id, asset_type=asset_type, asset_id=asset_id).first()
+    # Production sessions disable autoflush: a repeated BM/Page grant in the
+    # same batch can still be pending and invisible to a database query.
+    key = (connection.tenant_id, connection.id, asset_type, asset_id)
+    row = next((item for item in db.new if isinstance(item, MetaConnectionAsset)
+        and (item.tenant_id, item.connection_id, item.asset_type, item.asset_id) == key), None)
+    if row is None:
+        row = db.query(MetaConnectionAsset).filter_by(tenant_id=connection.tenant_id,
+            connection_id=connection.id, asset_type=asset_type, asset_id=asset_id).first()
     if not row:
         row = MetaConnectionAsset(id=uuid.uuid4().hex, tenant_id=connection.tenant_id,
                                  connection_id=connection.id, asset_type=asset_type, asset_id=asset_id)

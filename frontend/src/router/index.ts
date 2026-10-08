@@ -72,7 +72,7 @@ router.beforeEach(async (to, from, next) => {
   const hasRequiredPermissions = requiredPermissions.length === 0 || requiredPermissions.every(permission =>
     userStore.isAdmin || userStore.hasPermission(permission),
   )
-  if (requiresAuth && !userStore.isAuthenticated) next('/login')
+  if (requiresAuth && !userStore.isAuthenticated) next({ path: '/login', query: { redirect: to.fullPath } })
   else if (requiresAdmin && !userStore.isAdmin) next('/dashboard/overview')
   else if (!hasRequiredPermissions) next('/dashboard/overview')
   else next()

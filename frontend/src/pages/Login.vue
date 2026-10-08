@@ -105,13 +105,15 @@
 
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { safeAuthRedirect } from '@/utils/authRedirect'
 import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/userStore'
 import { formatRequestError } from '@/utils/request'
 import type { FormInstance } from 'element-plus'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
 const formRef = ref<FormInstance>()
 
@@ -141,6 +143,8 @@ const handleLogin = async () => {
     const success = await userStore.login(loginForm.username, loginForm.password)
     if (success) {
       ElMessage.success('登录成功')
+      const destination = safeAuthRedirect(route.query.redirect)
+      if (destination) { await router.replace(destination); return }
       // 根据角色跳转
       if (userStore.isAdmin) {
         await router.push('/admin/dashboard')

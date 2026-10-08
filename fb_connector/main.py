@@ -138,8 +138,8 @@ async def health():
 
 @app.get("/internal/ready")
 def ready():
-    required = ("FB_APP_ID", "FB_APP_SECRET", "FB_OAUTH_REDIRECT_URI", "SAAS_INTERNAL_SIGNING_KEY")
-    missing = [key for key in required if not os.getenv(key)]
+    from config.settings import settings
+    missing = settings.missing_connector_config()
     if missing:
         return JSONResponse(status_code=503, content={"status": "not_ready", "missing": missing})
     from fb_connector.models import engine
@@ -147,10 +147,15 @@ def ready():
     from services.readiness import dependency_readiness
     result = dependency_readiness(engine, redis_client.redis_client)
     result["service"] = "fb_connector"
+    result["checks"]["oauth_receipt_signing"] = "ok"
+    result["oauth_callback_contract"] = "signed_receipt_v1"
     return JSONResponse(status_code=200 if result["status"] == "ready" else 503, content=result)
 
 
 @app.get("/internal/meta/version")
 async def meta_version(request: Request):
     """临时受保护探针，确认 Connector 配置已加载；不返回 Secret。"""
-    return {"service": "fb_connector", "api_version": os.getenv("FB_API_VERSION", "")}
+    from config.settings import settings
+    return {"service": "fb_connector", "api_version": settings.FB_API_VERSION,
+            "oauth_callback_contract": "signed_receipt_v1",
+            "oauth_receipt_signing_configured": bool(settings.FB_CONNECTOR_SIGNING_KEY.strip())}

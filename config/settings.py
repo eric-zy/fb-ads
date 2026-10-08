@@ -266,6 +266,17 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = True
 
+    def missing_connector_config(self) -> list[str]:
+        """Connector 探针与部署检查共用配置要求，只返回键名。"""
+        required = ("FB_APP_ID", "FB_APP_SECRET", "FB_OAUTH_REDIRECT_URI",
+                    "FB_CONNECTOR_SIGNING_KEY", "SAAS_INTERNAL_SIGNING_KEY")
+        return [key for key in required if not str(getattr(self, key) or "").strip()]
+
+    def validate_connector_config(self) -> None:
+        missing = self.missing_connector_config()
+        if missing:
+            raise ValueError(f"FB Connector 缺少配置: {', '.join(missing)}")
+
     def validate_runtime_config(self) -> None:
         """校验当前部署角色所需配置，避免 Secret 放错服务器。"""
         role = self.APP_ROLE.strip().lower()
@@ -276,14 +287,7 @@ class Settings(BaseSettings):
         if self.ENVIRONMENT.lower() == "production" and not self.TENANT_STRICT_MODE:
             raise ValueError("生产环境必须开启 TENANT_STRICT_MODE=true")
         if role == "fb_connector":
-            required = {
-                "FB_APP_ID": self.FB_APP_ID,
-                "FB_APP_SECRET": self.FB_APP_SECRET,
-                "FB_OAUTH_REDIRECT_URI": self.FB_OAUTH_REDIRECT_URI,
-            }
-            missing = [key for key, value in required.items() if not value]
-            if missing:
-                raise ValueError(f"FB Connector 缺少配置: {', '.join(missing)}")
+            self.validate_connector_config()
         if role == "saas" and self.FB_ACCESS_MODE == "connector":
             required = {
                 "FB_CONNECTOR_ENABLED": self.FB_CONNECTOR_ENABLED,

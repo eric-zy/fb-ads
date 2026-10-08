@@ -355,3 +355,72 @@ def test_pending_media_identity_is_immutable_until_explicit_failed_retry(db, pub
     with pytest.raises(ValueError, match="没有个人授权快照"):
         resolver.validate_snapshot(account.id, None)
     resolver.validate_snapshot(account.id, binding.authorization_connection_id)
+
+
+@pytest.mark.parametrize("asset_type", ["BUSINESS", "AD_ACCOUNT", "PAGE"])
+def test_pending_grants_are_reused_with_production_autoflush_disabled(db, publishers, asset_type):
+    db.autoflush = False
+    connection = connect(db, publishers[0])
+    first = grant_asset(db, connection, asset_type, "shared-asset", ["ADVERTISE"])
+    second = grant_asset(db, connection, asset_type, "shared-asset", ["MANAGE"])
+    assert second is first
+    assert second.tasks == ["MANAGE"]
+    db.flush()
+    assert db.query(MetaConnectionAsset).filter_by(connection_id=connection.id,
+        asset_type=asset_type, asset_id="shared-asset").count() == 1
+    second.status = "REVOKED"
+    assert grant_asset(db, connection, asset_type, "shared-asset") is first
+    db.flush()
+    assert first.status == "ACTIVE"
+
+
+def test_complete_multiple_existing_accounts_in_same_bm_and_retry(auth_db, publishers, monkeypatch):
+    from models import MetaAccount
+    from services import meta_connection_sync
+    from tasks.meta_sync_tasks import sync_personal_connection_task
+    db = auth_db
+    db.autoflush = False
+    publisher, original_owner, _ = publishers
+    original_connection = connect(db, original_owner, "original-meta", "original-credential")
+    connection = connect(db, publisher)
+    for business in ("bm-a", "bm-b"):
+        db.add(MetaAccount(id=business, business_id=business, name=business,
+            connection_id=original_connection.id, connector_credential_id="original-credential"))
+    db.flush()
+    remote = []
+    for number, business in enumerate(("bm-a", "bm-b", "bm-a")):
+        account = AdAccount(id=f"batch-local-{number}", account_id=f"act_batch_{number}",
+            business_id=business, account_name=f"Account {number}",
+            connection_id=original_connection.id, connector_credential_id="original-credential",
+            system_status="DISABLED", system_status_reason="original restriction")
+        db.add(account)
+        db.flush()
+        db.add(UserAccount(id=f"batch-owner-{number}", user_id=original_owner.id,
+            account_id=account.id, role="owner", assignment_role="PRIMARY", assignment_status="ACTIVE"))
+        remote.append({"id": account.account_id, "name": account.account_name,
+            "business": {"id": business, "name": business}})
+    db.flush()
+    client = SimpleNamespace(oauth_ad_accounts=lambda credential: {"accounts": remote})
+    monkeypatch.setattr(meta_auth, "FBConnectorClient", lambda: client)
+    pages = Mock(return_value={"count": 0})
+    queue = Mock()
+    monkeypatch.setattr(meta_connection_sync, "sync_connection_pages", pages)
+    monkeypatch.setattr(sync_personal_connection_task, "delay", queue)
+    payload = meta_auth.OAuthAccountsCompleteRequest(credential_id=connection.credential_id,
+        account_ids=[row["id"] for row in remote])
+    for _ in range(2):
+        result = meta_auth.oauth_complete_accounts(payload, db, publisher)
+        assert result["success"] is True and len(result["accounts"]) == 3
+        assert all(row["assignment_required"] for row in result["accounts"])
+        assert db.query(MetaConnectionAsset).filter_by(connection_id=connection.id,
+            asset_type="BUSINESS").count() == 2
+        assert db.query(MetaConnectionAsset).filter_by(connection_id=connection.id,
+            asset_type="AD_ACCOUNT").count() == 3
+    assert queue.call_count == 2
+    assert db.query(UserAccount).filter_by(user_id=publisher.id).count() == 0
+    for account in db.query(AdAccount).filter(AdAccount.id.like("batch-local-%")).all():
+        assert account.connection_id == original_connection.id
+        assert account.connector_credential_id == "original-credential"
+        assert account.system_status == "DISABLED"
+        assert account.system_status_reason == "original restriction"
+        assert db.query(UserAccount).filter_by(account_id=account.id, assignment_role="PRIMARY").one().user_id == original_owner.id

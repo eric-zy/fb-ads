@@ -51,6 +51,13 @@ def _safe_return_base(state: str, fallback: str) -> str:
     return candidate if candidate in {"https://iornix.com", "http://49.232.238.163:8094"} else fallback
 
 
+def _require_receipt_signing_key() -> None:
+    if not settings.FB_CONNECTOR_SIGNING_KEY.strip():
+        raise HTTPException(status_code=503, detail=(
+            "Connector OAuth 回调签名未配置：请在海外 deploy/fb-connector.env 设置 "
+            "FB_CONNECTOR_SIGNING_KEY，并与国内 deploy/.env 保持一致"))
+
+
 class AuthorizeRequest(BaseModel):
     state: str
 
@@ -73,6 +80,7 @@ class CompleteRequest(BaseModel):
 async def authorize(payload: AuthorizeRequest):
     """生成 Meta 授权地址；state 由国内 SaaS 生成并透传，不在 Connector 重新生成。"""
     logger.info("[ConnectorOAuth] authorize start")
+    _require_receipt_signing_key()
     try:
         return {
             "authorization_url": MetaOAuthService().authorization_url(payload.state),
@@ -166,11 +174,10 @@ async def callback(state: str = Query(...), code: str | None = Query(None), erro
     if error or not code:
         return RedirectResponse(f"{redirect_base}/dashboard/accounts?{urlencode({'meta_auth': 'error', 'message': error_description or error or '授权失败'})}", status_code=302)
     try:
+        _require_receipt_signing_key()
         result = await exchange(ExchangeRequest(code=code))
         # OAuth-first requires a second step: the domestic frontend must load
         # the Connector-visible ad accounts before the user confirms them.
-        if not settings.FB_CONNECTOR_SIGNING_KEY:
-            raise HTTPException(status_code=503, detail="Connector OAuth 回调签名未配置")
         receipt = jwt.encode({"aud": "saas-meta-oauth", "exp": datetime.utcnow() + timedelta(minutes=10),
             "credential_id": result["credential_id"], "state_hash": sha256(state.encode()).hexdigest(),
             "data_access_expires_at": result["data_access_expires_at"].isoformat() if result.get("data_access_expires_at") else None},
