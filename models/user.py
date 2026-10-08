@@ -82,6 +82,10 @@ class UserAccount(TenantMixin, Base):
     assignment_status = Column(String(20), default="ACTIVE", nullable=False)
     assigned_by = Column(String(50), nullable=True)
     expires_at = Column(DateTime, nullable=True)
+    # Explicit per-account delegation; null keeps personal OAuth execution.
+    execution_connection_id = Column(String(50), nullable=True, index=True)
+    execution_granted_by = Column(String(50), nullable=True)
+    execution_granted_at = Column(DateTime, nullable=True)
 
     # 时间戳
     assigned_at = Column(DateTime, default=datetime.utcnow)

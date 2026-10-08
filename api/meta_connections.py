@@ -12,12 +12,17 @@ router = APIRouter(prefix="/api/v1/meta-connections", tags=["Meta 授权连接"]
 
 
 @router.get("")
-def list_connections(scope: str = Query("mine", pattern="^(mine|tenant)$"), db: Session = Depends(get_db), current_user: User = Depends(require_meta_self)):
+def list_connections(scope: str = Query("mine", pattern="^(mine|tenant|delegated)$"), db: Session = Depends(get_db), current_user: User = Depends(require_meta_self)):
     if scope == "tenant" and not current_user.is_admin():
         raise HTTPException(status_code=403, detail="只有管理员可查看租户全部个人授权")
     q = db.query(MetaConnection).filter_by(tenant_id=effective_tenant_id(current_user))
     if scope == "mine":
         q = q.filter_by(authorized_by_user_id=current_user.id)
+    delegated = []
+    if scope == "delegated":
+        from services.meta_execution_access import delegated_assignments
+        delegated = delegated_assignments(db, current_user)
+        q = q.filter(MetaConnection.id.in_([a.execution_connection_id for a in delegated]))
     result = []
     for row in q.order_by(MetaConnection.updated_at.desc()).all():
         item = row.to_dict()
@@ -25,7 +30,12 @@ def list_connections(scope: str = Query("mine", pattern="^(mine|tenant)$"), db: 
         owner = db.query(User).filter_by(id=row.authorized_by_user_id).first()
         item["authorized_by_username"] = owner.username if owner else "用户已删除"
         item["is_owner"] = row.authorized_by_user_id == current_user.id
+        item["execution_source"] = "DELEGATED" if scope == "delegated" else "PERSONAL"
+        item["can_manage"] = scope != "delegated" and (item["is_owner"] or current_user.is_admin())
         grants = db.query(MetaConnectionAsset).filter_by(connection_id=row.id, status="ACTIVE").all()
+        if scope == "delegated":
+            allowed_accounts = {a.account_id for a in delegated if a.execution_connection_id == row.id}
+            grants = [g for g in grants if g.asset_type == "PAGE" or (g.asset_type == "AD_ACCOUNT" and g.asset_id in allowed_accounts)]
         for name, kind in (("business_count", "BUSINESS"), ("account_count", "AD_ACCOUNT"), ("page_count", "PAGE")):
             item[name] = sum(g.asset_type == kind for g in grants)
         item["credential_count"] = 1 if row.credential_id else 0

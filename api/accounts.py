@@ -121,6 +121,7 @@ class AssignUsers(BaseModel):
         None, description="主投手用户 ID；为空时保留已有主投手，没有则选择首个用户"
     )
     lease_token: Optional[str] = Field(None, description="ACCOUNT_ASSIGNMENT 操作租约 token")
+    execution_connection_id: Optional[str] = Field(None, description="指定委派执行授权；显式 null 改为本人授权，未提供则保留现有设置")
 
 
 class PrimaryUserRequest(BaseModel):
@@ -273,6 +274,7 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
     if credential and credential.granted_by_user_id and db:
         authorized_by = db.query(User).filter(User.id == credential.granted_by_user_id).first()
     connection = None
+    execution_source = None
     if db:
         from models import MetaConnection, MetaConnectionAsset
         if db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=a.id).first():
@@ -283,6 +285,9 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
                 connector_credential_id = ref.credential_id if ref.mode == "connector" else None
                 credential = db.query(Credential).filter_by(id=ref.credential_id).first() if ref.mode == "direct" else None
                 authorized_by = db.query(User).filter_by(id=connection.authorized_by_user_id).first()
+                from services.meta_execution_access import delegated_connection_id
+                actor = db.query(User).filter_by(id=db.info.get("meta_actor_id")).first()
+                execution_source = "DELEGATED" if actor and not actor.is_admin() and delegated_connection_id(db, actor, a) == connection.id else "PERSONAL"
             except ValueError:
                 connector_credential_id = None
                 credential = None
@@ -332,6 +337,7 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
         "authorized_by_user_id": connection.authorized_by_user_id if connection else (credential.granted_by_user_id if credential else None),
         "authorization_connection_id": connection.id if connection else None,
         "authorization_version": connection.version if connection else None,
+        "execution_source": execution_source,
         "authorized_by_username": authorized_by.username if authorized_by else None,
         "credential_missing_scopes": missing_scopes,
         "is_deployable": is_deployable,
@@ -1024,6 +1030,13 @@ def assign_users(
         cross_tenant = [u.username for u in users if u.tenant_id != a.tenant_id]
         if cross_tenant:
             raise HTTPException(status_code=400, detail=f"不能将广告账户分配给其他租户用户: {', '.join(cross_tenant)}")
+        if any(not u.is_active for u in users):
+            raise HTTPException(status_code=400, detail="不能将广告账户分配给已停用用户")
+        update_execution = "execution_connection_id" in payload.model_fields_set
+        if update_execution and payload.execution_connection_id:
+            from services.meta_execution_access import execution_candidates
+            if payload.execution_connection_id not in {x["connection_id"] for x in execution_candidates(db, a)}:
+                raise HTTPException(status_code=400, detail="该执行授权已失效、不属于当前租户或无权操作此广告账户")
         rows = db.query(UserAccount).filter(
             UserAccount.tenant_id == a.tenant_id,
             UserAccount.account_id == a.id,
@@ -1045,12 +1058,21 @@ def assign_users(
                 db.add(row)
                 by_user[uid] = row
             else:
+                if row.assignment_status != "ACTIVE" or (row.expires_at and row.expires_at <= datetime.utcnow()):
+                    row.execution_connection_id = None
+                    row.execution_granted_by = None
+                    row.execution_granted_at = None
                 row.assignment_status = "ACTIVE"
                 row.assignment_type = "MANUAL"
                 row.assigned_by = current_user.id
                 row.expires_at = None
                 if not row.role or row.role == "viewer":
                     row.role = "publisher"
+
+            if update_execution:
+                row.execution_connection_id = payload.execution_connection_id
+                row.execution_granted_by = current_user.id if payload.execution_connection_id else None
+                row.execution_granted_at = datetime.utcnow() if payload.execution_connection_id else None
 
         active_rows = [row for row in by_user.values() if row.assignment_status == "ACTIVE"]
         primary_id = payload.primary_user_id
@@ -1074,6 +1096,9 @@ def assign_users(
             UserAccount.account_id == a.id,
             UserAccount.assignment_status == "ACTIVE",
         ).count()
+        record_audit(db, action="ASSIGN_ACCOUNT_EXECUTION", resource_type="ad_account", resource_id=a.id,
+            user_id=current_user.id, request_data={"user_ids": requested_ids, "primary_user_id": primary_id,
+                "execution_updated": update_execution, "execution_connection_id": payload.execution_connection_id})
         return {"success": True, "assigned_count": count, "primary_user_id": primary_id}
 
 
@@ -1166,8 +1191,23 @@ def account_users(
         "assignment_type": ua.assignment_type,
         "assigned_at": ua.assigned_at.isoformat() if ua.assigned_at else None,
         "expires_at": ua.expires_at.isoformat() if ua.expires_at else None,
+        "execution_connection_id": ua.execution_connection_id,
+        "execution_source": "DELEGATED" if ua.execution_connection_id else "PERSONAL",
+        "execution_granted_by": ua.execution_granted_by,
+        "execution_granted_at": ua.execution_granted_at.isoformat() if ua.execution_granted_at else None,
         "is_primary": ua.assignment_status == "ACTIVE" and ua.assignment_role == "PRIMARY",
     } for ua, u in rows]
+
+
+@router.get("/{account_pk}/execution-authorizations")
+def account_execution_authorizations(account_pk: str, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
+    tenant_ctx = nullcontext() if effective_tenant_id(current_user) else bypass_tenant()
+    with tenant_ctx:
+        account = db.query(AdAccount).filter_by(id=account_pk).first()
+        if not account:
+            raise HTTPException(404, "广告账户不存在或无权访问")
+        from services.meta_execution_access import execution_candidates
+        return {"items": execution_candidates(db, account)}
 
 
 def _lease_account_or_404(db: Session, account_pk: str, current_user: User) -> AdAccount:

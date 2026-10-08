@@ -3,7 +3,7 @@
     <div class="page-head">
       <div>
         <h2 class="page-title">{{ adminView ? 'Meta 个人授权管理' : '我的 Meta 授权' }}</h2>
-        <p class="page-subtitle">每位投手使用自己的 Meta 个号授权。平台分配账户后，还需该个号具有对应资产权限。</p>
+        <p class="page-subtitle">可使用本人接入的 Meta 授权，或管理员为已分配账户指定的委派授权。执行授权需具备对应资产权限。</p>
       </div>
       <div class="head-actions">
         <el-button v-if="adminView" @click="router.push('/admin/accounts')">交接 / 分配账户</el-button>
@@ -22,9 +22,11 @@
 
     <el-card shadow="never" class="card-shadow">
       <el-select v-if="adminView" v-model="scope" style="width:180px;margin-bottom:16px" @change="load"><el-option label="全部投手授权" value="tenant" /><el-option label="我的个人授权" value="mine" /></el-select>
+      <el-radio-group v-else v-model="scope" style="margin-bottom:16px" @change="load"><el-radio-button value="mine">本人接入</el-radio-button><el-radio-button value="delegated">管理员委派给我</el-radio-button></el-radio-group>
       <el-table :data="connections" v-loading="loading" stripe>
         <el-table-column type="expand" width="45"><template #default="{ row }"><el-descriptions :column="2" border style="padding:16px"><el-descriptions-item label="应用 ID">{{ row.app_id }}</el-descriptions-item><el-descriptions-item label="授权版本">V{{ row.version || 1 }}</el-descriptions-item><el-descriptions-item label="权限">{{ row.scopes?.join(', ') || '-' }}</el-descriptions-item><el-descriptions-item label="最近同步">{{ formatTime(row.last_synced_at) }}</el-descriptions-item><el-descriptions-item label="最近错误" :span="2">{{ row.last_error || '-' }}</el-descriptions-item><el-descriptions-item v-if="adminView && row.status !== 'OWNER_UNKNOWN' && row.executable_account_ids?.length" label="系统同步" :span="2"><el-button :disabled="!['ACTIVE','EXPIRING','EXPIRING_1_DAY'].includes(row.health || row.status)" @click="chooseReportingDefault(row as TableRow<typeof connections>)">设为系统同步授权</el-button></el-descriptions-item></el-descriptions></template></el-table-column>
         <el-table-column v-if="adminView" prop="authorized_by_username" label="所属投手" min-width="130" />
+        <el-table-column v-if="scope === 'delegated'" prop="authorized_by_username" label="授权人" min-width="130" />
         <el-table-column label="Meta 用户" min-width="150">
           <template #default="{ row }">{{ row.meta_user_id }}</template>
         </el-table-column>
@@ -38,17 +40,18 @@
         <el-table-column label="到期时间" width="230"><template #default="{ row }"><div>Token：{{ formatTime(row.expires_at) }}</div><div>数据访问：{{ formatTime(row.data_access_expires_at) }}</div></template></el-table-column>
         <el-table-column label="操作" width="310" fixed="right">
           <template #default="{ row }">
-            <template v-if="row.status !== 'OWNER_UNKNOWN'">
+            <template v-if="row.status !== 'OWNER_UNKNOWN' && scope !== 'delegated' && row.can_manage !== false">
               <el-button link type="primary" :disabled="!['ACTIVE','EXPIRING','EXPIRING_1_DAY'].includes(row.health || row.status)" :loading="syncingId === row.id" @click="sync(row as TableRow<typeof connections>)">同步资产</el-button>
               <el-button v-if="row.is_owner" link type="warning" @click="authorize(row.id)">重新授权</el-button>
               <el-button v-if="row.is_owner && row.executable_account_ids?.length" link type="primary" @click="chooseDefault(row as TableRow<typeof connections>)">执行授权</el-button>
               <el-button link type="danger" @click="disconnect(row as TableRow<typeof connections>)">解除授权</el-button>
               <span v-if="!row.is_owner">请原投手重新授权</span>
             </template>
+            <span v-else-if="scope === 'delegated'">执行权限由管理员设置；资产同步请联系授权人或管理员</span>
             <span v-else>请原投手重新接入确认归属</span>
           </template>
         </el-table-column>
-        <template #empty><el-empty description="暂无 Meta 授权，请先完成 OAuth" /></template>
+        <template #empty><el-empty :description="scope === 'delegated' ? '暂无委派执行授权，请联系管理员为已分配账户指定授权' : '暂无 Meta 授权，请先完成 OAuth'" /></template>
       </el-table>
     </el-card>
   </div>
@@ -66,7 +69,7 @@ const connections = ref<MetaConnection[]>([])
 const route = useRoute()
 const router = useRouter()
 const adminView = computed(() => route.path.startsWith('/admin/'))
-const scope = ref<'mine' | 'tenant'>(adminView.value ? 'tenant' : 'mine')
+const scope = ref<'mine' | 'tenant' | 'delegated'>(adminView.value ? 'tenant' : 'mine')
 const loading = ref(false)
 const syncingId = ref<string | null>(null)
 const connectorMode = ref(false)
@@ -89,7 +92,7 @@ async function authorize(connectionId?: string) {
 }
 async function disconnect(row: MetaConnection) {
   try {
-    await ElMessageBox.confirm('解除后将阻断该身份的后续操作，并取消尚未开始的投放任务。账户、历史任务和报表保留；交接请在广告账户分配中选择接手人，由接手人使用自己的 Meta 个号授权。', '解除个人 Meta 授权', { type: 'warning' })
+    await ElMessageBox.confirm('解除后将阻断本人及委派使用该身份的后续操作，并取消尚未开始的投放任务。账户、历史任务和报表保留；交接请在广告账户分配中为接手人指定有效执行授权。', '解除个人 Meta 授权', { type: 'warning' })
     const { data } = await metaConnectionsApi.disconnect(row.id)
     ElMessage.success(`授权已解除，取消 ${data.cancelled_jobs} 个待执行任务`)
     await load()

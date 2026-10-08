@@ -212,20 +212,37 @@
     </el-dialog>
 
     <!-- 分配用户 -->
-    <el-dialog v-model="showAssign" :title="`分配给投手 - ${assignAccount?.account_name || assignAccount?.account_id}`" width="480px" destroy-on-close>
+    <el-dialog v-model="showAssign" :title="`分配给投手 - ${assignAccount?.account_name || assignAccount?.account_id}`" width="620px" destroy-on-close>
       <p class="assignment-hint">勾选需要使用此账户的用户，再选择一名主投手。</p>
       <el-checkbox-group v-model="selectedUsers" class="user-group">
         <el-checkbox v-for="u in allUsers" :key="u.id" :value="u.id" border class="user-check">
           {{ u.username }}<span v-if="u.email"> ({{ u.email }})</span>
         </el-checkbox>
       </el-checkbox-group>
-      <el-form label-width="80px" class="primary-form">
+      <el-form label-width="128px" class="primary-form">
         <el-form-item label="主投手">
           <el-select v-model="primaryUserId" placeholder="选择主投手" style="width: 100%" :disabled="!selectedUsers.length">
             <el-option v-for="u in allUsers.filter((item) => selectedUsers.includes(item.id))" :key="u.id" :label="u.username" :value="u.id" />
           </el-select>
         </el-form-item>
       </el-form>
+      <el-form label-width="128px">
+        <el-form-item label="执行方式">
+          <el-select v-model="executionMode" style="width:100%">
+            <el-option label="保留当前设置" value="KEEP" />
+            <el-option label="本人 Meta 授权" value="PERSONAL" />
+            <el-option label="管理员委派授权" value="DELEGATED" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="executionMode === 'DELEGATED'" label="执行 Meta 授权" required>
+          <el-select v-model="executionConnectionId" style="width:100%" placeholder="选择可操作此账户的有效 Meta 授权">
+            <el-option v-for="item in executionAuthorizations" :key="item.connection_id" :value="item.connection_id" :label="`${item.authorized_by_username} · Meta ${item.meta_user_id} · ${item.page_count} 个可投放 Page`" />
+          </el-select>
+          <p v-if="!executionAuthorizations.length" class="assignment-hint">暂无有效授权，请先接入 Meta 并同步此账户。</p>
+          <p v-else-if="executionAuthorizations.find(item => item.connection_id === executionConnectionId)?.page_count === 0" class="assignment-hint">此授权暂无可投放 Page，新建广告前需由授权人补充 Page 权限并同步。</p>
+        </el-form-item>
+      </el-form>
+      <el-alert class="mb12" :title="executionMode === 'KEEP' ? '保留勾选用户的执行设置；新分配或已失效分配默认要求本人 Meta 授权。' : executionMode === 'PERSONAL' ? '本次勾选用户改为使用本人 Meta 授权，并撤销其在此账户上的委派执行权限。' : '指定授权仅供本次勾选用户操作此广告账户；投手无需重复 OAuth，授权人和原始凭据归属保持不变。'" type="info" :closable="false" show-icon />
       <el-alert
         title="主投手负责账户操作；其它已分配用户保留协作权限。保存不会移除未勾选的历史用户。"
         type="info"
@@ -243,6 +260,7 @@
       <el-table :data="assignedList" style="width: 100%">
         <el-table-column prop="username" label="用户名" />
         <el-table-column prop="email" label="邮箱" />
+        <el-table-column label="执行方式" width="105"><template #default="{ row }"><el-tag :type="row.execution_connection_id ? 'success' : 'info'">{{ row.execution_connection_id ? '委派授权' : '本人授权' }}</el-tag></template></el-table-column>
         <el-table-column label="分工" width="90">
           <template #default="{ row }">
             <el-tag v-if="row.is_primary" type="primary" size="small">主投手</el-tag>
@@ -321,6 +339,9 @@ const assignAccount = ref<AdAccountItem | null>(null)
 const allUsers = ref<AdminUser[]>([])
 const selectedUsers = ref<string[]>([])
 const primaryUserId = ref('')
+const executionMode = ref<'KEEP' | 'PERSONAL' | 'DELEGATED'>('KEEP')
+const executionConnectionId = ref('')
+const executionAuthorizations = ref<Array<{ connection_id: string; meta_user_id: string; authorized_by_username: string; page_count: number }>>([])
 watch(selectedUsers, (ids) => {
   if (!ids.includes(primaryUserId.value)) primaryUserId.value = ids[0] || ''
 })
@@ -672,12 +693,17 @@ async function openAssign(a: AdAccountItem) {
   assignAccount.value = a
   selectedUsers.value = []
   primaryUserId.value = ''
+  executionMode.value = 'KEEP'
+  executionConnectionId.value = ''
+  executionAuthorizations.value = []
   try {
-    const [users, { data: assigned }] = await Promise.all([
+    const [users, { data: assigned }, { data: authorizations }] = await Promise.all([
       userApi.listAll(),
       accountApi.users(a.id),
+      accountApi.executionAuthorizations(a.id),
     ])
     allUsers.value = users
+    executionAuthorizations.value = authorizations.items || []
     const activeAssigned = (assigned as AccountUser[]).filter((row) => row.assignment_status === 'ACTIVE')
     selectedUsers.value = activeAssigned.map((row) => row.user_id)
     primaryUserId.value = activeAssigned.find((row) => row.is_primary)?.user_id || ''
@@ -692,6 +718,10 @@ async function saveAssign() {
     ElMessage.warning('请选择至少一个用户')
     return
   }
+  if (executionMode.value === 'DELEGATED' && !executionConnectionId.value) {
+    ElMessage.warning('请选择执行 Meta 授权')
+    return
+  }
   saving.value = true
   try {
     await withAccountLeases([assignAccount.value.id], 'ACCOUNT_ASSIGNMENT', tokens => accountApi.assign(
@@ -699,6 +729,7 @@ async function saveAssign() {
       selectedUsers.value,
       selectedUsers.value.includes(primaryUserId.value) ? primaryUserId.value : selectedUsers.value[0],
       tokens[assignAccount.value!.id],
+      executionMode.value === 'KEEP' ? undefined : executionMode.value === 'PERSONAL' ? null : executionConnectionId.value,
     ))
     showAssign.value = false
     ElMessage.success('广告账户已分配给投手')

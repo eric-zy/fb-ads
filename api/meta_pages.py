@@ -13,6 +13,7 @@ from tasks.meta_sync_tasks import sync_meta_pages_task
 from config.settings import settings
 from services.fb_connector_client import FBConnectorError
 from services.meta.connector_page_sync import sync_connector_pages
+from services.meta_connection_service import connection_health
 
 router = APIRouter(prefix="/api/v1/meta-pages", tags=["Facebook Pages"])
 
@@ -30,7 +31,35 @@ def list_pages(
     status: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
+    account_ids: Optional[list[str]] = Query(None, max_length=50),
 ):
+    requested = list(dict.fromkeys(account_ids)) if isinstance(account_ids, list) else []
+    if requested:
+        from services.business_access import require_accounts
+        from services.credential_resolver import CredentialResolver
+        from services.meta.page_access import page_account_access_error
+        require_accounts(db, current_user, requested)
+        accounts = db.query(AdAccount).filter(AdAccount.id.in_(requested)).all()
+        if len(accounts) != len(requested):
+            raise HTTPException(404, "部分广告账户不存在或无权访问")
+        db.info["meta_actor_id"] = current_user.id
+        candidates = None
+        for account in accounts:
+            try:
+                ref = CredentialResolver(db).for_account(account.id, actor_id=current_user.id)
+            except ValueError:
+                return []
+            if ref.connection_id:
+                ids = {g.asset_id for g in db.query(MetaConnectionAsset).filter_by(
+                    connection_id=ref.connection_id, asset_type="PAGE", status="ACTIVE").all()}
+            else:
+                ids = {p.id for p in db.query(MetaPage).filter_by(connector_credential_id=ref.credential_id).all()}
+            candidates = ids if candidates is None else candidates & ids
+        query = db.query(MetaPage).filter(MetaPage.id.in_(candidates or set()))
+        if status:
+            query = query.filter(MetaPage.status == status)
+        return [p.to_dict() for p in query.order_by(MetaPage.page_name).all()
+                if all(page_account_access_error(p, a) is None for a in accounts)]
     if current_user.is_platform_admin():
         with bypass_tenant():
             query = db.query(MetaPage)
@@ -41,7 +70,21 @@ def list_pages(
     if status:
         query = query.filter(MetaPage.status == status)
     if not current_user.is_admin():
-        own = db.query(MetaConnection.id).filter_by(authorized_by_user_id=current_user.id, status="ACTIVE")
+        from sqlalchemy import or_
+        from services.meta_execution_access import delegated_assignments, HEALTHY_CONNECTIONS
+        delegated = delegated_assignments(db, current_user)
+        delegated_ids = []
+        for assignment in delegated:
+            from services.credential_resolver import CredentialResolver
+            try:
+                ref = CredentialResolver(db).for_account(assignment.account_id, actor_id=current_user.id)
+                if ref.connection_id == assignment.execution_connection_id:
+                    delegated_ids.append(ref.connection_id)
+            except ValueError:
+                continue
+        own = [c.id for c in db.query(MetaConnection).filter(or_(
+            MetaConnection.authorized_by_user_id == current_user.id, MetaConnection.id.in_(delegated_ids)),
+            MetaConnection.status == "ACTIVE").all() if connection_health(c) in HEALTHY_CONNECTIONS]
         own_pages = db.query(MetaConnectionAsset.asset_id).filter(MetaConnectionAsset.connection_id.in_(own),
             MetaConnectionAsset.asset_type == "PAGE", MetaConnectionAsset.status == "ACTIVE")
         query = query.filter(MetaPage.id.in_(own_pages))
@@ -57,11 +100,15 @@ def sync_all_pages(
     bm_query = db.query(MetaAccount).filter(MetaAccount.connector_credential_id.isnot(None))
     account_query = db.query(AdAccount).filter(AdAccount.connector_credential_id.isnot(None))
     page_query = db.query(MetaPage).filter(MetaPage.connector_credential_id.isnot(None))
+    connection_query = db.query(MetaConnection).join(
+        User, User.id == MetaConnection.authorized_by_user_id,
+    ).filter(MetaConnection.access_mode == "connector", MetaConnection.status == "ACTIVE", User.is_active.is_(True))
     if current_user.is_platform_admin():
         with bypass_tenant():
             businesses = bm_query.all()
             ad_accounts = account_query.all()
             pages = page_query.all()
+            connections = connection_query.all()
         targets = {
             (item.tenant_id, item.connector_credential_id)
             for item in [*businesses, *ad_accounts, *pages]
@@ -72,11 +119,18 @@ def sync_all_pages(
         businesses = bm_query.all()
         ad_accounts = account_query.all()
         pages = page_query.all()
+        connections = connection_query.all()
         targets = {
             (tenant_id, item.connector_credential_id)
             for item in [*businesses, *ad_accounts, *pages]
             if item.connector_credential_id
         }
+
+    targets.update(
+        (row.tenant_id, row.credential_id) for row in connections
+        if row.tenant_id and row.credential_id
+        and connection_health(row) in {"ACTIVE", "EXPIRING", "EXPIRING_1_DAY"}
+    )
 
     if not targets:
         raise HTTPException(

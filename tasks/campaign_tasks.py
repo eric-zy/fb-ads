@@ -78,6 +78,8 @@ def _validate_item_actor(db, item):
         if not item.authorization_connection_id and db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account.id).first():
             raise PermissionError("历史任务没有个人授权快照，请复制任务并重新预检提交")
     require_accounts(db, actor, [account.id], write=True)
+    if db is not None and item.authorization_connection_id:
+        CredentialResolver(db).for_job_item(item)
     if not actor.is_admin():
         permission = {"CREATE": "job:create", "PAUSE": "campaign:pause", "ENABLE": "campaign:enable", "ARCHIVE": "campaign:archive", "DELETE": "campaign:delete", "RESTORE": "campaign:restore", "UPDATE_BUDGET": "campaign:update_budget"}.get(job.action_type)
         compatible = job.action_type in {"PAUSE", "ENABLE"} and "job:create" in (actor.permissions or [])
@@ -699,7 +701,7 @@ def create_campaign_for_account(self, job_item_id: str) -> Dict[str, Any]:
                 raise ValueError("司南推广链未返回有效推广链接")
 
         # Connector 模式只在国内生成协议并投递海外任务，国内不读取 FB Token。
-        ref = CredentialResolver(db).for_account(item.ad_account_id)
+        ref = CredentialResolver(db).for_job_item(item)
         logger.info(
             "[JobItem %s] credential mode=%s connector_credential=%s",
             job_item_id,
@@ -1008,7 +1010,7 @@ def apply_action_for_account(self, job_item_id: str) -> Dict[str, Any]:
         action = job.action_type
         params = job.params or {}
 
-        credential = CredentialResolver(db).for_account(item.ad_account_id)
+        credential = CredentialResolver(db).for_job_item(item)
         connector = FBConnectorClient()
 
         # 优先用子项记录的实例，其次按 模板+账户 反查

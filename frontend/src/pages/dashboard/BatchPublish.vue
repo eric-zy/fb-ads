@@ -105,7 +105,9 @@
                 <el-option v-for="page in metaPages" :key="page.page_id" :label="`${page.page_name || page.page_id} (${page.page_id})`" :value="page.page_id" />
               </el-select>
               <div v-if="!metaPages.length" class="page-sync-inline">
-                <span>暂无已同步页面。</span>
+                <span>{{ pagesLoadError || (form.ad_account_ids.length ? '所选账户的执行授权没有共同可用 Page，请检查每个账户的执行授权及 Page 权限。' : '暂无可用 Page，请完成本人 Meta 授权，或请管理员为已分配账户指定委派执行授权并同步 Page。') }}</span>
+                <el-button v-if="pagesLoadError" size="small" @click="loadMetaPages">重新加载</el-button>
+                <el-button size="small" @click="router.push('/dashboard/meta-connections')">我的 Meta 授权</el-button>
                 <el-button v-if="userStore.isAdmin || userStore.hasPermission('meta_asset:manage')" size="small" :loading="pagesSyncing" @click="syncMetaPages">同步 Facebook 页面</el-button>
               </div>
             </el-form-item>
@@ -754,6 +756,8 @@ const dryRunning = ref(false)
 const rateLimitStatus = ref<{ count: number; limit: number; usage_ratio: number } | null>(null)
 const assetBindings = ref<MetaAssetBinding[]>([])
 const metaPages = ref<MetaPage[]>([])
+const pagesLoadError = ref('')
+let pagesLoadRequest = 0
 const pagesSyncing = ref(false)
 const trackingAssets = ref<MetaTrackingAsset[]>([])
 const trackingAssetsLoading = ref(false)
@@ -1585,11 +1589,20 @@ const syncExistingAdGroup = async (targetAccountId: string) => {
 }
 
 const loadMetaPages = async () => {
+  const requestNo = ++pagesLoadRequest
+  pagesLoadError.value = ''
   try {
-    const { data } = await metaPagesApi.list('ACTIVE')
+    const { data } = await metaPagesApi.list('ACTIVE', form.ad_account_ids)
+    if (requestNo !== pagesLoadRequest) return
     metaPages.value = data || []
+    if (directForm.page_id && !metaPages.value.some(p => p.page_id === directForm.page_id)) {
+      directForm.page_id = ''
+      setDirectInstagramIdentity('')
+    }
   } catch {
+    if (requestNo !== pagesLoadRequest) return
     metaPages.value = []
+    pagesLoadError.value = 'Facebook Page 列表加载失败，请重新加载。'
   }
 }
 
@@ -2071,6 +2084,7 @@ watch(() => form.ad_account_ids.slice(), ids => {
     if (adGroupMode.value !== 'NEW' && !existingAdGroups[id]) loadExistingAdGroups(id)
   }
   loadTrackingAssets(ids)
+  loadMetaPages()
   loadAudienceAssets(ids)
   preflightResult.value = null
 })

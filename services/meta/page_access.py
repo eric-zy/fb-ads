@@ -1,7 +1,7 @@
 """投放前 Facebook Page 与广告账户授权关系校验。"""
 from typing import Optional
 
-from models import AdAccount, MetaPage, MetaConnectionAsset
+from models import AdAccount, MetaPage, MetaConnection, MetaConnectionAsset, User
 from sqlalchemy.orm import object_session
 
 
@@ -11,6 +11,19 @@ ADVERTISING_PAGE_TASKS = {
     "MANAGE",
     "PROFILE_PLUS_FULL_CONTROL",
 }
+
+
+def has_active_personal_page_grant(db, page: MetaPage) -> bool:
+    """A stale canonical credential cannot invalidate another publisher's grant."""
+    from services.meta_connection_service import connection_health
+    connections = db.query(MetaConnection).join(
+        MetaConnectionAsset, MetaConnectionAsset.connection_id == MetaConnection.id,
+    ).join(User, User.id == MetaConnection.authorized_by_user_id).filter(
+        MetaConnection.tenant_id == page.tenant_id,
+        MetaConnectionAsset.asset_type == "PAGE", MetaConnectionAsset.asset_id == page.id,
+        MetaConnectionAsset.status == "ACTIVE", User.is_active.is_(True),
+    ).all()
+    return any(connection_health(row) in {"ACTIVE", "EXPIRING", "EXPIRING_1_DAY"} for row in connections)
 
 
 def account_connection_id(account: AdAccount) -> Optional[str]:

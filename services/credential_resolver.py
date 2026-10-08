@@ -1,5 +1,6 @@
 """统一解析国内资产所引用的凭据类型。"""
 from dataclasses import dataclass
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from models import AdAccount, Credential, MetaConnection, MetaConnectionAsset, User
 from services.meta_connection_service import connection_health
@@ -32,14 +33,18 @@ class CredentialResolver:
         if grants:
             q = self.db.query(MetaConnection).filter(MetaConnection.id.in_([g.connection_id for g in grants if g.status == "ACTIVE"]))
             actor = self.db.query(User).filter_by(id=actor_id).first() if actor_id else None
+            delegated_id = None
+            if actor and not actor.is_admin():
+                from services.meta_execution_access import delegated_connection_id
+                delegated_id = delegated_connection_id(self.db, actor, account)
             if actor and not connection_id:
-                connection_id = (actor.settings or {}).get("meta_execution_connections", {}).get(account.id)
+                connection_id = delegated_id or (actor.settings or {}).get("meta_execution_connections", {}).get(account.id)
             if actor_id and (not actor or not actor.is_active):
                 raise ValueError("操作人已停用或不存在")
             if connection_id:
                 q = q.filter(MetaConnection.id == connection_id)
                 if actor and not actor.is_admin():
-                    q = q.filter(MetaConnection.authorized_by_user_id == actor_id)
+                    q = q.filter(or_(MetaConnection.authorized_by_user_id == actor_id, MetaConnection.id == delegated_id))
             elif actor:
                 q = q.filter(MetaConnection.authorized_by_user_id == actor_id)
             else:
@@ -47,10 +52,12 @@ class CredentialResolver:
                 q = q.filter(MetaConnection.id == account.connection_id)
             choices = [c for c in q.all() if connection_health(c) in {"ACTIVE", "EXPIRING", "EXPIRING_1_DAY"}]
             if not choices:
-                raise ValueError("账户没有当前执行身份的有效 Meta 授权，请本人授权并同步账户")
+                raise ValueError("账户没有有效执行授权，请本人授权，或请管理员指定该账户的委派授权")
             if len(choices) != 1:
                 raise ValueError("该账户有多个个人授权，请明确选择执行授权")
             row = choices[0]
+            if row.tenant_id != account.tenant_id or (actor and not actor.is_platform_admin() and actor.tenant_id != account.tenant_id):
+                raise ValueError("执行授权与账户或操作人不属于同一租户")
             owner = self.db.query(User).filter_by(id=row.authorized_by_user_id).first()
             if not owner or not owner.is_active:
                 raise ValueError("Meta 授权所属用户已停用")

@@ -284,7 +284,7 @@ def test_legacy_campaign_job_also_uses_real_delete(db, monkeypatch, context, sta
     monkeypatch.setattr(campaign_tasks, "_validate_item_actor", lambda *args: False)
     monkeypatch.setattr(campaign_tasks, "_acquire_account_write_lock", lambda *args: None)
     monkeypatch.setattr(campaign_tasks, "_finalize_job_if_done", lambda *args: None)
-    monkeypatch.setattr(campaign_tasks, "CredentialResolver", lambda db: SimpleNamespace(for_account=lambda id: SimpleNamespace(credential_id="credential")))
+    monkeypatch.setattr(campaign_tasks, "CredentialResolver", lambda db: SimpleNamespace(for_job_item=lambda item: SimpleNamespace(credential_id="credential")))
     connector = SimpleNamespace(delete_object=Mock(return_value={"status": status, "remote_status": "DELETED" if status == "SUCCESS" else None}), update_object=Mock())
     monkeypatch.setattr(campaign_tasks, "FBConnectorClient", lambda: connector)
     campaign_tasks.apply_action_for_account.run.__wrapped__(SimpleNamespace(), item.id)

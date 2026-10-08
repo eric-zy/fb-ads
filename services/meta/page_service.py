@@ -11,6 +11,7 @@ from models import Credential, MetaPage, MetaConnection, MetaConnectionAsset
 from services.meta_connection_service import grant_asset
 from services.meta.client import MetaClient
 from services.meta.errors import MetaApiError
+from services.meta.page_access import has_active_personal_page_grant
 
 
 class MetaPageSyncService:
@@ -82,8 +83,12 @@ class MetaPageSyncService:
             if page.page_id not in seen:
                 if connection:
                     continue
-                page.status = CredentialStatus.DISABLED.value
-                page.last_error = "页面已不在当前 Meta 授权范围内"
+                if has_active_personal_page_grant(self.db, page):
+                    page.status = CredentialStatus.ACTIVE.value
+                    page.last_error = None
+                else:
+                    page.status = CredentialStatus.DISABLED.value
+                    page.last_error = "页面已不在当前 Meta 授权范围内"
 
         if connection:
             current_ids = {p.id for p in self.db.query(MetaPage).filter(MetaPage.page_id.in_(seen)).all()}

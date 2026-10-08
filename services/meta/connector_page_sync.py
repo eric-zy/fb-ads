@@ -11,6 +11,7 @@ from core.enums import CredentialStatus
 from models import MetaPage, MetaConnection, MetaConnectionAsset
 from services.meta_connection_service import grant_asset
 from services.fb_connector_client import FBConnectorClient
+from services.meta.page_access import has_active_personal_page_grant
 
 
 def sync_connector_pages(
@@ -111,8 +112,12 @@ def sync_connector_pages(
                 if grant:
                     grant.status = "REVOKED"
                 continue
-            page.status = CredentialStatus.DISABLED.value
-            page.last_error = "页面已不在当前 Meta 授权范围内"
+            if has_active_personal_page_grant(db, page):
+                page.status = CredentialStatus.ACTIVE.value
+                page.last_error = None
+            else:
+                page.status = CredentialStatus.DISABLED.value
+                page.last_error = "页面已不在当前 Meta 授权范围内"
 
     if connection:
         current_ids = {p.id for p in db.query(MetaPage).filter(MetaPage.page_id.in_(seen)).all()}

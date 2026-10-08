@@ -10,6 +10,8 @@ export interface MetaConnection {
   authorized_by_user_id?: string | null
   authorized_by_username?: string
   is_owner?: boolean
+  can_manage?: boolean
+  execution_source?: 'PERSONAL' | 'DELEGATED'
   version?: number
   account_names?: string[]
   executable_account_ids?: string[]
@@ -25,7 +27,7 @@ export interface MetaConnection {
 }
 
 export const metaConnectionsApi = {
-  list: (scope: 'mine' | 'tenant' = 'mine') => request.get<MetaConnection[]>('/api/v1/meta-connections', { params: { scope } }),
+  list: (scope: 'mine' | 'tenant' | 'delegated' = 'mine') => request.get<MetaConnection[]>('/api/v1/meta-connections', { params: { scope } }),
   sync: (id: string) => request.post(`/api/v1/meta-connections/${id}/sync`),
   disconnect: (id: string) => request.post<{ cancelled_jobs: number }>(`/api/v1/meta-connections/${id}/disconnect`),
   chooseDefault: (id: string, accountIds: string[]) => request.post(`/api/v1/meta-connections/${id}/execution-default`, { account_ids: accountIds }),
