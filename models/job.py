@@ -121,6 +121,8 @@ class CampaignJobItem(TenantMixin, Base):
     ad_account_id = Column(String(50), ForeignKey("ad_accounts.id"), nullable=False, index=True)
     access_business_id = Column(String(50), ForeignKey("meta_accounts.id"), nullable=True, index=True,
                                  comment="本次执行实际使用的 BM 访问关系")
+    authorization_connection_id = Column(String(50))
+    authorization_version = Column(Integer)
 
     status = Column(String(32), default=JobItemStatus.PENDING.value, index=True)
 
@@ -159,6 +161,10 @@ class CampaignJobItem(TenantMixin, Base):
             "job_id": self.job_id,
             "ad_account_id": self.ad_account_id,
             "access_business_id": self.access_business_id,
+            "authorization_connection_id": self.authorization_connection_id,
+            "authorization_version": self.authorization_version,
+            "authorization_meta_user_id": (self.request_payload or {}).get("authorization_meta_user_id"),
+            "authorization_owner_name": (self.request_payload or {}).get("authorization_owner_name"),
             "status": self.status,
             "meta_campaign_id": self.meta_campaign_id,
             "adset_ids": self.adset_ids,

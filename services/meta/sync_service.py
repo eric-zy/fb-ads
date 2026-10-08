@@ -355,7 +355,8 @@ class MetaSyncService:
                     status="ACTIVE",
                 )
                 self.db.add(access)
-            account.connector_credential_id = business.connector_credential_id
+            if not account.connection_id and not account.connector_credential_id:
+                account.connector_credential_id = business.connector_credential_id
             access.credential_id = None
             access.last_verified_at = datetime.utcnow()
             access.last_error = None
@@ -364,9 +365,9 @@ class MetaSyncService:
             if not account.business_id:
                 account.business_id = business.id
 
-        if business and business.connection_id:
+        if business and business.connection_id and not account.connection_id:
             account.connection_id = business.connection_id
-        elif account.connector_credential_id:
+        elif account.connector_credential_id and not account.connection_id:
             account.connection_id = None
 
         account.meta_business_id = raw_business_id or (business.business_id if business else None)
@@ -408,6 +409,8 @@ class MetaSyncService:
         self, ad_account_id: str, requested_by: Optional[str] = None
     ) -> MetaSyncLog:
         """同步单个广告账户的 Meta 侧信息"""
+        if requested_by:
+            self.db.info["meta_actor_id"] = requested_by
         account = self.db.query(AdAccount).filter(AdAccount.id == ad_account_id).first()
         if not account:
             raise ValueError(f"广告账户不存在: {ad_account_id}")

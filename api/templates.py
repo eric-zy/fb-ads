@@ -26,7 +26,7 @@ from services.template_access import (
     template_access_level,
     template_query,
 )
-from services.creative_format import normalize_creative_format
+from services.creative_format import normalize_creative_format, carousel_cta_mode
 from services.instagram_identity import instagram_references
 from services.meta_creative_options import normalize_cta
 from services.meta_delivery_rules import default_optimization_goal, filter_unused_tracking_assets, objective_optimization_preflight_errors
@@ -198,6 +198,10 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
         if not isinstance(cards, list) or not cards:
             cards = config.get("creatives") if isinstance(config.get("creatives"), list) else []
         config["carousel_cards"] = cards
+        try:
+            config["carousel_cta_mode"] = carousel_cta_mode(config)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         config.pop("creatives", None)
         if isinstance(config.get("adsets"), list):
             config["adsets"] = [
@@ -207,6 +211,7 @@ def _validate_delivery_config(values: Dict[str, Any]) -> None:
             ]
     else:
         config.pop("carousel_cards", None)
+        config.pop("carousel_cta_mode", None)
     delivery = config.get("delivery") or {}
     split_level = str(delivery.get("split_level") or "AD").upper()
     combination_mode = str(delivery.get("combination_mode") or "ACCOUNT_X_ADSET_X_CREATIVE").upper()

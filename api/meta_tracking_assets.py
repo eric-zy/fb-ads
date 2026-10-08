@@ -43,6 +43,15 @@ def list_tracking_assets(
     cached = db.query(MetaTrackingAsset).filter(MetaTrackingAsset.ad_account_id.in_(requested)).all()
     by_account = {account_id: [] for account_id in requested}
     for asset in cached:
+        from models import MetaConnectionAsset
+        if db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=asset.ad_account_id).first():
+            from services.credential_resolver import CredentialResolver
+            try:
+                ref = CredentialResolver(db).for_account(asset.ad_account_id, actor_id=current_user.id)
+            except ValueError:
+                continue
+            if not db.query(MetaConnectionAsset.id).filter_by(connection_id=ref.connection_id, asset_type="TRACKING", asset_id=asset.id, status="ACTIVE").first():
+                continue
         by_account[asset.ad_account_id].append(asset.to_dict())
     for account in accounts:
         rows = by_account[account.id]

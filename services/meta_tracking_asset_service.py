@@ -24,9 +24,8 @@ class MetaTrackingAssetSyncService:
             raise ValueError("广告账户不存在")
 
         if settings.FB_ACCESS_MODE == "connector":
-            credential_id = account.connector_credential_id or (
-                account.business.connector_credential_id if account.business else None
-            )
+            from services.credential_resolver import CredentialResolver
+            credential_id = CredentialResolver(self.db).for_account(account.id).credential_id
             if not credential_id:
                 raise ValueError("广告账户未绑定 Connector 凭据")
             payload = FBConnectorClient().list_tracking_assets(account.account_id, credential_id)
@@ -36,6 +35,13 @@ class MetaTrackingAssetSyncService:
             rows = MetaClient(token).get_tracking_assets(account.account_id, account.meta_business_id)
 
         now = datetime.utcnow()
+        from models import MetaConnection, MetaConnectionAsset
+        from services.meta_connection_service import grant_asset
+        connection = None
+        if self.db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account.id).first():
+            from services.credential_resolver import CredentialResolver
+            ref = CredentialResolver(self.db).for_account(account.id)
+            connection = self.db.query(MetaConnection).filter_by(id=ref.connection_id).one()
         seen: set[tuple[str, str]] = set()
         synced: list[MetaTrackingAsset] = []
         for raw in rows if isinstance(rows, list) else []:
@@ -67,6 +73,9 @@ class MetaTrackingAssetSyncService:
             item.last_sync_error = None
             item.raw_json = raw
             synced.append(item)
+            self.db.flush()
+            if connection:
+                grant_asset(self.db, connection, "TRACKING", item.id)
 
         # Meta 删除/撤销授权后不再出现在列表中，保留记录便于审计，
         # 但发布页不会再把它当作可用资产返回。
@@ -75,6 +84,11 @@ class MetaTrackingAssetSyncService:
         ).all()
         for item in existing:
             if (item.meta_asset_id, item.asset_type) not in seen:
+                if connection:
+                    grant = self.db.query(MetaConnectionAsset).filter_by(connection_id=connection.id, asset_type="TRACKING", asset_id=item.id).first()
+                    if grant:
+                        grant.status = "REVOKED"
+                    continue
                 item.status = "UNAVAILABLE"
                 item.usable = False
                 item.last_synced_at = now

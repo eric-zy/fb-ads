@@ -1,55 +1,123 @@
-"""Meta OAuth 2.0 授权流程。
-
-支持两种入口：已有 BM 重新授权；或 OAuth-first 先登录 Meta、发现 BM、选择 BM 后完成接入。
-Access Token 只进入 credentials 加密字段，前端只拿短时 credential_id。
-"""
+"""Self-service personal Meta OAuth with ownership and single-use state."""
 from datetime import datetime, timedelta
+from hashlib import sha256
 from urllib.parse import urlencode
 import uuid
-
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-
 from config.settings import settings
-from core.auth import require_meta_asset_admin as require_admin
+from core.auth import require_meta_self
 from core.database import get_db
-from core.enums import CredentialSource, CredentialStatus
-from core.logger import logger
 from core.tenant import tenant_scope, effective_tenant_id
-from models import AdAccount, Credential, MetaAccount, MetaConnection, User
-from models.ad_account import SystemStatus
-from models.tenant import UserRole
-from services.credential_service import CredentialService, CredentialError
-from services.meta.oauth_service import MetaOAuthError, MetaOAuthService
+from models import Credential, MetaAccount, MetaOAuthSession, User
+from services.meta.oauth_service import MetaOAuthService, MetaOAuthError
 from services.fb_connector_client import FBConnectorClient, FBConnectorError
-from services.meta.connector_page_sync import sync_connector_pages
-from tasks.meta_sync_tasks import sync_meta_authorization_task, sync_ad_accounts_task, sync_meta_pages_task
+from services.meta_connection_service import bind_connection, owned_connection
 
 router = APIRouter(prefix="/api/v1/meta-auth", tags=["Meta OAuth 授权"])
 
 
-@router.get("/mode")
-def auth_mode(_: User = Depends(require_admin)):
-    """返回前端授权模式，避免在 Connector 模式展示手工 Token 入口。"""
-    return {"access_mode": settings.FB_ACCESS_MODE}
-
-class OAuthCompleteRequest(BaseModel):
-    credential_id: str = Field(..., description="本次 OAuth 产生的临时凭据 ID")
-    business_id: str = Field(..., description="用户选择的 Meta Business ID")
-
-class OAuthAccountsCompleteRequest(BaseModel):
-    credential_id: str = Field(..., description="本次 OAuth 产生的临时凭据 ID")
-    account_ids: list[str] = Field(..., min_length=1, description="用户选择的 Meta 广告账户 ID")
-
 class SDKLoginRequest(BaseModel):
     access_token: str = Field(..., min_length=20)
+    connection_id: str | None = None
+
+
+class OAuthClaimRequest(BaseModel):
+    state: str
+    receipt: str
+
+
+class OAuthAccountsCompleteRequest(BaseModel):
+    credential_id: str
+    account_ids: list[str] = Field(..., min_length=1)
+
+
+class OAuthCompleteRequest(BaseModel):
+    credential_id: str
+    business_id: str
+
+
+def _frontend_redirect(**params):
+    return RedirectResponse(f"{settings.FRONTEND_BASE_URL.rstrip('/')}/dashboard/accounts?{urlencode(params)}", status_code=302)
+
+
+def _oauth_return_to(request, requested=None):
+    allowed = {"https://iornix.com", "http://49.232.238.163:8094", settings.FRONTEND_BASE_URL.rstrip("/")}
+    candidate = str(requested or "").rstrip("/")
+    return candidate if candidate in allowed else settings.FRONTEND_BASE_URL.rstrip("/")
+
+
+def _new_oauth_state(user, tenant_id, meta_account_id=None, return_to=None, *, db=None, connection_id=None):
+    now = datetime.utcnow()
+    nonce = uuid.uuid4().hex
+    payload = {"purpose": "meta_oauth", "sub": user.id, "tid": tenant_id, "jti": nonce,
+               "iat": now, "exp": now + timedelta(minutes=10), "return_to": return_to}
+    if meta_account_id:
+        payload["meta_account_id"] = meta_account_id
+    if db is not None:
+        db.add(MetaOAuthSession(id=nonce, tenant_id=tenant_id, user_id=user.id,
+                               connection_id=connection_id, expires_at=now + timedelta(minutes=10)))
+        db.commit()
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+
+
+def _consume_state(db, state, user=None):
+    try:
+        payload = jwt.decode(state, settings.SECRET_KEY, algorithms=["HS256"], options={"require": ["exp", "sub", "tid", "jti"]})
+        if payload.get("purpose") != "meta_oauth":
+            raise jwt.InvalidTokenError()
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=400, detail="授权 state 无效或已过期") from exc
+    if user and (payload["sub"] != user.id or payload["tid"] != effective_tenant_id(user)):
+        raise HTTPException(status_code=403, detail="授权回调不属于当前用户或租户")
+    with tenant_scope(payload["tid"]):
+        intent = db.query(MetaOAuthSession).filter_by(id=payload["jti"], user_id=payload["sub"], tenant_id=payload["tid"]).first()
+        if not intent or intent.consumed_at or intent.expires_at <= datetime.utcnow():
+            raise HTTPException(status_code=400, detail="授权回调已处理或已过期，请重新发起")
+        updated = db.query(MetaOAuthSession).filter(MetaOAuthSession.id == intent.id,
+                    MetaOAuthSession.consumed_at.is_(None)).update({"consumed_at": datetime.utcnow()}, synchronize_session=False)
+        if updated != 1:
+            raise HTTPException(status_code=400, detail="授权回调已处理")
+        return payload, intent.connection_id
+
+
+def _store_direct(db, user, token, scopes, connection_id=None):
+    row = bind_connection(db, user, {**token, "app_id": settings.FB_APP_ID, "scopes": scopes},
+                          mode="direct", expected_connection_id=connection_id)
+    query = db.query(Credential).filter_by(connection_id=row.id, granted_by_user_id=user.id)
+    cred = query.filter_by(id=row.credential_id).first() if row.credential_id else query.order_by(Credential.updated_at.desc()).first()
+    if not cred:
+        pending_id = uuid.uuid4().hex
+        db.add(MetaAccount(id=pending_id, tenant_id=row.tenant_id, name="个人 Meta 授权",
+            business_id=f"__oauth_pending__{pending_id}", app_id=settings.FB_APP_ID, status="ARCHIVED", sync_status="PENDING"))
+        db.flush()
+        cred = Credential(id=uuid.uuid4().hex, tenant_id=row.tenant_id, meta_account_id=pending_id,
+            token_type="USER", expires_at=token.get("expires_at"), source="OAUTH",
+            scopes=scopes, granted_by_user_id=user.id, meta_user_id=row.meta_user_id)
+        db.add(cred)
+        cred.name = f"个人 Meta OAuth - {user.username}"
+    cred.set_access_token(token["access_token"])
+    cred.connection_id = row.id
+    cred.app_id = row.app_id
+    cred.status = "ACTIVE"
+    cred.scopes = scopes
+    cred.expires_at = row.expires_at
+    cred.last_verified_at = datetime.utcnow()
+    row.credential_id = cred.id
+    db.flush()
+    return row
+
+
+@router.get("/mode")
+def auth_mode(_: User = Depends(require_meta_self)):
+    return {"access_mode": settings.FB_ACCESS_MODE}
+
 
 @router.get("/sdk-config")
-def sdk_config(_: User = Depends(require_admin)):
-    """返回可公开给浏览器 SDK 的 App ID；绝不返回 App Secret。"""
+def sdk_config(_: User = Depends(require_meta_self)):
     if settings.FB_ACCESS_MODE == "connector":
         try:
             return FBConnectorClient().sdk_config()
@@ -59,437 +127,161 @@ def sdk_config(_: User = Depends(require_admin)):
         raise HTTPException(status_code=503, detail="Meta App ID 未配置")
     return {"app_id": settings.FB_APP_ID, "version": settings.FB_API_VERSION, "login_config_id": settings.FB_LOGIN_CONFIG_ID or None}
 
+
 @router.post("/sdk-login")
-def sdk_login(payload: SDKLoginRequest, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
-    """接收 FB.login 返回的短期 Token，在服务端验证并创建临时凭据。"""
-    if settings.FB_ACCESS_MODE == "connector":
-        try:
-            return FBConnectorClient().sdk_login(payload.access_token)
-        except FBConnectorError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-    tenant_id = effective_tenant_id(current_user)
-    if not tenant_id:
-        raise HTTPException(status_code=400, detail="平台账号不属于任何租户，无法接入 Meta 广告账号")
-    try:
-        oauth = MetaOAuthService()
-        token = oauth.exchange_user_token(payload.access_token)
-        scopes = oauth.verify_permissions(token["access_token"])
-        existing = db.query(Credential).filter(Credential.tenant_id == tenant_id, Credential.source == CredentialSource.OAUTH.value, Credential.status == CredentialStatus.ACTIVE.value, Credential.meta_user_id == str(token.get("meta_user_id"))).order_by(Credential.updated_at.desc()).first() if token.get("meta_user_id") else None
-        pending = db.query(MetaAccount).filter(MetaAccount.id == existing.meta_account_id).first() if existing else None
-        if not pending or not (pending.business_id or "").startswith("__oauth_pending__"):
-            pending_id = str(uuid.uuid4()); pending = MetaAccount(id=pending_id, name="Meta SDK 待绑定", business_id=f"__oauth_pending__{pending_id}", app_id=settings.FB_APP_ID, status="ARCHIVED", sync_status="PENDING", description="JavaScript SDK 登录临时授权容器")
-            db.add(pending); db.flush()
-        cred = _upsert_oauth_credential(db, meta_account_id=pending.id, token=token, scopes=scopes, user=current_user, name="Meta SDK OAuth - 待选择广告账户")
-        db.commit()
-        return {"credential_id": cred.id, "expires_in": 600}
-    except (MetaOAuthError, CredentialError) as exc:
-        db.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-def _frontend_redirect(path: str = "/dashboard/accounts", **params: str) -> RedirectResponse:
-    base = settings.FRONTEND_BASE_URL.rstrip("/") + path
-    return RedirectResponse(f"{base}?{urlencode(params)}", status_code=302)
-
-def _oauth_return_to(request: Request, requested: str | None = None) -> str:
-    """Choose a fixed, trusted frontend return URL for the OAuth flow."""
-    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
-    host = request.headers.get("x-forwarded-host", request.headers.get("host", "")).split(",")[0].strip()
-    allowed = {
-        "https://iornix.com",
-        "http://49.232.238.163:8094",
-    }
-    candidate = (requested or f"{forwarded_proto}://{host}").rstrip("/")
-    return candidate if candidate in allowed else settings.FRONTEND_BASE_URL.rstrip("/")
-
-
-def _new_oauth_state(user: User, tenant_id: str, meta_account_id: str | None = None, return_to: str | None = None) -> str:
-    now = datetime.utcnow()
-    payload = {"purpose":"meta_oauth","sub":user.id,"tid":tenant_id,"jti":uuid.uuid4().hex,"iat":now,"exp":now+timedelta(minutes=10)}
-    if return_to:
-        payload["return_to"] = return_to
-    if meta_account_id: payload["meta_account_id"] = meta_account_id
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
-
-
-def _upsert_oauth_credential(
-    db: Session, *, meta_account_id: str, token: dict, scopes: list,
-    user: User, name: str,
-) -> Credential:
-    """同一 Meta 用户对同一目标只保留一条有效 OAuth 凭据。"""
-    meta_user_id = token.get("meta_user_id")
-    connection = None
-    if meta_user_id:
-        connection = db.query(MetaConnection).filter(
-            MetaConnection.tenant_id == effective_tenant_id(user),
-            MetaConnection.meta_user_id == str(meta_user_id),
-            MetaConnection.app_id == settings.FB_APP_ID,
-        ).first()
-        if not connection:
-            connection = MetaConnection(
-                id=uuid.uuid4().hex,
-                tenant_id=effective_tenant_id(user),
-                meta_user_id=str(meta_user_id),
-                app_id=settings.FB_APP_ID,
-            )
-            db.add(connection)
-        connection.status = CredentialStatus.ACTIVE.value
-        connection.scopes = scopes
-        connection.authorized_by_user_id = user.id
-        connection.expires_at = token.get("expires_at")
-        connection.last_error = None
-        db.flush()
-    query = db.query(Credential).filter(
-        Credential.tenant_id == effective_tenant_id(user),
-        Credential.meta_account_id == meta_account_id,
-        Credential.source == CredentialSource.OAUTH.value,
-        Credential.status == CredentialStatus.ACTIVE.value,
-    )
-    if meta_user_id:
-        query = query.filter(Credential.meta_user_id == str(meta_user_id))
-    cred = query.order_by(Credential.updated_at.desc()).first()
-    if not cred:
-        cred = CredentialService(db).create_for_meta(
-            meta_account_id=meta_account_id,
-            plain_token=token["access_token"],
-            token_type="USER",
-            expires_at=token["expires_at"],
-            replace_active=False,
-            source=CredentialSource.OAUTH.value,
-            scopes=scopes,
-            granted_by_user_id=user.id,
-            meta_user_id=meta_user_id,
-        )
-    else:
-        cred.set_access_token(token["access_token"])
-        cred.expires_at = token["expires_at"]
-        cred.scopes = scopes
-        cred.granted_by_user_id = user.id
-        cred.meta_user_id = meta_user_id
-        cred.status = CredentialStatus.ACTIVE.value
-    cred.name = name
-    cred.app_id = settings.FB_APP_ID
-    cred.connection_id = connection.id if connection else None
-    cred.last_verified_at = datetime.utcnow()
-    return cred
-
-# 两个入口共用同一套安全逻辑：/authorize-first 明确用于“添加广告用户”，不带 BM 参数。
-@router.get("/authorize-first")
-@router.get("/authorize")
-def authorize_meta(request: Request, meta_account_id: str | None = Query(None, description="已有 BM 主键；为空表示 OAuth-first"), return_to: str | None = Query(None), db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
-    tenant_id = effective_tenant_id(current_user)
-    if not tenant_id: raise HTTPException(status_code=400, detail="平台账号不属于任何租户，无法发起 Meta 授权")
-    if meta_account_id and not db.query(MetaAccount).filter(MetaAccount.id == meta_account_id).first():
-        raise HTTPException(status_code=404, detail="BM 不存在")
-    state = _new_oauth_state(current_user, tenant_id, meta_account_id, _oauth_return_to(request, return_to))
+def sdk_login(payload: SDKLoginRequest, db: Session = Depends(get_db), current_user: User = Depends(require_meta_self)):
+    if payload.connection_id:
+        owned_connection(db, current_user, connection_id=payload.connection_id)
     try:
         if settings.FB_ACCESS_MODE == "connector":
-            result = FBConnectorClient().authorize(state)
-            url = result.get("authorization_url")
-            if not url:
-                raise FBConnectorError("海外 Connector 未返回授权地址")
+            result = FBConnectorClient().sdk_login(payload.access_token)
+            row = bind_connection(db, current_user, result, mode="connector", expected_connection_id=payload.connection_id)
         else:
-            url = MetaOAuthService().authorization_url(state)
-    except FBConnectorError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except MetaOAuthError as exc: raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"authorization_url": url, "expires_in": 600, "oauth_mode": "business" if meta_account_id else "discover_businesses"}
+            oauth = MetaOAuthService()
+            token = oauth.exchange_user_token(payload.access_token)
+            row = _store_direct(db, current_user, token, oauth.verify_permissions(token["access_token"]), payload.connection_id)
+        db.commit()
+        return {"credential_id": row.credential_id, "connection_id": row.id, "expires_in": 600}
+    except (MetaOAuthError, FBConnectorError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-@router.get("/callback", include_in_schema=True)
-def meta_oauth_callback(state: str = Query(...), code: str | None = Query(None), error: str | None = Query(None), error_description: str | None = Query(None), db: Session = Depends(get_db)):
+
+@router.get("/authorize-first")
+@router.get("/authorize")
+def authorize_meta(request: Request, meta_account_id: str | None = Query(None), return_to: str | None = Query(None),
+                   connection_id: str | None = Query(None), db: Session = Depends(get_db), current_user: User = Depends(require_meta_self)):
+    if connection_id:
+        owned_connection(db, current_user, connection_id=connection_id)
+    if meta_account_id and not current_user.is_admin():
+        raise HTTPException(status_code=403, detail="个人接入请使用我的 Meta 授权入口")
+    state = _new_oauth_state(current_user, effective_tenant_id(current_user), meta_account_id,
+                            _oauth_return_to(request, return_to), db=db, connection_id=connection_id)
+    try:
+        url = FBConnectorClient().authorize(state).get("authorization_url") if settings.FB_ACCESS_MODE == "connector" else MetaOAuthService().authorization_url(state)
+        if not url:
+            raise MetaOAuthError("Meta 未返回授权地址")
+    except (MetaOAuthError, FBConnectorError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"authorization_url": url, "expires_in": 600, "oauth_mode": "discover_businesses"}
+
+
+@router.post("/claim")
+def claim_oauth(payload: OAuthClaimRequest, db: Session = Depends(get_db), current_user: User = Depends(require_meta_self)):
+    if settings.FB_ACCESS_MODE != "connector" or not settings.FB_CONNECTOR_SIGNING_KEY:
+        raise HTTPException(status_code=503, detail="Connector 回调签名未配置")
+    try:
+        receipt = jwt.decode(payload.receipt, settings.FB_CONNECTOR_SIGNING_KEY, algorithms=["HS256"],
+                             audience="saas-meta-oauth", options={"require": ["exp", "state_hash", "credential_id"]})
+        if receipt["state_hash"] != sha256(payload.state.encode()).hexdigest():
+            raise jwt.InvalidTokenError()
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=400, detail="海外授权回执无效，请重新发起授权") from exc
+    try:
+        _, connection_id = _consume_state(db, payload.state, current_user)
+        result = FBConnectorClient().credential_health([receipt["credential_id"]]).get("items", [])
+        verified = next((x for x in result if x.get("id") == receipt["credential_id"]), None)
+        if not verified or verified.get("status") != "ACTIVE":
+            raise HTTPException(status_code=400, detail="海外个人授权已失效")
+        row = bind_connection(db, current_user, {**verified, "credential_id": receipt["credential_id"],
+                    "data_access_expires_at": receipt.get("data_access_expires_at")}, mode="connector", expected_connection_id=connection_id)
+        db.commit()
+        return {"credential_id": row.credential_id, "connection_id": row.id}
+    except (HTTPException, FBConnectorError) as exc:
+        db.rollback()
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/callback")
+def meta_oauth_callback(state: str = Query(...), code: str | None = Query(None), error: str | None = Query(None),
+                        error_description: str | None = Query(None), db: Session = Depends(get_db)):
     if settings.FB_ACCESS_MODE == "connector":
         return _frontend_redirect(meta_auth="error", message="OAuth 回调必须由海外 Connector 处理")
-    if error or not code: return _frontend_redirect(meta_auth="error", message=error_description or error or "用户取消授权")
     try:
-        payload = jwt.decode(state, settings.SECRET_KEY, algorithms=["HS256"])
-        if payload.get("purpose") != "meta_oauth" or not payload.get("sub") or not payload.get("tid"): raise jwt.InvalidTokenError("state 不合法")
-    except jwt.PyJWTError: return _frontend_redirect(meta_auth="error", message="授权 state 无效或已过期")
+        payload, connection_id = _consume_state(db, state)
+        with tenant_scope(payload["tid"]):
+            user = db.query(User).filter_by(id=payload["sub"], tenant_id=payload["tid"]).first()
+            if not user or not user.is_active:
+                raise HTTPException(status_code=403, detail="发起授权的用户已失效")
+            if error or not code:
+                db.commit()
+                return _frontend_redirect(meta_auth="error", message=error_description or error or "用户取消授权")
+            oauth = MetaOAuthService()
+            token = oauth.exchange_code(code)
+            row = _store_direct(db, user, token, oauth.verify_permissions(token["access_token"]), connection_id)
+            db.commit()
+            return _frontend_redirect(meta_auth="businesses", credential_id=row.credential_id)
+    except (HTTPException, MetaOAuthError) as exc:
+        db.rollback()
+        return _frontend_redirect(meta_auth="error", message=str(getattr(exc, "detail", exc))[:240])
 
-    with tenant_scope(payload.get("tid")):
-        user = db.query(User).filter(User.id == payload.get("sub")).first()
-        if not user or not user.is_active or not UserRole.is_admin(user.role): return _frontend_redirect(meta_auth="error", message="发起授权的管理员已失效")
-        if getattr(user, "tenant_id", None) != payload.get("tid"): return _frontend_redirect(meta_auth="error", message="授权租户信息已变更，请重新发起")
-        target_meta = None
-        if payload.get("meta_account_id"):
-            target_meta = db.query(MetaAccount).filter(MetaAccount.id == payload.get("meta_account_id")).first()
-            if not target_meta: return _frontend_redirect(meta_auth="error", message="要绑定的 BM 不存在")
-        try:
-            oauth = MetaOAuthService(); token = oauth.exchange_code(code); scopes = oauth.verify_permissions(token["access_token"])
-            if target_meta:
-                business = oauth.verify_business_access(token["access_token"], target_meta.business_id)
-                cred = _upsert_oauth_credential(db, meta_account_id=target_meta.id, token=token, scopes=scopes, user=user, name=f"Meta OAuth - {business.get('name') or target_meta.name}"); db.commit()
-                try:
-                    sync_meta_authorization_task.delay(cred.id)
-                except Exception as exc: logger.warning(f"[meta-auth] 自动同步任务投递失败: {exc}")
-                return _frontend_redirect(meta_auth="success", meta_account_id=target_meta.id)
 
-            existing_pending_cred = db.query(Credential).filter(Credential.tenant_id == effective_tenant_id(user), Credential.source == CredentialSource.OAUTH.value, Credential.status == CredentialStatus.ACTIVE.value, Credential.meta_user_id == str(token.get("meta_user_id"))).order_by(Credential.updated_at.desc()).first() if token.get("meta_user_id") else None
-            pending = db.query(MetaAccount).filter(MetaAccount.id == existing_pending_cred.meta_account_id).first() if existing_pending_cred else None
-            if not pending or not (pending.business_id or "").startswith("__oauth_pending__"):
-                pending_id=str(uuid.uuid4()); pending=MetaAccount(id=pending_id,name="Meta OAuth 待绑定",business_id=f"__oauth_pending__{pending_id}",app_id=settings.FB_APP_ID,status="ARCHIVED",sync_status="PENDING",description="OAuth-first 临时授权容器，完成 BM 选择后自动转换")
-                db.add(pending); db.flush()
-            cred=_upsert_oauth_credential(db, meta_account_id=pending.id, token=token, scopes=scopes, user=user, name="Meta OAuth - 待选择 BM"); db.commit()
-            return _frontend_redirect(meta_auth="businesses", credential_id=cred.id)
-        except (MetaOAuthError, PermissionError, CredentialError) as exc:
-            db.rollback(); return _frontend_redirect(meta_auth="error", message=str(exc)[:240])
+def _remote_accounts(db, user, credential_id):
+    connection = owned_connection(db, user, credential_id=credential_id, active=True)
+    if connection.access_mode == "connector":
+        rows = FBConnectorClient().oauth_ad_accounts(credential_id).get("accounts", [])
+    else:
+        cred = db.query(Credential).filter_by(id=credential_id, connection_id=connection.id, status="ACTIVE").first()
+        if not cred or cred.is_expired():
+            raise HTTPException(status_code=400, detail="个人 OAuth 凭据已失效")
+        rows = MetaOAuthService().get_ad_accounts(cred.get_access_token())
+    return connection, rows
+
 
 @router.get("/businesses")
-def oauth_businesses(credential_id: str = Query(...), db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
-    if settings.FB_ACCESS_MODE == "connector":
-        try:
+def oauth_businesses(credential_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_meta_self)):
+    connection = owned_connection(db, current_user, credential_id=credential_id, active=True)
+    try:
+        if connection.access_mode == "connector":
             return FBConnectorClient().oauth_businesses(credential_id)
-        except FBConnectorError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-    cred=db.query(Credential).filter(Credential.id==credential_id).first()
-    if not cred or cred.source!=CredentialSource.OAUTH.value: raise HTTPException(status_code=404, detail="OAuth 凭据不存在或已失效")
-    if cred.granted_by_user_id!=current_user.id: raise HTTPException(status_code=403, detail="无权访问该 OAuth 授权")
-    if cred.status!=CredentialStatus.ACTIVE.value or cred.is_expired(): raise HTTPException(status_code=400, detail="OAuth 凭据已失效，请重新授权")
-    pending=db.query(MetaAccount).filter(MetaAccount.id==cred.meta_account_id).first() if cred.meta_account_id else None
-    if not pending or not pending.business_id.startswith("__oauth_pending__"): raise HTTPException(status_code=400, detail="该 OAuth 凭据已完成 BM 绑定")
-    try: businesses=MetaOAuthService().get_businesses(cred.get_access_token())
-    except MetaOAuthError as exc: raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"credential_id":credential_id,"businesses":businesses}
+        cred = db.query(Credential).filter_by(id=credential_id).one()
+        return {"credential_id": credential_id, "businesses": MetaOAuthService().get_businesses(cred.get_access_token())}
+    except (MetaOAuthError, FBConnectorError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 
 @router.get("/ad-accounts")
-def oauth_ad_accounts(credential_id: str = Query(...), db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
-    """OAuth-first 直接读取广告账户，前端无需先选择 BM。"""
-    if settings.FB_ACCESS_MODE == "connector":
-        try:
-            return FBConnectorClient().oauth_ad_accounts(credential_id)
-        except FBConnectorError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-    cred = db.query(Credential).filter(Credential.id == credential_id).first()
-    if not cred or cred.source != CredentialSource.OAUTH.value:
-        raise HTTPException(status_code=404, detail="OAuth 凭据不存在")
-    if cred.granted_by_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="无权访问该 OAuth 授权")
-    if cred.status != CredentialStatus.ACTIVE.value or cred.is_expired():
-        raise HTTPException(status_code=400, detail="OAuth 凭据已失效，请重新授权")
+def oauth_ad_accounts(credential_id: str, db: Session = Depends(get_db), current_user: User = Depends(require_meta_self)):
     try:
-        accounts = MetaOAuthService().get_ad_accounts(cred.get_access_token())
-    except MetaOAuthError as exc:
+        _, rows = _remote_accounts(db, current_user, credential_id)
+        return {"credential_id": credential_id, "accounts": rows}
+    except (MetaOAuthError, FBConnectorError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"credential_id": credential_id, "accounts": accounts}
+
 
 @router.post("/complete-accounts")
-def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
-    """直接接入所选广告账户；BM 由 Meta 返回值自动创建/绑定，不要求用户选择。"""
-    if settings.FB_ACCESS_MODE == "connector":
-        try:
-            remote = FBConnectorClient().oauth_ad_accounts(payload.credential_id).get("accounts", [])
-            wanted = {str(x) for x in payload.account_ids}
-            selected = [item for item in remote if str(item.get("id")) in wanted]
-            if len({str(item.get("id")) for item in selected}) != len(wanted):
-                raise HTTPException(status_code=400, detail="所选广告账户不在当前授权范围内")
-            imported = []
-            for item in selected:
-                business = item.get("business") or {}; business_id = str(business.get("id") or "").strip()
-                meta = db.query(MetaAccount).filter(MetaAccount.business_id == business_id).first() if business_id else None
-                if not meta and business_id:
-                    meta = MetaAccount(id=uuid.uuid4().hex, name=business.get("name") or f"Meta Business {business_id}", business_id=business_id, app_id="connector", status="ACTIVE", sync_status="SUCCESS")
-                    db.add(meta); db.flush()
-                account_id = str(item.get("id")); account = db.query(AdAccount).filter(AdAccount.account_id == account_id).first()
-                if not account:
-                    account = AdAccount(id=uuid.uuid4().hex, account_id=account_id, system_status=SystemStatus.ACTIVE.value); db.add(account)
-                account.business_id = meta.id if meta else None; account.meta_business_id = business_id or None
-                account.connector_credential_id = payload.credential_id; account.credential_id = None
-                account.account_name = item.get("name") or account_id; account.account_status = str(item.get("account_status")) if item.get("account_status") is not None else None
-                account.currency = item.get("currency") or account.currency; account.timezone = item.get("timezone_name") or account.timezone
-                account.owner_type = "BUSINESS" if meta else "PERSONAL"
-                if meta: meta.connector_credential_id = payload.credential_id
-                imported.append({"id": account.id, "account_id": account_id, "business_id": meta.id if meta else None, "business_name": meta.name if meta else None, "owner_type": account.owner_type})
-            db.commit()
-            page_sync = {"status": "SKIPPED", "count": 0, "page_ids": []}
-            try:
-                page_sync = {"status": "SUCCESS", **sync_connector_pages(
-                    db,
-                    effective_tenant_id(current_user),
-                    payload.credential_id,
-                    allow_rebind=True,
-                )}
-                db.commit()
-            except FBConnectorError as exc:
-                db.rollback()
-                page_sync = {"status": "FAILED", "credential_id": payload.credential_id, "count": 0, "page_ids": [], "error": str(exc)}
-            return {"success": True, "accounts": imported, "page_sync": page_sync}
-        except FBConnectorError as exc:
-            db.rollback(); raise HTTPException(status_code=503, detail=str(exc)) from exc
-    cred = db.query(Credential).filter(Credential.id == payload.credential_id).first()
-    if not cred or cred.source != CredentialSource.OAUTH.value:
-        raise HTTPException(status_code=404, detail="OAuth 凭据不存在")
-    if cred.granted_by_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="无权完成该 OAuth 授权")
-    if cred.status != CredentialStatus.ACTIVE.value or cred.is_expired():
-        raise HTTPException(status_code=400, detail="OAuth 凭据已失效，请重新授权")
+def oauth_complete_accounts(payload: OAuthAccountsCompleteRequest, db: Session = Depends(get_db), current_user: User = Depends(require_meta_self)):
+    from services.meta_connection_sync import import_connection_accounts, sync_connection_pages
     try:
-        remote = MetaOAuthService().get_ad_accounts(cred.get_access_token())
-        pending = db.query(MetaAccount).filter(
-            MetaAccount.id == cred.meta_account_id,
-            MetaAccount.business_id.like("__oauth_pending__%"),
-        ).first() if cred.meta_account_id else None
-        selected = {str(item.get("id")): item for item in remote if str(item.get("id")) in set(payload.account_ids)}
-        if len(selected) != len(set(payload.account_ids)):
-            raise MetaOAuthError("所选广告账户不在当前授权范围内")
-        imported = []
-        sync_credential_ids = set()
-        business_credential_ids = set()
-        for meta_id, item in selected.items():
-            business = item.get("business") or {}
-            business_id = str(business.get("id") or "").strip()
-            meta = db.query(MetaAccount).filter(MetaAccount.business_id == business_id).first() if business_id else None
-            if not meta and business_id:
-                meta = MetaAccount(id=uuid.uuid4().hex, name=business.get("name") or f"Meta Business {business_id}", business_id=business_id, app_id=settings.FB_APP_ID, status="ACTIVE", sync_status="SUCCESS", description="OAuth 直接接入广告账号自动创建")
-                meta.connection_id = cred.connection_id
-                db.add(meta); db.flush()
-            elif meta and cred.connection_id:
-                meta.connection_id = cred.connection_id
-            # 账号是 Meta 侧的稳定资源。重新授权后 credential_id、BM 归属都可能变化，
-            # 不能把旧凭证或旧归属作为匹配条件，否则会产生重复账号或继续引用 DISABLED 凭证。
-            existing = db.query(AdAccount).filter(
-                AdAccount.account_id == meta_id,
-            ).first()
-            if not existing:
-                existing = AdAccount(id=uuid.uuid4().hex, business_id=meta.id if meta else None,
-                                     credential_id=None if meta else cred.id,
-                                     owner_type="BUSINESS" if meta else "PERSONAL",
-                                     account_id=meta_id, system_status=SystemStatus.ACTIVE.value)
-                db.add(existing)
-            existing.meta_business_id = business_id or None
-            existing.business_id = meta.id if meta else None
-            existing.account_name = item.get("name")
-            existing.account_status = str(item.get("account_status")) if item.get("account_status") is not None else None
-            # AdAccount 节点没有 effective_status；该字段只用于 Campaign/AdSet/Ad。
-            existing.effective_status = None
-            existing.currency = item.get("currency") or existing.currency
-            existing.timezone = item.get("timezone_name") or existing.timezone
-            existing.credential_id = None if meta else cred.id
-            existing.connection_id = cred.connection_id
-            existing.owner_type = "BUSINESS" if meta else "PERSONAL"
-            existing.system_status = SystemStatus.ACTIVE.value
-            existing.system_status_reason = None
-            imported.append({"id": existing.id, "account_id": meta_id, "business_id": meta.id if meta else None, "business_name": meta.name if meta else None, "owner_type": existing.owner_type})
-            # 一个 OAuth 连接可覆盖多个 BM。首次选中的 BM 直接复用本次凭据；
-            # 其它 BM 只有在确实没有同连接凭据时才创建加密副本，避免重复授权产生孤儿记录。
-            if meta:
-                active = db.query(Credential).filter(
-                    Credential.meta_account_id == meta.id,
-                    Credential.status == CredentialStatus.ACTIVE.value,
-                ).order_by(Credential.updated_at.desc()).first()
-                if active and pending is not None and cred.meta_account_id == pending.id:
-                    active.set_access_token(cred.get_access_token())
-                    active.expires_at = cred.expires_at
-                    active.scopes = cred.scopes
-                    active.connection_id = cred.connection_id
-                    active.last_verified_at = datetime.utcnow()
-                    cred.status = CredentialStatus.DISABLED.value
-                    db.delete(pending)
-                    pending = None
-                elif not active:
-                    if pending is not None and cred.meta_account_id == pending.id:
-                        cred.meta_account_id = meta.id
-                        cred.name = f"Meta OAuth - {meta.name}"
-                        cred.last_verified_at = datetime.utcnow()
-                        db.delete(pending)
-                        pending = None
-                        active = cred
-                    else:
-                        active = CredentialService(db).create_for_meta(
-                            meta_account_id=meta.id,
-                            plain_token=cred.get_access_token(),
-                            token_type="USER",
-                            expires_at=cred.expires_at,
-                            replace_active=False,
-                            source=CredentialSource.OAUTH.value,
-                            scopes=cred.scopes,
-                            granted_by_user_id=current_user.id,
-                            meta_user_id=cred.meta_user_id,
-                        )
-                        active.name = f"Meta OAuth - {meta.name}"
-                        active.app_id = settings.FB_APP_ID
-                        active.connection_id = cred.connection_id
-                        active.last_verified_at = datetime.utcnow()
-                sync_credential_ids.add(active.id)
-                business_credential_ids.add(active.id)
-                # BM 账号不直接绑定 OAuth 凭证，投放时通过 BM 默认凭证取 Token。
-                # 每次重新授权都显式更新默认凭证，避免仍回退到旧凭证。
-                meta.default_credential_id = active.id
-                logger.info(
-                    "[meta-auth] 广告账号 %s 绑定 BM=%s default_credential=%s",
-                    meta_id, meta.business_id, active.id,
-                )
-            else:
-                sync_credential_ids.add(cred.id)
-                logger.info(
-                    "[meta-auth] 个人广告账号 %s 绑定 OAuth credential=%s",
-                    meta_id, cred.id,
-                )
+        connection, rows = _remote_accounts(db, current_user, payload.credential_id)
+        selected = [x for x in rows if str(x.get("id")) in set(payload.account_ids)]
+        if len({str(x.get("id")) for x in selected}) != len(set(payload.account_ids)):
+            raise HTTPException(status_code=400, detail="所选广告账户不在当前授权范围内")
+        imported = import_connection_accounts(db, connection, current_user, selected)
         db.commit()
-        for sync_credential_id in sync_credential_ids:
-            try:
-                # BM 凭据走统一的 BM/账户/Page 同步；个人账号没有 MetaAccount，
-                # 不能调用 sync_meta_authorization，否则会被判定为“尚未绑定 BM”。
-                if sync_credential_id in business_credential_ids:
-                    sync_meta_authorization_task.delay(sync_credential_id)
-                else:
-                    sync_meta_pages_task.delay(sync_credential_id)
-            except Exception as exc:
-                logger.warning(f"[meta-auth] 广告账户 {sync_credential_id} 自动同步任务投递失败: {exc}")
-        return {"success": True, "accounts": imported}
-    except (MetaOAuthError, CredentialError) as exc:
-        db.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            page_sync = {"status": "SUCCESS", **sync_connection_pages(db, connection)}
+        except (MetaOAuthError, FBConnectorError) as exc:
+            db.rollback()
+            page_sync = {"status": "FAILED", "count": 0, "error": str(exc)}
+        try:
+            from tasks.meta_sync_tasks import sync_personal_connection_task
+            sync_personal_connection_task.delay(connection.id, requested_by=current_user.id)
+        except Exception:
+            from core.logger import logger
+            logger.warning("[meta-auth] personal asset sync queue unavailable, connection=%s", connection.id)
+        return {"success": True, "connection_id": connection.id, "accounts": imported, "page_sync": page_sync}
+    except (MetaOAuthError, FBConnectorError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 
 @router.post("/complete")
-def oauth_complete(payload: OAuthCompleteRequest, db: Session = Depends(get_db), current_user: User = Depends(require_admin)):
-    if settings.FB_ACCESS_MODE == "connector":
-        business_id = payload.business_id.strip()
-        if not business_id or business_id.startswith("__oauth_pending__"):
-            raise HTTPException(status_code=400, detail="Business ID 无效")
-        try:
-            result = FBConnectorClient().oauth_complete(payload.credential_id, business_id)
-            business = result.get("business") or {}
-            existing = db.query(MetaAccount).filter(MetaAccount.business_id == business_id).first()
-            if existing:
-                target = existing
-            else:
-                target = MetaAccount(id=uuid.uuid4().hex, name=business.get("name") or f"Meta BM {business_id}", business_id=business_id, app_id="connector", status="ACTIVE", sync_status="SUCCESS")
-                db.add(target)
-            target.connector_credential_id = payload.credential_id
-            target.default_credential_id = None
-            db.commit()
-            page_sync = {"status": "SKIPPED", "count": 0, "page_ids": []}
-            try:
-                page_sync = {"status": "SUCCESS", **sync_connector_pages(
-                    db,
-                    effective_tenant_id(current_user),
-                    payload.credential_id,
-                    allow_rebind=True,
-                )}
-                db.commit()
-            except FBConnectorError as exc:
-                db.rollback()
-                page_sync = {"status": "FAILED", "credential_id": payload.credential_id, "count": 0, "page_ids": [], "error": str(exc)}
-            return {"success": True, "meta_account_id": target.id, "business": business, "page_sync": page_sync}
-        except FBConnectorError as exc:
-            db.rollback()
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-    cred=db.query(Credential).filter(Credential.id==payload.credential_id).first()
-    if not cred or cred.source!=CredentialSource.OAUTH.value: raise HTTPException(status_code=404, detail="OAuth 凭据不存在")
-    if cred.granted_by_user_id!=current_user.id: raise HTTPException(status_code=403, detail="无权完成该 OAuth 授权")
-    pending=db.query(MetaAccount).filter(MetaAccount.id==cred.meta_account_id).first() if cred.meta_account_id else None
-    if not pending or not pending.business_id.startswith("__oauth_pending__"): raise HTTPException(status_code=400, detail="该 OAuth 授权已完成或已失效")
-    business_id=payload.business_id.strip()
-    if not business_id or business_id.startswith("__oauth_pending__"): raise HTTPException(status_code=400, detail="Business ID 无效")
-    existing=db.query(MetaAccount).filter(MetaAccount.business_id==business_id, MetaAccount.id!=pending.id).first()
-    try:
-        token=cred.get_access_token(); business=MetaOAuthService().verify_business_access(token,business_id)
-        if existing:
-            for old_cred in db.query(Credential).filter(Credential.meta_account_id==existing.id, Credential.status==CredentialStatus.ACTIVE.value).all(): old_cred.status=CredentialStatus.DISABLED.value
-            cred.meta_account_id=existing.id; cred.name=f"Meta OAuth - {business.get('name') or existing.name}"; existing.default_credential_id=cred.id; db.delete(pending); target=existing
-        else:
-            pending.name=business.get("name") or f"Meta BM {business_id}"; pending.business_id=business_id; pending.status="ACTIVE"; pending.timezone=None; pending.currency=None; pending.description="通过 Meta OAuth 2.0 接入"; cred.name=f"Meta OAuth - {pending.name}"; target=pending
-        target.connection_id = cred.connection_id
-        db.commit()
-        try:
-            sync_meta_authorization_task.delay(cred.id)
-        except Exception as exc: logger.warning(f"[meta-auth] BM {target.id} 同步任务投递失败: {exc}")
-        return {"success":True,"meta_account_id":target.id,"business":business}
-    except (MetaOAuthError, CredentialError) as exc:
-        db.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
+def oauth_complete(payload: OAuthCompleteRequest, db: Session = Depends(get_db), current_user: User = Depends(require_meta_self)):
+    _, rows = _remote_accounts(db, current_user, payload.credential_id)
+    ids = [str(x["id"]) for x in rows if str((x.get("business") or {}).get("id")) == payload.business_id]
+    if not ids:
+        raise HTTPException(status_code=400, detail="当前个人授权不能访问所选 BM 的广告账户")
+    return oauth_complete_accounts(OAuthAccountsCompleteRequest(credential_id=payload.credential_id, account_ids=ids), db, current_user)

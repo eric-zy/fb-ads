@@ -8,7 +8,8 @@ import uuid
 from sqlalchemy.orm import Session
 
 from core.enums import CredentialStatus
-from models import MetaPage
+from models import MetaPage, MetaConnection, MetaConnectionAsset
+from services.meta_connection_service import grant_asset
 from services.fb_connector_client import FBConnectorClient
 
 
@@ -33,6 +34,7 @@ def sync_connector_pages(
     seen: set[str] = set()
     synced: list[str] = []
     conflicts: list[dict] = []
+    connection = db.query(MetaConnection).filter_by(tenant_id=tenant_id, credential_id=credential_id, access_mode="connector").first()
 
     for remote in rows:
         page_id = str(remote.get("id") or "").strip()
@@ -53,7 +55,7 @@ def sync_connector_pages(
                 credential_id=credential_id,
             )
             db.add(page)
-        elif not allow_rebind and (
+        elif not connection and not allow_rebind and (
             page.connection_id is not None
             or page.connector_credential_id not in (None, credential_id)
         ):
@@ -67,6 +69,20 @@ def sync_connector_pages(
 
         page.page_name = remote.get("name") or page_id
         page.category = remote.get("category")
+        db.flush()
+        if connection:
+            grant_asset(db, connection, "PAGE", page.id, remote.get("tasks"))
+            # Keep canonical metadata usable when another independent grant is healthy.
+            page.status = "ACTIVE"
+            page.last_error = None
+            page.last_synced_at = datetime.utcnow()
+            if page.connection_id == connection.id or (not page.connection_id and not page.connector_credential_id):
+                page.connection_id = connection.id
+                page.connector_credential_id = credential_id
+                page.credential_id = credential_id
+                page.tasks = remote.get("tasks") or []
+            synced.append(page_id)
+            continue
         page.tasks = remote.get("tasks") or []
         page.credential_id = credential_id
         page.connector_credential_id = credential_id
@@ -90,9 +106,19 @@ def sync_connector_pages(
     )
     for page in existing:
         if page.page_id not in seen:
+            if connection:
+                grant = db.query(MetaConnectionAsset).filter_by(connection_id=connection.id, asset_type="PAGE", asset_id=page.id).first()
+                if grant:
+                    grant.status = "REVOKED"
+                continue
             page.status = CredentialStatus.DISABLED.value
             page.last_error = "页面已不在当前 Meta 授权范围内"
 
+    if connection:
+        current_ids = {p.id for p in db.query(MetaPage).filter(MetaPage.page_id.in_(seen)).all()}
+        for grant in db.query(MetaConnectionAsset).filter_by(connection_id=connection.id, asset_type="PAGE").all():
+            if grant.asset_id not in current_ids:
+                grant.status = "REVOKED"
     return {
         "credential_id": credential_id,
         "count": len(synced),

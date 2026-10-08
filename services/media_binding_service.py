@@ -75,6 +75,7 @@ def ensure_asset_bindings(
                 MetaAssetBinding.asset_id == asset_id,
                 MetaAssetBinding.ad_account_id == account_id,
             ).first()
+            explicit_retry = bool(binding and reset_failed and binding.status in ("FAILED", "EXPIRED"))
             if not binding:
                 binding = MetaAssetBinding(
                     id=uuid.uuid4().hex,
@@ -91,6 +92,15 @@ def ensure_asset_bindings(
                 binding.error_code = None
                 binding.connector_task_id = None
                 binding.updated_at = datetime.utcnow()
+            if binding.status == "PENDING" and db.info.get("meta_actor_id") and (
+                not binding.authorization_connection_id or explicit_retry
+            ):
+                from services.credential_resolver import CredentialResolver
+                from models import MetaConnectionAsset
+                if db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account.id).first():
+                    ref = CredentialResolver(db).for_account(account.id)
+                    binding.authorization_connection_id = ref.connection_id
+                    binding.requested_by = db.info["meta_actor_id"]
             bindings.append(binding)
     db.flush()
     return bindings

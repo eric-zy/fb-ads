@@ -280,7 +280,7 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     creative_config = dict(config.get("creative_config_json") or {})
     # 直接投放的事件源字段位于 inline_config 顶层；统一收进模板 JSON，
     # 否则预检和最终构建拿不到用户刚选择的 Pixel/Dataset。
-    for key in ("page_id", "instagram_user_id", "instagram_actor_id", "creatives", "carousel_cards", "adsets", "dataset_id", "pixel_id", "conversion_event", "custom_event_type", "promoted_object", "optimization_goal", "creative_format", "delivery"):
+    for key in ("page_id", "instagram_user_id", "instagram_actor_id", "creatives", "carousel_cards", "carousel_cta_mode", "shared_creative", "adsets", "dataset_id", "pixel_id", "conversion_event", "custom_event_type", "promoted_object", "optimization_goal", "creative_format", "delivery"):
         if key in config and key not in creative_config:
             creative_config[key] = config[key]
     try:
@@ -295,6 +295,11 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
         if not isinstance(cards, list) or not cards:
             cards = creative_config.get("creatives") if isinstance(creative_config.get("creatives"), list) else []
         creative_config["carousel_cards"] = cards
+        from services.creative_format import carousel_cta_mode
+        try:
+            creative_config["carousel_cta_mode"] = carousel_cta_mode(creative_config)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         creative_config.pop("creatives", None)
         if isinstance(creative_config.get("adsets"), list):
             creative_config["adsets"] = [
@@ -305,6 +310,7 @@ def _ensure_template(db: Session, req: CampaignCreateRequest, tenant_id: Optiona
     else:
         # 防止从轮播切回单素材后把旧卡片带入模板快照。
         creative_config.pop("carousel_cards", None)
+        creative_config.pop("carousel_cta_mode", None)
     try:
         instagram_references(creative_config)
     except ValueError as exc:

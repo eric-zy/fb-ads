@@ -256,12 +256,13 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
     所有返回账户信息的接口（/accounts、/users/{id}/accounts 等）必须复用本函数，
     避免出现"同一资源两套字段契约"的问题（前端类型与实际响应对不上）。
     """
+    from services.meta_connection_service import connection_health
     credential = None
     connector_credential_id = None
     if settings.FB_ACCESS_MODE == "connector":
         connector_credential_id = (
-            (a.business.connector_credential_id if a.business else None)
-            or a.connector_credential_id
+            a.connector_credential_id
+            or (a.business.connector_credential_id if a.business else None)
         )
     elif db:
         if a.business_id and a.business:
@@ -271,6 +272,20 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
     authorized_by = None
     if credential and credential.granted_by_user_id and db:
         authorized_by = db.query(User).filter(User.id == credential.granted_by_user_id).first()
+    connection = None
+    if db:
+        from models import MetaConnection, MetaConnectionAsset
+        if db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=a.id).first():
+            from services.credential_resolver import CredentialResolver
+            try:
+                ref = CredentialResolver(db).for_account(a.id)
+                connection = db.query(MetaConnection).filter_by(id=ref.connection_id).one()
+                connector_credential_id = ref.credential_id if ref.mode == "connector" else None
+                credential = db.query(Credential).filter_by(id=ref.credential_id).first() if ref.mode == "direct" else None
+                authorized_by = db.query(User).filter_by(id=connection.authorized_by_user_id).first()
+            except ValueError:
+                connector_credential_id = None
+                credential = None
     availability_reason = None
     is_deployable = False
     missing_scopes = []
@@ -311,10 +326,12 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
         "owner_type": a.owner_type,
         "asset_type": a.asset_type or "OWNED",
         "credential_id": connector_credential_id or a.credential_id,
-        "credential_status": "ACTIVE" if connector_credential_id else (credential.status if credential else None),
-        "credential_expires_at": credential.expires_at.isoformat() if credential and credential.expires_at else None,
+        "credential_status": connection_health(connection) if connection else ("ACTIVE" if connector_credential_id else (credential.status if credential else None)),
+        "credential_expires_at": connection.expires_at.isoformat() if connection and connection.expires_at else (credential.expires_at.isoformat() if credential and credential.expires_at else None),
         "credential_last_verified_at": credential.last_verified_at.isoformat() if credential and credential.last_verified_at else None,
-        "authorized_by_user_id": credential.granted_by_user_id if credential else None,
+        "authorized_by_user_id": connection.authorized_by_user_id if connection else (credential.granted_by_user_id if credential else None),
+        "authorization_connection_id": connection.id if connection else None,
+        "authorization_version": connection.version if connection else None,
         "authorized_by_username": authorized_by.username if authorized_by else None,
         "credential_missing_scopes": missing_scopes,
         "is_deployable": is_deployable,

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import uuid
 import os
+from datetime import datetime, timedelta
+from hashlib import sha256
+import jwt
+from config.settings import settings
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
@@ -90,7 +94,8 @@ async def exchange(payload: ExchangeRequest):
         scopes = payload.scopes or oauth.verify_permissions(token["access_token"])
         from fb_connector.credential_store import DatabaseCredentialVault
         credential_id = DatabaseCredentialVault().save_oauth_result(access_token=token["access_token"], meta_user_id=token.get("meta_user_id"), expires_at=token.get("expires_at"), scopes=scopes)
-        return {"credential_id": credential_id, "meta_user_id": token.get("meta_user_id"), "expires_at": token.get("expires_at")}
+        return {"credential_id": credential_id, "meta_user_id": token.get("meta_user_id"), "expires_at": token.get("expires_at"),
+                "app_id": settings.FB_APP_ID, "scopes": scopes, "data_access_expires_at": token.get("data_access_expires_at")}
     except (MetaOAuthError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -111,7 +116,9 @@ async def sdk_login(payload: SDKLoginRequest):
         scopes = oauth.verify_permissions(token["access_token"])
         from fb_connector.credential_store import DatabaseCredentialVault
         credential_id = DatabaseCredentialVault().save_oauth_result(access_token=token["access_token"], meta_user_id=token.get("meta_user_id"), expires_at=token.get("expires_at"), scopes=scopes)
-        return {"credential_id": credential_id, "expires_in": 600, "meta_user_id": token.get("meta_user_id")}
+        return {"credential_id": credential_id, "expires_in": 600, "meta_user_id": token.get("meta_user_id"),
+                "app_id": settings.FB_APP_ID, "scopes": scopes, "expires_at": token.get("expires_at"),
+                "data_access_expires_at": token.get("data_access_expires_at")}
     except (MetaOAuthError, KeyError, ValueError) as exc:
         logger.warning("[ConnectorOAuth] sdk-login failed error=%s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -162,7 +169,13 @@ async def callback(state: str = Query(...), code: str | None = Query(None), erro
         result = await exchange(ExchangeRequest(code=code))
         # OAuth-first requires a second step: the domestic frontend must load
         # the Connector-visible ad accounts before the user confirms them.
-        params = {"meta_auth": "businesses", "credential_id": result["credential_id"], "state": state}
+        if not settings.FB_CONNECTOR_SIGNING_KEY:
+            raise HTTPException(status_code=503, detail="Connector OAuth 回调签名未配置")
+        receipt = jwt.encode({"aud": "saas-meta-oauth", "exp": datetime.utcnow() + timedelta(minutes=10),
+            "credential_id": result["credential_id"], "state_hash": sha256(state.encode()).hexdigest(),
+            "data_access_expires_at": result["data_access_expires_at"].isoformat() if result.get("data_access_expires_at") else None},
+            settings.FB_CONNECTOR_SIGNING_KEY, algorithm="HS256")
+        params = {"meta_auth": "businesses", "credential_id": result["credential_id"], "state": state, "receipt": receipt}
         return RedirectResponse(f"{redirect_base}/dashboard/accounts?{urlencode(params)}", status_code=302)
     except HTTPException as exc:
         return RedirectResponse(f"{redirect_base}/dashboard/accounts?{urlencode({'meta_auth': 'error', 'message': str(exc.detail)[:200]})}", status_code=302)

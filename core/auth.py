@@ -237,7 +237,16 @@ async def get_current_active_user(
     elif not user.is_platform_admin() and token_tenant_id and token_tenant_id != tenant_id:
         raise HTTPException(status_code=401, detail="租户上下文与账号不匹配")
     set_current_tenant_id(tenant_id)
+    db.info["meta_actor_id"] = user.id
     return user
+
+
+async def require_meta_self(current_user: "User" = Depends(get_current_active_user)) -> "User":
+    """All active tenant members may manage their own personal authorization."""
+    from core.tenant import effective_tenant_id
+    if not effective_tenant_id(current_user):
+        raise HTTPException(status_code=403, detail="请先进入目标租户")
+    return current_user
 
 
 async def get_current_tenant(

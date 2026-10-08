@@ -46,6 +46,9 @@ class CredentialService:
     # ------------------------------------------------------------------
     def resolve_token(self, ad_account_id: str) -> Tuple[str, Optional[Credential]]:
         """解析广告账户可用的明文 token，返回 (token, credential|None)"""
+        modern = self._personal_token(ad_account_id)
+        if modern:
+            return modern
         account = self.db.query(AdAccount).filter(AdAccount.id == ad_account_id).first()
         if not account:
             raise CredentialError(f"广告账户不存在: {ad_account_id}")
@@ -133,6 +136,9 @@ class CredentialService:
         User Access Token；生产链路禁止回退到全局 ``FB_ACCESS_TOKEN``，
         否则多个 BM/个人账户之间会发生身份串用。
         """
+        modern = self._personal_token(ad_account_id)
+        if modern:
+            return modern
         account = self.db.query(AdAccount).filter(AdAccount.id == ad_account_id).first()
         if not account:
             raise CredentialError(f"广告账户不存在: {ad_account_id}")
@@ -181,6 +187,19 @@ class CredentialService:
             f"广告账户 {ad_account_id} 未绑定可用凭据，请重新授权或绑定凭据"
         )
 
+    def _personal_token(self, account_id):
+        from models import MetaConnectionAsset
+        if not self.db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account_id).first():
+            return None
+        from services.credential_resolver import CredentialResolver
+        try:
+            ref = CredentialResolver(self.db).for_account(account_id)
+        except ValueError as exc:
+            raise CredentialError(str(exc)) from exc
+        if ref.mode != "direct" or not ref.token:
+            raise CredentialError("该个人授权通过海外 Connector 执行")
+        return ref.token, self.db.query(Credential).filter_by(id=ref.credential_id).one()
+
     def build_service(
         self, ad_account_id: str, *, access_business_id: Optional[str] = None, **service_kwargs
     ) -> MetaAdsService:
@@ -202,8 +221,28 @@ class CredentialService:
         logger.warning(f"[CredentialService] 凭据 {credential.id} 标记为 INVALID: {reason}")
 
     def mark_invalid_by_account(self, ad_account_id: str, reason: str) -> None:
-        """按广告账户定位其 BM 的当前凭据并标记异常"""
+        """只标记当前执行身份，避免影响共享 BM 下其他投手的授权。"""
         account = self.db.query(AdAccount).filter(AdAccount.id == ad_account_id).first()
+        if not account:
+            return
+        from models import MetaConnection, MetaConnectionAsset
+        if self.db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account.id).first():
+            from services.credential_resolver import CredentialResolver
+            try:
+                ref = CredentialResolver(self.db).for_account(account.id)
+            except ValueError:
+                return
+            connection = self.db.query(MetaConnection).filter_by(id=ref.connection_id).first()
+            if connection:
+                connection.status = "INVALID"
+                connection.last_error = reason
+                if ref.mode == "direct":
+                    credential = self.db.query(Credential).filter_by(id=ref.credential_id, connection_id=connection.id).first()
+                    if credential:
+                        credential.status = CredentialStatus.INVALID.value
+                        credential.last_error = reason
+                self.db.commit()
+            return
         if not account or not account.business_id:
             return
         cred = (

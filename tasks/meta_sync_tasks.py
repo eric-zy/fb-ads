@@ -36,6 +36,8 @@ from models import (
     Credential,
     DeliveryAction,
     SyncAlert,
+    MetaConnection,
+    User,
 )
 import uuid
 from services.ads_manager import AdsManager
@@ -50,6 +52,36 @@ from tasks.meta_tracking_asset_tasks import sync_tracking_assets_task
 from tasks.meta_instagram_tasks import sync_instagram_task
 from services.account_dispatch import AccountDispatchService
 from services.meta.connector_page_sync import sync_connector_pages
+
+
+@shared_task(bind=True, name="meta.sync_personal_connection", max_retries=2, default_retry_delay=60)
+@tenant_task(lambda self, connection_id, requested_by: resolve_tenant_of(MetaConnection, connection_id))
+def sync_personal_connection_task(self, connection_id: str, requested_by: str) -> Dict:
+    from services.meta_connection_sync import refresh_connection
+    from services.meta_connection_service import owned_connection
+    db = SessionLocal()
+    try:
+        row = db.query(MetaConnection).filter_by(id=connection_id).first()
+        if not row:
+            raise ValueError("个人授权不存在")
+        actor = task_actor(db, requested_by, row.tenant_id)
+        connection = owned_connection(db, actor, connection_id=connection_id, active=True, admin=True)
+        owner = db.query(User).filter_by(id=connection.authorized_by_user_id, is_active=True).first()
+        if not owner:
+            raise PermissionError("授权所属用户已停用")
+        db.info["meta_actor_id"] = owner.id
+        db.info["meta_connection_id"] = connection.id
+        return {"status": "SUCCESS", **refresh_connection(db, connection, owner)}
+    except Exception as exc:
+        db.rollback()
+        row = db.query(MetaConnection).filter_by(id=connection_id).first()
+        if row:
+            row.last_error = "个人授权同步失败，请检查授权健康状态后重试"
+            db.commit()
+        logger.warning("[personal-meta-sync] connection=%s failed: %s", connection_id, type(exc).__name__)
+        return {"status": "FAILED", "error": "个人授权同步失败，请重新授权或重试"}
+    finally:
+        db.close()
 
 
 def _log_to_dict(log) -> Dict:
@@ -786,6 +818,10 @@ def update_delivery_object_task(self, object_type: str, object_id: str, account_
             raise RuntimeError("广告账户不存在")
         require_accounts(db, task_actor(db, action_row.requested_by, account.tenant_id), [account.id], write=True)
         actor = task_actor(db, action_row.requested_by, account.tenant_id)
+        if hasattr(db, "info"):
+            db.info["meta_actor_id"] = action_row.requested_by
+            db.info["meta_connection_id"] = (action_row.request_payload or {}).get("authorization_connection_id")
+            CredentialResolver(db).validate_snapshot(account.id, db.info["meta_connection_id"])
         permission = {"DELETE": "campaign:delete", "RESTORE": "campaign:restore", "ARCHIVE": "campaign:archive", "PAUSE": "campaign:pause", "ENABLE": "campaign:enable"}.get(action)
         if not actor.is_admin() and permission not in (actor.permissions or []) and not (action in {"PAUSE", "ENABLE"} and "job:create" in (actor.permissions or [])):
             raise PermissionError("操作权限已撤销")

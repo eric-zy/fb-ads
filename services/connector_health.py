@@ -1,5 +1,5 @@
 """Fetch only credential summaries referenced by the current tenant context."""
-from models import AdAccount, MetaAccount, MetaPage
+from models import AdAccount, MetaAccount, MetaPage, MetaConnection, MetaConnectionAsset
 from services.fb_connector_client import FBConnectorClient, FBConnectorError
 
 SUMMARY_FIELDS = {"id", "app_id", "meta_user_id", "token_type", "status", "health", "scopes",
@@ -23,6 +23,15 @@ def connector_references(db):
         add(row.tenant_id, row.connector_credential_id or getattr(business, "connector_credential_id", None), "account_ids", row.id)
     for row in db.query(MetaPage).all():
         add(row.tenant_id, row.connector_credential_id, "page_ids", row.id)
+    for row in db.query(MetaConnection).filter_by(access_mode="connector").all():
+        if not row.credential_id:
+            continue
+        refs.setdefault((row.tenant_id, row.credential_id), {"tenant_id": row.tenant_id, "id": row.credential_id,
+            "business_ids": [], "account_ids": [], "page_ids": []})
+        for grant in db.query(MetaConnectionAsset).filter_by(connection_id=row.id, status="ACTIVE").all():
+            key = {"AD_ACCOUNT": "account_ids", "BUSINESS": "business_ids", "PAGE": "page_ids"}.get(grant.asset_type)
+            if key:
+                add(row.tenant_id, row.credential_id, key, grant.asset_id)
     return list(refs.values())
 
 

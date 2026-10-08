@@ -144,7 +144,16 @@ def upload_asset_task(self, binding_id: str):
         binding.retry_count = (binding.retry_count or 0) + 1
         binding.error_message = None
         db.commit()
-        ref = CredentialResolver(db).for_account(account.id)
+        if binding.requested_by:
+            from services.business_access import task_actor, require_accounts
+            actor = task_actor(db, binding.requested_by, account.tenant_id)
+            require_accounts(db, actor, [account.id], write=True)
+        resolver = CredentialResolver(db)
+        resolver.validate_snapshot(account.id, binding.authorization_connection_id)
+        if binding.authorization_connection_id and not binding.requested_by:
+            raise PermissionError("素材同步缺少操作人，请重新提交同步")
+        ref = resolver.for_account(account.id, actor_id=binding.requested_by,
+            connection_id=binding.authorization_connection_id)
         if ref.mode != "connector":
             raise RuntimeError("当前素材上传只支持海外 Connector")
         source_url = AliyunOSSStorage().download_url(asset.object_key)

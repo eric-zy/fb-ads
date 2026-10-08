@@ -68,7 +68,15 @@ def _validate_item_actor(db, item):
     account = item.ad_account
     if not job or not account or job.tenant_id != item.tenant_id or account.tenant_id != item.tenant_id:
         raise PermissionError("任务、子项与账户归属不一致")
+    if job.status == JobStatus.CANCELLED.value:
+        return True
     actor = task_actor(db, job.created_by, item.tenant_id)
+    if db is not None:
+        db.info["meta_actor_id"] = job.created_by
+        db.info["meta_connection_id"] = item.authorization_connection_id
+        from models import MetaConnectionAsset
+        if not item.authorization_connection_id and db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account.id).first():
+            raise PermissionError("历史任务没有个人授权快照，请复制任务并重新预检提交")
     require_accounts(db, actor, [account.id], write=True)
     if not actor.is_admin():
         permission = {"CREATE": "job:create", "PAUSE": "campaign:pause", "ENABLE": "campaign:enable", "ARCHIVE": "campaign:archive", "DELETE": "campaign:delete", "RESTORE": "campaign:restore", "UPDATE_BUDGET": "campaign:update_budget"}.get(job.action_type)
@@ -379,6 +387,8 @@ def _finalize_job_if_done(db: Session, job_id: Optional[str]) -> None:
 
     job = db.query(CampaignJob).filter(CampaignJob.id == job_id).first()
     if not job:
+        return
+    if job.status == JobStatus.CANCELLED.value:
         return
 
     pending = (

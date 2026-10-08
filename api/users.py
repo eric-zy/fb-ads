@@ -70,7 +70,8 @@ async def get_user_accounts(
         
         # 获取用户的所有账户
         user_accounts = db.query(UserAccount).filter(
-            UserAccount.user_id == user_id
+            UserAccount.user_id == user_id,
+            UserAccount.assignment_status == "ACTIVE",
         ).all()
         
         account_ids = {ua.account_id for ua in user_accounts}
@@ -339,6 +340,9 @@ def update_user(
         if db.query(User).filter(User.email == data.email).first():
             raise HTTPException(status_code=400, detail="该邮箱已被其他用户使用")
         u.email = data.email
+    if data.is_active is False and u.is_active:
+        from services.meta_connection_service import suspend_user_authorizations
+        suspend_user_authorizations(db, u.id)
     if data.username and data.username != u.username:
         if db.query(User).filter(User.username == data.username).first():
             raise HTTPException(status_code=400, detail="该用户名已被其他用户使用")
@@ -395,6 +399,9 @@ def toggle_active(
     if u.id == current_user.id:
         raise HTTPException(status_code=400, detail="不能禁用自己")
     u.is_active = not u.is_active
+    if not u.is_active:
+        from services.meta_connection_service import suspend_user_authorizations
+        suspend_user_authorizations(db, u.id)
     db.commit()
     return {"success": True, "is_active": u.is_active}
 
@@ -411,6 +418,8 @@ def delete_user(
         raise HTTPException(status_code=404, detail="用户不存在")
     if u.id == current_user.id:
         raise HTTPException(status_code=400, detail="不能删除自己")
+    from services.meta_connection_service import suspend_user_authorizations
+    suspend_user_authorizations(db, u.id)
     db.delete(u)
     db.commit()
     return {"success": True}

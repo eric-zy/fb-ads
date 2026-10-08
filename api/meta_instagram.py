@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from core.auth import get_current_active_user, require_meta_asset_admin
 from core.database import get_db
 from core.tenant import effective_tenant_id
-from models import AdAccount, AsyncTaskRecord, MetaPage, User
+from models import AdAccount, AsyncTaskRecord, MetaPage, User, MetaConnectionAsset
 from models.meta_instagram import MetaInstagramSnapshot
 from services.account_access import can_access_account
 from services.instagram_identity import snapshot_health
@@ -53,13 +53,22 @@ def list_instagram_identities(
     for account in visible:
         snapshot = by_account.get(account.id)
         status = snapshot_health(snapshot, account)
+        if db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account.id).first():
+            from services.credential_resolver import CredentialResolver
+            try:
+                ref = CredentialResolver(db).for_account(account.id, actor_id=current_user.id)
+                grant = db.query(MetaConnectionAsset).filter_by(connection_id=ref.connection_id, asset_type="INSTAGRAM", asset_id=account.id, status="ACTIVE").first()
+            except ValueError:
+                grant = None
+            snapshot = grant
+            status = "HEALTHY" if grant and grant.last_synced_at and grant.last_synced_at >= datetime.utcnow() - timedelta(hours=24) else "STALE"
         page_error = page_account_access_error(page, account)
         health.append({"account_pk": account.id, "account_name": account.account_name or account.account_id,
                        "sync_status": status, "page_error": page_error,
                        "last_synced_at": snapshot.last_synced_at.isoformat() if snapshot and snapshot.last_synced_at else None})
         if status != "HEALTHY" or page_error:
             continue
-        for row in snapshot.items or []:
+        for row in (snapshot.tasks if isinstance(snapshot, MetaConnectionAsset) else snapshot.items) or []:
             if page_id not in row.get("page_ids", []):
                 continue
             item = merged.setdefault(row["id"], {"id": row["id"], "username": row["username"], "account_ids": []})

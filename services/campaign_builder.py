@@ -266,12 +266,17 @@ class CreativeBuilder:
         asset_type = cfg.get("asset_type", "image")
 
         if cfg.get("creative_format") == "CAROUSEL":
+            from services.creative_format import carousel_cta_mode
+            button_mode = carousel_cta_mode(cfg)
             # 读取旧模板时兼容曾使用 creatives 保存卡片的格式；
             # 新模板由 API 规范化为 carousel_cards。
             cards = cfg.get("carousel_cards") or cfg.get("creatives") or []
             if not 2 <= len(cards) <= 10:
                 raise ValueError("轮播广告需要 2-10 张图片卡片")
             child_attachments = []
+            shared_creative = cfg.get("shared_creative") if isinstance(cfg.get("shared_creative"), dict) else {}
+            shared_cta = cfg.get("cta") or shared_creative.get("cta") or cards[0].get("cta")
+            card_ctas = []
             for index, card in enumerate(cards, 1):
                 if card.get("asset_type", "image") != "image" or not card.get("image_hash"):
                     raise ValueError(f"轮播第 {index} 张卡片缺少已上传图片")
@@ -280,18 +285,27 @@ class CreativeBuilder:
                 child = {"image_hash": card["image_hash"], "link": card["landing_url"]}
                 if card.get("headline"): child["name"] = card["headline"]
                 if card.get("description"): child["description"] = card["description"]
+                cta = normalize_cta(card.get("cta") or shared_cta)
+                if button_mode == "CUSTOM" and not card.get("show_cta", True):
+                    cta = None
+                if cta and cta != "NO_BUTTON":
+                    child["call_to_action"] = {"type": cta, "value": {"link": card["landing_url"]}}
+                card_ctas.append(cta)
                 child_attachments.append(child)
-            shared_creative = cfg.get("shared_creative") if isinstance(cfg.get("shared_creative"), dict) else {}
             primary_text = cfg.get("primary_text") or shared_creative.get("primary_text") or cards[0].get("primary_text", "")
-            cta_value = cfg.get("cta") or shared_creative.get("cta") or cards[0].get("cta")
             media_data = {
                 "message": primary_text,
                 "link": cards[0]["landing_url"],
                 "child_attachments": child_attachments,
             }
-            cta = normalize_cta(cta_value)
-            if cta and cta != "NO_BUTTON":
+            cta = card_ctas[0]
+            # An overall CTA can be inherited by every card. Never emit it for
+            # custom selection or heterogeneous/no-button card overrides.
+            if button_mode == "ALL" and cta and cta != "NO_BUTTON" and all(value == cta for value in card_ctas):
                 media_data["call_to_action"] = {"type": cta, "value": {"link": cards[0]["landing_url"]}}
+            if button_mode == "CUSTOM":
+                media_data["multi_share_optimized"] = False
+                media_data["multi_share_end_card"] = False
             story_key = "link_data"
         else:
             story_key = None

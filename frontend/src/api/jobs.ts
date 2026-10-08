@@ -9,6 +9,10 @@ export interface CampaignJobItem {
   job_id: string
   ad_account_id: string
   access_business_id?: string | null
+  authorization_connection_id?: string | null
+  authorization_version?: number | null
+  authorization_meta_user_id?: string | null
+  authorization_owner_name?: string | null
   status: string
   meta_campaign_id: string | null
   adset_ids: string[] | null

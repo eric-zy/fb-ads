@@ -767,11 +767,21 @@ def _queue_object_actions(req, db, user, visible):
         if pending:
             db.rollback()
             raise HTTPException(409, "对象有未完成或待确认操作，请先查看任务结果")
+        from services.credential_resolver import CredentialResolver
+        from models import MetaConnectionAsset
+        authorization = {}
+        if db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=object_account_id(obj, object_type)).first():
+            try:
+                ref = CredentialResolver(db).for_account(object_account_id(obj, object_type), actor_id=user.id)
+            except ValueError as exc:
+                db.rollback()
+                raise HTTPException(409, str(exc)) from exc
+            authorization = {"authorization_connection_id": ref.connection_id, "authorization_version": ref.version}
         row = DeliveryAction(id=uuid.uuid4().hex, object_type=object_type, object_id=obj.id,
                              account_id=object_account_id(obj, object_type), action=action, requested_by=user.id,
                              before_status=obj.status, desired_status="DELETED" if action == "DELETE" else "ARCHIVED" if action == "ARCHIVE" else "ACTIVE" if action == "ENABLE" else "PAUSED",
                              idempotency_key=key,
-                             request_payload={"deletion_version": 2, "object_name": obj.name,
+                             request_payload={**authorization, "deletion_version": 2, "object_name": obj.name,
                                               "meta_object_id": getattr(obj, META_ID_FIELDS[object_type]),
                                               "account_name": db.query(AdAccount).filter_by(id=object_account_id(obj, object_type)).one().account_name})
         db.add(row)

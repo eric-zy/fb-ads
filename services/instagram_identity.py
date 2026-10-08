@@ -52,6 +52,23 @@ def instagram_account_access_error(db, account, config: dict) -> str | None:
     references = instagram_references(config)
     if not references:
         return None
+    from models import MetaConnectionAsset
+    if db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account.id).first():
+        from services.credential_resolver import CredentialResolver
+        try:
+            ref = CredentialResolver(db).for_account(account.id)
+        except ValueError as exc:
+            return str(exc)
+        grant = db.query(MetaConnectionAsset).filter_by(connection_id=ref.connection_id, asset_type="INSTAGRAM", asset_id=account.id, status="ACTIVE").first()
+        if not grant or not grant.last_synced_at or grant.last_synced_at < datetime.utcnow() - timedelta(hours=24):
+            return "当前执行授权的 Instagram 身份未同步或已过期，请同步我的 Meta 授权"
+        for page_id, identity in references:
+            page = db.query(MetaPage).filter_by(page_id=page_id).first()
+            if not page or page_account_access_error(page, account):
+                return "当前执行授权没有 Instagram 关联 Page 的投放权限"
+            if not any(str(item.get("id")) == identity and page_id in item.get("page_ids", []) for item in grant.tasks or []):
+                return f"当前执行授权无权使用 Instagram 身份 {identity}"
+        return None
     snapshot = db.query(MetaInstagramSnapshot).filter(
         MetaInstagramSnapshot.tenant_id == account.tenant_id,
         MetaInstagramSnapshot.ad_account_id == account.id,

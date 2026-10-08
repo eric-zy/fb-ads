@@ -68,6 +68,13 @@ class AdAccountService:
         )
         if not connector_credential_id:
             return False, "账号未绑定海外 Connector 凭据"
+        from models import MetaConnectionAsset
+        if self.db is not None and (self.db.info.get("meta_actor_id") or self.db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account.id).first()):
+            from services.credential_resolver import CredentialResolver
+            try:
+                CredentialResolver(self.db).for_account(account.id)
+            except ValueError as exc:
+                return False, str(exc)
 
         # 4) Meta 侧状态。投放属于写操作，未同步或未知状态必须安全拒绝，
         # 避免仅凭本地 system_status=ACTIVE 就向 Meta 创建对象。
@@ -154,6 +161,8 @@ class AdAccountService:
         供 JobService 在创建批量任务前做前置校验。
         """
         available_ids: List[str] = []
+        if user_id:
+            self.db.info["meta_actor_id"] = user_id
         rejected: List[Dict] = []
 
         for pk in ad_account_ids:

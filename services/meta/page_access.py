@@ -1,7 +1,8 @@
 """投放前 Facebook Page 与广告账户授权关系校验。"""
 from typing import Optional
 
-from models import AdAccount, MetaPage
+from models import AdAccount, MetaPage, MetaConnectionAsset
+from sqlalchemy.orm import object_session
 
 
 ADVERTISING_PAGE_TASKS = {
@@ -36,6 +37,19 @@ def page_account_access_error(page: MetaPage, account: AdAccount) -> Optional[st
     # 海外 Connector 不创建本地 OAuth connection，Page 与广告账户通过
     # connector_credential_id 绑定；旧逻辑访问 account.credential 会直接 500，
     # 因为 AdAccount 已没有 credential relationship。
+    db = object_session(account) if isinstance(account, AdAccount) else None
+    if db and db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account.id).first():
+        from services.credential_resolver import CredentialResolver
+        try:
+            ref = CredentialResolver(db).for_account(account.id)
+        except ValueError as exc:
+            return str(exc)
+        grant = db.query(MetaConnectionAsset).filter_by(connection_id=ref.connection_id, asset_type="PAGE", asset_id=page.id, status="ACTIVE").first()
+        if not grant:
+            return "当前执行授权没有该 Page 的访问关系，请用同一个 Meta 个号同步账户和 Page"
+        if not {str(x).upper() for x in grant.tasks or []}.intersection(ADVERTISING_PAGE_TASKS):
+            return "当前执行授权没有该 Page 的广告投放权限（ADVERTISE）"
+        return None
     page_connector = page.connector_credential_id
     account_connector = account_connector_credential_id(account)
     if page_connector or account_connector:

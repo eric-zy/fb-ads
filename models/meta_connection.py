@@ -1,7 +1,7 @@
 """Meta OAuth 授权连接：一个租户下一个 Meta 用户的一次授权。"""
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Index, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Column, DateTime, Index, Integer, JSON, String, Text, UniqueConstraint
 
 from core.database import Base
 from core.tenant import TenantMixin
@@ -21,6 +21,10 @@ class MetaConnection(TenantMixin, Base):
     scopes = Column(JSON)
     authorized_by_user_id = Column(String(50))
     expires_at = Column(DateTime)
+    data_access_expires_at = Column(DateTime)
+    access_mode = Column(String(20), nullable=False, default="direct")
+    credential_id = Column(String(50))
+    version = Column(Integer, nullable=False, default=1)
     last_synced_at = Column(DateTime)
     last_error = Column(Text)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -36,8 +40,34 @@ class MetaConnection(TenantMixin, Base):
             "scopes": self.scopes or [],
             "authorized_by_user_id": self.authorized_by_user_id,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "data_access_expires_at": self.data_access_expires_at.isoformat() if self.data_access_expires_at else None,
+            "access_mode": self.access_mode,
+            "version": self.version,
             "last_synced_at": self.last_synced_at.isoformat() if self.last_synced_at else None,
             "last_error": self.last_error,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+
+
+class MetaConnectionAsset(TenantMixin, Base):
+    """Each personal authorization's independent access to a shared asset."""
+    __tablename__ = "meta_connection_assets"
+    __table_args__ = (UniqueConstraint("tenant_id", "connection_id", "asset_type", "asset_id", name="uq_connection_asset"),)
+    id = Column(String(50), primary_key=True)
+    connection_id = Column(String(50), nullable=False, index=True)
+    asset_type = Column(String(32), nullable=False)
+    asset_id = Column(String(50), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="ACTIVE")
+    tasks = Column(JSON)
+    last_synced_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MetaOAuthSession(TenantMixin, Base):
+    """Single-use server-side OAuth intent; never stores a token."""
+    __tablename__ = "meta_oauth_sessions"
+    id = Column(String(50), primary_key=True)
+    user_id = Column(String(50), nullable=False)
+    connection_id = Column(String(50))
+    expires_at = Column(DateTime, nullable=False)
+    consumed_at = Column(DateTime)

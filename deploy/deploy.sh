@@ -145,7 +145,7 @@ if ! "${compose[@]}" exec -T api python scripts/check_http_readiness.py http://n
 fi
 
 echo "[deploy] 校验 Celery Worker 关键任务注册..."
-if ! "${compose[@]}" exec -T celery-worker python -c 'import celery_app; required = {"campaign.execute_job", "campaign.create_for_account", "campaign.apply_action_for_account", "meta.sync_custom_audiences", "meta.sync_instagram", "credentials.check_expiring"}; registered = set(celery_app.celery_app.tasks); missing = sorted(required - registered); assert not missing, f"missing celery tasks: {missing}"; print("celery task registration ok")'; then
+if ! "${compose[@]}" exec -T celery-worker python -c 'import celery_app; required = {"campaign.execute_job", "campaign.create_for_account", "campaign.apply_action_for_account", "meta.sync_custom_audiences", "meta.sync_instagram", "meta.sync_personal_connection", "credentials.check_expiring"}; registered = set(celery_app.celery_app.tasks); missing = sorted(required - registered); assert not missing, f"missing celery tasks: {missing}"; print("celery task registration ok")'; then
   echo "[deploy] Celery Worker 关键任务未注册，拒绝完成部署。最近日志：" >&2
   "${compose[@]}" logs --tail=100 celery-worker >&2 || true
   exit 1

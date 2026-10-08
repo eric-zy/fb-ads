@@ -1,0 +1,110 @@
+const assert = require('node:assert/strict')
+const { chromium } = require('playwright')
+const fs = require('node:fs')
+const baseURL = process.env.UI_TEST_BASE_URL || 'http://127.0.0.1:4178'
+const user = { id: 'carousel-user', username: '轮播测试', role: 'tenant_admin', tenant_id: 'test', settings: {}, permissions: [] }
+const account = { id: 'carousel-account', account_id: 'act_1', account_name: '轮播账户', system_status: 'ACTIVE', account_status: '1', currency: 'USD' }
+const assets = Array.from({ length: 5 }, (_, i) => ({ id: `asset-${i}`, name: `轮播图片 ${i + 1}`, asset_type: 'image', status: 'READY', fb_hash: `hash-${i}`, is_current: true }))
+let template = { id: 'carousel-template', name: '五张轮播', status: 'ACTIVE', objective: 'OUTCOME_TRAFFIC', daily_budget: 10, budget_type: 'DAILY', buying_type: 'AUCTION', optimization_goal: 'LANDING_PAGE_VIEWS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', targeting_json: { geo_locations: { countries: ['US'] }, age_min: 18, age_max: 65 }, placement_json: {}, creative_config_json: { page_id: 'page-1', creative_format: 'CAROUSEL', shared_creative: { cta: 'LEARN_MORE', landing_url: 'https://example.com/default' }, carousel_cards: assets.map(asset => ({ asset_id: asset.id, asset_type: 'image', landing_url: 'https://example.com/default' })) } }
+const posts = [], errors = []
+
+async function main() {
+  const browser = await chromium.launch({ executablePath: process.env.UI_TEST_BROWSER_PATH || undefined, headless: true })
+  let page
+  try {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+    await context.addCookies([{ name: 'auth_token', value: 'isolated-carousel-test', url: baseURL }])
+    await context.addInitScript(data => { localStorage.setItem('user', JSON.stringify(data)); localStorage.setItem('site-locale', 'zh') }, user)
+    page = await context.newPage()
+    page.setDefaultTimeout(10000)
+    page.on('pageerror', error => errors.push(error.message))
+    await page.route('**/*', route => {
+      const req = route.request(), url = new URL(req.url())
+      if (url.origin !== baseURL) return route.abort()
+      if (!url.pathname.startsWith('/api/')) return route.continue()
+      const path = url.pathname.replace('/api/v1', '')
+      const respond = data => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(data) })
+      if (req.method() !== 'GET') posts.push({ path, body: req.postData() ? req.postDataJSON() : null })
+      if (path === '/auth/me') return respond(user)
+      if (path === '/templates') return respond([template])
+      if (path === '/templates/carousel-template' && req.method() === 'PATCH') { template = { ...template, ...req.postDataJSON() }; return respond(template) }
+      if (path === '/accounts') return respond([account])
+      if (path.endsWith('/users/carousel-user/accounts')) return respond({ accounts: [account] })
+      if (path === '/accounts/available-for-deployment') return respond({ total: 1, accounts: [account] })
+      if (path === '/meta-pages') return respond([{ id: 'page-local', page_id: 'page-1', page_name: '轮播 Page', status: 'ACTIVE' }])
+      if (path === '/media') return respond(assets)
+      if (path === '/sinan/status') return respond({ verified: false })
+      if (path === '/meta-instagram') return respond({ items: [], accounts: [] })
+      if (path === '/meta-tracking-assets') return respond({ items: [], unsynced_account_ids: [] })
+      if (path === '/jobs') return respond({ items: [], total: 0 })
+      if (path === '/jobs/campaign-preflight') return respond({ passed: false, errors: [{ message: '隔离测试只检查请求，不创建真实广告' }] })
+      if (path.includes('notifications')) return respond({ items: [], total: 0 })
+      return respond([])
+    })
+    await page.goto(`${baseURL}/dashboard/templates`)
+    async function openEditor() {
+      await page.getByRole('button', { name: '编辑', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '编辑模板', exact: true })
+      for (let i = 0; i < 3; i++) await dialog.getByRole('button', { name: '下一步', exact: true }).click()
+      return dialog
+    }
+    let editor = await openEditor()
+    await editor.getByRole('button', { name: '仅最后一张', exact: true }).click()
+    let checks = editor.getByRole('checkbox', { name: '此卡片显示按钮', exact: true })
+    assert.equal(await checks.count(), 5)
+    for (let i = 0; i < 5; i++) assert.equal(await checks.nth(i).isChecked(), i === 4)
+    await editor.getByRole('button', { name: '保存模板', exact: true }).click()
+    await editor.waitFor({ state: 'hidden' })
+    assert.equal(template.creative_config_json.carousel_cta_mode, 'CUSTOM')
+    assert.deepEqual(template.creative_config_json.carousel_cards.map(card => card.show_cta), [false, false, false, false, true])
+    editor = await openEditor()
+    checks = editor.getByRole('checkbox', { name: '此卡片显示按钮', exact: true })
+    await editor.locator('.el-checkbox').filter({ hasText: '此卡片显示按钮' }).nth(1).click()
+    await editor.locator('.el-checkbox').filter({ hasText: '此卡片显示按钮' }).nth(4).click()
+    await editor.getByRole('button', { name: '保存模板', exact: true }).click()
+    await editor.waitFor({ state: 'hidden' })
+    assert.deepEqual(template.creative_config_json.carousel_cards.map(card => card.show_cta), [false, true, false, false, false])
+    editor = await openEditor()
+    await editor.getByRole('radio', { name: '全部卡片', exact: true }).locator('..').click()
+    assert.equal(await editor.getByRole('checkbox', { name: '此卡片显示按钮', exact: true }).count(), 0)
+    await editor.getByRole('button', { name: '保存模板', exact: true }).click()
+    await editor.waitFor({ state: 'hidden' })
+    assert.equal(template.creative_config_json.carousel_cta_mode, 'ALL')
+
+    await page.goto(`${baseURL}/dashboard/batch-publish`)
+    await page.locator('.el-form-item').filter({ hasText: /^投放方式/ }).locator('.el-select').click()
+    await page.getByRole('option', { name: '直接配置投放', exact: true }).click()
+    await page.getByRole('radio', { name: '轮播', exact: true }).locator('..').click()
+    await page.locator('.el-form-item').filter({ hasText: /^Facebook Page/ }).locator('.el-select').click()
+    await page.getByRole('option').filter({ hasText: '轮播 Page' }).click()
+    await page.locator('.el-form-item').filter({ hasText: /^批量选素材/ }).locator('.el-select').click()
+    for (const asset of assets) await page.getByRole('option').filter({ hasText: asset.name }).click()
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: '加入轮播卡片', exact: true }).click()
+    await page.getByPlaceholder('https://example.com/landing（图片广告最终必须有有效链接）').fill('https://example.com/default')
+    await page.getByRole('button', { name: '仅最后一张', exact: true }).click()
+    checks = page.getByRole('checkbox', { name: '此卡片显示按钮', exact: true })
+    assert.equal(await checks.count(), 5)
+    assert.equal(await page.getByRole('radio', { name: '自定义卡片', exact: true }).isChecked(), true)
+    fs.mkdirSync('test-results', { recursive: true })
+    await page.screenshot({ path: 'test-results/carousel-buttons.png', fullPage: true, animations: 'disabled' })
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.locator('.el-form-item').filter({ hasText: /^广告账户/ }).locator('.el-select').click()
+    await page.getByRole('option').filter({ hasText: '轮播账户' }).click()
+    await page.keyboard.press('Escape')
+    const sent = page.waitForRequest(req => new URL(req.url()).pathname.endsWith('/jobs/campaign-preflight'))
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    const inline = (await sent).postDataJSON().inline_config
+    assert.equal(inline.carousel_cta_mode, 'CUSTOM')
+    assert.equal(inline.shared_creative.cta, 'LEARN_MORE')
+    assert.deepEqual(inline.carousel_cards.map(card => card.show_cta), [false, false, false, false, true])
+    assert.ok(inline.carousel_cards.every(card => card.landing_url === 'https://example.com/default'))
+    assert.deepEqual(errors, [])
+    console.log('PASS carousel buttons: legacy default, last-only, arbitrary selection, all, save/reopen and direct preflight')
+  } catch (error) {
+    if (page) { fs.mkdirSync('test-results', { recursive: true }); await page.screenshot({ path: 'test-results/carousel-buttons-failure.png', fullPage: true }) }
+    throw error
+  } finally { await browser.close() }
+}
+main().catch(error => { console.error(error); process.exitCode = 1 })

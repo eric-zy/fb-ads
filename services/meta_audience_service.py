@@ -34,6 +34,8 @@ class MetaAudienceSyncService:
             account.business.connector_credential_id if account.business else None
         )
         if settings.FB_ACCESS_MODE == "connector":
+            from services.credential_resolver import CredentialResolver
+            connector_credential_id = CredentialResolver(self.db).for_account(account.id).credential_id
             if not connector_credential_id:
                 raise ValueError("广告账户未绑定 Connector 凭据")
             payload = FBConnectorClient().list_custom_audiences(

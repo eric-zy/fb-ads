@@ -28,3 +28,17 @@ def normalize_creative_format(value: object) -> str:
     if normalized == CAROUSEL:
         return CAROUSEL
     raise ValueError("创意格式必须是单图片或视频（SINGLE_IMAGE_VIDEO）或轮播（CAROUSEL）")
+
+
+def carousel_cta_mode(config: dict) -> str:
+    """Validate card button selection independently of destination URLs."""
+    mode = str(config.get("carousel_cta_mode") or "ALL").strip().upper()
+    if mode not in {"ALL", "CUSTOM"}:
+        raise ValueError("轮播跳转按钮模式只能是 ALL 或 CUSTOM")
+    cards = config.get("carousel_cards") or config.get("creatives") or []
+    for index, card in enumerate(cards, 1):
+        if not isinstance(card, dict):
+            raise ValueError(f"轮播卡片 {index} 配置必须是对象")
+        if "show_cta" in card and not isinstance(card["show_cta"], bool):
+            raise ValueError(f"轮播卡片 {index} 的 show_cta 必须是布尔值")
+    return mode

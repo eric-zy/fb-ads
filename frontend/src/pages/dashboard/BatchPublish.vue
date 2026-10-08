@@ -215,6 +215,13 @@
             <el-form-item label="公共标题"><el-input v-model="sharedCreative.headline" /></el-form-item>
             <el-form-item label="公共描述"><el-input v-model="sharedCreative.description" /></el-form-item>
             <el-form-item label="公共行动号召"><el-select v-model="sharedCreative.cta" style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
+            <template v-if="creativeFormat === 'CAROUSEL'">
+              <el-form-item label="跳转按钮">
+                <el-radio-group v-model="carouselCtaMode"><el-radio value="ALL">全部卡片</el-radio><el-radio value="CUSTOM">自定义卡片</el-radio></el-radio-group>
+                <el-button link type="primary" style="margin-left:16px" @click="onlyLastCarouselCta">仅最后一张</el-button>
+              </el-form-item>
+              <div class="tip">按钮与落地页分别设置。不显示按钮的卡片仍可通过图片跳转；自定义模式保留卡片顺序，最终展示以 Meta 版位为准。</div>
+            </template>
             <div v-for="(creative, index) in directForm.creatives" :key="creative.key" class="direct-creative">
               <div class="direct-adset-head"><b>{{ creativeFormat === 'CAROUSEL' ? `轮播卡片 ${index + 1}` : `创意 ${index + 1}` }}</b><el-button v-if="directForm.creatives.length > 1" link type="danger" @click="removeDirectCreative(index)">删除</el-button></div>
               <el-form-item label="素材" required><el-select v-model="creative.asset_id" filterable style="width:100%" :placeholder="creativeFormat === 'CAROUSEL' ? '选择已同步图片' : '选择已上传素材'"><el-option v-for="asset in creativeAssetOptions" :key="asset.id" :label="`${asset.name} · V${asset.version_number || 1} · ${asset.asset_type} · ${asset.status}`" :value="asset.id" /></el-select></el-form-item>
@@ -222,7 +229,12 @@
                 <el-form-item label="主文案覆盖"><el-input v-model="creative.primary_text" type="textarea" :rows="3" placeholder="可留空，使用公共主文案" /></el-form-item>
                 <el-form-item label="标题覆盖"><el-input v-model="creative.headline" placeholder="可留空，使用公共标题" /></el-form-item>
                 <el-form-item label="描述覆盖"><el-input v-model="creative.description" placeholder="可留空，使用公共描述" /></el-form-item>
-                <el-form-item label="行动号召覆盖"><el-select v-model="creative.cta" clearable style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
+                <el-form-item v-if="creativeFormat !== 'CAROUSEL'" label="行动号召覆盖"><el-select v-model="creative.cta" clearable style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
+                <el-form-item v-if="creativeFormat !== 'CAROUSEL'" label="落地页覆盖"><el-input v-model="creative.landing_url" placeholder="可留空，使用公共默认落地页" /></el-form-item>
+              </template>
+              <template v-if="creativeFormat === 'CAROUSEL'">
+                <el-form-item v-if="carouselCtaMode === 'CUSTOM'" label="跳转按钮"><el-checkbox v-model="creative.show_cta">此卡片显示按钮</el-checkbox></el-form-item>
+                <el-form-item v-if="carouselCtaMode === 'ALL' || creative.show_cta" label="行动号召覆盖"><el-select v-model="creative.cta" clearable placeholder="使用公共行动号召" style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
                 <el-form-item label="落地页覆盖"><el-input v-model="creative.landing_url" placeholder="可留空，使用公共默认落地页" /></el-form-item>
               </template>
             </div>
@@ -798,7 +810,7 @@ const directForm = reactive({
   dataset_id: '', tracking_asset_type: 'PIXEL' as 'PIXEL' | 'DATASET', conversion_event: 'PURCHASE',
   creative_format: 'SINGLE_IMAGE_VIDEO' as 'SINGLE_IMAGE_VIDEO' | 'CAROUSEL',
   adsets: [{ key: `${Date.now()}-1`, name: 'US 广告组', budget: 10, country: 'US', regions: '', cities: '', zips: '', excluded_country: '', excluded_regions: '', excluded_cities: '', excluded_zips: '', custom_locations_json: '', excluded_custom_locations_json: '', region_group_id: '', targeting_package_id: '', location_types: ['home', 'recent'] as string[], age_min: 18, age_max: 65, genders: [1, 2] as number[], interests: '', languages: [] as string[], custom_audiences: [] as string[], excluded_custom_audiences: [] as string[], device_platforms: [] as string[], user_os: '', user_device: '', wireless_carrier: '', publisher_platforms: [] as string[], facebook_positions: [] as string[], instagram_positions: [] as string[], audience_network_positions: [] as string[], messenger_positions: [] as string[], optimization_goal: 'LANDING_PAGE_VIEWS', billing_event: 'IMPRESSIONS', bid_strategy: 'LOWEST_COST_WITHOUT_CAP', bid_amount: 1 }],
-  creatives: [{ key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' }],
+  creatives: [{ key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: '', landing_url: '', show_cta: true }],
 })
 const batchAssetIds = ref<string[]>([])
 const hasDirectInstagramOverrides = computed(() => directForm.creatives.some(item => {
@@ -845,16 +857,21 @@ const previewAdCount = computed(() => directForm.adsets.length * (creativeFormat
 const directObjectiveValid = computed(() => isOptimizationGoalAllowed(directForm.objective, directForm.optimization_goal)
   && directForm.adsets.every(item => isOptimizationGoalAllowed(directForm.objective, item.optimization_goal)))
 const sharedCreative = reactive({ primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
+const carouselCtaMode = ref<'ALL' | 'CUSTOM'>('ALL')
+const onlyLastCarouselCta = () => {
+  carouselCtaMode.value = 'CUSTOM'
+  directForm.creatives.forEach((item, index) => { item.show_cta = index === directForm.creatives.length - 1 })
+}
 
 const addDirectAdset = () => {
   directForm.adsets.push({ key: `${Date.now()}-${directForm.adsets.length + 1}`, name: `广告组 ${directForm.adsets.length + 1}`, budget: directForm.daily_budget, country: 'US', regions: '', cities: '', zips: '', excluded_country: '', excluded_regions: '', excluded_cities: '', excluded_zips: '', custom_locations_json: '', excluded_custom_locations_json: '', region_group_id: '', targeting_package_id: '', location_types: ['home', 'recent'], age_min: 18, age_max: 65, genders: [1, 2], interests: '', languages: [], custom_audiences: [], excluded_custom_audiences: [], device_platforms: [], user_os: '', user_device: '', wireless_carrier: '', publisher_platforms: [], facebook_positions: [], instagram_positions: [], audience_network_positions: [], messenger_positions: [], optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy, bid_amount: 1 })
 }
 const removeDirectAdset = (index: number) => { if (directForm.adsets.length > 1) directForm.adsets.splice(index, 1) }
-const addDirectCreative = () => directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
+const addDirectCreative = () => directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}`, asset_id: '', primary_text: '', headline: '', description: '', cta: '', landing_url: '', show_cta: true })
 const removeDirectCreative = (index: number) => { if (directForm.creatives.length > 1) directForm.creatives.splice(index, 1) }
 const resetCreativeItems = () => {
   directForm.creatives.splice(0, directForm.creatives.length, {
-    key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '',
+    key: `${Date.now()}-creative-1`, asset_id: '', primary_text: '', headline: '', description: '', cta: '', landing_url: '', show_cta: true,
   })
   batchAssetIds.value = []
 }
@@ -889,7 +906,7 @@ const addBatchCreatives = () => {
   const accepted = added.slice(0, capacity)
   const blank = directForm.creatives.length === 1 && !directForm.creatives[0].asset_id
   if (blank) directForm.creatives.splice(0, 1)
-  for (const asset_id of accepted) directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}-${asset_id}`, asset_id, primary_text: '', headline: '', description: '', cta: 'LEARN_MORE', landing_url: '' })
+  for (const asset_id of accepted) directForm.creatives.push({ key: `${Date.now()}-${directForm.creatives.length + 1}-${asset_id}`, asset_id, primary_text: '', headline: '', description: '', cta: '', landing_url: '', show_cta: true })
   batchAssetIds.value = []
   if (accepted.length < added.length) ElMessage.warning('轮播最多支持 10 张图片，超出素材未加入')
   else ElMessage.success(creativeFormat.value === 'CAROUSEL' ? `已加入 ${accepted.length} 张轮播卡片` : `已加入 ${accepted.length} 个素材创意`)
@@ -1014,7 +1031,7 @@ const directConfiguration = computed<{ config: Record<string, any> | null; error
     ...(directForm.instagram_user_id ? { instagram_user_id: directForm.instagram_user_id } : {}),
     creative_format: creativeFormat.value,
     delivery: { ...delivery },
-    ...(creativeFormat.value === 'CAROUSEL' ? { carousel_cards: creatives } : {}),
+    ...(creativeFormat.value === 'CAROUSEL' ? { carousel_cards: creatives, carousel_cta_mode: carouselCtaMode.value, shared_creative: { ...sharedCreative } } : {}),
     ...(creativeFormat.value !== 'CAROUSEL' ? { creatives } : {}),
     optimization_goal: directForm.optimization_goal, billing_event: directForm.billing_event, bid_strategy: directForm.bid_strategy,
     // 事件源仅在当前广告组实际使用转化优化时进入请求；切换到互动、展示
@@ -1062,11 +1079,12 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
   directForm.billing_event = config.billing_event || directForm.billing_event
   directForm.bid_strategy = config.bid_strategy || directForm.bid_strategy
   creativeFormat.value = config.creative_format === 'CAROUSEL' ? 'CAROUSEL' : 'SINGLE_IMAGE_VIDEO'
+  carouselCtaMode.value = config.carousel_cta_mode === 'CUSTOM' ? 'CUSTOM' : 'ALL'
   if (config.delivery) Object.assign(delivery, config.delivery)
   const sourceCreatives = creativeFormat.value === 'CAROUSEL' ? (config.carousel_cards || []) : (config.creatives || [])
   const firstCreative = sourceCreatives[0] || {}
   for (const key of ['primary_text', 'headline', 'description', 'cta', 'landing_url'] as const) {
-    if (firstCreative[key] != null) (sharedCreative as any)[key] = firstCreative[key]
+    sharedCreative[key] = config.shared_creative?.[key] ?? firstCreative[key] ?? (key === 'cta' ? 'LEARN_MORE' : '')
   }
   const adsets = Array.isArray(config.adsets) && config.adsets.length ? config.adsets : []
   directForm.adsets.splice(0, directForm.adsets.length, ...adsets.map((item: any, index: number) => {
@@ -1130,8 +1148,9 @@ const applyEditInlineConfig = (config: Record<string, any>) => {
     primary_text: item.primary_text || '',
     headline: item.headline || '',
     description: item.description || '',
-    cta: item.cta || 'LEARN_MORE',
+    cta: item.cta || '',
     landing_url: item.landing_url || '',
+    show_cta: item.show_cta !== false,
   })))
   if (!directForm.creatives.length) addDirectCreative()
 }

@@ -40,7 +40,7 @@ from models.instance import CampaignInstance, AdSetInstance, AdInstance
 # 加密凭据（设计文档第 9 节 / Meta 账号管理 V1 §4）
 from models.credential import Credential
 from models.meta_page import MetaPage
-from models.meta_connection import MetaConnection
+from models.meta_connection import MetaConnection, MetaConnectionAsset, MetaOAuthSession
 # Job Center（设计文档第 17 节）
 from models.job import CampaignJob, CampaignJobItem
 from models.job_revision import CampaignJobRevision

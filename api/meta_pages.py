@@ -8,7 +8,7 @@ from core.auth import get_current_active_user, require_meta_asset_admin as requi
 from core.database import get_db
 from core.enums import CredentialStatus
 from core.tenant import bypass_tenant, effective_tenant_id, tenant_scope
-from models import AdAccount, Credential, MetaAccount, MetaPage, User
+from models import AdAccount, Credential, MetaAccount, MetaPage, User, MetaConnection, MetaConnectionAsset
 from tasks.meta_sync_tasks import sync_meta_pages_task
 from config.settings import settings
 from services.fb_connector_client import FBConnectorError
@@ -40,6 +40,11 @@ def list_pages(
     query = db.query(MetaPage)
     if status:
         query = query.filter(MetaPage.status == status)
+    if not current_user.is_admin():
+        own = db.query(MetaConnection.id).filter_by(authorized_by_user_id=current_user.id, status="ACTIVE")
+        own_pages = db.query(MetaConnectionAsset.asset_id).filter(MetaConnectionAsset.connection_id.in_(own),
+            MetaConnectionAsset.asset_type == "PAGE", MetaConnectionAsset.status == "ACTIVE")
+        query = query.filter(MetaPage.id.in_(own_pages))
     return [item.to_dict() for item in query.order_by(MetaPage.page_name).all()]
 
 

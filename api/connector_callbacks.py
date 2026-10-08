@@ -291,9 +291,18 @@ async def credential_status_callback(
     if not verify_request(settings.SAAS_INTERNAL_SIGNING_KEY, headers, "POST", "/api/v1/internal/fb-connector/credential-status", body):
         raise HTTPException(status_code=401, detail="invalid connector signature")
     now = datetime.utcnow()
+    from models import MetaConnection
+    modern_connections = db.query(MetaConnection).filter_by(credential_id=payload.credential_id, access_mode="connector").all()
+    for connection in modern_connections:
+        if connection.status not in {"REVOKED", "SUSPENDED"}:
+            connection.status = payload.status
+            connection.last_error = payload.error_message
     page_query = db.query(MetaPage).filter(MetaPage.connector_credential_id == payload.credential_id)
     pages = page_query.all()
     for page in pages:
+        if modern_connections:
+            # Failure belongs to one personal connection, not the shared Page.
+            continue
         page.status = payload.status
         page.last_error = payload.error_message
         if payload.status == "ACTIVE":

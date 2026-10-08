@@ -30,6 +30,8 @@ class MetaAssetBinding(TenantMixin, Base):
     retry_count = Column(Integer, default=0, nullable=False)
     processing_status = Column(String(30), nullable=True)
     error_code = Column(String(80), nullable=True)
+    authorization_connection_id = Column(String(50))
+    requested_by = Column(String(50))
 
     def to_dict(self) -> dict:
         return {

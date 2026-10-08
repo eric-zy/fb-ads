@@ -310,6 +310,13 @@
         <el-form-item label="公共标题"><el-input v-model="creativeForm.shared.headline" /></el-form-item>
         <el-form-item label="公共描述"><el-input v-model="creativeForm.shared.description" /></el-form-item>
         <el-form-item label="公共行动号召"><el-select v-model="creativeForm.shared.cta" style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
+        <template v-if="creativeForm.creative_format === 'CAROUSEL'">
+          <el-form-item label="跳转按钮">
+            <el-radio-group v-model="creativeForm.carousel_cta_mode"><el-radio value="ALL">全部卡片</el-radio><el-radio value="CUSTOM">自定义卡片</el-radio></el-radio-group>
+            <el-button link type="primary" style="margin-left:16px" @click="onlyLastCarouselCta">仅最后一张</el-button>
+          </el-form-item>
+          <div class="tip">按钮与落地页分别设置。不显示按钮的卡片仍可通过图片跳转；自定义模式保留卡片顺序，最终展示以 Meta 版位为准。</div>
+        </template>
         <el-form-item label="标签筛选">
           <el-select v-model="pickerTagIds" multiple collapse-tags clearable filterable placeholder="按分类筛选素材" style="width:100%" @change="loadMediaAssets">
             <el-option-group v-for="category in pickerCategories" :key="category.id" :label="category.name">
@@ -339,6 +346,13 @@
             <el-form-item label="标题覆盖"><el-input v-model="creative.headline" /></el-form-item>
             <el-form-item label="描述覆盖"><el-input v-model="creative.description" /></el-form-item>
             <el-form-item label="行动号召覆盖"><el-select v-model="creative.cta" clearable style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
+            <el-form-item label="落地页覆盖"><el-input v-model="creative.landing_url" placeholder="可留空，使用公共默认落地页" /></el-form-item>
+          </template>
+          <template v-else>
+            <el-form-item label="标题覆盖"><el-input v-model="creative.headline" placeholder="可留空，使用公共标题" /></el-form-item>
+            <el-form-item label="描述覆盖"><el-input v-model="creative.description" placeholder="可留空，使用公共描述" /></el-form-item>
+            <el-form-item v-if="creativeForm.carousel_cta_mode === 'CUSTOM'" label="跳转按钮"><el-checkbox v-model="creative.show_cta">此卡片显示按钮</el-checkbox></el-form-item>
+            <el-form-item v-if="creativeForm.carousel_cta_mode === 'ALL' || creative.show_cta" label="行动号召覆盖"><el-select v-model="creative.cta" clearable placeholder="使用公共行动号召" style="width:100%"><el-option v-for="cta in CTA_OPTIONS" :key="cta.value" :label="`${cta.label} ${cta.value}`" :value="cta.value" /></el-select></el-form-item>
             <el-form-item label="落地页覆盖"><el-input v-model="creative.landing_url" placeholder="可留空，使用公共默认落地页" /></el-form-item>
           </template>
         </div>
@@ -625,9 +639,13 @@ watch(() => form.objective, objective => {
     if (!isOptimizationGoalAllowed(objective, item.optimization_goal)) item.optimization_goal = defaultOptimizationGoal(objective)
   })
 })
-type CreativeForm = { asset_type: 'image' | 'video'; image_hash: string; video_id: string; headline: string; primary_text: string; description: string; cta: string; landing_url: string; asset_id: string }
-const newCreative = (): CreativeForm => ({ asset_type: 'image', image_hash: '', video_id: '', headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '', asset_id: '' })
-const creativeForm = reactive<{ page_id: string; instagram_user_id: string; creative_format: 'SINGLE_IMAGE_VIDEO' | 'CAROUSEL'; delivery: { split_level: 'AD' | 'ADSET' | 'CAMPAIGN'; combination_mode: string }; shared: Omit<CreativeForm, 'asset_type' | 'asset_id' | 'image_hash' | 'video_id'>; creatives: CreativeForm[] }>({ page_id: '', instagram_user_id: '', creative_format: 'SINGLE_IMAGE_VIDEO', delivery: { split_level: 'AD', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' }, shared: { headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '' }, creatives: [newCreative()] })
+type CreativeForm = { asset_type: 'image' | 'video'; image_hash: string; video_id: string; headline: string; primary_text: string; description: string; cta: string; landing_url: string; asset_id: string; show_cta: boolean }
+const newCreative = (): CreativeForm => ({ asset_type: 'image', image_hash: '', video_id: '', headline: '', primary_text: '', description: '', cta: '', landing_url: '', asset_id: '', show_cta: true })
+const creativeForm = reactive<{ page_id: string; instagram_user_id: string; creative_format: 'SINGLE_IMAGE_VIDEO' | 'CAROUSEL'; carousel_cta_mode: 'ALL' | 'CUSTOM'; delivery: { split_level: 'AD' | 'ADSET' | 'CAMPAIGN'; combination_mode: string }; shared: Omit<CreativeForm, 'asset_type' | 'asset_id' | 'image_hash' | 'video_id' | 'show_cta'>; creatives: CreativeForm[] }>({ page_id: '', instagram_user_id: '', creative_format: 'SINGLE_IMAGE_VIDEO', carousel_cta_mode: 'ALL', delivery: { split_level: 'AD', combination_mode: 'ACCOUNT_X_ADSET_X_CREATIVE' }, shared: { headline: '', primary_text: '', description: '', cta: 'LEARN_MORE', landing_url: '' }, creatives: [newCreative()] })
+const onlyLastCarouselCta = () => {
+  creativeForm.carousel_cta_mode = 'CUSTOM'
+  creativeForm.creatives.forEach((item, index) => { item.show_cta = index === creativeForm.creatives.length - 1 })
+}
 const hasCreativeInstagramOverrides = computed(() => creativeForm.creatives.some(item => {
   const config = item as Record<string, any>
   return config.instagram_user_id || config.instagram_actor_id
@@ -678,7 +696,10 @@ const buildCreativeJson = () => {
     creative_format: creativeForm.creative_format,
     delivery: { ...creativeForm.delivery },
   }
-  if (creativeForm.creative_format === 'CAROUSEL') config.carousel_cards = creativeItems
+  if (creativeForm.creative_format === 'CAROUSEL') {
+    config.carousel_cards = creativeItems
+    config.carousel_cta_mode = creativeForm.carousel_cta_mode
+  }
   else config.creatives = creativeItems
   if (form.budget_type === 'LIFETIME') {
     config.schedule = { start_time: form.schedule_start || undefined, end_time: form.schedule_end }
@@ -734,6 +755,7 @@ const loadCreativeForm = (value: Record<string, any> | null | undefined) => {
   creativeForm.page_id = cfg.page_id || ''
   creativeForm.instagram_user_id = cfg.instagram_user_id || cfg.instagram_actor_id || cfg.creatives?.[0]?.instagram_user_id || cfg.creatives?.[0]?.instagram_actor_id || ''
   creativeForm.creative_format = cfg.creative_format === 'CAROUSEL' ? 'CAROUSEL' : 'SINGLE_IMAGE_VIDEO'
+  creativeForm.carousel_cta_mode = cfg.carousel_cta_mode === 'CUSTOM' ? 'CUSTOM' : 'ALL'
   creativeForm.delivery.split_level = ['AD', 'ADSET', 'CAMPAIGN'].includes(cfg.delivery?.split_level) ? cfg.delivery.split_level : 'AD'
   creativeForm.delivery.combination_mode = cfg.delivery?.combination_mode || 'ACCOUNT_X_ADSET_X_CREATIVE'
   const source = creativeForm.creative_format === 'CAROUSEL'

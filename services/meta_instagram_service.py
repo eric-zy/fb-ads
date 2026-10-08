@@ -44,6 +44,11 @@ class MetaInstagramSyncService:
                 item = cleaned.setdefault(identity, {"id": identity, "username": str(row.get("username") or identity), "page_ids": []})
                 item["page_ids"] = sorted(set(item["page_ids"]) | {str(value) for value in row.get("page_ids", [])})
             snapshot.items = list(cleaned.values())
+            if ref.connection_id:
+                from models import MetaConnection
+                from services.meta_connection_service import grant_asset
+                connection = self.db.query(MetaConnection).filter_by(id=ref.connection_id).one()
+                grant_asset(self.db, connection, "INSTAGRAM", account.id, snapshot.items)
             snapshot.credential_id = ref.credential_id
             snapshot.status = "HEALTHY"
             snapshot.last_sync_error = None
@@ -58,6 +63,11 @@ class MetaInstagramSyncService:
                 self.db.rollback()
                 snapshot = self._snapshot(account)
             snapshot.status = "ERROR"
+            if self.db.info.get("meta_connection_id"):
+                from models import MetaConnectionAsset
+                grant = self.db.query(MetaConnectionAsset).filter_by(connection_id=self.db.info["meta_connection_id"], asset_type="INSTAGRAM", asset_id=account.id).first()
+                if grant:
+                    grant.status = "INVALID"
             snapshot.last_sync_error = "Instagram 身份同步失败，请检查授权权限和 Connector 状态后重试"
             self.db.commit()
             raise

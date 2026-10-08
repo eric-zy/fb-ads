@@ -106,6 +106,7 @@ class MetaOAuthService:
             "access_token": access_token,
             "expires_at": expires_at,
             "meta_user_id": meta_user_id,
+            "data_access_expires_at": datetime.utcfromtimestamp(debug["data_access_expires_at"]) if debug.get("data_access_expires_at") else None,
         }
 
     def exchange_user_token(self, user_token: str) -> Dict[str, Any]:
@@ -128,7 +129,8 @@ class MetaOAuthService:
         })
         access_token = result.get("access_token", user_token)
         expires_at = datetime.utcnow() + timedelta(seconds=int(result["expires_in"])) if result.get("expires_in") else None
-        return {"access_token": access_token, "expires_at": expires_at, "meta_user_id": data.get("user_id")}
+        return {"access_token": access_token, "expires_at": expires_at, "meta_user_id": data.get("user_id"),
+                "data_access_expires_at": datetime.utcfromtimestamp(data["data_access_expires_at"]) if data.get("data_access_expires_at") else None}
 
     def verify_permissions(self, access_token: str) -> list[str]:
         """确认用户实际授予了配置中的全部权限。"""

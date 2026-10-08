@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from core.enums import CredentialStatus
 from core.logger import logger
-from models import Credential, MetaPage
+from models import Credential, MetaPage, MetaConnection, MetaConnectionAsset
+from services.meta_connection_service import grant_asset
 from services.meta.client import MetaClient
 from services.meta.errors import MetaApiError
 
@@ -38,6 +39,7 @@ class MetaPageSyncService:
 
         seen = set()
         synced = []
+        connection = self.db.query(MetaConnection).filter_by(id=credential.connection_id).first() if credential.connection_id else None
         for remote in rows:
             page_id = str(remote.get("id") or "").strip()
             page_token = remote.get("access_token")
@@ -48,7 +50,7 @@ class MetaPageSyncService:
             if not page:
                 page = MetaPage(id=uuid.uuid4().hex, page_id=page_id, tenant_id=credential.tenant_id)
                 self.db.add(page)
-            elif page.connection_id and page.connection_id != credential.connection_id:
+            elif not connection and page.connection_id and page.connection_id != credential.connection_id:
                 # 当前表结构按租户+Page 唯一，不能安全保存同一 Page 在多个 OAuth
                 # 连接下的不同 Page Token。禁止后授权静默覆盖前一授权。
                 logger.warning(
@@ -58,6 +60,13 @@ class MetaPageSyncService:
                 continue
             page.page_name = remote.get("name") or page_id
             page.category = remote.get("category")
+            self.db.flush()
+            if connection:
+                grant_asset(self.db, connection, "PAGE", page.id, remote.get("tasks"))
+                if page.connection_id and page.connection_id != connection.id:
+                    page.status = "ACTIVE"
+                    synced.append(page_id)
+                    continue
             page.tasks = remote.get("tasks") or []
             page.credential_id = credential.id
             page.connection_id = credential.connection_id
@@ -71,9 +80,16 @@ class MetaPageSyncService:
         existing = self.db.query(MetaPage).filter(MetaPage.credential_id == credential.id).all()
         for page in existing:
             if page.page_id not in seen:
+                if connection:
+                    continue
                 page.status = CredentialStatus.DISABLED.value
                 page.last_error = "页面已不在当前 Meta 授权范围内"
 
+        if connection:
+            current_ids = {p.id for p in self.db.query(MetaPage).filter(MetaPage.page_id.in_(seen)).all()}
+            for grant in self.db.query(MetaConnectionAsset).filter_by(connection_id=connection.id, asset_type="PAGE").all():
+                if grant.asset_id not in current_ids:
+                    grant.status = "REVOKED"
         self.db.commit()
         logger.info(f"[meta_pages] 凭据 {credential.id} 同步页面 {len(synced)} 个")
         return {"credential_id": credential.id, "count": len(synced), "page_ids": synced}

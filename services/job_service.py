@@ -135,6 +135,8 @@ class JobService:
 
         errors: List[Dict[str, Any]] = []
         warnings: List[Dict[str, Any]] = []
+        if created_by:
+            self.db.info["meta_actor_id"] = created_by
         template = self.db.query(CampaignTemplate).filter(CampaignTemplate.id == template_id).first()
         if not template:
             return {"passed": False, "errors": [{"code": "TEMPLATE_NOT_FOUND", "message": "投放模板不存在"}], "warnings": [], "accounts": []}
@@ -223,6 +225,17 @@ class JobService:
             ).all()
             usable_by_account = {}
             for row in asset_rows:
+                from models import MetaConnectionAsset
+                if self.db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=row.ad_account_id).first():
+                    from services.credential_resolver import CredentialResolver
+                    try:
+                        ref = CredentialResolver(self.db).for_account(row.ad_account_id)
+                    except ValueError:
+                        continue
+                    grant = self.db.query(MetaConnectionAsset).filter_by(connection_id=ref.connection_id,
+                        asset_type="TRACKING", asset_id=row.id, status="ACTIVE").first()
+                    if not grant or not grant.last_synced_at or grant.last_synced_at < datetime.utcnow() - timedelta(hours=24):
+                        continue
                 usable_by_account.setdefault(row.ad_account_id, set()).add((row.asset_type, row.meta_asset_id))
             unavailable_items = []
             for account_id in ids:
@@ -628,6 +641,8 @@ class JobService:
         from services.meta import AdAccountService
 
         params = params or {}
+        if created_by:
+            self.db.info["meta_actor_id"] = created_by
         preview_id = params.get("_preview_id")
         idempotency_key = params.get("_idempotency_key")
         if idempotency_key:
@@ -749,17 +764,31 @@ class JobService:
         for account_id in ad_account_ids:
             access_map = params.get("access_business_ids") or {}
             access_business_id = access_map.get(account_id)
+            from services.credential_resolver import CredentialResolver
+            from models import MetaConnectionAsset, MetaConnection
+            auth_ref = None
+            if self.db.query(MetaConnectionAsset.id).filter_by(asset_type="AD_ACCOUNT", asset_id=account_id).first():
+                auth_ref = CredentialResolver(self.db).for_account(account_id, actor_id=created_by,
+                    connection_id=(params.get("authorization_connection_ids") or {}).get(account_id))
+            elif created_by:
+                actor = self.db.query(User).filter_by(id=created_by).first()
+                if actor and not actor.is_admin():
+                    raise ValueError("历史授权尚未确认归属，请投手本人重新授权并预检")
             self.db.add(
                 CampaignJobItem(
                     id=_new_id(),
                     job_id=job.id,
                     ad_account_id=account_id,
                     access_business_id=access_business_id,
+                    authorization_connection_id=auth_ref.connection_id if auth_ref else None,
+                    authorization_version=auth_ref.version if auth_ref else None,
                     status=JobItemStatus.PENDING.value,
                     request_hash=build_request_hash(
                         template_id, account_id, action_value, key_params
                     ),
-                    request_payload={"template_id": template_id, "params": params},
+                    request_payload={"template_id": template_id, "params": params,
+                        "authorization_meta_user_id": self.db.query(MetaConnection).filter_by(id=auth_ref.connection_id).one().meta_user_id if auth_ref else None,
+                        "authorization_owner_name": self.db.query(User).join(MetaConnection, MetaConnection.authorized_by_user_id == User.id).filter(MetaConnection.id == auth_ref.connection_id).one().username if auth_ref else None},
                 )
             )
 

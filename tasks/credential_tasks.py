@@ -58,6 +58,8 @@ def check_expiring_credentials(self, warn_days: int = None) -> Dict:
         from services.risk_reliability import upsert_operational_alert
         db = SessionLocal()
         try:
+            from services.meta_connection_service import inspect_personal_authorizations
+            inspect_personal_authorizations(db)
             rows = connector_health_rows(db)
             result = {"expired": 0, "expiring": 0, "permission_missing": 0, "unavailable": 0, "details": []}
             counters = {"EXPIRED": "expired", "EXPIRING": "expiring", "PERMISSION_MISSING": "permission_missing",
@@ -88,6 +90,8 @@ def check_expiring_credentials(self, warn_days: int = None) -> Dict:
     result: Dict = {"expired": 0, "expiring": 0, "details": []}
 
     try:
+        from services.meta_connection_service import inspect_personal_authorizations
+        inspect_personal_authorizations(db)
         # 1) 已过期但仍标记为 ACTIVE → 置为 EXPIRED
         #    只改状态字段，不动 tenant_id，绕过租户过滤下同样安全
         expired = (
