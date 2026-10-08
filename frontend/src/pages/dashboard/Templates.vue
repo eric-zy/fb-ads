@@ -50,7 +50,7 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="updated_at" :label="t('pages.updated')" width="180" show-overflow-tooltip />
+        <el-table-column prop="updated_at" :label="t('pages.updated')" width="180" show-overflow-tooltip :formatter="formatDateTimeCell" />
         <el-table-column :label="t('pages.actions')" width="280" fixed="right">
           <template #default="{ row }">
             <el-button v-if="row.can_edit !== false" link type="primary" @click="openEdit(row as TableRow<typeof templates>)">编辑</el-button>
@@ -390,6 +390,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTimeCell } from '@/utils/dateTime'
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { templatesApi, type CampaignTemplate, type TemplateCollaborator, type TemplateCollaboratorCandidate } from '@/api/templates'

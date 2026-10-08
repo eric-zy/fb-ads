@@ -154,6 +154,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime } from '@/utils/dateTime'
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -181,7 +182,7 @@ const connectorMode = ref(false)
 const createForm = ref({ meta_account_id: '', access_token: '', name: '', app_id: '', token_type: 'USER', expires_at: '' as string | null, replace_active: true })
 const rotateForm = ref({ access_token: '', name: '', token_type: 'USER', expires_at: '' as string | null, keep_old: true })
 
-function formatTime(v: string | null) { return v ? v.replace('T', ' ').slice(0, 19) : '-' }
+const formatTime = displayDateTime
 function sourceLabel(row: CredentialItem) { return row.name?.startsWith('Meta OAuth') ? 'Meta OAuth' : '手工/Token' }
 function statusLabel(row: CredentialItem) {
   if (row.is_expired) return '已过期'

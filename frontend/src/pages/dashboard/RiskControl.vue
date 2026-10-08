@@ -47,6 +47,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime } from '@/utils/dateTime'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAccountStore } from '@/stores/accountStore'
@@ -100,7 +101,7 @@ const frequencyStatus = computed(() => (({ safe: '安全', warning: '注意', da
 const frequencyDescription = computed(() => frequencyReport.value ? `${frequencyReport.value.hours}小时内 ${frequencyReport.value.count} 次` : '暂无数据')
 const riskColor = computed(() => riskScore.value > .7 ? '#f56c6c' : riskScore.value > .5 ? '#e6a23c' : '#67c23a')
 function accountId() { return accountStore.selectedAccount?.id || '' }
-function formatTime(value: string | null) { return value ? new Date(value).toLocaleString() : '—' }
+const formatTime = displayDateTime
 function riskLevelLabel(value: string | null) { return ({ critical: '严重', high: '高', medium: '中', low: '低' }[value || ''] || value || '未知') }
 function riskLevelType(value: string | null) { return (({ critical: 'danger', high: 'warning', medium: 'warning', low: 'success' } as Record<string, 'danger' | 'warning' | 'success'>)[value || ''] || 'info') }
 function eventTypeLabel(value: string | null) { return ({ unusual_spend: '异常花费', low_quality: '低质量', high_fraud: '高欺诈', account_frozen: '账户冻结', policy_violation: '政策违规', suspicious_pattern: '可疑模式', DELIVERY_SYNC: '投放状态同步异常', DELIVERY_SYNC_FAILED: '投放状态同步失败', RISK_REDIS_UNAVAILABLE: '风控服务异常' }[value || ''] || value || '未知事件') }

@@ -47,11 +47,11 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最后登录" min-width="150">
-          <template #default="{ row }">{{ row.last_login ? row.last_login.slice(0, 19).replace('T', ' ') : '从未登录' }}</template>
+        <el-table-column label="最后登录" min-width="190">
+          <template #default="{ row }">{{ formatDateTime(row.last_login, '暂无登录记录') }}</template>
         </el-table-column>
-        <el-table-column label="创建时间" min-width="130">
-          <template #default="{ row }">{{ row.created_at ? row.created_at.slice(0, 10) : '-' }}</template>
+        <el-table-column label="创建时间" min-width="190">
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
@@ -133,6 +133,7 @@ import { userApi, tenantApi, type AdminUser, type TenantItem } from '../../api/a
 import { roleApi } from '../../api/admin'
 import { useUserStore } from '../../stores/userStore'
 import PermissionSelector from '@/components/PermissionSelector.vue'
+import { formatDateTime } from '@/utils/dateTime'
 
 const users = ref<AdminUser[]>([])
 const userPage = ref(1)
@@ -251,7 +252,7 @@ async function savePwd() {
 }
 async function toggle(u: AdminUser) {
   try {
-    await ElMessageBox.confirm(`确认${u.is_active ? '禁用' : '启用'}用户 ${u.username}？`, '提示', { type: 'warning' })
+    await ElMessageBox.confirm(`确认${u.is_active ? '禁用' : '启用'}用户 ${u.username}？${u.is_active ? '禁用将暂停其个人 Meta 授权、撤销账户分配并取消待执行投放任务。历史数据保留，请完成账户交接。' : '启用后需要本人重新授权 Meta，并由管理员重新分配账户。'}`, '提示', { type: 'warning' })
   } catch {
     return
   }
@@ -264,7 +265,7 @@ async function toggle(u: AdminUser) {
 }
 async function remove(u: AdminUser) {
   try {
-    await ElMessageBox.confirm(`确认删除用户 ${u.username}？此操作不可恢复。`, '警告', { type: 'error' })
+    await ElMessageBox.confirm(`确认删除用户 ${u.username}？将暂停其个人 Meta 授权、撤销账户分配并取消待执行投放任务。历史任务和报表保留，请先完成账户交接。用户删除不可恢复。`, '警告', { type: 'error' })
   } catch {
     return
   }

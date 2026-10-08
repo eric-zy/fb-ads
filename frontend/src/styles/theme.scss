@@ -94,6 +94,14 @@
 }
 
 // 日期选择器统一弹层：贴近输入框、尺寸克制，避免日期面板漂浮在页面正中间。
+.date-range-custom-popper.el-popover.el-popper {
+  max-width: calc(100vw - 24px);
+  padding: 18px;
+  border: 1px solid #e7edf5;
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(31, 55, 88, 0.14);
+}
+.date-range-menu .date-range-custom-option { border-top: 1px solid #edf1f7; margin-top: 5px; }
 .date-single-popper.el-popper {
   border: 1px solid #e7edf5;
   border-radius: 10px;

@@ -122,10 +122,10 @@
         <el-descriptions-item label="总数">{{ currentJob?.total_accounts }}</el-descriptions-item>
         <el-descriptions-item label="成功">{{ currentJob?.success_count }}</el-descriptions-item>
         <el-descriptions-item label="失败">{{ currentJob?.failed_count }}</el-descriptions-item>
-        <el-descriptions-item label="创建">{{ currentJob?.created_at }}</el-descriptions-item>
+        <el-descriptions-item label="创建">{{ displayDateTime(currentJob?.created_at) }}</el-descriptions-item>
         <el-descriptions-item label="发布人">{{ currentJob?.publisher?.username || currentJob?.publisher?.email || currentJob?.created_by || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="开始">{{ currentJob?.started_at || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="结束">{{ currentJob?.finished_at || '-' }}</el-descriptions-item>
+        <el-descriptions-item label="开始">{{ displayDateTime(currentJob?.started_at, '-') }}</el-descriptions-item>
+        <el-descriptions-item label="结束">{{ displayDateTime(currentJob?.finished_at, '-') }}</el-descriptions-item>
       </el-descriptions>
 
       <el-alert
@@ -150,7 +150,7 @@
           <template #default="{ row }">{{ row.diff?.length || 0 }} 项</template>
         </el-table-column>
         <el-table-column prop="published_job_id" label="提交任务" show-overflow-tooltip />
-        <el-table-column prop="updated_at" label="更新时间" width="180" show-overflow-tooltip />
+        <el-table-column prop="updated_at" label="更新时间" width="180" show-overflow-tooltip :formatter="formatDateTimeCell" />
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
             <el-button
@@ -177,6 +177,7 @@
           <template #default="{ row }">{{ row.ad_names?.join('、') || row.campaign_name || '-' }}</template>
         </el-table-column>
         <el-table-column prop="ad_account_id" label="广告账户" show-overflow-tooltip />
+        <el-table-column label="执行授权" min-width="190" show-overflow-tooltip><template #default="{ row }">{{ row.authorization_connection_id ? `${row.authorization_owner_name || ''} / ${row.authorization_meta_user_id || row.authorization_connection_id} · V${row.authorization_version || 1}` : '历史绑定授权' }}</template></el-table-column>
           <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <el-tag :type="itemTagType(row.status)" size="small">{{ row.status }}</el-tag>
@@ -291,6 +292,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime, formatDateTimeCell } from '@/utils/dateTime'
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowDown, Refresh } from '@element-plus/icons-vue'
@@ -390,7 +392,7 @@ const statusLabel = (status: string) =>
   }[status] || status || '-')
 
 const shortId = (id: string) => id ? `${id.slice(0, 8)}…${id.slice(-6)}` : '-'
-const formatDateTime = (value?: string | null) => value ? value.replace('T', ' ').slice(0, 19) : '-'
+const formatDateTime = displayDateTime
 
 const statusTagType = (status: string) =>
   ({

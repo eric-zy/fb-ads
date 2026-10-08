@@ -91,6 +91,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime } from '@/utils/dateTime'
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
@@ -116,7 +117,7 @@ const candidates = ref<any[]>([])
 const selectedCandidates = ref<any[]>([])
 const candidateTableRef = ref<any>(null)
 
-function formatTime(v: string | null) { if (!v) return '-'; return v.replace('T', ' ').slice(0, 19) }
+const formatTime = displayDateTime
 function statusLabel(row: MetaAccountItem | null) { if (!row) return '-'; return ({ ACTIVE: '启用', DISABLED: '已禁用', ARCHIVED: '已归档' } as Record<string, string>)[row.status] || row.status }
 function statusType(row: MetaAccountItem | null): 'success' | 'danger' | 'info' { if (!row) return 'info'; if (row.status === 'ACTIVE') return 'success'; if (row.status === 'DISABLED') return 'danger'; return 'info' }
 function metaStatusLabel(v: string) { return ({ '1': '正常', '2': '已禁用', '3': '未结算', '7': '风险审核中', '8': '待结算', '9': '宽限期', '100': '待关闭', '101': '已关闭', ACTIVE: '正常', DISABLED: '已禁用', UNSETTLED: '未结算' } as Record<string, string>)[v] || v }

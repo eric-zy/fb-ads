@@ -268,6 +268,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime } from '@/utils/dateTime'
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -288,10 +289,7 @@ const deployEnabled = ref(false)
 const isDeployEnabled = computed(() => detail.value?.system_status === 'ACTIVE')
 const paymentNeedsAttention = computed(() => ['UNKNOWN', 'MISSING', 'PAST_DUE', 'RESTRICTED'].includes((detail.value?.payment_status || 'UNKNOWN').toUpperCase()))
 
-function formatTime(v?: string | null) {
-  if (!v) return '-'
-  return v.replace('T', ' ').slice(0, 19)
-}
+const formatTime = displayDateTime
 
 function metaStatusLabel(v: string | null) {
   if (!v) return '-'

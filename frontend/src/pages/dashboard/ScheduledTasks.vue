@@ -46,7 +46,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="total_accounts" label="账户数" width="90" />
-        <el-table-column prop="created_at" label="创建时间" width="180" show-overflow-tooltip />
+        <el-table-column prop="created_at" label="创建时间" width="180" show-overflow-tooltip :formatter="formatDateTimeCell" />
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="handleDispatchNow(row as TableRow<typeof tasks>)">立即执行</el-button>
@@ -155,6 +155,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime, formatDateTimeCell, parseDateTime } from '@/utils/dateTime'
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
@@ -214,16 +215,12 @@ const statusTagType = (status: string) =>
   ({ PENDING: 'info', QUEUED: 'warning', RUNNING: 'primary', SUCCESS: 'success',
      PARTIAL_SUCCESS: 'warning', FAILED: 'danger', CANCELLED: 'info' } as Record<string, 'info' | 'primary' | 'success' | 'warning' | 'danger'>)[status] || 'info'
 
-const formatTime = (iso?: string | null) => {
-  if (!iso) return '-'
-  // 后端存的是 UTC naive，补 Z 让浏览器按 UTC 解析
-  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z')
-  return d.toLocaleString()
-}
+const formatTime = displayDateTime
 
 const countdown = (iso?: string | null) => {
-  if (!iso) return '-'
-  const target = new Date(iso.endsWith('Z') ? iso : iso + 'Z').getTime()
+  const date = parseDateTime(iso)
+  if (!date) return '-'
+  const target = date.getTime()
   const diff = target - Date.now()
   if (diff <= 0) return '即将执行'
   const mins = Math.floor(diff / 60000)

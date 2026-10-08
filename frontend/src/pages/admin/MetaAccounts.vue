@@ -132,6 +132,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime } from '@/utils/dateTime'
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -157,7 +158,7 @@ const defaultRow = ref<MetaAccountItem | null>(null)
 const connectorMode = ref(false)
 
 function emptyForm() { return { name: '', business_id: '', access_token: '', app_id: '', timezone: '', currency: '', description: '', is_default: false } }
-function formatTime(v: string | null) { if (!v) return '-'; return v.replace('T', ' ').slice(0, 19) }
+const formatTime = displayDateTime
 function credLabel(row: MetaAccountItem) { if (row.credential_source === 'NONE') return '无凭据'; if (row.credential_is_expired || row.credential_status === 'EXPIRED') return '已过期'; return ({ ACTIVE: '正常', INVALID: '权限异常', DISABLED: '已停用', VERIFYING: '校验中' } as Record<string, string>)[row.credential_status] || row.credential_status }
 function credType(row: MetaAccountItem): 'success' | 'danger' | 'warning' | 'info' { if (row.credential_source === 'NONE') return 'info'; if (row.credential_is_expired || row.credential_status === 'EXPIRED') return 'danger'; if (row.credential_status === 'ACTIVE') return 'success'; return 'warning' }
 function syncLabel(row: MetaAccountItem) { return ({ PENDING: '待同步', SYNCING: '同步中', SUCCESS: '已同步', FAILED: '同步失败' } as Record<string, string>)[row.sync_status] || row.sync_status }

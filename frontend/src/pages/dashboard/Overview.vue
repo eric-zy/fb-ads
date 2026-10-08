@@ -165,6 +165,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime } from '@/utils/dateTime'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import DateRangeFields from '@/components/DateRangeFields.vue'
 import { useRouter } from 'vue-router'
@@ -458,11 +459,7 @@ const syncReports = async () => {
   }
 }
 
-const formatDateTime = (value?: string | null) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(date)
-}
+const formatDateTime = displayDateTime
 
 const actionLabel = (action: string) => ({
   CREATE: '创建投放', PAUSE: '暂停投放', ENABLE: '启用投放', ARCHIVE: '归档', DELETE: '删除', RESTORE: '恢复', UPDATE_BUDGET: '调整预算', SYNC: '数据同步',

@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router'
 import { useUserStore } from '@/stores/userStore'
+import { rememberAdminRoute } from '@/utils/adminNavigation'
 
 const routes: RouteRecordRaw[] = [
   { path: '/', name: 'CompanyHome', component: () => import('@/pages/CompanyHome.vue'), meta: { requiresAuth: false } },
@@ -17,7 +18,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/data-deletion', name: 'DataDeletion', component: () => import('@/pages/DataDeletion.vue'), meta: { requiresAuth: false } },
   { path: '/contact', name: 'Contact', component: () => import('@/pages/Contact.vue'), meta: { requiresAuth: false } },
   {
-    path: '/dashboard', component: () => import('@/layouts/DashboardLayout.vue'), meta: { requiresAuth: true },
+    path: '/dashboard', redirect: '/dashboard/overview', component: () => import('@/layouts/DashboardLayout.vue'), meta: { requiresAuth: true },
     children: [
       { path: 'overview', name: 'Overview', component: () => import('@/pages/dashboard/Overview.vue'), meta: { title: '仪表板' } },
       { path: 'campaigns', name: 'Campaigns', component: () => import('@/pages/dashboard/Campaigns.vue'), meta: { title: '广告系列', permissions: ['campaign:read'] } },
@@ -31,13 +32,14 @@ const routes: RouteRecordRaw[] = [
       { path: 'account-overview', name: 'AccountOverview', component: () => import('@/pages/dashboard/AccountOverview.vue'), meta: { title: '广告账户消耗总览' } },
       { path: 'risk-control', name: 'RiskControl', component: () => import('@/pages/dashboard/RiskControl.vue'), meta: { title: '风险控制', permissions: ['risk:read'] } },
       { path: 'accounts', name: 'Accounts', component: () => import('@/pages/dashboard/Accounts.vue'), meta: { title: '账号中心' } },
+      { path: 'meta-connections', name: 'MyMetaConnections', component: () => import('@/pages/admin/MetaConnections.vue'), meta: { title: '我的 Meta 授权' } },
       { path: 'settings', name: 'Settings', component: () => import('@/pages/dashboard/Settings.vue'), meta: { title: '设置' } },
       { path: 'sinan-settings', name: 'SinanSettings', component: () => import('@/pages/dashboard/SinanSettings.vue'), meta: { title: '司南配置' } },
       { path: 'sinan-promotions', name: 'SinanPromotions', component: () => import('@/pages/dashboard/SinanPromotions.vue'), meta: { title: '司南推广链', permissions: ['sinan:read'] } },
     ],
   },
   {
-    path: '/admin', component: () => import('@/layouts/AdminLayout.vue'), meta: { requiresAuth: true, requiresAdmin: true },
+    path: '/admin', redirect: '/admin/dashboard', component: () => import('@/layouts/AdminLayout.vue'), meta: { requiresAuth: true, requiresAdmin: true },
     children: [
       { path: 'dashboard', name: 'AdminDashboard', component: () => import('@/pages/admin/Dashboard.vue'), meta: { title: '管理员仪表板' } },
       { path: 'users', name: 'AdminUsers', component: () => import('@/pages/admin/Users.vue'), meta: { title: '用户管理' } },
@@ -74,6 +76,14 @@ router.beforeEach(async (to, from, next) => {
   else if (requiresAdmin && !userStore.isAdmin) next('/dashboard/overview')
   else if (!hasRequiredPermissions) next('/dashboard/overview')
   else next()
+})
+
+router.afterEach((to, _from, failure) => {
+  const userStore = useUserStore()
+  if (!failure && userStore.isAdmin && userStore.user
+    && to.matched.some(record => record.meta.requiresAdmin)) {
+    rememberAdminRoute(userStore.user.id, userStore.user.tenant_id, to.fullPath)
+  }
 })
 
 export default router

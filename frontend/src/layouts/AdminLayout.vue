@@ -21,7 +21,7 @@
           </el-menu-item>
           <el-menu-item index="/admin/accounts">
             <el-icon><Postcard /></el-icon>
-            <span>广告账户</span>
+            <span>广告账户分配</span>
           </el-menu-item>
           <el-menu-item index="/admin/meta-accounts">
             <el-icon><Postcard /></el-icon>
@@ -92,14 +92,12 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/admin/accounts')) return '/admin/accounts'
   if (route.path.startsWith('/admin/meta-connections')) return '/admin/meta-connections'
   if (route.path.startsWith('/admin/meta-accounts') || route.path.startsWith('/admin/businesses')) return '/admin/meta-accounts'
-  if (route.path.startsWith('/admin/users')) return '/admin/users'
-  if (route.path.startsWith('/admin/account-dispatch')) return '/admin/account-dispatch'
-  return '/admin/dashboard'
+  return `/admin/${route.path.split('/')[2] || 'dashboard'}`
 })
 
 
 // 侧边栏由 el-menu 的 router 模式按 index 自动跳转；
-// 「返回用户端」对应 /admin/overview 路由，已配置重定向到用户端首页
+// 「返回用户端」直达工作台，路由会记住当前后台页面供返回时使用。
 const handleLogout = async () => {
   await userStore.logout()
   await router.push('/login')

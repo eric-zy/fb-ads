@@ -185,40 +185,6 @@ def get_default_meta_account(
     return {"meta_account": _meta_to_dict(db, m)}
 
 
-@router.get("/{meta_id}", response_model=dict)
-def get_meta_account(
-    meta_id: str,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
-):
-    """主账号详情（含凭据健康状态与账户概况）"""
-    meta = _get_meta_or_404(db, meta_id)
-    data = _meta_to_dict(db, meta)
-
-    accounts = (
-        db.query(AdAccount)
-        .join(BusinessAssetAccess, BusinessAssetAccess.asset_id == AdAccount.id)
-        .filter(BusinessAssetAccess.business_id == meta_id, BusinessAssetAccess.asset_type == "AD_ACCOUNT")
-        .all()
-    )
-    data["accounts"] = [account_to_dict(a) for a in accounts]
-    data["account_stats"] = {
-        "total": len(accounts),
-        "system_active": sum(
-            1 for a in accounts if a.system_status == SystemStatus.ACTIVE.value
-        ),
-        "system_disabled": sum(
-            1 for a in accounts if a.system_status == SystemStatus.DISABLED.value
-        ),
-        "meta_abnormal": sum(
-            1
-            for a in accounts
-            if (a.account_status or "").strip().upper() in UNDEPLOYABLE_META_STATUS
-        ),
-    }
-    return data
-
-
 @router.post("", status_code=201)
 def create_meta_account(
     payload: MetaAccountCreate,
@@ -723,6 +689,35 @@ def list_pending_ad_accounts(
             logger.warning("[meta_accounts] pending scan failed for %s: %s", meta.id, exc)
             errors.append({"meta_account_id": meta.id, "business_name": meta.name, "error": str(exc)})
     return {"total": len(pending), "accounts": pending, "errors": errors}
+
+
+# 固定路径必须先于 /{meta_id} 注册，避免 pending-ad-accounts 被当作主键。
+@router.get("/{meta_id}", response_model=dict)
+def get_meta_account(
+    meta_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """主账号详情（含凭据健康状态与账户概况）"""
+    meta = _get_meta_or_404(db, meta_id)
+    data = _meta_to_dict(db, meta)
+    accounts = (
+        db.query(AdAccount)
+        .join(BusinessAssetAccess, BusinessAssetAccess.asset_id == AdAccount.id)
+        .filter(BusinessAssetAccess.business_id == meta_id, BusinessAssetAccess.asset_type == "AD_ACCOUNT")
+        .all()
+    )
+    data["accounts"] = [account_to_dict(a) for a in accounts]
+    data["account_stats"] = {
+        "total": len(accounts),
+        "system_active": sum(1 for a in accounts if a.system_status == SystemStatus.ACTIVE.value),
+        "system_disabled": sum(1 for a in accounts if a.system_status == SystemStatus.DISABLED.value),
+        "meta_abnormal": sum(
+            1 for a in accounts
+            if (a.account_status or "").strip().upper() in UNDEPLOYABLE_META_STATUS
+        ),
+    }
+    return data
 
 
 class ImportAccountsRequest(BaseModel):

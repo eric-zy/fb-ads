@@ -19,7 +19,7 @@
           <el-table-column prop="status" label="状态" />
           <el-table-column label="结果"><template #default="{ row }">{{ row.success_count }} / {{ row.total_count }}</template></el-table-column>
           <el-table-column prop="error_message" label="错误" show-overflow-tooltip />
-          <el-table-column prop="created_at" label="创建时间" />
+          <el-table-column prop="created_at" label="创建时间" :formatter="formatDateTimeCell" />
         </el-table>
       </el-tab-pane>
 
@@ -28,7 +28,7 @@
           <el-table-column prop="meta_account_id" label="BM" />
           <el-table-column prop="token_type" label="类型" />
           <el-table-column prop="health" label="健康状态" />
-          <el-table-column prop="expires_at" label="过期时间" />
+          <el-table-column prop="expires_at" label="过期时间" :formatter="formatDateTimeCell" />
           <el-table-column prop="last_error" label="错误" show-overflow-tooltip />
         </el-table>
       </el-tab-pane>
@@ -39,7 +39,7 @@
           <el-table-column prop="alert_type" label="类型" />
           <el-table-column prop="ad_account_id" label="广告账户" />
           <el-table-column prop="message" label="详情" show-overflow-tooltip />
-          <el-table-column prop="created_at" label="时间" />
+          <el-table-column prop="created_at" label="时间" :formatter="formatDateTimeCell" />
           <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" @click="resolveAlert(row as TableRow<typeof alerts>)">处理</el-button></template></el-table-column>
         </el-table>
         <el-empty v-if="!alerts.length" description="暂无未处理投放告警" />
@@ -54,7 +54,7 @@
           <el-table-column prop="status" label="状态" />
           <el-table-column prop="desired_status" label="目标状态" />
           <el-table-column prop="error_message" label="错误" show-overflow-tooltip />
-          <el-table-column prop="created_at" label="提交时间" />
+          <el-table-column prop="created_at" label="提交时间" :formatter="formatDateTimeCell" />
         </el-table>
         <el-empty v-if="!deliveryActions.length" description="暂无投放操作记录" />
       </el-tab-pane>
@@ -66,7 +66,7 @@
           <el-table-column prop="resource_type" label="资源类型" />
           <el-table-column prop="resource_id" label="资源 ID" />
           <el-table-column prop="user_id" label="操作人" />
-          <el-table-column prop="created_at" label="时间" />
+          <el-table-column prop="created_at" label="时间" :formatter="formatDateTimeCell" />
         </el-table>
       </el-tab-pane>
     </el-tabs>
@@ -74,6 +74,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTimeCell } from '@/utils/dateTime'
 import { onMounted, ref } from 'vue'
 import { operationsApi, credentialApi } from '@/api/admin'
 import { campaignsApi, type DeliveryAction, type SyncAlert } from '@/api/campaigns'

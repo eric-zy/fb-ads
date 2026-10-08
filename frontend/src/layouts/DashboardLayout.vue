@@ -29,9 +29,15 @@
           <el-sub-menu v-if="canSeeAccountsMenu" index="accounts-group">
             <template #title><el-icon><OfficeBuilding /></el-icon><span>账号中心</span></template>
             <el-menu-item index="accounts"><span>账号总览</span></el-menu-item>
+            <el-menu-item index="meta-connections"><span>{{ isZh ? '我的 Meta 授权' : 'My Meta connections' }}</span></el-menu-item>
+            <el-menu-item v-if="userStore.isAdmin" index="/admin/accounts"><span>{{ isZh ? '广告账户分配' : 'Assign ad accounts' }}</span></el-menu-item>
           </el-sub-menu>
           <el-menu-item v-if="canSeeSettings" index="settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
           <el-menu-item v-if="canManageSinan" index="sinan-settings"><el-icon><Connection /></el-icon><span>司南配置</span></el-menu-item>
+          <template v-if="userStore.isAdmin">
+            <el-divider />
+            <el-menu-item index="return-admin"><el-icon><Back /></el-icon><span>{{ isZh ? '返回管理后台' : 'Back to admin' }}</span></el-menu-item>
+          </template>
         </el-menu>
       </el-aside>
 
@@ -49,6 +55,7 @@
           </div>
 
           <div class="header-right">
+            <el-button v-if="userStore.isAdmin" class="admin-return" :icon="Back" @click="returnToAdmin">{{ isZh ? '返回管理后台' : 'Back to admin' }}</el-button>
             <LanguageSwitcher />
             <el-badge :value="notificationCount" class="notification-badge">
               <el-button text @click="showNotifications"><el-icon><Bell /></el-icon></el-button>
@@ -62,6 +69,7 @@
                 </div>
               </template>
               <div class="dropdown-menu">
+                <div v-if="userStore.isAdmin" class="menu-item" @click="returnToAdmin"><el-icon><Back /></el-icon><span>{{ isZh ? '返回管理后台' : 'Back to admin' }}</span></div>
                 <div class="menu-item" @click="goToSettings"><el-icon><Setting /></el-icon><span>{{ t('menu.settings') }}</span></div>
                 <el-divider style="margin: 10px 0" />
                 <div class="menu-item" @click="handleLogout"><el-icon><Switch /></el-icon><span>{{ isZh ? '登出' : 'Log out' }}</span></div>
@@ -87,11 +95,12 @@ import { useAccountStore } from '@/stores/accountStore'
 import { sinanApi } from '@/api/sinan'
 import {
   DocumentCopy, Promotion, Collection, Upload, List, Picture, Timer,
-  PieChart, DataAnalysis, Warning, OfficeBuilding, Setting, Switch, ArrowDown, Bell, Connection,
+  PieChart, DataAnalysis, Warning, OfficeBuilding, Setting, Switch, ArrowDown, Bell, Connection, Back,
 } from '@element-plus/icons-vue'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { useLocale } from '@/stores/localeStore'
 import { workbenchApi } from '@/api/reports'
+import { getAdminReturnRoute } from '@/utils/adminNavigation'
 
 const router = useRouter()
 const route = useRoute()
@@ -100,7 +109,7 @@ const accountStore = useAccountStore()
 const notificationCount = ref(0)
 const sinanVerified = ref(false)
 const { t, isZh } = useLocale()
-const canSeeAccountsMenu = computed(() => userStore.isAdmin || userStore.isManager || userStore.hasPermission('ad_account:read'))
+const canSeeAccountsMenu = computed(() => Boolean(userStore.user))
 const canSeeSettings = computed(() => userStore.isAdmin || userStore.hasPermission('settings:read'))
 const canSeeSinanPromotions = computed(() => sinanVerified.value && (userStore.isAdmin || userStore.hasPermission('sinan:read')))
 // 每个登录账号维护自己的司南配置，配置入口对所有登录用户开放。
@@ -111,7 +120,11 @@ const activeMenu = computed(() => {
   return path || 'overview'
 })
 
-const handleMenuSelect = (key: string) => router.push(`/dashboard/${key}`)
+const returnToAdmin = () => router.push(getAdminReturnRoute(router, userStore.user?.id, userStore.user?.tenant_id))
+const handleMenuSelect = (key: string) => {
+  if (key === 'return-admin') return returnToAdmin()
+  return router.push(key.startsWith('/admin/') ? key : `/dashboard/${key}`)
+}
 const handleAccountChange = (accountId: string) => {
   accountStore.selectAccount(accountId || '')
   void refreshNotificationCount()
@@ -160,4 +173,5 @@ onMounted(async () => {
 .main-content { background: #f5f7fa; padding: 20px; overflow-y: auto; }
 .dropdown-menu .menu-item { display: flex; align-items: center; gap: 10px; padding: 10px 15px; cursor: pointer; border-radius: 4px; &:hover { background: #f5f7fa; } }
 @media (max-width: 900px) { .breadcrumb { display: none; } .header-left .account-selector { width: 160px !important; } }
+@media (max-width: 1100px) { .header-right .admin-return { display: none; } }
 </style>

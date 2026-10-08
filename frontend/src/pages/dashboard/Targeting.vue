@@ -36,7 +36,7 @@
             <el-table-column label="适用账户" width="110">
               <template #default="{ row }">{{ row.account_ids?.length || '全部可见' }}</template>
             </el-table-column>
-            <el-table-column prop="updated_at" label="最近更新" width="180" show-overflow-tooltip />
+            <el-table-column prop="updated_at" label="最近更新" width="180" show-overflow-tooltip :formatter="formatDateTimeCell" />
             <el-table-column label="操作" width="140" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openEditRegion(row as TableRow<typeof regionGroups>)">编辑</el-button>
@@ -69,7 +69,7 @@
             <el-table-column label="适用账户" width="110">
               <template #default="{ row }">{{ row.account_ids?.length || '全部可见' }}</template>
             </el-table-column>
-            <el-table-column prop="updated_at" label="最近更新" width="180" show-overflow-tooltip />
+            <el-table-column prop="updated_at" label="最近更新" width="180" show-overflow-tooltip :formatter="formatDateTimeCell" />
             <el-table-column label="操作" width="140" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openEditPackage(row as TableRow<typeof targetingPackages>)">编辑</el-button>
@@ -311,6 +311,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTimeCell } from '@/utils/dateTime'
 import { onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { accountApi, type DeployableAccount } from '@/api/admin'

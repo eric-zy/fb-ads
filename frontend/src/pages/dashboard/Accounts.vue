@@ -8,7 +8,8 @@
       </div>
       <div class="head-actions">
         <el-button :icon="Refresh" :loading="loading" @click="load()">{{ t('pages.refresh') }}</el-button>
-        <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="openAddDialog">接入账号</el-button>
+        <el-button @click="router.push('/dashboard/meta-connections')">我的 Meta 授权</el-button>
+        <el-button type="primary" :icon="Plus" @click="openAddDialog">接入我的 Meta 账号</el-button>
       </div>
     </div>
 
@@ -51,7 +52,7 @@
           </template>
         </el-tree>
         <el-empty v-if="!loading && businessNodes.length === 0" description="还没有接入 Meta 账号">
-          <template #default><el-button v-if="isAdmin" type="primary" :icon="Plus" @click="openAddDialog">接入账号</el-button></template>
+          <template #default><el-button type="primary" :icon="Plus" @click="openAddDialog">接入我的 Meta 账号</el-button></template>
         </el-empty>
       </div>
         </el-card>
@@ -106,7 +107,7 @@
               <template #default="{ row }"><div>{{ row.account_name }}</div><span class="status-detail">{{ row.account_id }} · {{ row.business_name || '个人授权' }}</span></template>
             </el-table-column>
             <el-table-column label="同步状态" width="120">
-              <template #default="{ row }"><el-tag :type="trackingHealthType(row.sync_status)" size="small">{{ trackingHealthLabel(row.sync_status) }}</el-tag><div class="status-detail">{{ row.last_synced_at || '尚未同步' }}</div></template>
+              <template #default="{ row }"><el-tag :type="trackingHealthType(row.sync_status)" size="small">{{ trackingHealthLabel(row.sync_status) }}</el-tag><div class="status-detail">{{ displayDateTime(row.last_synced_at, '尚未同步') }}</div></template>
             </el-table-column>
             <el-table-column label="可用资产" min-width="250">
               <template #default="{ row }"><el-tag v-for="asset in row.assets" :key="`${asset.asset_type}-${asset.id}`" size="small" effect="plain" class="asset-tag">{{ asset.name }} · {{ asset.asset_type === 'PIXEL' ? 'Pixel' : 'Dataset' }}</el-tag><span v-if="!row.assets.length" class="status-detail">暂无可用资产</span></template>
@@ -160,12 +161,13 @@
     <el-drawer v-model="drawerVisible" :title="drawerTitle" size="520px">
       <template #footer v-if="selectedAccount && isAdmin"><div class="drawer-actions"><el-button type="warning" plain @click="setAccountStatus(selectedAccount.source, 'freeze')">限制新建投放</el-button><el-button type="danger" plain @click="unbindAccount(selectedAccount.source)">解绑账号</el-button></div></template>
       <template v-if="selectedBusiness"><el-descriptions :column="1" border><el-descriptions-item label="类型">{{ selectedBusiness.businessId ? 'Business / BM' : '个人授权' }}</el-descriptions-item><el-descriptions-item label="名称">{{ selectedBusiness.label }}</el-descriptions-item><el-descriptions-item label="Business ID">{{ selectedBusiness.metaBusinessId || '-' }}</el-descriptions-item><el-descriptions-item label="授权"><el-tag :type="credentialTagType(selectedBusiness.credentialStatus)">{{ credentialLabel(selectedBusiness.credentialStatus) }}</el-tag></el-descriptions-item><el-descriptions-item label="广告账户">{{ selectedBusiness.accountCount || 0 }}</el-descriptions-item><el-descriptions-item label="同步">{{ syncLabel(selectedBusiness.syncStatus) }}</el-descriptions-item></el-descriptions><el-button v-if="isAdmin && selectedBusiness.businessId" type="primary" class="drawer-button" @click="authorizeBusiness(selectedBusiness)">重新授权 Meta</el-button></template>
-      <template v-else-if="selectedAccount"><el-descriptions :column="1" border><el-descriptions-item label="账号">{{ selectedAccount.label }}</el-descriptions-item><el-descriptions-item label="Account ID">{{ selectedAccount.accountId }}</el-descriptions-item><el-descriptions-item label="账号来源">{{ selectedAccount.source?.owner_type === 'PERSONAL' ? '个人授权' : 'BM 资产' }}</el-descriptions-item><el-descriptions-item label="BM ID">{{ selectedAccount.source?.meta_business_id || '-' }}</el-descriptions-item><el-descriptions-item label="授权人">{{ selectedAccount.source?.authorized_by_username || selectedAccount.source?.authorized_by_user_id || '-' }}</el-descriptions-item><el-descriptions-item label="凭证状态"><el-tag :type="credentialTagType(selectedAccount.source?.credential_status)">{{ credentialLabel(selectedAccount.source?.credential_status) }}</el-tag><div class="status-detail">过期时间：{{ selectedAccount.source?.credential_expires_at || '-' }}</div></el-descriptions-item><el-descriptions-item label="Meta 状态">{{ selectedAccount.effectiveStatus || selectedAccount.accountStatus || '待同步' }}</el-descriptions-item><el-descriptions-item label="投放可用性"><el-tag :type="accountAvailabilityType(selectedAccount.source!)">{{ accountAvailabilityLabel(selectedAccount.source!) }}</el-tag><div class="status-detail">{{ selectedAccount.source?.availability_reason || '-' }}</div></el-descriptions-item><el-descriptions-item label="最近同步">{{ selectedAccount.source?.last_synced_at || '未同步' }}</el-descriptions-item><el-descriptions-item label="同步错误">{{ selectedAccount.source?.last_sync_error || '-' }}</el-descriptions-item><el-descriptions-item label="已消费">{{ formatMoney(selectedAccount.amountSpent, selectedAccount.currency) }}</el-descriptions-item></el-descriptions><el-button v-if="isAdmin && selectedAccount.source && !accountIsDeployable(selectedAccount.source)" type="primary" class="drawer-button" @click="reauthorizeAccount(selectedAccount.source)">重新授权</el-button></template>
+      <template v-else-if="selectedAccount"><el-descriptions :column="1" border><el-descriptions-item label="账号">{{ selectedAccount.label }}</el-descriptions-item><el-descriptions-item label="Account ID">{{ selectedAccount.accountId }}</el-descriptions-item><el-descriptions-item label="账号来源">{{ selectedAccount.source?.owner_type === 'PERSONAL' ? '个人授权' : 'BM 资产' }}</el-descriptions-item><el-descriptions-item label="BM ID">{{ selectedAccount.source?.meta_business_id || '-' }}</el-descriptions-item><el-descriptions-item label="授权人">{{ selectedAccount.source?.authorized_by_username || selectedAccount.source?.authorized_by_user_id || '-' }}</el-descriptions-item><el-descriptions-item label="凭证状态"><el-tag :type="credentialTagType(selectedAccount.source?.credential_status)">{{ credentialLabel(selectedAccount.source?.credential_status) }}</el-tag><div class="status-detail">过期时间：{{ displayDateTime(selectedAccount.source?.credential_expires_at, '-') }}</div></el-descriptions-item><el-descriptions-item label="Meta 状态">{{ selectedAccount.effectiveStatus || selectedAccount.accountStatus || '待同步' }}</el-descriptions-item><el-descriptions-item label="投放可用性"><el-tag :type="accountAvailabilityType(selectedAccount.source!)">{{ accountAvailabilityLabel(selectedAccount.source!) }}</el-tag><div class="status-detail">{{ selectedAccount.source?.availability_reason || '-' }}</div></el-descriptions-item><el-descriptions-item label="最近同步">{{ displayDateTime(selectedAccount.source?.last_synced_at, '未同步') }}</el-descriptions-item><el-descriptions-item label="同步错误">{{ selectedAccount.source?.last_sync_error || '-' }}</el-descriptions-item><el-descriptions-item label="已消费">{{ formatMoney(selectedAccount.amountSpent, selectedAccount.currency) }}</el-descriptions-item></el-descriptions><el-button v-if="isAdmin && selectedAccount.source && !accountIsDeployable(selectedAccount.source)" type="primary" class="drawer-button" @click="reauthorizeAccount(selectedAccount.source)">重新授权</el-button></template>
     </el-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime } from '@/utils/dateTime'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -258,7 +260,7 @@ function handleNodeClick(n: TreeNode) { if (n.type === 'business') { selectedBus
 function openBusiness(n: TreeNode) { if (n.businessId) router.push(`/admin/businesses/${n.businessId}`) }
 function openAccount(n: TreeNode) { if (n.source?.id) router.push(`/admin/accounts/${n.source.id}`) }
 function openAddDialog() { oauthStep.value = 'login'; oauthError.value = ''; discoveredBusinesses.value = []; selectedDiscoveredBusinessId.value = null; oauthAdAccounts.value = []; selectedOAuthAccountIds.value = []; oauthCredentialId.value = null; oauthOwnerFilter.value = 'ALL'; addDialogVisible.value = true }
-function closeAddDialog() { addDialogVisible.value = false; if (route.query.meta_auth || route.query.credential_id) router.replace({ query: { ...route.query, meta_auth: undefined, credential_id: undefined, message: undefined } }) }
+function closeAddDialog() { addDialogVisible.value = false; if (route.query.meta_auth || route.query.credential_id) router.replace({ query: { ...route.query, meta_auth: undefined, credential_id: undefined, message: undefined, state: undefined, receipt: undefined } }) }
 async function startOAuth() { const popup = window.open('', 'meta-oauth', 'width=620,height=760,resizable=yes,scrollbars=yes'); authorizing.value = true; oauthError.value = ''; try { const { data } = await credentialApi.oauthAuthorizeFirst(); if (!data.authorization_url) throw new Error('Meta 未返回授权地址'); if (popup) popup.location.href = data.authorization_url; else window.location.assign(data.authorization_url) } catch (e: any) { popup?.close(); oauthError.value = e?.response?.data?.detail || e?.message || '无法启动 Facebook 登录'; ElMessage.error(oauthError.value) } finally { authorizing.value = false } }
 async function openBusinessDiscovery(id?: string) { addDialogVisible.value = true; oauthStep.value = 'businesses'; oauthError.value = ''; const credentialId = id || String(route.query.credential_id || ''); if (!credentialId) { oauthError.value = '缺少本次 OAuth 授权凭据，请重新授权'; return } oauthCredentialId.value = credentialId; try { const { data } = await credentialApi.oauthAdAccounts(credentialId); oauthAdAccounts.value = data.accounts || []; } catch (e: any) { oauthError.value = e?.response?.data?.detail || '无法读取 Meta 可访问广告账户，请重新授权' } }
 async function completeOAuth() {
@@ -267,6 +269,7 @@ async function completeOAuth() {
   try {
     const { data } = await credentialApi.oauthCompleteAccounts({ credential_id: oauthCredentialId.value, account_ids: selectedOAuthAccountIds.value })
     oauthStep.value = 'success'
+    if (data?.accounts?.some((item: { assignment_required?: boolean }) => item.assignment_required)) ElMessage.warning('授权资产已接入；已有账户需管理员分配后才能投放，原主投手保持不变')
     if (data?.page_sync?.status === 'FAILED') {
       ElMessage.warning('授权资产已接入，但 Facebook Page 同步失败，请稍后在投放模板中重试')
     } else {
@@ -290,7 +293,16 @@ function trackingHealthType(status: string): 'success'|'warning'|'danger'|'info'
 async function loadTrackingHealth() { trackingHealthLoading.value = true; try { const { data } = await metaTrackingAssetsApi.health(); trackingHealth.value = data.items || []; trackingHealthSummary.value = data.summary || {} } catch { trackingHealth.value = []; trackingHealthSummary.value = {} } finally { trackingHealthLoading.value = false } }
 async function syncTrackingAsset(accountPk: string) { trackingSyncing[accountPk] = true; try { await metaTrackingAssetsApi.sync(accountPk); ElMessage.success('已提交 Pixel / Dataset 同步任务'); await loadTrackingHealth() } finally { trackingSyncing[accountPk] = false } }
 async function handleTabChange(tab: string | number) { if (tab === 'credentials') await loadCredentials(); if (tab === 'sync') await loadSyncLogs(); if (tab === 'tracking-health') await loadTrackingHealth() }
-function handleOAuthMessage(e: MessageEvent) { if (e.origin !== window.location.origin) return; if (e.data?.type === 'meta-oauth-ready') openBusinessDiscovery(e.data.credential_id); if (e.data?.type === 'meta-oauth-completed') load() }
+async function acceptOAuthResult(result: { credential_id?: string; state?: string; receipt?: string }) {
+  try {
+    const id = result.receipt ? (await credentialApi.oauthClaim({ state: result.state || '', receipt: result.receipt })).data.credential_id : result.credential_id
+    await router.replace({ query: { ...route.query, meta_auth: undefined, credential_id: undefined, state: undefined, receipt: undefined } })
+    await openBusinessDiscovery(id)
+  } catch (e: any) {
+    addDialogVisible.value = true; oauthStep.value = 'login'; oauthError.value = e?.response?.data?.detail || '授权归属校验失败，请重新接入'
+  }
+}
+function handleOAuthMessage(e: MessageEvent) { if (e.origin !== window.location.origin) return; if (e.data?.type === 'meta-oauth-ready') void acceptOAuthResult(e.data); if (e.data?.type === 'meta-oauth-completed') load(); if (e.data?.type === 'meta-oauth-error') { addDialogVisible.value = true; oauthStep.value = 'login'; oauthError.value = e.data.message || 'Meta 授权失败' } }
 async function authorizeBusiness(n: TreeNode | null) { if (!n?.businessId) return; try { const { data } = await credentialApi.oauthAuthorize(n.businessId); window.location.assign(data.authorization_url) } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '无法发起 Meta 重新授权') } }
 async function reauthorizeCredential(row: CredentialItem) { try { const { data } = row.meta_account_id ? await credentialApi.oauthAuthorize(row.meta_account_id) : await credentialApi.oauthAuthorizeFirst(); window.location.assign(data.authorization_url) } catch (e: any) { ElMessage.error(e?.response?.data?.detail || '无法发起 Meta 重新授权') } }
 async function reauthorizeAccount(account: AdAccountItem) {
@@ -299,7 +311,19 @@ async function reauthorizeAccount(account: AdAccountItem) {
   return reauthorizeCredential({ meta_account_id: null } as CredentialItem)
 }
 async function load(page = accountPage.value) { accountPage.value = page; loading.value = true; try { const r = await accountApi.list({ page, page_size: accountPageSize }); accounts.value = r.data || []; accountTotal.value = Number(r.headers?.['x-total-count'] || accounts.value.length); if (isAdmin.value) { try { const m = await metaAccountApi.list(); metaAccounts.value = m.data || []; await loadCredentials() } catch { metaAccounts.value = [] } } } catch { accounts.value = []; accountTotal.value = 0; metaAccounts.value = [] } finally { loading.value = false; await nextTick(); if (filterText.value) treeRef.value?.filter(filterText.value) } }
-function handleOAuthRoute() { const auth = String(route.query.meta_auth || ''); if (auth === 'businesses') { if (window.opener) { const id = String(route.query.credential_id || ''); if (id) { window.opener.postMessage({ type: 'meta-oauth-ready', credential_id: id }, window.location.origin); setTimeout(() => window.close(), 200) } } else openBusinessDiscovery(String(route.query.credential_id || '')) } else if (auth === 'success') { if (window.opener) { window.opener.postMessage({ type: 'meta-oauth-completed', meta_account_id: String(route.query.meta_account_id || '') }, window.location.origin); setTimeout(() => window.close(), 200) } else { ElMessage.success('Meta 授权成功，BM、广告账户和 Page 正在同步'); void load() } } else if (auth === 'error') { const message = String(route.query.message || 'Meta 授权失败或已取消'); if (window.opener) { window.opener.postMessage({ type: 'meta-oauth-error', message }, window.location.origin); setTimeout(() => window.close(), 200) } else { addDialogVisible.value = true; oauthStep.value = 'login'; oauthError.value = message } } }
+function handleOAuthRoute() {
+  const auth = String(route.query.meta_auth || '')
+  if (auth === 'businesses') {
+    const result = { credential_id: String(route.query.credential_id || ''), state: String(route.query.state || ''), receipt: String(route.query.receipt || '') }
+    if (window.opener) { window.opener.postMessage({ type: 'meta-oauth-ready', ...result }, window.location.origin); setTimeout(() => window.close(), 200) }
+    else void acceptOAuthResult(result)
+  } else if (auth === 'success') { ElMessage.success('Meta 授权成功'); void load() }
+  else if (auth === 'error') {
+    const message = String(route.query.message || 'Meta 授权失败或已取消')
+    if (window.opener) { window.opener.postMessage({ type: 'meta-oauth-error', message }, window.location.origin); setTimeout(() => window.close(), 200) }
+    else { addDialogVisible.value = true; oauthStep.value = 'login'; oauthError.value = message }
+  }
+}
 onMounted(async () => { window.addEventListener('message', handleOAuthMessage); await load(); handleOAuthRoute() })
 onBeforeUnmount(() => window.removeEventListener('message', handleOAuthMessage))
 </script>

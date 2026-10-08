@@ -84,6 +84,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime } from '@/utils/dateTime'
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useUserStore } from '../../stores/userStore'
 import { useLocale } from '@/stores/localeStore'
@@ -155,9 +156,7 @@ async function loadAudiences() {
   } catch { audiences.value = [] }
 }
 
-function formatDate(value?: string | null) {
-  return value ? new Date(value).toLocaleString() : '未同步'
-}
+const formatDate = displayDateTime
 
 function audienceStatus(audience: MetaAudienceAsset) {
   const status = String(audience.sync_status || '').toUpperCase()

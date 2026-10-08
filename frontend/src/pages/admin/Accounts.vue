@@ -2,7 +2,7 @@
   <div class="page-container">
     <div class="page-head">
       <div>
-        <h2 class="page-title">广告账户</h2>
+        <h2 class="page-title">广告账户管理与分配</h2>
         <p class="page-subtitle">
           维护 BM 下的广告账户资源池。Meta 状态由同步覆盖，系统状态决定是否参与批量投放
         </p>
@@ -11,6 +11,10 @@
     </div>
 
     <el-card class="card-shadow" shadow="never">
+      <el-alert class="assignment-guide" title="分配给投手：找到广告账户，点击右侧「分配给投手」，勾选用户并指定主投手后保存。查看或移除协作者请点击「已分配用户」。待导入账户需先从 BM 导入。" type="info" :closable="false" show-icon />
+      <el-alert v-if="pendingScanErrors.length" class="assignment-guide" type="warning" :closable="false" show-icon title="部分 BM 扫描失败，当前待导入列表不完整">
+        <div v-for="(item, index) in pendingScanErrors" :key="index">{{ item.business_name }}：{{ item.error }}</div>
+      </el-alert>
       <div class="toolbar">
         <el-radio-group v-model="assetFilter" size="small" @change="resetAccountPage">
           <el-radio-button label="ALL">全部</el-radio-button>
@@ -107,12 +111,12 @@
         <el-table-column label="分配用户" width="90">
           <template #default="{ row }">{{ userCount[row.id] ?? '-' }}</template>
         </el-table-column>
-        <el-table-column v-if="assetFilter !== 'PENDING'" label="操作" width="390" fixed="right">
+        <el-table-column v-if="assetFilter !== 'PENDING'" label="操作" width="470" fixed="right">
           <template #default="{ row }">
+            <el-button type="primary" plain size="small" @click="openAssign(row as TableRow<typeof accounts>)">分配给投手</el-button>
             <el-button link type="primary" size="small" @click="goDetail(row as TableRow<typeof accounts>)">详情</el-button>
             <el-button link type="primary" size="small" @click="openTransfer(row as TableRow<typeof accounts>)">转移归属</el-button>
-            <el-button link type="primary" size="small" @click="openAssign(row as TableRow<typeof accounts>)">分配</el-button>
-            <el-button link type="info" size="small" @click="openUsers(row as TableRow<typeof accounts>)">用户</el-button>
+            <el-button link type="info" size="small" @click="openUsers(row as TableRow<typeof accounts>)">已分配用户</el-button>
             <el-button link type="warning" size="small" @click="openEdit(row as TableRow<typeof accounts>)">编辑</el-button>
             <el-button link :type="row.system_status === 'ACTIVE' ? 'danger' : 'success'" size="small" @click="toggleStatus(row as TableRow<typeof accounts>)">
               {{ row.system_status === 'ACTIVE' ? '停用' : '启用' }}
@@ -208,10 +212,11 @@
     </el-dialog>
 
     <!-- 分配用户 -->
-    <el-dialog v-model="showAssign" :title="`分配用户 - ${assignAccount?.account_name || assignAccount?.account_id}`" width="420px" destroy-on-close>
+    <el-dialog v-model="showAssign" :title="`分配给投手 - ${assignAccount?.account_name || assignAccount?.account_id}`" width="480px" destroy-on-close>
+      <p class="assignment-hint">勾选需要使用此账户的用户，再选择一名主投手。</p>
       <el-checkbox-group v-model="selectedUsers" class="user-group">
         <el-checkbox v-for="u in allUsers" :key="u.id" :value="u.id" border class="user-check">
-          {{ u.username }} ({{ u.email }})
+          {{ u.username }}<span v-if="u.email"> ({{ u.email }})</span>
         </el-checkbox>
       </el-checkbox-group>
       <el-form label-width="80px" class="primary-form">
@@ -260,7 +265,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Refresh } from '@element-plus/icons-vue'
@@ -289,6 +294,7 @@ const systemStatusFilter = ref('')
 const accountStatusFilter = ref('')
 const businessFilter = ref('')
 const assetFilter = ref('ALL')
+const pendingScanErrors = ref<Array<{ business_name: string; error: string }>>([])
 const businesses = ref<MetaAccountItem[]>([])
 const userCount = ref<Record<string, number>>({})
 const tableRef = ref<any>(null)
@@ -315,6 +321,9 @@ const assignAccount = ref<AdAccountItem | null>(null)
 const allUsers = ref<AdminUser[]>([])
 const selectedUsers = ref<string[]>([])
 const primaryUserId = ref('')
+watch(selectedUsers, (ids) => {
+  if (!ids.includes(primaryUserId.value)) primaryUserId.value = ids[0] || ''
+})
 
 const showUsers = ref(false)
 const userAccount = ref<AdAccountItem | null>(null)
@@ -363,6 +372,7 @@ let accountRequestNo = 0
 async function loadAccounts() {
   const requestNo = ++accountRequestNo
   loading.value = true
+  pendingScanErrors.value = []
   try {
     const params: Record<string, unknown> = { page: accountPage.value, page_size: accountPageSize }
     if (search.value) params.search = search.value
@@ -374,6 +384,7 @@ async function loadAccounts() {
     if (assetFilter.value === 'PENDING') {
       const { data } = await metaAccountApi.pendingAdAccounts()
       if (requestNo !== accountRequestNo) return
+      pendingScanErrors.value = data.errors || []
       accounts.value = (data.accounts || []).map((row: any) => ({
         id: `pending-${row.meta_account_id}-${row.id}`,
         account_id: row.id,
@@ -408,6 +419,12 @@ async function loadAccounts() {
     )
     if (requestNo === accountRequestNo) userCount.value = counts
   } catch (e: any) {
+    if (requestNo === accountRequestNo) {
+      accounts.value = []
+      userCount.value = {}
+      accountTotal.value = 0
+      clearSelection()
+    }
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   } finally {
     if (requestNo === accountRequestNo) loading.value = false
@@ -680,10 +697,11 @@ async function saveAssign() {
     await withAccountLeases([assignAccount.value.id], 'ACCOUNT_ASSIGNMENT', tokens => accountApi.assign(
       assignAccount.value!.id,
       selectedUsers.value,
-      primaryUserId.value || selectedUsers.value[0],
+      selectedUsers.value.includes(primaryUserId.value) ? primaryUserId.value : selectedUsers.value[0],
       tokens[assignAccount.value!.id],
     ))
     showAssign.value = false
+    ElMessage.success('广告账户已分配给投手')
     await loadAccounts()
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
@@ -737,6 +755,8 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.assignment-guide { margin-bottom: 16px; }
+.assignment-hint { margin: 0 0 16px; color: var(--el-text-color-secondary); }
 .bulk-bar {
   display: flex;
   align-items: center;

@@ -442,6 +442,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime } from '@/utils/dateTime'
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import DateRangeFields from '@/components/DateRangeFields.vue'
 import { UploadFilled, Picture } from '@element-plus/icons-vue'
@@ -1208,18 +1209,7 @@ const formatDuration = (seconds?: number | null) => {
   const total = Math.round(seconds)
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
-const formatUploadedAt = (value?: string | null) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '-'
-  return new Intl.DateTimeFormat(undefined, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date)
-}
+const formatUploadedAt = displayDateTime
 const formatPercent = (value?: number | null) => value == null ? '—' : `${Number(value).toFixed(2)}%`
 const formatRatio = (value?: number | null) => value == null ? '—' : Number(value).toFixed(2)
 const formatMajorMoney = (value?: number | null, currency?: string | null) => {

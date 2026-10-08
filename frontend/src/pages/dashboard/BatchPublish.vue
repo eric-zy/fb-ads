@@ -490,7 +490,7 @@
           </el-alert>
           <el-alert v-if="preflightResult" :type="preflightResult.passed ? 'success' : 'error'" :closable="false" show-icon style="margin-top:12px">
             <template #title>{{ preflightResult.passed ? `预检通过：${preflightResult.ready_account_ids.length} 个账户可投放` : '预检未通过，暂不能提交' }}</template>
-            <div v-if="preflightResult.passed && preflightResult.expires_at" class="preflight-detail">本次预览仅对当前账户、素材和配置有效，提交前会再次校验；有效期至 {{ preflightResult.expires_at }}</div>
+            <div v-if="preflightResult.passed && preflightResult.expires_at" class="preflight-detail">本次预览仅对当前账户、素材和配置有效，提交前会再次校验；有效期至 {{ displayDateTime(preflightResult.expires_at) }}</div>
             <div v-for="item in preflightResult.errors" :key="`error-${item.code}`" class="preflight-error-item">
               <div>{{ item.message }}</div>
               <div v-if="preflightActionHint(item.code)" class="preflight-detail">处理建议：{{ preflightActionHint(item.code) }}</div>
@@ -607,7 +607,7 @@
         <el-table-column prop="total_accounts" label="总数" width="80" />
         <el-table-column prop="success_count" label="成功" width="80" />
         <el-table-column prop="failed_count" label="失败" width="80" />
-        <el-table-column prop="created_at" label="创建时间" />
+        <el-table-column prop="created_at" label="创建时间" :formatter="formatDateTimeCell" />
         <el-table-column label="操作" width="160">
           <template #default="{ row }">
             <el-button link type="primary" @click="viewJob(row.id)">查看</el-button>
@@ -679,6 +679,7 @@
 </template>
 
 <script setup lang="ts">
+import { formatDateTime as displayDateTime, formatDateTimeCell } from '@/utils/dateTime'
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -1241,7 +1242,7 @@ const templateBudget = computed(() => {
 })
 const templateSchedule = computed<Record<string, string>>(() => selectedTemplate.value?.creative_config_json?.schedule || {})
 const formatScheduleTime = (value?: string | null) => value
-  ? new Date(value).toLocaleString('zh-CN', { hour12: false })
+  ? displayDateTime(value)
   : '未设置'
 const accessBusinessIds = reactive<Record<string, string>>({})
 const selectedAccountRows = computed(() => accounts.value.filter(account => form.ad_account_ids.includes(account.id)))
@@ -1287,9 +1288,7 @@ const handleDirectTrackingAssetChange = (assetId: string) => {
   const selected = trackingAssets.value.find(item => item.id === assetId)
   if (selected) directForm.tracking_asset_type = selected.asset_type
 }
-const formatTrackingAssetTime = (value?: string | null) => value
-  ? new Date(value).toLocaleString('zh-CN', { hour12: false })
-  : '未同步'
+const formatTrackingAssetTime = displayDateTime
 const trackingAssetStatusLabel = (asset: MetaTrackingAsset) => asset.last_sync_error
   ? '同步异常'
   : asset.status === 'ACTIVE' && asset.usable !== false ? '可用' : '不可用'

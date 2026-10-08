@@ -43,7 +43,7 @@ from core.middleware import (
     RateLimitMiddleware,
 )
 from models import User
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 # 初始化FastAPI应用
 app = FastAPI(
@@ -205,12 +205,13 @@ async def auth_login(request: LoginRequest, db: Session = Depends(get_db)):
 
             if AuthManager.needs_password_rehash(user.hashed_password):
                 user.hashed_password = AuthManager.hash_password(request.password)
-                db.commit()
 
             role_permissions = []
             if getattr(user, "role_id", None):
                 role = db.query(Role).filter(Role.id == user.role_id).first()
                 role_permissions = role.permissions if role else []
+            user.last_login = datetime.utcnow()
+            db.commit()
         effective_permissions = sorted(set((user.permissions or []) + (role_permissions or [])))
         token = _create_access_token(user.id, user.email, user.role, user.tenant_id)
         return {
@@ -226,6 +227,7 @@ async def auth_login(request: LoginRequest, db: Session = Depends(get_db)):
                 "is_platform_admin": user.is_platform_admin(),
                 "permissions": effective_permissions,
                 "settings": user.settings or {},
+                "last_login": user.last_login.isoformat(),
             },
         }
     except HTTPException:
