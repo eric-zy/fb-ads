@@ -11,7 +11,7 @@
     </div>
 
     <el-card class="card-shadow" shadow="never">
-      <el-alert class="assignment-guide" title="分配给投手：找到广告账户，点击右侧「分配给投手」，勾选用户并指定主投手后保存。查看或移除协作者请点击「已分配用户」。待导入账户需先从 BM 导入。" type="info" :closable="false" show-icon />
+      <el-alert class="assignment-guide" title="勾选账户后可批量添加协作者、变更负责人或设置执行授权；支持跨页选择。只操作一个账户时也请先勾选。待导入账户需先从 BM 导入。" type="info" :closable="false" show-icon />
       <el-alert v-if="pendingScanErrors.length" class="assignment-guide" type="warning" :closable="false" show-icon title="部分 BM 扫描失败，当前待导入列表不完整">
         <div v-for="(item, index) in pendingScanErrors" :key="index">{{ item.business_name }}：{{ item.error }}</div>
       </el-alert>
@@ -46,13 +46,16 @@
       </div>
 
       <div v-if="selected.length" class="bulk-bar">
-        <span class="bulk-tip">已选 {{ selected.length }} 个账户</span>
+        <span class="bulk-tip">已选 {{ selected.length }} 个账户（含跨页选择）</span>
+        <el-button size="small" type="primary" @click="openBulkAssignment('COLLABORATOR')">批量添加协作者</el-button>
+        <el-button size="small" type="primary" plain @click="openBulkAssignment('PRIMARY')">批量变更负责人</el-button>
+        <el-button size="small" type="primary" plain @click="openBulkAssignment('EXECUTION')">批量设置执行授权</el-button>
         <el-button size="small" type="warning" @click="bulkAction('freeze')">批量停用</el-button>
         <el-button size="small" type="success" @click="bulkAction('unfreeze')">批量启用</el-button>
         <el-button size="small" type="primary" @click="openBulkTransfer">批量转移归属</el-button>
         <el-button size="small" type="primary" :loading="syncing" @click="bulkSync">批量同步</el-button>
         <el-button size="small" type="danger" @click="bulkAction('delete')">批量删除</el-button>
-        <el-button size="small" link @click="clearSelection">取消选择</el-button>
+        <el-button size="small" link @click="clearSelection">取消全部选择</el-button>
       </div>
 
       <el-table
@@ -61,9 +64,10 @@
         stripe
         style="width: 100%"
         ref="tableRef"
+        row-key="id"
         @selection-change="onSelectionChange"
       >
-        <el-table-column v-if="assetFilter !== 'PENDING'" type="selection" width="46" />
+        <el-table-column v-if="assetFilter !== 'PENDING'" type="selection" width="46" :reserve-selection="true" />
         <el-table-column prop="account_name" label="账户名" min-width="140" />
         <el-table-column prop="account_id" label="账户 ID" min-width="140" />
         <el-table-column label="归属 BM" min-width="150">
@@ -111,17 +115,21 @@
         <el-table-column label="分配用户" width="90">
           <template #default="{ row }">{{ userCount[row.id] ?? '-' }}</template>
         </el-table-column>
-        <el-table-column v-if="assetFilter !== 'PENDING'" label="操作" width="470" fixed="right">
+        <el-table-column label="负责人 / 协作者" min-width="190"><template #default="{ row }"><div>负责人：{{ accountAssignments[row.id]?.find(x => x.is_primary)?.username || '未分配' }}</div><div class="sub-text">协作者：{{ accountAssignments[row.id]?.filter(x => !x.is_primary).map(x => x.username).join('、') || '-' }}</div></template></el-table-column>
+        <el-table-column label="执行授权" min-width="150"><template #default="{ row }"><div v-for="item in accountAssignments[row.id]" :key="item.user_id" class="sub-text">{{ item.username }} · {{ item.execution_connection_id ? '委派授权' : '本人授权' }}</div></template></el-table-column>
+        <el-table-column v-if="assetFilter !== 'PENDING'" label="操作" width="270" fixed="right">
           <template #default="{ row }">
-            <el-button type="primary" plain size="small" @click="openAssign(row as TableRow<typeof accounts>)">分配给投手</el-button>
             <el-button link type="primary" size="small" @click="goDetail(row as TableRow<typeof accounts>)">详情</el-button>
-            <el-button link type="primary" size="small" @click="openTransfer(row as TableRow<typeof accounts>)">转移归属</el-button>
             <el-button link type="info" size="small" @click="openUsers(row as TableRow<typeof accounts>)">已分配用户</el-button>
-            <el-button link type="warning" size="small" @click="openEdit(row as TableRow<typeof accounts>)">编辑</el-button>
-            <el-button link :type="row.system_status === 'ACTIVE' ? 'danger' : 'success'" size="small" @click="toggleStatus(row as TableRow<typeof accounts>)">
-              {{ row.system_status === 'ACTIVE' ? '停用' : '启用' }}
-            </el-button>
-            <el-button link type="danger" size="small" @click="remove(row as TableRow<typeof accounts>)">删除</el-button>
+            <el-dropdown trigger="click">
+              <el-button link type="primary" size="small">更多</el-button>
+              <template #dropdown><el-dropdown-menu>
+                <el-dropdown-item @click="openTransfer(row as TableRow<typeof accounts>)">转移归属</el-dropdown-item>
+                <el-dropdown-item @click="openEdit(row as TableRow<typeof accounts>)">编辑</el-dropdown-item>
+                <el-dropdown-item @click="toggleStatus(row as TableRow<typeof accounts>)">{{ row.system_status === 'ACTIVE' ? '停用' : '启用' }}</el-dropdown-item>
+                <el-dropdown-item divided @click="remove(row as TableRow<typeof accounts>)">删除</el-dropdown-item>
+              </el-dropdown-menu></template>
+            </el-dropdown>
           </template>
         </el-table-column>
         <el-table-column v-else label="操作" width="150" fixed="right">
@@ -138,6 +146,8 @@
       </el-table>
       <el-pagination v-if="assetFilter !== 'PENDING' && accountTotal > accountPageSize" v-model:current-page="accountPage" :page-size="accountPageSize" :total="accountTotal" layout="total, prev, pager, next" style="justify-content:flex-end;margin-top:16px" @current-change="loadAccounts" />
     </el-card>
+
+    <BulkAccountAssignmentDialog v-model="showBulkAssignment" :accounts="bulkAssignmentAccounts" :action="bulkAssignmentAction" @saved="loadAccounts" />
 
     <!-- 新建/编辑 -->
     <el-dialog v-model="showForm" :title="form.id ? '编辑账户' : '新建账户'" width="480px" destroy-on-close>
@@ -211,50 +221,6 @@
       </template>
     </el-dialog>
 
-    <!-- 分配用户 -->
-    <el-dialog v-model="showAssign" :title="`分配给投手 - ${assignAccount?.account_name || assignAccount?.account_id}`" width="620px" destroy-on-close>
-      <p class="assignment-hint">勾选需要使用此账户的用户，再选择一名主投手。</p>
-      <el-checkbox-group v-model="selectedUsers" class="user-group">
-        <el-checkbox v-for="u in allUsers" :key="u.id" :value="u.id" border class="user-check">
-          {{ u.username }}<span v-if="u.email"> ({{ u.email }})</span>
-        </el-checkbox>
-      </el-checkbox-group>
-      <el-form label-width="128px" class="primary-form">
-        <el-form-item label="主投手">
-          <el-select v-model="primaryUserId" placeholder="选择主投手" style="width: 100%" :disabled="!selectedUsers.length">
-            <el-option v-for="u in allUsers.filter((item) => selectedUsers.includes(item.id))" :key="u.id" :label="u.username" :value="u.id" />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <el-form label-width="128px">
-        <el-form-item label="执行方式">
-          <el-select v-model="executionMode" style="width:100%">
-            <el-option label="保留当前设置" value="KEEP" />
-            <el-option label="本人 Meta 授权" value="PERSONAL" />
-            <el-option label="管理员委派授权" value="DELEGATED" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="executionMode === 'DELEGATED'" label="执行 Meta 授权" required>
-          <el-select v-model="executionConnectionId" style="width:100%" placeholder="选择可操作此账户的有效 Meta 授权">
-            <el-option v-for="item in executionAuthorizations" :key="item.connection_id" :value="item.connection_id" :label="`${item.authorized_by_username} · Meta ${item.meta_user_id} · ${item.page_count} 个可投放 Page`" />
-          </el-select>
-          <p v-if="!executionAuthorizations.length" class="assignment-hint">暂无有效授权，请先接入 Meta 并同步此账户。</p>
-          <p v-else-if="executionAuthorizations.find(item => item.connection_id === executionConnectionId)?.page_count === 0" class="assignment-hint">此授权暂无可投放 Page，新建广告前需由授权人补充 Page 权限并同步。</p>
-        </el-form-item>
-      </el-form>
-      <el-alert class="mb12" :title="executionMode === 'KEEP' ? '保留勾选用户的执行设置；新分配或已失效分配默认要求本人 Meta 授权。' : executionMode === 'PERSONAL' ? '本次勾选用户改为使用本人 Meta 授权，并撤销其在此账户上的委派执行权限。' : '指定授权仅供本次勾选用户操作此广告账户；投手无需重复 OAuth，授权人和原始凭据归属保持不变。'" type="info" :closable="false" show-icon />
-      <el-alert
-        title="主投手负责账户操作；其它已分配用户保留协作权限。保存不会移除未勾选的历史用户。"
-        type="info"
-        :closable="false"
-        show-icon
-      />
-      <template #footer>
-        <el-button @click="showAssign = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="saveAssign">保存分配</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 已分配用户 -->
     <el-dialog v-model="showUsers" :title="`已分配用户 - ${userAccount?.account_name || userAccount?.account_id}`" width="420px" destroy-on-close>
       <el-table :data="assignedList" style="width: 100%">
@@ -290,12 +256,13 @@ import { Plus, Search, Refresh } from '@element-plus/icons-vue'
 import {
   accountApi,
   metaAccountApi,
-  userApi,
   type AdAccountItem,
-  type AdminUser,
   type AccountUser,
   type MetaAccountItem,
+  type BulkAssignmentAction,
 } from '@/api/admin'
+import BulkAccountAssignmentDialog from '@/components/BulkAccountAssignmentDialog.vue'
+import { parseDateTime } from '@/utils/dateTime'
 import { formatMoney, toMajor, toMinor } from '@/utils/money'
 
 const route = useRoute()
@@ -334,17 +301,17 @@ const transferBulk = ref(false)
 const transferTarget = ref<string>('')
 const transferSkipVerify = ref(false)
 
-const showAssign = ref(false)
-const assignAccount = ref<AdAccountItem | null>(null)
-const allUsers = ref<AdminUser[]>([])
-const selectedUsers = ref<string[]>([])
-const primaryUserId = ref('')
-const executionMode = ref<'KEEP' | 'PERSONAL' | 'DELEGATED'>('KEEP')
-const executionConnectionId = ref('')
-const executionAuthorizations = ref<Array<{ connection_id: string; meta_user_id: string; authorized_by_username: string; page_count: number }>>([])
-watch(selectedUsers, (ids) => {
-  if (!ids.includes(primaryUserId.value)) primaryUserId.value = ids[0] || ''
-})
+const showBulkAssignment = ref(false)
+const bulkAssignmentAction = ref<BulkAssignmentAction>('COLLABORATOR')
+const bulkAssignmentAccounts = ref<AdAccountItem[]>([])
+const accountAssignments = ref<Record<string, AccountUser[]>>({})
+function openBulkAssignment(action: BulkAssignmentAction) {
+  if (!selected.value.length) return
+  if (selected.value.length > 100) { ElMessage.warning('每次最多选择 100 个账户'); return }
+  bulkAssignmentAction.value = action
+  bulkAssignmentAccounts.value = [...selected.value]
+  showBulkAssignment.value = true
+}
 
 const showUsers = ref(false)
 const userAccount = ref<AdAccountItem | null>(null)
@@ -388,7 +355,7 @@ async function loadBusinesses() {
   }
 }
 
-function resetAccountPage() { accountPage.value = 1; void loadAccounts() }
+function resetAccountPage() { clearSelection(); accountPage.value = 1; void loadAccounts() }
 let accountRequestNo = 0
 async function loadAccounts() {
   const requestNo = ++accountRequestNo
@@ -418,6 +385,8 @@ async function loadAccounts() {
         currency: row.currency,
       })) as AdAccountItem[]
       userCount.value = {}
+      accountAssignments.value = {}
+      clearSelection()
       accountTotal.value = accounts.value.length
       return
     }
@@ -428,23 +397,26 @@ async function loadAccounts() {
     accountTotal.value = Number(headers['x-total-count'] ?? data.length)
 
     const counts: Record<string, number> = {}
+    const assignments: Record<string, AccountUser[]> = {}
     await Promise.all(
       data.map(async (a) => {
         try {
           const r = await accountApi.users(a.id)
           counts[a.id] = r.data.length
+          assignments[a.id] = (r.data as AccountUser[]).filter(row => row.assignment_status === 'ACTIVE' && (!row.expires_at || (parseDateTime(row.expires_at)?.getTime() || 0) > Date.now()))
         } catch {
           counts[a.id] = 0
         }
       })
     )
-    if (requestNo === accountRequestNo) userCount.value = counts
+    if (requestNo === accountRequestNo) { userCount.value = counts; accountAssignments.value = assignments }
   } catch (e: any) {
     if (requestNo === accountRequestNo) {
       accounts.value = []
       userCount.value = {}
-      accountTotal.value = 0
+      accountAssignments.value = {}
       clearSelection()
+      accountTotal.value = 0
     }
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   } finally {
@@ -462,6 +434,7 @@ function onSelectionChange(rows: AdAccountItem[]) {
   selected.value = rows
 }
 function clearSelection() {
+  selected.value = []
   tableRef.value?.clearSelection()
 }
 
@@ -689,58 +662,6 @@ async function remove(a: AdAccountItem) {
   }
 }
 
-async function openAssign(a: AdAccountItem) {
-  assignAccount.value = a
-  selectedUsers.value = []
-  primaryUserId.value = ''
-  executionMode.value = 'KEEP'
-  executionConnectionId.value = ''
-  executionAuthorizations.value = []
-  try {
-    const [users, { data: assigned }, { data: authorizations }] = await Promise.all([
-      userApi.listAll(),
-      accountApi.users(a.id),
-      accountApi.executionAuthorizations(a.id),
-    ])
-    allUsers.value = users
-    executionAuthorizations.value = authorizations.items || []
-    const activeAssigned = (assigned as AccountUser[]).filter((row) => row.assignment_status === 'ACTIVE')
-    selectedUsers.value = activeAssigned.map((row) => row.user_id)
-    primaryUserId.value = activeAssigned.find((row) => row.is_primary)?.user_id || ''
-  } catch (e: any) {
-    // 错误已由 utils/request.ts 全局拦截器弹框提示
-    return
-  }
-  showAssign.value = true
-}
-async function saveAssign() {
-  if (!assignAccount.value || selectedUsers.value.length === 0) {
-    ElMessage.warning('请选择至少一个用户')
-    return
-  }
-  if (executionMode.value === 'DELEGATED' && !executionConnectionId.value) {
-    ElMessage.warning('请选择执行 Meta 授权')
-    return
-  }
-  saving.value = true
-  try {
-    await withAccountLeases([assignAccount.value.id], 'ACCOUNT_ASSIGNMENT', tokens => accountApi.assign(
-      assignAccount.value!.id,
-      selectedUsers.value,
-      selectedUsers.value.includes(primaryUserId.value) ? primaryUserId.value : selectedUsers.value[0],
-      tokens[assignAccount.value!.id],
-      executionMode.value === 'KEEP' ? undefined : executionMode.value === 'PERSONAL' ? null : executionConnectionId.value,
-    ))
-    showAssign.value = false
-    ElMessage.success('广告账户已分配给投手')
-    await loadAccounts()
-  } catch (e: any) {
-    // 错误已由 utils/request.ts 全局拦截器弹框提示
-  } finally {
-    saving.value = false
-  }
-}
-
 async function openUsers(a: AdAccountItem) {
   userAccount.value = a
   try {
@@ -770,6 +691,7 @@ async function setPrimaryUser(u: AccountUser) {
     await withAccountLeases([userAccount.value.id], 'ACCOUNT_ASSIGNMENT', tokens => accountApi.setPrimary(userAccount.value!.id, u.user_id, tokens[userAccount.value!.id]))
     const { data } = await accountApi.users(userAccount.value.id)
     assignedList.value = data
+    await loadAccounts()
   } catch (e: any) {
     // 错误已由 utils/request.ts 全局拦截器弹框提示
   }
@@ -787,7 +709,6 @@ onMounted(async () => {
 
 <style scoped>
 .assignment-guide { margin-bottom: 16px; }
-.assignment-hint { margin: 0 0 16px; color: var(--el-text-color-secondary); }
 .bulk-bar {
   display: flex;
   align-items: center;
@@ -821,22 +742,10 @@ onMounted(async () => {
 .status-dot.off {
   background: var(--danger);
 }
-.user-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.user-check {
-  width: 100%;
-  margin-right: 0;
-}
 .form-hint {
   margin-left: 10px;
   font-size: 12px;
   color: #909399;
-}
-.primary-form {
-  margin-top: 16px;
 }
 .mb12 {
   margin-bottom: 12px;

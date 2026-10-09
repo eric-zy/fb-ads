@@ -6,13 +6,12 @@ const baseURL = process.env.UI_TEST_BASE_URL || 'http://127.0.0.1:4178'
 const admin = { id: 'nav-admin', username: '测试管理员', role: 'tenant_admin', tenant_id: 'tenant-one', permissions: [], settings: {} }
 const publisher = { id: 'nav-publisher', username: '测试投手', role: 'user', tenant_id: 'tenant-one', permissions: [], settings: {} }
 const account = { id: 'nav-account', account_id: 'act_123', account_name: '分配测试账户', system_status: 'ACTIVE', account_status: '1', risk_score: 0, currency: 'USD' }
-let assignments = [
+const assignments = [
   { user_id: admin.id, username: admin.username, assignment_status: 'ACTIVE', is_primary: true },
   { user_id: publisher.id, username: publisher.username, assignment_status: 'ACTIVE', is_primary: false },
 ]
 const calls = []
 const errors = []
-let failAssign = true
 let failPending = true
 let lastPage
 
@@ -54,11 +53,6 @@ async function main() {
         ])
         if (path === `/accounts/${account.id}/users`) return respond(assignments)
         if (path.endsWith('/operation-lease')) return respond({ lease: { lease_token: 'mock-assignment-lease' } })
-        if (path.endsWith('/assign')) {
-          if (failAssign) return respond({ detail: '模拟账户分配失败' }, 500)
-          assignments = body.user_ids.map(id => ({ user_id: id, username: id === publisher.id ? publisher.username : admin.username, assignment_status: 'ACTIVE', is_primary: id === body.primary_user_id }))
-          return respond({ success: true })
-        }
         if (path === '/sinan/status') return respond({ verified: false })
         if (path.includes('notifications')) return respond({ total: 0, items: [] })
         if (path === '/workbench/summary') return respond({
@@ -79,31 +73,13 @@ async function main() {
     await page.waitForURL('**/admin/dashboard')
     await page.getByRole('button', { name: '分配广告账户给投手', exact: true }).click()
     await page.waitForURL('**/admin/accounts')
-    await page.getByRole('button', { name: '分配给投手', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '分配给投手 - 分配测试账户' })
-    await dialog.waitFor()
-    await dialog.locator('.el-checkbox').filter({ hasText: admin.username }).click()
-    assert.equal(await dialog.getByRole('checkbox', { name: admin.username, exact: true }).isChecked(), false)
-    await dialog.locator('.primary-form .el-select').getByText(publisher.username, { exact: true }).waitFor()
-    await dialog.getByRole('button', { name: '保存分配', exact: true }).click()
-    await page.waitForFunction(() => [...document.querySelectorAll('.el-dialog button')].some(button => button.textContent.includes('保存分配') && !button.disabled))
-    assert.equal(await dialog.isVisible(), true)
-    assert.equal(await page.getByText('广告账户已分配给投手', { exact: true }).count(), 0)
-    failAssign = false
-    await dialog.getByRole('button', { name: '保存分配', exact: true }).click()
-    await dialog.waitFor({ state: 'hidden' })
-    await page.getByText('广告账户已分配给投手', { exact: true }).waitFor()
-    const assign = calls.filter(call => call.path.endsWith('/assign')).at(-1)
-    assert.deepEqual(assign.body.user_ids, [publisher.id])
-    assert.equal(assign.body.primary_user_id, publisher.id)
-    assert.equal(assign.body.lease_token, 'mock-assignment-lease')
-    assert(calls.some(call => call.path.endsWith('/operation-lease') && call.method === 'POST' && call.body.operation_type === 'ACCOUNT_ASSIGNMENT'))
-    assert(calls.some(call => call.path.endsWith('/operation-lease') && call.method === 'DELETE'))
+    assert.equal(await page.getByRole('button', { name: '分配给投手', exact: true }).count(), 0)
+    await page.locator('.el-table__body tr').first().locator('.el-checkbox').click()
+    await page.getByRole('button', { name: '批量添加协作者', exact: true }).waitFor()
     await page.getByRole('button', { name: '已分配用户', exact: true }).click()
     await page.getByRole('dialog').getByText(publisher.username, { exact: true }).waitFor()
-    await page.getByRole('dialog').getByText('主投手', { exact: true }).waitFor()
     await page.getByRole('dialog').getByRole('button', { name: '关闭', exact: true }).click()
-    console.log('PASS assignment: discoverable entry, failed save stays open, selected primary and operation lease submitted')
+    console.log('PASS assignment navigation: unified bulk entry and assigned-user information are discoverable')
 
     await page.getByText('待导入', { exact: true }).click()
     await page.waitForFunction(() => !document.querySelector('.el-loading-mask'))

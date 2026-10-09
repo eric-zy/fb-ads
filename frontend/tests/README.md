@@ -20,3 +20,5 @@ npm run preview -- --host 127.0.0.1 --port 4178
 报表同步专项回归：`node tests/report-sync-smoke.cjs`，覆盖 90 天同步、等待任务结果、业务失败提示、所选日期回补、窗口覆盖和 Meta ID 展示。
 
 删除专项回归：`node tests/campaign-delete-smoke.cjs`，覆盖删除范围确认、取消、结果不确定时只读对账、失败重试与复制重新创建。
+
+账户批量分配回归：`node tests/bulk-account-assignment-smoke.cjs`，覆盖统一批量入口、跨页勾选、委派授权自动填充、修改配置后重新预览、部分成功与失败项重试、负责人交接和取消选择。单账户委派与撤销、投手 Page 范围回归：`node tests/delegated-meta-execution-smoke.cjs`。

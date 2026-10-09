@@ -44,6 +44,10 @@ export interface AccountUser {
   is_primary?: boolean
 }
 export interface ExecutionAuthorization { connection_id: string; meta_user_id: string; authorized_by_username: string; health: string; page_count: number; expires_at?: string | null }
+export type BulkAssignmentAction = 'COLLABORATOR' | 'PRIMARY' | 'EXECUTION'
+export interface BulkAssignmentConfig { account_ids: string[]; user_ids: string[]; action: BulkAssignmentAction; primary_user_id?: string; execution_mode: 'KEEP' | 'PERSONAL' | 'DELEGATED'; execution_connection_id?: string; execution_overrides: Record<string, string>; preserve_existing_execution: boolean }
+export interface AssignmentContextItem { account_id: string; account_name: string; error?: string | null; candidates: ExecutionAuthorization[]; assignments: Array<{ user_id: string; username: string; assignment_role: string; effective: boolean; execution_connection_id?: string | null }> }
+export interface BulkAssignmentResult { account_id: string; account_name: string; status: 'READY' | 'BLOCKED' | 'SUCCESS' | 'FAILED'; error?: string; primary_label?: string; primary_changed?: boolean; assignments?: Array<{ user_id: string; username: string; execution_connection_id?: string | null; execution_label: string }>; warnings?: string[]; preview_hash?: string; replayed?: boolean }
 export const accountApi = {
   list: (params?: { search?: string; system_status?: string; account_status?: string; business_id?: string; page?: number; page_size?: number }) => request.get<AdAccountItem[]>('/api/v1/accounts', { params }),
   listAll: async () => {
@@ -67,6 +71,9 @@ export const accountApi = {
   availableForDeployment: (params?: { business_id?: string; allow_paused_debug?: boolean }) => request.get('/api/v1/accounts/available-for-deployment', { params }),
   rateLimitStatus: (id: string) => request.get('/api/v1/accounts/' + id + '/rate-limit-status'),
   assign: (id: string, user_ids: string[], primary_user_id: string | undefined, lease_token: string, execution_connection_id?: string | null) => request.post('/api/v1/accounts/' + id + '/assign', { user_ids, primary_user_id, lease_token, ...(execution_connection_id !== undefined ? { execution_connection_id } : {}) }),
+  assignmentContext: (account_ids: string[]) => request.post<{ items: AssignmentContextItem[]; users: Array<{ id: string; username: string }> }>('/api/v1/accounts/bulk-assignment/context', { account_ids }),
+  previewAssignment: (data: BulkAssignmentConfig) => request.post<{ items: BulkAssignmentResult[]; ready_count: number; blocked_count: number }>('/api/v1/accounts/bulk-assignment/preview', data),
+  submitAssignment: (data: BulkAssignmentConfig & { idempotency_key: string; preview_hashes: Record<string, string> }) => request.post<{ items: BulkAssignmentResult[]; success_count: number; failed_count: number }>('/api/v1/accounts/bulk-assignment/submit', data),
   executionAuthorizations: (id: string) => request.get<{ items: ExecutionAuthorization[] }>(`/api/v1/accounts/${id}/execution-authorizations`),
   unassign: (id: string, user_ids: string[], lease_token: string) => request.post('/api/v1/accounts/' + id + '/unassign', { user_ids, lease_token }),
   setPrimary: (id: string, user_id: string, lease_token: string) => request.post('/api/v1/accounts/' + id + '/primary', { user_id, lease_token }),

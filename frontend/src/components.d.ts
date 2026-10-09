@@ -7,6 +7,7 @@ export {}
 
 declare module 'vue' {
   export interface GlobalComponents {
+    BulkAccountAssignmentDialog: typeof import('./components/BulkAccountAssignmentDialog.vue')['default']
     DateRangeFields: typeof import('./components/DateRangeFields.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElAside: typeof import('element-plus/es')['ElAside']

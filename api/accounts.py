@@ -47,6 +47,10 @@ from services.account_operation_lease import (
 from services.business_access import account_ids_for_action, require_accounts, tenant_required
 from config.settings import settings
 from tasks.meta_sync_tasks import sync_ad_account_task
+from services.bulk_account_assignment import (
+    AssignmentContextRequest, BulkAssignmentRequest, BulkAssignmentSubmit,
+    assignment_context, assignment_preview, assignment_submit,
+)
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["账户管理"])
 
@@ -999,6 +1003,21 @@ def unfreeze_account(
     a.system_status_at = datetime.utcnow()
     db.commit()
     return account_to_dict(a)
+
+
+@router.post("/bulk-assignment/context")
+def bulk_assignment_context(payload: AssignmentContextRequest, current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return assignment_context(db, current_user, payload)
+
+
+@router.post("/bulk-assignment/preview")
+def bulk_assignment_preview(payload: BulkAssignmentRequest, current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return assignment_preview(db, current_user, payload)
+
+
+@router.post("/bulk-assignment/submit")
+def bulk_assignment_submit(payload: BulkAssignmentSubmit, current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return assignment_submit(db, current_user, payload)
 
 
 @router.post("/{account_pk}/assign", response_model=dict)
