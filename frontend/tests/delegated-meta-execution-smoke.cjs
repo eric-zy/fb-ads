@@ -10,6 +10,7 @@ const connection = { id: 'connection', meta_user_id: 'fb-owner', app_id: 'app', 
 const calls = []
 const errors = []
 let revoked = false
+let adminMissingExecution = false
 
 async function main() {
   const browser = await chromium.launch({ executablePath: process.env.UI_TEST_BROWSER_PATH || undefined, headless: true })
@@ -38,7 +39,7 @@ async function main() {
         if (path === '/accounts/bulk-assignment/context') return respond({ users: [publisher], items: [{ account_id: account.id, account_name: account.account_name, assignments: [], candidates: [{ connection_id: connection.id, meta_user_id: connection.meta_user_id, authorized_by_username: connection.authorized_by_username, page_count: 1 }] }] })
         if (path === '/accounts/bulk-assignment/preview') return respond({ items: [{ account_id: account.id, account_name: account.account_name, status: 'READY', preview_hash: 'mock-preview', primary_label: publisher.username, assignments: [{ user_id: publisher.id, username: publisher.username, execution_label: '授权管理员' }] }], ready_count: 1, blocked_count: 0 })
         if (path === '/accounts/bulk-assignment/submit') return respond({ items: [{ account_id: account.id, account_name: account.account_name, status: 'SUCCESS', primary_label: publisher.username }], success_count: 1, failed_count: 0 })
-        if (path === '/accounts') return respond([account])
+        if (path === '/accounts') return respond([adminMissingExecution && user.id === admin.id ? { ...account, is_deployable: false, availability_reason: '账户没有有效执行授权，请本人授权，或请管理员指定该账户的委派授权' } : account])
         if (path === '/accounts/available-for-deployment') return respond({ accounts: [account], total: 1 })
         if (path.startsWith('/users/') && path.endsWith('/accounts')) return respond({ accounts: [account] })
         if (path === '/meta-connections') return respond(url.searchParams.get('scope') === 'delegated' ? [connection] : [])
@@ -67,18 +68,29 @@ async function main() {
     await dialog.getByText(/授权管理员 · Meta fb-owner/).first().waitFor()
     fs.mkdirSync('test-results', { recursive: true })
     await dialog.screenshot({ path: 'test-results/admin-delegated-execution.png' })
-    await dialog.getByRole('button', { name: '预览分配', exact: true }).click()
-    await dialog.getByRole('button', { name: '保存分配（1）', exact: true }).click()
+    await dialog.getByRole('button', { name: '下一步：核对变更', exact: true }).click()
+    await dialog.getByRole('button', { name: '确认分配（1 个账户）', exact: true }).click()
     await dialog.getByRole('button', { name: '完成', exact: true }).click()
     await dialog.waitFor({ state: 'hidden' })
     assert.equal(calls.filter(x => x.path.endsWith('/bulk-assignment/submit')).at(-1).body.execution_connection_id, connection.id)
     dialog = await open()
-    await dialog.locator('.el-radio').filter({ hasText: '本人 Meta 授权' }).click()
-    await dialog.getByRole('button', { name: '预览分配', exact: true }).click()
-    await dialog.getByRole('button', { name: '保存分配（1）', exact: true }).click()
+    await dialog.locator('.el-radio').filter({ hasText: '投手使用自己的 Meta 授权' }).click()
+    await dialog.getByRole('button', { name: '下一步：核对变更', exact: true }).click()
+    await dialog.getByRole('button', { name: '确认分配（1 个账户）', exact: true }).click()
     await dialog.getByRole('button', { name: '完成', exact: true }).click()
     await dialog.waitFor({ state: 'hidden' })
     assert.equal(calls.filter(x => x.path.endsWith('/bulk-assignment/submit')).at(-1).body.execution_mode, 'PERSONAL')
+
+    adminMissingExecution = true
+    await adminPage.goto(`${baseURL}/dashboard/accounts`)
+    await adminPage.getByRole('button', { name: '设置执行授权', exact: true }).waitFor()
+    assert.equal(await adminPage.locator('.stats-grid .el-card').filter({ has: adminPage.getByText('待同步', { exact: true }) }).locator('.stat-value').innerText(), '0')
+    await adminPage.getByRole('button', { name: '设置执行授权', exact: true }).click()
+    await adminPage.waitForURL('**/admin/accounts?search=act_1')
+    await adminPage.getByPlaceholder('搜索账户名 / ID', { exact: true }).waitFor()
+    assert.equal(await adminPage.getByPlaceholder('搜索账户名 / ID', { exact: true }).inputValue(), account.account_id)
+    assert(calls.some(x => x.path === '/accounts' && new URLSearchParams(x.query).get('search') === account.account_id))
+    adminMissingExecution = false
 
     const page = await createPage(publisher)
     await page.goto(`${baseURL}/dashboard/meta-connections`)

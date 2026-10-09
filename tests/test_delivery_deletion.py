@@ -53,6 +53,33 @@ def execute(row):
     return meta_sync_tasks.update_delivery_object_task.run.__wrapped__(SimpleNamespace(), row.object_type, row.object_id, row.account_id, row.action, row.id)
 
 
+def test_delivery_sync_replaces_technical_names_and_preserves_archived_state(db, monkeypatch, context):
+    _, account, campaign, adset, ad, _ = context
+    campaign.name = "旧系列名称"
+    adset.name = "adset-1"
+    ad.name = "ad-1-1"
+    ad.status = "ARCHIVED"
+    db.commit()
+    connector = SimpleNamespace(
+        list_campaigns=lambda *args: {"campaigns": [{"id": "1001", "name": "远端系列", "status": "PAUSED"}]},
+        list_adsets=lambda *args: {"adsets": [{"id": "1002", "name": "US 广告组", "status": "PAUSED"}]},
+        list_ads=lambda *args: {"ads": [{"id": "1003", "name": "广告完整名称", "status": "PAUSED"}]},
+    )
+    monkeypatch.setattr(meta_sync_tasks, "FBConnectorClient", lambda: connector)
+    monkeypatch.setattr(meta_sync_tasks, "SessionLocal", lambda: db)
+    monkeypatch.setattr(db, "close", lambda: None)
+    monkeypatch.setattr("services.report_sync.FBConnectorClient", lambda: connector)
+    monkeypatch.setattr("services.report_sync.CredentialResolver", meta_sync_tasks.CredentialResolver)
+    result = meta_sync_tasks.sync_delivery_objects_task.run.__wrapped__(SimpleNamespace(), account.id)
+    assert result["status"] == "success"
+    assert campaign.name == "远端系列" and adset.name == "US 广告组" and ad.name == "广告完整名称"
+    assert ad.status == "ARCHIVED"
+    # A partial response must not blank names or replace them with an internal key.
+    connector.list_ads = lambda *args: {"ads": [{"id": "1003", "status": "PAUSED"}]}
+    meta_sync_tasks.sync_delivery_objects_task.run.__wrapped__(SimpleNamespace(), account.id)
+    assert ad.name == "广告完整名称"
+
+
 @pytest.mark.parametrize("object_type", ["CAMPAIGN", "ADSET", "AD"])
 def test_real_delete_marks_state_only_after_meta_ack(db, monkeypatch, context, object_type):
     row = submit(db, context, object_type)

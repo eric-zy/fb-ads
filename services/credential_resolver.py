@@ -34,7 +34,7 @@ class CredentialResolver:
             q = self.db.query(MetaConnection).filter(MetaConnection.id.in_([g.connection_id for g in grants if g.status == "ACTIVE"]))
             actor = self.db.query(User).filter_by(id=actor_id).first() if actor_id else None
             delegated_id = None
-            if actor and not actor.is_admin():
+            if actor:
                 from services.meta_execution_access import delegated_connection_id
                 delegated_id = delegated_connection_id(self.db, actor, account)
             if actor and not connection_id:

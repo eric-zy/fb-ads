@@ -140,6 +140,7 @@ def preview_account(db, actor, request, account):
             "execution_label": f'{source["authorized_by_username"]} · Meta {source["meta_user_id"]}' if source else "已有委派失效" if connection_id else "本人 Meta 授权"})
     return {"account_id": account.id, "account_name": account.account_name or account.account_id,
         "status": "READY", "old_primary_user_id": old_primary, "primary_user_id": primary,
+        "old_primary_label": names.get(old_primary, "未分配"),
         "primary_label": names.get(primary, "无负责人"), "primary_changed": primary != old_primary,
         "assignments": assignments, "warnings": list(dict.fromkeys(warnings)),
         "preview_hash": _digest({"signature": signature, "state": _state(rows), "candidates": candidates})}

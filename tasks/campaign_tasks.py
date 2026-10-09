@@ -120,6 +120,56 @@ def _resolve_adset_for_remote_ad(
     return ordered_adsets[0] if len(ordered_adsets) == 1 else None
 
 
+def _store_connector_instances(db, instance, objects, protocol_payload):
+    """Use the submitted names, never technical correlation keys as display names."""
+    requested_sets = {
+        str(row["client_key"]): row for row in protocol_payload.get("adsets", [])
+        if row.get("client_key")
+    }
+    requested_ads = {
+        str(ad["client_key"]): ad
+        for row in protocol_payload.get("adsets", [])
+        for creative in row.get("creatives", [])
+        for ad in creative.get("ads", [])
+        if ad.get("client_key")
+    }
+    requested_ads.update({str(ad["client_key"]): ad for ad in protocol_payload.get("ads", []) if ad.get("client_key")})
+
+    def display_name(remote, requested, kind):
+        snapshot = requested.get(str(remote.get("client_key") or ""), {})
+        return remote.get("name") or snapshot.get("name") or f"{kind} {remote.get('id') or '未命名'}"
+
+    adsets_by_key = {}
+    adsets_by_id = {}
+    ordered_adsets = []
+    for remote in objects.get("adsets", []):
+        name = display_name(remote, requested_sets, "AdSet")
+        row = db.query(AdSetInstance).filter_by(campaign_instance_id=instance.id, meta_adset_id=remote.get("id")).first()
+        if not row:
+            row = AdSetInstance(id=uuid.uuid4().hex, tenant_id=instance.tenant_id,
+                campaign_instance_id=instance.id, meta_adset_id=remote.get("id"), name=name, status="PAUSED")
+            db.add(row)
+        elif not row.name or row.name == remote.get("client_key"):
+            row.name = name
+        ordered_adsets.append(row)
+        if remote.get("client_key"):
+            adsets_by_key[str(remote["client_key"])] = row
+        if remote.get("id"):
+            adsets_by_id[str(remote["id"])] = row
+    for remote in objects.get("ads", []):
+        adset = _resolve_adset_for_remote_ad(remote, adsets_by_id=adsets_by_id,
+            adsets_by_key=adsets_by_key, ordered_adsets=ordered_adsets)
+        if not adset:
+            raise RuntimeError("Connector 返回广告缺少可确认的父广告组: " + str(remote.get("client_key") or remote.get("id")))
+        name = display_name(remote, requested_ads, "Ad")
+        row = db.query(AdInstance).filter_by(adset_instance_id=adset.id, meta_ad_id=remote.get("id")).first()
+        if not row:
+            db.add(AdInstance(id=uuid.uuid4().hex, tenant_id=instance.tenant_id,
+                adset_instance_id=adset.id, meta_ad_id=remote.get("id"), name=name, status="PAUSED"))
+        elif not row.name or row.name == remote.get("client_key"):
+            row.name = name
+
+
 @shared_task(
     bind=True,
     name="campaign.poll_connector_deployment",
@@ -261,6 +311,7 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
         if not instance:
             instance = CampaignInstance(
                 id=uuid.uuid4().hex,
+                tenant_id=item.tenant_id,
                 template_id=template_id,
                 ad_account_id=item.ad_account_id,
                 meta_campaign_id=item.meta_campaign_id,
@@ -275,30 +326,7 @@ def poll_connector_deployment_task(self, job_item_id: str) -> Dict[str, Any]:
             if not instance.name:
                 instance.name = campaign_name
         item.campaign_instance_id = instance.id
-        adsets_by_key = {}
-        adsets_by_id = {}
-        ordered_adsets = []
-        for pos, remote in enumerate(objects.get("adsets", []), 1):
-            row = AdSetInstance(id=uuid.uuid4().hex, campaign_instance_id=instance.id, meta_adset_id=remote.get("id"), name=remote.get("client_key") or f"AdSet {pos}", status="PAUSED")
-            db.add(row)
-            ordered_adsets.append(row)
-            if remote.get("client_key"):
-                adsets_by_key[str(remote["client_key"])] = row
-            if remote.get("id"):
-                adsets_by_id[str(remote["id"])] = row
-        for pos, remote in enumerate(objects.get("ads", []), 1):
-            adset = _resolve_adset_for_remote_ad(
-                remote,
-                adsets_by_id=adsets_by_id,
-                adsets_by_key=adsets_by_key,
-                ordered_adsets=ordered_adsets,
-            )
-            if not adset:
-                raise RuntimeError(
-                    "Connector 返回广告缺少可确认的父广告组: "
-                    f"{remote.get('client_key') or remote.get('id') or pos}"
-                )
-            db.add(AdInstance(id=uuid.uuid4().hex, adset_instance_id=adset.id, meta_ad_id=remote.get("id"), name=remote.get("client_key") or f"Ad {pos}", status="PAUSED"))
+        _store_connector_instances(db, instance, objects, protocol_payload)
         template = item.job.template if item.job else None
         record_template_usage(
             db,

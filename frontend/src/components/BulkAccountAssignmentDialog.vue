@@ -3,40 +3,62 @@
     <div v-loading="loading">
       <template v-if="!results.length">
         <el-form label-width="120px" class="bulk-assignment-form" :disabled="saving || loading || previewing">
-          <el-form-item label="目标投手" required>
+          <el-form-item v-if="action !== 'PRIMARY'" label="目标投手" required>
             <el-select v-model="config.user_ids" multiple filterable placeholder="搜索并选择投手" style="width:100%">
               <el-option v-for="user in users" :key="user.id" :label="user.username" :value="user.id" />
             </el-select>
           </el-form-item>
           <el-form-item v-if="action === 'PRIMARY'" label="新负责人" required>
-            <el-select v-model="config.primary_user_id" placeholder="选择一名负责人" style="width:100%">
-              <el-option v-for="user in users.filter(u => config.user_ids.includes(u.id))" :key="user.id" :label="user.username" :value="user.id" />
+            <el-select v-model="config.primary_user_id" filterable placeholder="搜索并选择新负责人" style="width:100%">
+              <el-option v-for="user in users" :key="user.id" :label="user.username" :value="user.id" />
             </el-select>
+          </el-form-item>
+          <el-form-item v-if="action === 'PRIMARY'" label="协作者">
+            <el-checkbox v-model="includeCollaborators">同时添加协作者</el-checkbox>
+            <el-select v-if="includeCollaborators" v-model="collaboratorIds" popper-class="bulk-collaborator-options" multiple filterable placeholder="可选，选择要新增的协作者" style="width:100%">
+              <el-option v-for="user in users.filter(u => u.id !== config.primary_user_id)" :key="user.id" :label="user.username" :value="user.id" />
+            </el-select>
+            <div class="hint">原负责人自动转为协作者，其他已分配用户保留。</div>
           </el-form-item>
           <el-form-item label="执行授权">
             <el-radio-group v-model="config.execution_mode">
-              <el-radio v-if="action !== 'EXECUTION'" value="KEEP">保留现有设置</el-radio>
-              <el-radio value="PERSONAL">本人 Meta 授权</el-radio>
-              <el-radio value="DELEGATED">管理员委派</el-radio>
+              <el-radio v-if="action !== 'EXECUTION'" value="KEEP">不修改当前授权</el-radio>
+              <el-radio value="PERSONAL">投手使用自己的 Meta 授权</el-radio>
+              <el-radio value="DELEGATED">使用已接入的 Meta 授权</el-radio>
             </el-radio-group>
           </el-form-item>
           <template v-if="config.execution_mode === 'DELEGATED'">
-            <el-form-item label="统一委派授权">
-              <el-select v-model="config.execution_connection_id" clearable filterable placeholder="统一设置，或在下面按账户选择" style="width:100%">
+            <el-form-item label="这批账户的授权">
+              <div v-if="commonCandidates.length === 1" class="authorization-summary">
+                {{ authorizationLabel(commonCandidates[0]) }}<el-tag size="small" :type="commonCandidates[0].health?.startsWith('EXPIRING') ? 'warning' : 'success'">{{ commonCandidates[0].health?.startsWith('EXPIRING') ? '授权即将到期' : '授权有效' }}</el-tag>
+                <div class="hint">已自动匹配唯一可用授权；投手通过此授权操作所选账户。</div>
+              </div>
+              <el-select v-else-if="commonCandidates.length > 1" v-model="config.execution_connection_id" popper-class="bulk-execution-options" clearable filterable placeholder="选择这批账户使用的授权" style="width:100%">
                 <el-option v-for="item in commonCandidates" :key="item.connection_id" :label="authorizationLabel(item)" :value="item.connection_id" />
               </el-select>
-              <div class="hint">{{ commonCandidates.length ? '只展示能操作全部所选账户的授权；下方可为个别账户调整。' : '没有能覆盖全部账户的共同授权，请在下方逐账户选择。' }}</div>
+              <div v-else class="hint">没有覆盖全部账户的共同授权，请在下方按账户设置。没有候选授权的账户需先接入并同步。</div>
+              <div v-if="commonCandidates.length > 1" class="hint">仅列出可操作全部所选账户的有效授权。</div>
             </el-form-item>
-            <el-form-item label="已有有效委派"><el-switch v-model="config.preserve_existing_execution" active-text="保留" inactive-text="覆盖" /></el-form-item>
+            <el-form-item label="已有委派处理">
+              <el-radio-group v-model="config.preserve_existing_execution">
+                <el-radio :value="true">已有有效委派保持不变</el-radio>
+                <el-radio :value="false">所选投手统一改用本次授权</el-radio>
+              </el-radio-group>
+              <div class="hint">仅影响本次所选投手，实际使用的授权会显示在核对结果中。</div>
+            </el-form-item>
+            <el-form-item v-if="config.account_ids.length > 1 && commonCandidates.length" label="高级设置">
+              <el-checkbox v-model="perAccount">按账户单独设置</el-checkbox>
+            </el-form-item>
           </template>
         </el-form>
         <el-alert :title="action === 'COLLABORATOR' ? '添加协作者，保留原负责人和其他用户；账户没有有效负责人时，将在预览中指定一名目标投手。' : action === 'PRIMARY' ? '将所选账户交给新负责人，原负责人转为协作者，其他用户保留。' : '只更新目标投手已有分配的执行授权；尚未分配或只有只读权限的账户需先添加协作者。'" type="info" :closable="false" show-icon />
         <el-table :data="context" class="assignment-table" max-height="300">
           <el-table-column prop="account_name" label="账户" min-width="170" show-overflow-tooltip />
           <el-table-column label="当前负责人" width="140"><template #default="{ row }">{{ row.assignments.find((a: any) => a.effective && a.assignment_role === 'PRIMARY')?.username || '未分配' }}</template></el-table-column>
-          <el-table-column v-if="config.execution_mode === 'DELEGATED'" label="账户授权例外" min-width="310">
+          <el-table-column v-if="showPerAccount" label="该账户使用的授权" min-width="310">
             <template #default="{ row }">
-              <el-select v-model="config.execution_overrides[row.account_id]" clearable filterable :disabled="!!row.error || saving || previewing || loading" :placeholder="config.execution_connection_id ? '使用统一授权' : '选择有效执行授权'" style="width:100%">
+              <div v-if="row.candidates.length === 1">{{ authorizationLabel(row.candidates[0]) }}<div class="hint">唯一可用授权，已自动匹配</div></div>
+              <el-select v-else-if="row.candidates.length > 1" v-model="config.execution_overrides[row.account_id]" :popper-class="`bulk-account-options-${row.account_id}`" clearable filterable :disabled="!!row.error || saving || previewing || loading" :placeholder="config.execution_connection_id ? '使用这批账户的授权' : '选择有效执行授权'" style="width:100%">
                 <el-option v-for="item in row.candidates" :key="item.connection_id" :label="authorizationLabel(item)" :value="item.connection_id" />
               </el-select>
               <span v-if="!row.candidates.length" class="error">无有效候选，请先接入并同步账户</span>
@@ -47,9 +69,9 @@
         <el-alert v-if="preview.length" :title="`可保存 ${ready.length} 个，需处理 ${preview.length - ready.length} 个；仅保存通过账户，其他账户保持原设置。`" :type="ready.length === preview.length ? 'success' : 'warning'" :closable="false" show-icon />
         <el-table v-if="preview.length" :data="preview" class="assignment-table" max-height="320">
           <el-table-column prop="account_name" label="变更预览 / 账户" min-width="160" />
-          <el-table-column label="负责人" width="140"><template #default="{ row }">{{ row.primary_label || '-' }}<el-tag v-if="row.primary_changed" size="small" type="warning">变更</el-tag></template></el-table-column>
+          <el-table-column label="负责人变更" min-width="180"><template #default="{ row }"><template v-if="row.primary_changed">{{ row.old_primary_label || '未分配' }} → {{ row.primary_label }}<div v-if="row.old_primary_user_id" class="hint">原负责人转为协作者</div></template><template v-else>{{ row.primary_label || '-' }}（保持不变）</template></template></el-table-column>
           <el-table-column label="目标投手 / 执行授权" min-width="280"><template #default="{ row }"><div v-for="item in row.assignments" :key="item.user_id">{{ item.username }}：{{ item.execution_label }}</div></template></el-table-column>
-          <el-table-column label="校验结果" min-width="220"><template #default="{ row }"><span v-if="row.error" class="error">{{ row.error }}</span><template v-else><el-tag type="success" size="small">可保存</el-tag><div v-for="warning in row.warnings" :key="warning" class="hint">{{ warning }}</div></template></template></el-table-column>
+          <el-table-column label="校验结果" min-width="220"><template #default="{ row }"><span v-if="row.error" class="error">{{ row.error }}</span><div v-else><el-tag type="success" size="small">可保存</el-tag><div v-for="warning in row.warnings" :key="warning" class="hint">{{ warning }}</div></div></template></el-table-column>
         </el-table>
       </template>
       <template v-else>
@@ -64,8 +86,9 @@
     <template #footer>
       <el-button :disabled="saving" @click="visible = false">{{ results.length ? '完成' : '取消' }}</el-button>
       <template v-if="!results.length">
-        <el-button :disabled="loading || saving" :loading="previewing" @click="makePreview">预览分配</el-button>
-        <el-button type="primary" :disabled="!ready.length || loading || previewing" :loading="saving" @click="submit">{{ ready.length < preview.length ? `仅保存通过账户（${ready.length}）` : `保存分配（${ready.length}）` }}</el-button>
+        <el-button v-if="preview.length" :disabled="loading || saving" :loading="previewing" @click="makePreview">重新核对</el-button>
+        <el-button v-if="!preview.length" type="primary" :disabled="loading || saving" :loading="previewing" @click="makePreview">下一步：核对变更</el-button>
+        <el-button v-else type="primary" :disabled="!ready.length || loading || previewing" :loading="saving" @click="submit">{{ ready.length < preview.length ? `仅确认通过账户（${ready.length} 个账户）` : `确认分配（${ready.length} 个账户）` }}</el-button>
       </template>
       <template v-else-if="failed.length">
         <el-button :disabled="saving" @click="editFailed">修改失败项</el-button>
@@ -95,6 +118,13 @@ const ready = computed(() => preview.value.filter(x => x.status === 'READY'))
 const failed = computed(() => results.value.filter(x => x.status === 'FAILED'))
 const config = reactive<BulkAssignmentConfig>({ account_ids: [], user_ids: [], action: 'COLLABORATOR', execution_mode: 'KEEP', execution_overrides: {}, preserve_existing_execution: true })
 const commonCandidates = computed(() => context.value.length ? context.value[0].candidates.filter(c => context.value.every(row => row.candidates.some(x => x.connection_id === c.connection_id))) : [])
+const includeCollaborators = ref(false)
+const perAccount = ref(false)
+const collaboratorIds = computed({
+  get: () => config.user_ids.filter(id => id !== config.primary_user_id),
+  set: ids => { config.user_ids = [...new Set([config.primary_user_id, ...ids].filter((id): id is string => !!id))] },
+})
+const showPerAccount = computed(() => config.execution_mode === 'DELEGATED' && (perAccount.value || !commonCandidates.value.length))
 const authorizationLabel = (c: ExecutionAuthorization) => `${c.authorized_by_username} · Meta ${c.meta_user_id} · ${c.page_count} 个 Page`
 let key = ''
 let approved: BulkAssignmentConfig | null = null
@@ -107,19 +137,25 @@ const cloneConfig = (): BulkAssignmentConfig => {
 }
 function reset() { ++loadNo; preview.value = []; results.value = []; approved = null; previewing.value = false }
 watch(config, () => { preview.value = []; approved = null }, { deep: true })
-watch(() => config.user_ids, ids => {
-  if (!ids.includes(config.primary_user_id || '')) config.primary_user_id = props.action === 'PRIMARY' && ids.length === 1 ? ids[0] : undefined
-}, { deep: true })
+watch(() => config.primary_user_id, (id, old) => {
+  if (props.action === 'PRIMARY') config.user_ids = [...new Set([id, ...config.user_ids.filter(uid => uid !== old && uid !== id)].filter((uid): uid is string => !!uid))]
+})
+watch(includeCollaborators, value => { if (!value && props.action === 'PRIMARY') collaboratorIds.value = [] })
+watch(perAccount, value => {
+  config.execution_overrides = {}
+  if (value) for (const row of context.value) if (row.candidates.length === 1) config.execution_overrides[row.account_id] = row.candidates[0].connection_id
+})
 watch(() => config.execution_mode, mode => {
   if (mode === 'DELEGATED' && !config.execution_connection_id) {
     const common = commonCandidates.value
     if (common.length === 1) config.execution_connection_id = common[0].connection_id
-    else for (const row of context.value) if (row.candidates.length === 1 && !config.execution_overrides[row.account_id]) config.execution_overrides[row.account_id] = row.candidates[0].connection_id
+    else if (!common.length) for (const row of context.value) if (row.candidates.length === 1 && !config.execution_overrides[row.account_id]) config.execution_overrides[row.account_id] = row.candidates[0].connection_id
   }
 })
 watch(() => props.modelValue, async show => {
   if (!show) return
   const current = ++loadNo
+  includeCollaborators.value = false; perAccount.value = false
   Object.assign(config, { account_ids: props.accounts.map(a => a.id), user_ids: [], action: props.action,
     primary_user_id: undefined, execution_mode: props.action === 'EXECUTION' ? 'DELEGATED' : 'KEEP', execution_connection_id: undefined, execution_overrides: {}, preserve_existing_execution: true })
   preview.value = []; results.value = []; context.value = []; users.value = []; approved = null
@@ -131,15 +167,15 @@ watch(() => props.modelValue, async show => {
     context.value = data.items; users.value = data.users
     if (props.action === 'EXECUTION') {
       if (commonCandidates.value.length === 1) config.execution_connection_id = commonCandidates.value[0].connection_id
-      else for (const row of context.value) if (row.candidates.length === 1) config.execution_overrides[row.account_id] = row.candidates[0].connection_id
+      else if (!commonCandidates.value.length) for (const row of context.value) if (row.candidates.length === 1) config.execution_overrides[row.account_id] = row.candidates[0].connection_id
     }
   } catch { ElMessage.error('无法读取账户分配信息，请关闭后重试') }
   finally { if (current === loadNo) loading.value = false }
 })
 
 function valid() {
-  if (!config.user_ids.length) { ElMessage.warning('请选择目标投手'); return false }
   if (props.action === 'PRIMARY' && !config.user_ids.includes(config.primary_user_id || '')) { ElMessage.warning('请选择一名新负责人'); return false }
+  if (!config.user_ids.length) { ElMessage.warning('请选择目标投手'); return false }
   return true
 }
 async function makePreview() {
@@ -189,7 +225,11 @@ function editFailed() {
 
 <style scoped>
 .bulk-assignment-form { margin-bottom: 16px; }
+.bulk-assignment-form :deep(.el-radio-group) { display: flex; flex-wrap: wrap; gap: 8px 24px; width: 100%; }
+.bulk-assignment-form :deep(.el-radio) { margin-right: 0; }
+.bulk-assignment-form .hint { flex-basis: 100%; }
 .assignment-table { margin: 16px 0; }
 .hint { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; }
+.authorization-summary .el-tag { margin-left: 8px; }
 .error { color: var(--el-color-danger); }
 </style>

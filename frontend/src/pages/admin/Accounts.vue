@@ -701,6 +701,8 @@ onMounted(async () => {
   // 支持从 BM 详情页跳转过来时按 BM 预筛选
   const q = route.query.business_id
   if (typeof q === 'string' && q) businessFilter.value = q
+  const querySearch = route.query.search
+  if (typeof querySearch === 'string' && querySearch) search.value = querySearch
   await loadBusinesses()
   await nextTick()
   await loadAccounts()

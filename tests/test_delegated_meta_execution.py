@@ -57,6 +57,34 @@ def test_account_assignment_alone_does_not_grant_execution(db, delegated_setup):
     assert meta_connections.list_connections("mine", db, publisher) == []
 
 
+def test_admin_without_personal_oauth_uses_explicit_account_delegation(db, delegated_setup):
+    owner, _, admin, connection, account, _ = delegated_setup
+    with pytest.raises(ValueError, match="委派授权"):
+        CredentialResolver(db).for_account(account.id, actor_id=admin.id)
+    accounts.assign_users(account.id, accounts.AssignUsers(user_ids=[admin.id],
+        execution_connection_id=connection.id), admin, db)
+    ref = CredentialResolver(db).for_account(account.id, actor_id=admin.id)
+    assert ref.connection_id == connection.id and ref.token is None
+    db.info["meta_actor_id"] = admin.id
+    result = accounts.account_to_dict(account, db)
+    assert result["execution_source"] == "DELEGATED"
+    assert result["authorized_by_user_id"] == owner.id
+    assert result["authorization_connection_id"] == connection.id
+    assert meta_connections.list_connections("mine", db, admin) == []
+    assert connection.authorized_by_user_id == owner.id
+
+
+def test_admin_clearing_delegation_does_not_implicitly_use_other_users_oauth(db, delegated_setup):
+    _, _, admin, connection, account, _ = delegated_setup
+    accounts.assign_users(account.id, accounts.AssignUsers(user_ids=[admin.id],
+        execution_connection_id=connection.id), admin, db)
+    assert CredentialResolver(db).for_account(account.id, actor_id=admin.id).connection_id == connection.id
+    accounts.assign_users(account.id, accounts.AssignUsers(user_ids=[admin.id],
+        execution_connection_id=None), admin, db)
+    with pytest.raises(ValueError, match="委派授权"):
+        CredentialResolver(db).for_account(account.id, actor_id=admin.id)
+
+
 def test_admin_delegates_without_transferring_owner_or_canonical_identity(db, delegated_setup):
     owner, publisher, admin, connection, account, page = delegated_setup
     delegate(db, delegated_setup)

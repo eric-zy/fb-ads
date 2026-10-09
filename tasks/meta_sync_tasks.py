@@ -432,6 +432,8 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                 instance.last_error = "REMOTE_NOT_FOUND"
                 return 0
 
+            if remote.get("name"):
+                instance.name = remote["name"]
             remote_status = remote.get("status") or remote.get("effective_status")
             instance.meta_status = remote.get("effective_status") or remote_status
             if instance.status not in {"ARCHIVED", "DELETED"}:
@@ -574,8 +576,6 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                         campaign.id,
                         remote_adset_id,
                     )
-                elif not adset.name and remote_set.get("name"):
-                    adset.name = remote_set["name"]
                 updated += sync_instance_state(adset, remote_set, "ADSET", str(adset.id))
 
                 if remote_adset_id not in remote_ads_by_adset:
@@ -651,8 +651,6 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                             adset.id,
                             remote_ad_id,
                         )
-                    elif not ad.name and remote_ad.get("name"):
-                        ad.name = remote_ad["name"]
                     updated += sync_instance_state(ad, remote_ad, "AD", str(ad.id))
 
                 # Meta 已明确返回列表时，本地存在但远端不存在的对象标记为 NOT_FOUND；

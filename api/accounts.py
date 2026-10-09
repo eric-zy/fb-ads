@@ -291,7 +291,7 @@ def account_to_dict(a: AdAccount, db: Optional[Session] = None) -> dict:
                 authorized_by = db.query(User).filter_by(id=connection.authorized_by_user_id).first()
                 from services.meta_execution_access import delegated_connection_id
                 actor = db.query(User).filter_by(id=db.info.get("meta_actor_id")).first()
-                execution_source = "DELEGATED" if actor and not actor.is_admin() and delegated_connection_id(db, actor, a) == connection.id else "PERSONAL"
+                execution_source = "DELEGATED" if actor and delegated_connection_id(db, actor, a) == connection.id else "PERSONAL"
             except ValueError:
                 connector_credential_id = None
                 credential = None

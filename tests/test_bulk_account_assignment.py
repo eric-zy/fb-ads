@@ -70,6 +70,8 @@ def test_bulk_collaboration_preserves_owner_and_warns_missing_page(setup_bulk):
 def test_primary_transfer_keeps_original_as_collaborator(setup_bulk):
     db, owner, publisher, _, accounts = setup_bulk
     request = request_for(setup_bulk, action="PRIMARY", primary_user_id=publisher.id, execution_mode="KEEP")
+    preview = assignment_preview(db, owner, request)
+    assert all(x["old_primary_label"] == owner.username and x["primary_label"] == publisher.username for x in preview["items"])
     assert submit_preview(setup_bulk, request)["success_count"] == 2
     for account in accounts:
         assert db.query(UserAccount).filter_by(account_id=account.id, assignment_role="PRIMARY").one().user_id == publisher.id
