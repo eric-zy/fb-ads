@@ -19,6 +19,12 @@ npm run preview -- --host 127.0.0.1 --port 4178
 
 报表同步专项回归：`node tests/report-sync-smoke.cjs`，覆盖 90 天同步、等待任务结果、业务失败提示、所选日期回补、窗口覆盖和 Meta ID 展示。
 
+旧路由和环比边界回归：`node tests/navigation-report-regressions.cjs`，使用实际 Vue Router 校验全部旧路由映射、查询参数及锚点保留，以及同步覆盖与环比零值边界；无需预览服务。
+
+报表环比页面回归：`node tests/report-comparison-smoke.cjs`，覆盖上一周期慢请求/失败、两个周期的完整性检查、零值/空行/缺失指标、币种不一致及日期切换后的过期响应。
+
+风控路由页面回归：`node tests/risk-route-smoke.cjs`，覆盖旧链接进入、查询参数切换、手动切换标签、缓存页面重新进入，以及离开页面后的定时刷新清理。
+
 删除专项回归：`node tests/campaign-delete-smoke.cjs`，覆盖删除范围确认、取消、结果不确定时只读对账、失败重试与复制重新创建。
 
 账户批量分配回归：`node tests/bulk-account-assignment-smoke.cjs`，覆盖统一批量入口、跨页勾选、委派授权自动填充、修改配置后重新预览、部分成功与失败项重试、负责人交接和取消选择。单账户委派与撤销、投手 Page 范围回归：`node tests/delegated-meta-execution-smoke.cjs`。

@@ -25,6 +25,25 @@ def report_meta_auth_failure(credential_id: str, error: Exception) -> bool:
         return True
     return False
 
+class ConnectorCredentialUnavailable(KeyError):
+    """Expected credential state failure; never includes token or ciphertext."""
+    def __init__(self, credential_id: str, status: str):
+        self.credential_id = credential_id
+        self.status = status
+        self.code = "CONNECTOR_CREDENTIAL_" + ("MISSING" if status == "MISSING" else "EXPIRED" if status == "EXPIRED" else "INACTIVE")
+        message = {
+            "MISSING": "海外凭据记录不存在，请检查 Connector 数据库与凭据绑定，或重新授权",
+            "EXPIRED": "海外凭据已过期，请重新授权",
+        }.get(status, "海外凭据已停用或失效，请检查授权状态")
+        super().__init__(message)
+
+    def __str__(self):
+        return str(self.args[0])
+
+    def detail(self):
+        return {"code": self.code, "message": str(self), "credential_id": self.credential_id, "credential_status": self.status}
+
+
 class DatabaseCredentialVault:
     """海外凭据仓储；对外仅返回 credential_id，不返回明文 Token。"""
     def save_oauth_result(self, *, access_token: str, meta_user_id, expires_at, scopes: list[str]) -> str:
@@ -43,8 +62,12 @@ class DatabaseCredentialVault:
         session = connector_session_factory()
         try:
             row = session.get(ConnectorCredential, credential_id)
-            if not row or row.status != "ACTIVE" or row.expires_at and row.expires_at <= datetime.utcnow():
-                raise KeyError("凭据不存在或已失效")
+            if not row:
+                raise ConnectorCredentialUnavailable(credential_id, "MISSING")
+            if row.status != "ACTIVE":
+                raise ConnectorCredentialUnavailable(credential_id, row.status)
+            if row.expires_at and row.expires_at <= datetime.utcnow():
+                raise ConnectorCredentialUnavailable(credential_id, "EXPIRED")
             return _cipher().decrypt(row.access_token_encrypted.encode()).decode()
         finally:
             session.close()

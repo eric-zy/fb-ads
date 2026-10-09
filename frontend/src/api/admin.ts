@@ -135,6 +135,7 @@ export const tenantApi = {
 }
 
 export const operationsApi = {
+  health: () => request.get<{ status: string; checked_at: string; checks: Record<string, string>; celery_workers: string[]; connector: { status: string; checks: Record<string, string> } }>('/api/v1/operations/health'),
   syncTasks: (params?: { status?: string; limit?: number }) => request.get('/api/v1/operations/sync-tasks', { params }),
   credentialHealth: () => request.get('/api/v1/operations/credential-health'),
   auditLogs: (params?: { action?: string; resource_type?: string; resource_id?: string; limit?: number }) => request.get('/api/v1/operations/audit-logs', { params }),

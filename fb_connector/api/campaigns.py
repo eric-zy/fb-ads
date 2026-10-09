@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 import uuid
 from fb_connector.models import ConnectorDeliveryTask, connector_session_factory
-from fb_connector.credential_store import report_meta_auth_failure
+from fb_connector.credential_store import ConnectorCredentialUnavailable, report_meta_auth_failure
 from core.logger import logger
 from config.settings import settings
 
@@ -185,6 +185,9 @@ def _meta_service(credential_id: str):
 async def list_adsets(payload: ParentRequest):
     try:
         return {"parent_id": payload.parent_id, "adsets": _meta_service(payload.credential_id).list_adsets(payload.parent_id)}
+    except ConnectorCredentialUnavailable as exc:
+        logger.warning("[ConnectorCampaignAPI] credential unavailable credential_id=%s status=%s parent_id=%s", exc.credential_id, exc.status, payload.parent_id)
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
     except Exception as exc:
         report_meta_auth_failure(payload.credential_id, exc)
         logger.exception("[ConnectorCampaignAPI] list adsets failed parent_id=%s", payload.parent_id)
@@ -194,6 +197,9 @@ async def list_adsets(payload: ParentRequest):
 async def list_ads(payload: ParentRequest):
     try:
         return {"parent_id": payload.parent_id, "ads": _meta_service(payload.credential_id).list_ads(payload.parent_id)}
+    except ConnectorCredentialUnavailable as exc:
+        logger.warning("[ConnectorCampaignAPI] credential unavailable credential_id=%s status=%s parent_id=%s", exc.credential_id, exc.status, payload.parent_id)
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
     except Exception as exc:
         report_meta_auth_failure(payload.credential_id, exc)
         logger.exception("[ConnectorCampaignAPI] list ads failed parent_id=%s", payload.parent_id)
@@ -244,6 +250,9 @@ async def list_campaigns(payload: CampaignListRequest):
         from services.meta import MetaClient
         campaigns = MetaAdsService(MetaClient(access_token=token)).list_campaigns(payload.account_id)
         return {"account_id": payload.account_id, "credential_id": payload.credential_id, "campaigns": campaigns}
+    except ConnectorCredentialUnavailable as exc:
+        logger.warning("[ConnectorCampaignAPI] credential unavailable credential_id=%s status=%s account_id=%s", exc.credential_id, exc.status, payload.account_id)
+        raise HTTPException(status_code=409, detail=exc.detail()) from exc
     except Exception as exc:
         report_meta_auth_failure(payload.credential_id, exc)
         logger.exception("[ConnectorCampaignAPI] list campaigns failed account_id=%s", payload.account_id)

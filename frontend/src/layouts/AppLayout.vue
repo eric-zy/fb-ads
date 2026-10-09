@@ -114,7 +114,7 @@
             </div>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item @click="router.push('/app/system/settings')">系统设置</el-dropdown-item>
+                <el-dropdown-item @click="router.push('/dashboard/settings')">系统设置</el-dropdown-item>
                 <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>

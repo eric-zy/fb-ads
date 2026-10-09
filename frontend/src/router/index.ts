@@ -39,6 +39,46 @@ const routes: RouteRecordRaw[] = [
     ],
   },
   {
+    // Keep old bookmarks and links working while the app's canonical routes
+    // remain under /dashboard and /admin.
+    path: '/app/:legacyPath(.*)*',
+    redirect: to => {
+      const legacyPath = to.params.legacyPath
+      const path = `/app/${Array.isArray(legacyPath) ? legacyPath.join('/') : legacyPath ?? ''}`.replace(/\/$/, '')
+      const legacyRoutes: Record<string, string> = {
+        '/app': '/dashboard/overview',
+        '/app/overview': '/dashboard/overview',
+        '/app/delivery/campaigns': '/dashboard/campaigns',
+        '/app/delivery/templates': '/dashboard/templates',
+        '/app/delivery/batch-publish': '/dashboard/batch-publish',
+        '/app/delivery/jobs': '/dashboard/jobs',
+        '/app/delivery/material': '/dashboard/material',
+        '/app/delivery/scheduled-tasks': '/dashboard/scheduled-tasks',
+        '/app/accounts/platforms': '/dashboard/accounts',
+        '/app/accounts/meta-accounts': '/dashboard/accounts',
+        '/app/accounts/bms': '/dashboard/accounts',
+        '/app/accounts/ad-accounts': '/dashboard/accounts',
+        '/app/accounts/tree': '/dashboard/accounts',
+        '/app/reports/overview': '/dashboard/reports',
+        '/app/reports/platforms': '/dashboard/reports',
+        '/app/reports/bms': '/dashboard/reports',
+        '/app/reports/accounts': '/dashboard/account-overview',
+        '/app/risk/accounts': '/dashboard/risk-control',
+        '/app/risk/stops': '/dashboard/risk-control',
+        '/app/risk/rules': '/dashboard/risk-control',
+        '/app/system/users': '/admin/users',
+        '/app/system/roles': '/admin/roles',
+        '/app/system/permissions': '/admin/roles',
+        '/app/system/logs': '/admin/operations',
+        '/app/system/settings': '/dashboard/settings',
+      }
+      const query = { ...to.query }
+      if (path === '/app/risk/rules') query.tab = 'rules'
+      if (path === '/app/risk/stops') query.tab = 'executions'
+      return { path: legacyRoutes[path] ?? '/dashboard/overview', query, hash: to.hash }
+    },
+  },
+  {
     path: '/admin', redirect: '/admin/dashboard', component: () => import('@/layouts/AdminLayout.vue'), meta: { requiresAuth: true, requiresAdmin: true },
     children: [
       { path: 'dashboard', name: 'AdminDashboard', component: () => import('@/pages/admin/Dashboard.vue'), meta: { title: '管理员仪表板' } },

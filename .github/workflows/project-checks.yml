@@ -72,6 +72,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run type-check
+      - run: node tests/navigation-report-regressions.cjs
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - name: Frontend UI regression with mocked APIs
@@ -80,3 +81,6 @@ jobs:
           preview_pid=$!
           trap 'kill "$preview_pid"' EXIT
           npm run test:ui
+          node tests/report-sync-smoke.cjs
+          node tests/report-comparison-smoke.cjs
+          node tests/risk-route-smoke.cjs

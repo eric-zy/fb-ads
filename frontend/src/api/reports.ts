@@ -4,8 +4,10 @@ import type { AxiosRequestConfig } from 'axios'
 export const reportsApi = {
   accountOverview: (params?: { start_date?: string; end_date?: string }) =>
     request.get('/api/v1/reports/account-overview', { params }),
-  breakdown: (params: { dimension: string; days?: number; start_date?: string; end_date?: string; parent_id?: string }) =>
-    request.get('/api/v1/reports/breakdown', { params }),
+  breakdown: (
+    params: { dimension: string; days?: number; start_date?: string; end_date?: string; parent_id?: string },
+    config?: Pick<AxiosRequestConfig, 'signal' | 'skipErrorMessage'>,
+  ) => request.get<ReportBreakdown>('/api/v1/reports/breakdown', { params, ...config }),
   trend: (params: { dimension: string; days?: number; start_date?: string; end_date?: string; entity_id?: string }) =>
     request.get('/api/v1/reports/trend', { params }),
   sync: (params?: { account_id?: string; days?: number; start_date?: string; end_date?: string }) =>
@@ -20,6 +22,19 @@ export interface RevenueRecord {
   source: string
   currency: string
   revenue: string
+}
+
+export interface ReportQuality {
+  account_id: string
+  status: string
+  covered_days: number
+  expected_days: number
+  complete: boolean
+}
+
+export interface ReportBreakdown {
+  items: ReportItem[]
+  data_quality: ReportQuality[]
 }
 
 export interface ReportItem {

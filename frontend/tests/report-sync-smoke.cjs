@@ -45,6 +45,10 @@ async function main() {
     })
     await page.goto(baseURL + '/dashboard/reports')
     await page.getByText('act_meta_123', { exact: true }).waitFor()
+    // Keep this scenario focused on current-period synchronization; comparison has its own regression suite.
+    await page.getByText('对比上一周期', { exact: true }).click()
+    assert.equal(await page.getByRole('checkbox', { name: '对比上一周期' }).isChecked(), false)
+    await page.getByText('act_meta_123', { exact: true }).waitFor()
     assert.ok((await page.locator('.metric-note').allTextContents()).some(text => text.includes('已覆盖 3/30 天')))
     const selectPreset = async label => {
       await page.locator('.date-range-select').click()

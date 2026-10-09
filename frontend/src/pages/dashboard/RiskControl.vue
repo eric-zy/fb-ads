@@ -17,7 +17,7 @@
       <el-col :xs="24" :sm="12" :md="6"><div class="status-card"><h3>API 限制</h3><p class="status-value">{{ rateLimitUsage }}%</p><p class="status-desc">当前小时</p></div></el-col>
     </el-row>
 
-    <el-tabs v-model="activeTab" class="risk-tabs" @tab-change="onTabChange">
+    <el-tabs v-model="activeTab" class="risk-tabs">
       <el-tab-pane label="风险事件" name="events">
         <el-card shadow="never"><div class="filters"><el-select v-model="eventResolved" clearable placeholder="处理状态" @change="eventPage = 1; loadRiskEvents()"><el-option label="未解决" :value="false" /><el-option label="已解决" :value="true" /></el-select><el-select v-model="eventLevel" clearable placeholder="风险等级" @change="eventPage = 1; loadRiskEvents()"><el-option label="严重" value="critical" /><el-option label="高" value="high" /><el-option label="中" value="medium" /><el-option label="低" value="low" /></el-select><el-button @click="loadRiskEvents">刷新事件</el-button></div>
           <el-table :data="riskEvents" v-loading="eventsLoading" empty-text="暂无风险事件"><el-table-column prop="event_type" label="事件类型" width="140"><template #default="{ row }">{{ eventTypeLabel(row.event_type) }}</template></el-table-column><el-table-column prop="risk_level" label="等级" width="90"><template #default="{ row }"><el-tag :type="riskLevelType(row.risk_level)">{{ riskLevelLabel(row.risk_level) }}</el-tag></template></el-table-column><el-table-column prop="title" label="标题" min-width="220" show-overflow-tooltip /><el-table-column prop="notification_status" label="通知" width="100"><template #default="{ row }"><el-tag size="small" :type="notificationType(row.notification_status)">{{ notificationLabel(row.notification_status) }}</el-tag></template></el-table-column><el-table-column prop="is_resolved" label="状态" width="90"><template #default="{ row }"><el-tag size="small" :type="row.is_resolved ? 'success' : 'warning'">{{ row.is_resolved ? '已解决' : '未解决' }}</el-tag></template></el-table-column><el-table-column prop="created_at" label="发生时间" width="180"><template #default="{ row }">{{ formatTime(row.created_at) }}</template></el-table-column><el-table-column label="操作" width="170" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="showEvent(row as TableRow<typeof riskEvents>)">详情</el-button><el-button v-if="!row.is_resolved" link type="warning" @click="resolveEvent(row as TableRow<typeof riskEvents>)">处理</el-button></template></el-table-column></el-table>
@@ -48,13 +48,14 @@
 
 <script setup lang="ts">
 import { formatDateTime as displayDateTime } from '@/utils/dateTime'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAccountStore } from '@/stores/accountStore'
 import { useUserStore } from '@/stores/userStore'
 import { riskControlApi, type RiskEventItem, type RiskRuleItem, type RiskAutomationState } from '@/api/riskControl'
 
-const accountStore = useAccountStore(); const userStore = useUserStore()
+const accountStore = useAccountStore(); const userStore = useUserStore(); const route = useRoute()
 const activeTab = ref('events'); const loading = ref(false); const pageError = ref(''); const accountHealth = ref<any>(null); const riskScore = ref(0); const frequencyReport = ref<any>(null); const rateLimitUsage = ref(0); const recommendations = ref<any>(null)
 const riskEvents = ref<RiskEventItem[]>([]); const eventsLoading = ref(false); const eventTotal = ref(0); const eventPage = ref(1); const eventPageSize = 20; const eventResolved = ref<boolean | undefined>(false); const eventLevel = ref('')
 const rules = ref<RiskRuleItem[]>([]); const rulesLoading = ref(false); const executions = ref<any[]>([]); const executionsLoading = ref(false); const executionTotal = ref(0); const executionPage = ref(1); const executionPageSize = 20; const executionStatus = ref('')
@@ -133,9 +134,22 @@ async function runDryRun(row: RiskRuleItem) { try { dryRunResult.value = (await 
 async function showExecution(row: any) { try { executionDetail.value = (await riskControlApi.execution(row.id)).data; executionDetailVisible.value = true } catch { ElMessage.error('加载执行详情失败') } }
 async function retryExecution(row: any) { try { await ElMessageBox.confirm('将重新经过规则和安全护栏校验，确认重试？', '重试止损动作', { type: 'warning' }); await riskControlApi.retryExecution(row.id); ElMessage.success('重试任务已提交'); await loadExecutions() } catch (error: any) { if (error?.response?.data?.detail) ElMessage.error(error.response.data.detail) } }
 async function onTabChange(tab: string | number) { if (tab === 'rules') await loadRules(); if (tab === 'executions') await loadExecutions() }
+watch(activeTab, tab => {
+  if (refreshTimer !== null) void onTabChange(tab).catch(() => { pageError.value = '标签数据加载失败，请稍后重试' })
+})
 watch(() => accountStore.selectedAccountId, async () => { eventPage.value = 1; executionPage.value = 1; accountHealth.value = null; riskScore.value = 0; frequencyReport.value = null; riskEvents.value = []; await refreshAll() })
-onMounted(() => { refreshAll(); refreshTimer = window.setInterval(refreshAll, 30000) })
-onUnmounted(() => { if (refreshTimer !== null) window.clearInterval(refreshTimer) })
+watch(() => [route.path, route.query.tab], () => {
+  if (route.path !== '/dashboard/risk-control') return
+  const requestedTab = route.query.tab
+  activeTab.value = requestedTab === 'rules' || requestedTab === 'executions' || requestedTab === 'recommendations' ? requestedTab : 'events'
+}, { immediate: true })
+function stopRefresh() {
+  if (refreshTimer !== null) window.clearInterval(refreshTimer)
+  refreshTimer = null
+}
+onActivated(() => { stopRefresh(); void refreshAll(); refreshTimer = window.setInterval(refreshAll, 30000) })
+onDeactivated(stopRefresh)
+onUnmounted(stopRefresh)
 </script>
 
 <style scoped lang="scss">

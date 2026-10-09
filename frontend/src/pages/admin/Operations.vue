@@ -3,7 +3,7 @@
     <div class="page-head">
       <div>
         <h2 class="page-title">运维中心</h2>
-        <p class="page-subtitle">同步任务、投放告警、投放操作和操作审计</p>
+        <p class="page-subtitle">系统依赖、同步任务、投放告警、投放操作和操作审计</p>
       </div>
       <el-button :loading="loading" @click="load">刷新</el-button>
     </div>
@@ -13,6 +13,41 @@
     </el-alert>
 
     <el-tabs v-model="tab" @tab-change="load">
+      <el-tab-pane label="系统健康" name="health">
+        <template v-if="health">
+          <div class="health-summary">
+            <el-tag :type="health.status === 'ready' ? 'success' : 'warning'" effect="dark">
+              {{ health.status === 'ready' ? '运行正常' : '存在异常' }}
+            </el-tag>
+            <span class="health-time">检查时间：{{ formatDateTimeCell(null, null, health.checked_at) }}</span>
+          </div>
+          <el-row :gutter="12">
+            <el-col v-for="(status, name) in health.checks" :key="name" :xs="24" :sm="12" :lg="6">
+              <el-card shadow="never" class="health-card">
+                <div class="health-name">{{ healthLabel(String(name)) }}</div>
+                <el-tag :type="status === 'ok' ? 'success' : status === 'not_required' ? 'info' : 'danger'">
+                  {{ healthStatusLabel(status) }}
+                </el-tag>
+                <div v-if="name === 'celery_workers'" class="health-detail">
+                  {{ health.celery_workers.join('、') || '未发现在线 Worker' }}
+                </div>
+              </el-card>
+            </el-col>
+          </el-row>
+          <el-card v-if="connectorMode" shadow="never" class="connector-health">
+            <template #header>海外 Connector</template>
+            <div class="health-summary">
+              <el-tag :type="health.connector.status === 'ok' ? 'success' : 'danger'">
+                {{ healthStatusLabel(health.connector.status) }}
+              </el-tag>
+              <span v-for="(status, name) in health.connector.checks" :key="name" class="health-detail">
+                {{ healthLabel(String(name)) }}：{{ healthStatusLabel(status) }}
+              </span>
+            </div>
+          </el-card>
+        </template>
+        <el-empty v-else-if="!loading" description="暂无健康检查结果" />
+      </el-tab-pane>
       <el-tab-pane label="同步任务" name="tasks">
         <el-table :data="tasks" stripe>
           <el-table-column prop="sync_type" label="类型" />
@@ -80,8 +115,9 @@ import { operationsApi, credentialApi } from '@/api/admin'
 import { campaignsApi, type DeliveryAction, type SyncAlert } from '@/api/campaigns'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-const tab = ref('tasks')
+const tab = ref('health')
 const loading = ref(false)
+const health = ref<{ status: string; checked_at: string; checks: Record<string, string>; celery_workers: string[]; connector: { status: string; checks: Record<string, string> } } | null>(null)
 const tasks = ref<any[]>([])
 const credentials = ref<any[]>([])
 const audits = ref<any[]>([])
@@ -97,14 +133,25 @@ async function load() {
   loading.value = true
   try {
     connectorMode.value = (await credentialApi.accessMode()).data?.access_mode === 'connector'
+    if (tab.value === 'health') health.value = (await operationsApi.health()).data
     if (tab.value === 'tasks') tasks.value = (await operationsApi.syncTasks()).data
     if (tab.value === 'credentials') credentials.value = (await operationsApi.credentialHealth()).data
     if (tab.value === 'audit') audits.value = (await operationsApi.auditLogs({ resource_id: auditResourceId.value || undefined, action: auditAction.value || undefined, resource_type: auditResourceType.value || undefined })).data
     if (tab.value === 'alerts') alerts.value = (await campaignsApi.alerts(100)).data
     if (tab.value === 'delivery-actions') deliveryActions.value = (await campaignsApi.deliveryActions(100, actionStatus.value || undefined)).data
+  } catch {
+    if (tab.value === 'health') health.value = null
+    ElMessage.error('运维数据加载失败，请检查服务状态后重试')
   } finally {
     loading.value = false
   }
+}
+
+function healthLabel(name: string) {
+  return ({ database: '数据库', redis: 'Redis', celery_workers: 'Celery Worker', connector: 'Connector', oauth_receipt_signing: 'OAuth 回执签名', service_auth: '服务签名与鉴权通信' } as Record<string, string>)[name] || name
+}
+function healthStatusLabel(status: string) {
+  return ({ ok: '正常', ready: '正常', unavailable: '不可用', degraded: '异常', not_required: '不需要' } as Record<string, string>)[status] || status
 }
 
 async function resolveAlert(row: SyncAlert) {
@@ -129,4 +176,9 @@ onMounted(load)
 .filters .el-select {
   width: 160px;
 }
+.health-summary { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.health-time, .health-detail { color: #718096; font-size: 13px; }
+.health-card { margin-bottom: 12px; min-height: 104px; }
+.health-name { margin-bottom: 12px; font-weight: 600; }
+.connector-health { margin-top: 8px; }
 </style>

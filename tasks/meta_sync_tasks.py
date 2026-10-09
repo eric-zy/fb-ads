@@ -399,6 +399,8 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
             ).get("campaigns", [])
         except Exception as exc:
             logger.warning(f"[meta_sync] 账户 {account.id} Campaign 拉取失败: {exc}")
+            if isinstance(exc, FBConnectorError) and exc.credential_unavailable:
+                raise
             campaign_fetch_ok = False
             remote_campaigns = []
             sync_errors.append({"type": "CAMPAIGN", "error": str(exc)})
@@ -510,6 +512,8 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                     ).get("adsets", [])
                 except Exception as exc:
                     logger.warning(f"[meta_sync] Campaign {campaign_key} AdSet 拉取失败: {exc}")
+                    if isinstance(exc, FBConnectorError) and exc.credential_unavailable:
+                        raise
                     remote_adsets_by_campaign[campaign_key] = None
                     sync_errors.append({"type": "ADSET", "parent_id": campaign_key, "error": str(exc)})
             remote_sets = remote_adsets_by_campaign[campaign_key]
@@ -585,6 +589,8 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                         ).get("ads", [])
                     except Exception as exc:
                         logger.warning(f"[meta_sync] AdSet {remote_adset_id} Ad 拉取失败: {exc}")
+                        if isinstance(exc, FBConnectorError) and exc.credential_unavailable:
+                            raise
                         remote_ads_by_adset[remote_adset_id] = None
                         sync_errors.append({"type": "AD", "parent_id": remote_adset_id, "error": str(exc)})
                 remote_ads = remote_ads_by_adset[remote_adset_id]
@@ -687,6 +693,14 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
                     )
                 except Exception:
                     logger.exception("[meta_sync] 投放状态同步告警发送失败")
+        else:
+            db.query(SyncAlert).filter(
+                SyncAlert.tenant_id == account.tenant_id,
+                SyncAlert.ad_account_id == account.id,
+                SyncAlert.alert_type == "DELIVERY_SYNC_CREDENTIAL",
+                SyncAlert.is_resolved.is_(False),
+            ).update({"is_resolved": True, "resolved_at": datetime.utcnow()}, synchronize_session="fetch")
+            db.commit()
         return {
             "status": "partial_success" if sync_errors else "success",
             "account_id": account.id,
@@ -698,6 +712,21 @@ def sync_delivery_objects_task(self, account_id: str) -> Dict:
     except Exception as exc:
         db.rollback()
         logger.error(f"[meta_sync] 投放对象同步失败: {exc}")
+        if isinstance(exc, FBConnectorError) and exc.credential_unavailable:
+            from services.risk_reliability import upsert_operational_alert
+            account = db.query(AdAccount).filter(AdAccount.id == account_id).first()
+            if account:
+                alert, created = upsert_operational_alert(
+                    db, tenant_id=account.tenant_id, ad_account_id=account.id,
+                    alert_type="DELIVERY_SYNC_CREDENTIAL", title="Meta 投放同步凭据不可用", message=str(exc),
+                )
+                if created:
+                    try:
+                        NotificationService().notify_all(alert.title, alert.message)
+                    except Exception:
+                        logger.exception("[meta_sync] 凭据异常告警发送失败")
+            return {"status": "failed", "account_id": account_id,
+                    "error_code": "CONNECTOR_CREDENTIAL_UNAVAILABLE", "error": str(exc)}
         try:
             raise self.retry(exc=exc)
         except self.MaxRetriesExceededError:

@@ -28,6 +28,15 @@ class FBConnectorError(RuntimeError):
         self.request_id = request_id
         self.detail = detail
 
+    @property
+    def credential_unavailable(self) -> bool:
+        if isinstance(self.detail, dict):
+            return self.detail.get("code") in (
+                "CONNECTOR_CREDENTIAL_MISSING", "CONNECTOR_CREDENTIAL_EXPIRED", "CONNECTOR_CREDENTIAL_INACTIVE",
+            )
+        # Support the existing overseas version during a rolling deployment.
+        return self.status_code == 400 and "凭据不存在或已失效" in str(self.detail or self)
+
 
 class FBConnectorClient:
     """所有国内到海外 FB 请求的唯一 HTTP 出口。"""
@@ -105,7 +114,7 @@ class FBConnectorClient:
                     str(detail)[:300],
                 )
                 raise FBConnectorError(
-                    str(detail),
+                    str(detail.get("message") or detail) if isinstance(detail, dict) else str(detail),
                     status_code=response.status_code,
                     request_id=rid,
                     detail=detail,
@@ -122,6 +131,15 @@ class FBConnectorClient:
                 round((time.monotonic() - started) * 1000, 1),
             )
             raise FBConnectorError(f"FB Connector 不可用: {exc}", request_id=rid) from exc
+
+    def probe_version(self, *, timeout: int | float = 5.0) -> dict[str, Any]:
+        """Read-only probe through the same signed channel used by business requests."""
+        result = self._request("GET", "/internal/meta/version", timeout=timeout)
+        if (result.get("service") != "fb_connector"
+                or result.get("oauth_callback_contract") != "signed_receipt_v1"
+                or result.get("oauth_receipt_signing_configured") is not True):
+            raise FBConnectorError("FB Connector 探针响应不符合预期")
+        return result
 
     def authorize(self, state: str, *, request_id: str | None = None) -> dict[str, Any]:
         return self._request("POST", "/internal/meta/oauth/authorize", {"state": state}, request_id=request_id)
